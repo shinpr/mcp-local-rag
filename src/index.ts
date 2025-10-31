@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 // Entry point for RAG MCP Server
 
 import { RAGServer } from './server/index.js'
