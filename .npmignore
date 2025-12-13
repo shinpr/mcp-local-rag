@@ -26,6 +26,7 @@ CLAUDE.md
 server.json
 
 # Test files
+tests/
 __tests__/
 src/__tests__/
 src/tests/

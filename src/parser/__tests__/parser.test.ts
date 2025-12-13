@@ -37,18 +37,30 @@ describe('DocumentParser', () => {
     })
 
     it('should reject relative path', () => {
-      expect(() => parser.validateFilePath('test.txt')).toThrow(ValidationError)
-      expect(() => parser.validateFilePath('test.txt')).toThrow(/absolute path/)
+      expect(() => parser.validateFilePath('test.txt')).toThrow(
+        expect.objectContaining({
+          name: 'ValidationError',
+          message: expect.stringMatching(/absolute path/),
+        })
+      )
     })
 
     it('should reject relative path traversal attack (../)', () => {
-      expect(() => parser.validateFilePath('../outside.txt')).toThrow(ValidationError)
-      expect(() => parser.validateFilePath('../outside.txt')).toThrow(/absolute path/)
+      expect(() => parser.validateFilePath('../outside.txt')).toThrow(
+        expect.objectContaining({
+          name: 'ValidationError',
+          message: expect.stringMatching(/absolute path/),
+        })
+      )
     })
 
     it('should reject absolute path outside baseDir', () => {
-      expect(() => parser.validateFilePath('/etc/passwd')).toThrow(ValidationError)
-      expect(() => parser.validateFilePath('/etc/passwd')).toThrow(/outside BASE_DIR/)
+      expect(() => parser.validateFilePath('/etc/passwd')).toThrow(
+        expect.objectContaining({
+          name: 'ValidationError',
+          message: expect.stringMatching(/outside BASE_DIR/),
+        })
+      )
     })
   })
 
@@ -71,8 +83,12 @@ describe('DocumentParser', () => {
         maxFileSize: 1,
       })
 
-      expect(() => smallParser.validateFileSize(filePath)).toThrow(ValidationError)
-      expect(() => smallParser.validateFileSize(filePath)).toThrow(/File size exceeds limit/)
+      expect(() => smallParser.validateFileSize(filePath)).toThrow(
+        expect.objectContaining({
+          name: 'ValidationError',
+          message: expect.stringMatching(/File size exceeds limit/),
+        })
+      )
     })
 
     it('should throw FileOperationError for non-existent file', () => {
@@ -104,16 +120,24 @@ describe('DocumentParser', () => {
       const filePath = join(testDir, 'test.xyz')
       await writeFile(filePath, 'fake xyz content')
 
-      await expect(parser.parseFile(filePath)).rejects.toThrow(ValidationError)
-      await expect(parser.parseFile(filePath)).rejects.toThrow(/Unsupported file format/)
+      await expect(parser.parseFile(filePath)).rejects.toThrow(
+        expect.objectContaining({
+          name: 'ValidationError',
+          message: expect.stringMatching(/Unsupported file format/),
+        })
+      )
     })
 
     it('should throw FileOperationError for invalid DOCX file', async () => {
       const filePath = join(testDir, 'test.docx')
       await writeFile(filePath, 'fake docx content')
 
-      await expect(parser.parseFile(filePath)).rejects.toThrow(FileOperationError)
-      await expect(parser.parseFile(filePath)).rejects.toThrow(/Failed to parse DOCX/)
+      await expect(parser.parseFile(filePath)).rejects.toThrow(
+        expect.objectContaining({
+          name: 'FileOperationError',
+          message: expect.stringMatching(/Failed to parse DOCX/),
+        })
+      )
     })
 
     it('should throw ValidationError for path traversal attempt', async () => {

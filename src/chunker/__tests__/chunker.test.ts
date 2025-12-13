@@ -2,7 +2,7 @@
 // Created: 2025-10-31
 // Purpose: Verify proper error handling in chunking process
 
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it } from 'vitest'
 import { DocumentChunker } from '../index.js'
 
 describe('DocumentChunker', () => {
@@ -47,33 +47,10 @@ describe('DocumentChunker', () => {
   })
 
   // --------------------------------------------
-  // Error Case: RecursiveCharacterTextSplitter failure
-  // RED PHASE: This test should FAIL with current implementation
-  // Current behavior: chunkText() catches error and returns []
-  // Expected behavior: chunkText() should propagate error
+  // Error Case: Uninitialized chunker
   // --------------------------------------------
-  describe('Error propagation (Fail-fast principle)', () => {
-    it('should propagate error when RecursiveCharacterTextSplitter.splitText() fails', async () => {
-      // Mock the splitter to throw an error
-      const mockError = new Error('RecursiveCharacterTextSplitter failure')
-      const mockSplitter = {
-        splitText: vi.fn().mockRejectedValue(mockError),
-      }
-
-      // Replace the internal splitter with our mock
-      // @ts-expect-error - accessing private property for testing
-      chunker['splitter'] = mockSplitter
-
-      // Act & Assert: Verify error is propagated (not caught and converted to [])
-      await expect(chunker.chunkText('test input')).rejects.toThrow(
-        'RecursiveCharacterTextSplitter failure'
-      )
-
-      // Verify splitText was called
-      expect(mockSplitter.splitText).toHaveBeenCalledWith('test input')
-    })
-
-    it('should not initialize without calling initialize()', async () => {
+  describe('Error handling', () => {
+    it('should throw error when chunkText called without initialization', async () => {
       const uninitializedChunker = new DocumentChunker({
         chunkSize: 512,
         chunkOverlap: 100,

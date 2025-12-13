@@ -3,7 +3,7 @@
 // Test Type: End-to-End Test
 // Implementation Timing: After all implementations complete
 
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { copyFileSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { RAGServer } from '../../server/index.js'
@@ -109,36 +109,27 @@ describe('RAG MCP Server E2E Test', () => {
       try {
         expect(ragServer).toBeDefined()
 
-        // 2. Ingest DOCX file
-        // Note: Create simple DOCX file (simulate with text instead of actual binary DOCX)
+        // 2. Ingest valid DOCX file from fixtures
+        const fixtureDocx = resolve('./tests/fixtures/sample-e2e.docx')
         const docxFile = resolve(testDataDir, 'sample.docx')
-        writeFileSync(
-          docxFile,
-          'This is a sample DOCX document for E2E testing. Project management is important. Agile methodology provides effective project management.'
-        )
+        copyFileSync(fixtureDocx, docxFile)
 
-        try {
-          const ingestResult = await ragServer.handleIngestFile({ filePath: docxFile })
-          expect(ingestResult.content[0].text).toBeDefined()
+        const ingestResult = await ragServer.handleIngestFile({ filePath: docxFile })
+        expect(ingestResult.content[0].text).toBeDefined()
 
-          const ingestData = JSON.parse(ingestResult.content[0].text)
-          expect(ingestData.chunkCount).toBeGreaterThan(0)
+        const ingestData = JSON.parse(ingestResult.content[0].text)
+        expect(ingestData.chunkCount).toBeGreaterThan(0)
 
-          // 3. Search with natural language query
-          const queryResult = await ragServer.handleQueryDocuments({
-            query: 'project management',
-            limit: 5,
-          })
-          const results = JSON.parse(queryResult.content[0].text)
+        // 3. Search with natural language query
+        const queryResult = await ragServer.handleQueryDocuments({
+          query: 'project management',
+          limit: 5,
+        })
+        const results = JSON.parse(queryResult.content[0].text)
 
-          // 4. Verify related document retrieval
-          expect(results.length).toBeGreaterThan(0)
-          expect(results[0].filePath).toContain('sample.docx')
-        } catch (error) {
-          // If DOCX parsing fails (when mammoth requires actual DOCX binary)
-          // Verify error message
-          expect((error as Error).message).toContain('Failed to parse DOCX')
-        }
+        // 4. Verify related document retrieval
+        expect(results.length).toBeGreaterThan(0)
+        expect(results[0].filePath).toContain('sample.docx')
       } finally {
         // Cleanup
         rmSync(testDbPath, { recursive: true, force: true })
