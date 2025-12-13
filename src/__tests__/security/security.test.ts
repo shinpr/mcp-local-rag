@@ -25,6 +25,32 @@ const testConfig = {
 }
 
 // ============================================
+// Network Monitoring Helper
+// ============================================
+
+interface NetworkMonitor {
+  requests: string[]
+  restore: () => void
+}
+
+function createNetworkMonitor(): NetworkMonitor {
+  const requests: string[] = []
+  const originalFetch = global.fetch
+
+  global.fetch = vi.fn(async (url: RequestInfo | URL) => {
+    requests.push(url.toString())
+    return originalFetch(url)
+  }) as typeof fetch
+
+  return {
+    requests,
+    restore: () => {
+      global.fetch = originalFetch
+    },
+  }
+}
+
+// ============================================
 // ============================================
 
 describe('RAG MCP Server Security Test', () => {
@@ -63,78 +89,57 @@ describe('RAG MCP Server Security Test', () => {
     // AC interpretation: [Security requirement] No external communication detected by packet capture (except model download)
     // Validation: No external communication occurs during file ingestion → search workflow after server startup
     it('No external communication detected during file ingestion → search workflow after server startup (simulated)', async () => {
-      // Network request monitoring (simulated)
-      const networkRequests: string[] = []
-      const originalFetch = global.fetch
+      const monitor = createNetworkMonitor()
 
-      // Mock fetch API (for external communication detection)
-      global.fetch = vi.fn(async (url: RequestInfo | URL) => {
-        networkRequests.push(url.toString())
-        return originalFetch(url)
-      }) as typeof fetch
+      try {
+        // Ingest file
+        const sampleFile = resolve(fixturesDir, 'sample.txt')
+        await server.handleIngestFile({ filePath: sampleFile })
 
-      // Ingest file
-      const sampleFile = resolve(fixturesDir, 'sample.txt')
-      await server.handleIngestFile({ filePath: sampleFile })
+        // Execute search
+        await server.handleQueryDocuments({ query: 'TypeScript', limit: 5 })
 
-      // Execute search
-      await server.handleQueryDocuments({ query: 'TypeScript', limit: 5 })
-
-      // Verify no external communication occurred
-      expect(networkRequests.length).toBe(0)
-
-      // Restore fetch API
-      global.fetch = originalFetch
+        // Verify no external communication occurred
+        expect(monitor.requests.length).toBe(0)
+      } finally {
+        monitor.restore()
+      }
     })
 
     // AC interpretation: [Security requirement] Transformers.js model loaded from local cache
     // Validation: No network communication after initial model download on subsequent startups
     it('No network communication after initial model download on subsequent startups (simulated)', async () => {
-      // Network request monitoring (simulated)
-      const networkRequests: string[] = []
-      const originalFetch = global.fetch
+      const monitor = createNetworkMonitor()
 
-      // Mock fetch API
-      global.fetch = vi.fn(async (url: RequestInfo | URL) => {
-        networkRequests.push(url.toString())
-        return originalFetch(url)
-      }) as typeof fetch
+      try {
+        // Second initialization (model already cached)
+        const server2 = new RAGServer(testConfig)
+        await server2.initialize()
 
-      // Second initialization (model already cached)
-      const server2 = new RAGServer(testConfig)
-      await server2.initialize()
-
-      // Verify no requests to HuggingFace API
-      const huggingfaceRequests = networkRequests.filter((url) => url.includes('huggingface.co'))
-      expect(huggingfaceRequests.length).toBe(0)
-
-      // Restore fetch API
-      global.fetch = originalFetch
+        // Verify no requests to HuggingFace API
+        const huggingfaceRequests = monitor.requests.filter((url) => url.includes('huggingface.co'))
+        expect(huggingfaceRequests.length).toBe(0)
+      } finally {
+        monitor.restore()
+      }
     })
 
     // AC interpretation: [Security requirement] LanceDB accesses local filesystem only
     // Validation: No network communication during LanceDB operations
     it('No network communication during LanceDB operations (initialization, insertion, search) (simulated)', async () => {
-      // Network request monitoring (simulated)
-      const networkRequests: string[] = []
-      const originalFetch = global.fetch
+      const monitor = createNetworkMonitor()
 
-      // Mock fetch API
-      global.fetch = vi.fn(async (url: RequestInfo | URL) => {
-        networkRequests.push(url.toString())
-        return originalFetch(url)
-      }) as typeof fetch
+      try {
+        // Execute LanceDB operations
+        const sampleFile = resolve(fixturesDir, 'sample.txt')
+        await server.handleIngestFile({ filePath: sampleFile })
+        await server.handleQueryDocuments({ query: 'TypeScript', limit: 5 })
 
-      // Execute LanceDB operations
-      const sampleFile = resolve(fixturesDir, 'sample.txt')
-      await server.handleIngestFile({ filePath: sampleFile })
-      await server.handleQueryDocuments({ query: 'TypeScript', limit: 5 })
-
-      // Verify no external communication occurred
-      expect(networkRequests.length).toBe(0)
-
-      // Restore fetch API
-      global.fetch = originalFetch
+        // Verify no external communication occurred
+        expect(monitor.requests.length).toBe(0)
+      } finally {
+        monitor.restore()
+      }
     })
   })
 
