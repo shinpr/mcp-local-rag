@@ -116,6 +116,24 @@ Results include text content, source file, and relevance score. Adjust result co
 "Show RAG server status"           # Check system health
 ```
 
+## Search Tuning
+
+Adjust these for your use case:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `RAG_HYBRID_WEIGHT` | `0.6` | Keyword vs semantic balance. Higher = more exact matching. |
+| `RAG_GROUPING` | (not set) | `similar` for top group only, `related` for top 2 groups. |
+| `RAG_MAX_DISTANCE` | (not set) | Filter out low-relevance results (e.g., `0.5`). |
+
+Example (stricter, code-focused):
+```json
+"env": {
+  "RAG_HYBRID_WEIGHT": "0.7",
+  "RAG_GROUPING": "similar"
+}
+```
+
 ## How It Works
 
 **TL;DR:**
@@ -154,9 +172,6 @@ The keyword-heavy default works well for developer documentation where exact ter
 | `MAX_FILE_SIZE` | `104857600` (100MB) | Maximum file size in bytes |
 | `CHUNK_SIZE` | `512` | Characters per chunk |
 | `CHUNK_OVERLAP` | `100` | Overlap between chunks |
-| `RAG_MAX_DISTANCE` | (not set) | Maximum distance threshold for results |
-| `RAG_GROUPING` | (not set) | `similar` (top group only) or `related` (top 2 groups) |
-| `RAG_HYBRID_WEIGHT` | `0.6` | BM25 vs semantic balance (0.0 = pure semantic, 1.0 = pure keyword) |
 
 ### Client-Specific Setup
 
@@ -169,8 +184,7 @@ The keyword-heavy default works well for developer documentation where exact ter
       "command": "npx",
       "args": ["-y", "mcp-local-rag"],
       "env": {
-        "BASE_DIR": "/path/to/your/documents",
-        "RAG_HYBRID_WEIGHT": "0.6"
+        "BASE_DIR": "/path/to/your/documents"
       }
     }
   }
@@ -188,12 +202,11 @@ args = ["-y", "mcp-local-rag"]
 BASE_DIR = "/path/to/your/documents"
 ```
 
-**Claude Code** — With additional options:
+**Claude Code**:
 
 ```bash
 claude mcp add local-rag --scope user \
   --env BASE_DIR=/path/to/your/documents \
-  --env RAG_HYBRID_WEIGHT=0.6 \
   -- npx -y mcp-local-rag
 ```
 
