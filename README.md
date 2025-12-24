@@ -1,14 +1,32 @@
 # MCP Local RAG
 
-A privacy-first document search server that runs entirely on your machine. No API keys, no cloud services, no data leaving your computer.
+[![npm version](https://img.shields.io/npm/v/mcp-local-rag.svg)](https://www.npmjs.com/package/mcp-local-rag)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-Built for the Model Context Protocol (MCP), this lets you use Cursor, Codex, Claude Code, or any MCP client to search through your local documents using semantic search—without sending anything to external services.
+Code-aware local RAG for developers using MCP.
+Hybrid search (BM25 + semantic) — fully private, zero setup.
+
+## Features
+
+- **Code-aware hybrid search**
+  Keyword (BM25) + semantic search combined. Exact terms like `useEffect`, error codes, and class names are matched reliably—not just semantically guessed.
+
+- **Quality-first result filtering**
+  Groups results by relevance gaps instead of arbitrary top-K cutoffs. Get fewer but more trustworthy chunks.
+
+- **Runs entirely locally**
+  No API keys, no cloud, no data leaving your machine. Works fully offline after the first model download.
+
+- **Zero-friction setup**
+  One `npx` command. No Docker, no Python, no servers to manage. Designed for Cursor, Codex, and Claude Code via MCP.
 
 ## Quick Start
 
-Add the MCP server to your AI coding tool. Choose your tool below:
+Set `BASE_DIR` to the folder you want to search. Documents must live under it.
 
-**For Cursor** - Add to `~/.cursor/mcp.json`:
+Add the MCP server to your AI coding tool:
+
+**For Cursor** — Add to `~/.cursor/mcp.json`:
 ```json
 {
   "mcpServers": {
@@ -23,7 +41,7 @@ Add the MCP server to your AI coding tool. Choose your tool below:
 }
 ```
 
-**For Codex** - Add to `~/.codex/config.toml`:
+**For Codex** — Add to `~/.codex/config.toml`:
 ```toml
 [mcp_servers.local-rag]
 command = "npx"
@@ -33,103 +51,116 @@ args = ["-y", "mcp-local-rag"]
 BASE_DIR = "/path/to/your/documents"
 ```
 
-**For Claude Code** - Run this command:
+**For Claude Code** — Run this command:
 ```bash
 claude mcp add local-rag --scope user --env BASE_DIR=/path/to/your/documents -- npx -y mcp-local-rag
 ```
 
-Restart your tool, then start using:
+Restart your tool, then start using it:
+
 ```
-"Ingest api-spec.pdf"
-"What does this document say about authentication?"
+You: "Ingest api-spec.pdf"
+Assistant: Successfully ingested api-spec.pdf (47 chunks created)
+
+You: "What does the API documentation say about authentication?"
+Assistant: Based on the documentation, authentication uses OAuth 2.0 with JWT tokens.
+          The flow is described in section 3.2...
 ```
 
 That's it. No installation, no Docker, no complex setup.
 
 ## Why This Exists
 
-You want to use AI to search through your documents. Maybe they're technical specs, research papers, internal documentation, or meeting notes. The problem: most solutions require sending your files to external APIs.
+You want AI to search your documents—technical specs, research papers, internal docs. But most solutions send your files to external APIs.
 
-This creates three issues:
+**Privacy.** Your documents might contain sensitive data. This runs entirely locally.
 
-**Privacy concerns.** Your documents might contain sensitive information—client data, proprietary research, personal notes. Sending them to third-party services means trusting them with that data.
+**Cost.** External embedding APIs charge per use. This is free after the initial model download.
 
-**Cost at scale.** External embedding APIs charge per use. For large document sets or frequent searches, costs add up quickly.
+**Offline.** Works without internet after setup.
 
-**Network dependency.** If you're offline or have limited connectivity, you can't search your own documents.
+**Code search.** Pure semantic search misses exact terms like `useEffect` or `ERR_CONNECTION_REFUSED`. Hybrid search catches both meaning and exact matches.
 
-This project solves these problems by running everything locally. Documents never leave your machine. The embedding model downloads once, then works offline. And it's free to use as much as you want.
+## Usage
 
-## What You Get
+The server provides 5 MCP tools: ingest, search, list, delete, status
+(`ingest_file`, `query_documents`, `list_files`, `delete_file`, `status`).
 
-The server provides five tools through MCP:
+### Ingesting Documents
 
-**Document ingestion** handles PDF, DOCX, TXT, and Markdown files. Point it at a file, and it extracts the text, splits it into searchable chunks, generates embeddings using a local model, and stores everything in a local vector database. If you ingest the same file again, it replaces the old version—no duplicate data.
-
-**Semantic search** lets you query in natural language. Instead of keyword matching, it understands meaning. Ask "how does authentication work" and it finds relevant sections even if they use different words like "login flow" or "credential validation."
-
-**File management** shows what you've ingested and when. You can see how many chunks each file produced and verify everything is indexed correctly.
-
-**File deletion** removes ingested documents from the vector database. When you delete a file, all its chunks and embeddings are permanently removed. This is useful for removing outdated documents or sensitive data you no longer want indexed.
-
-**System status** reports on your database—document count, total chunks, memory usage. Helpful for monitoring performance or debugging issues.
-
-All of this uses:
-- **LanceDB** for vector storage (file-based, no server needed)
-- **Transformers.js** for embeddings (runs in Node.js, no Python)
-- **all-MiniLM-L6-v2** model (384 dimensions, good balance of speed and accuracy)
-- **RecursiveCharacterTextSplitter** for intelligent text chunking
-
-The result: query responses typically under 3 seconds on a standard laptop, even with thousands of document chunks indexed.
-
-## First Run
-
-The server starts instantly, but the embedding model downloads **on first use** (when you ingest or search for the first time):
-- **Download size**: ~90MB (model files)
-- **Disk usage after caching**: ~120MB (includes ONNX runtime cache)
-- **Time**: 1-2 minutes on a decent connection
-- **First operation delay**: Your initial ingest or search request will wait for the model download to complete
-
-You'll see a message like "Initializing model (downloading ~90MB, may take 1-2 minutes)..." in the console. The model caches in `CACHE_DIR` (default: `./models/`) for offline use.
-
-**Why lazy initialization?** This approach allows the server to start immediately without upfront model loading. You only download when actually needed, making the server more responsive for quick status checks or file management operations.
-
-**Offline Mode**: After first download, works completely offline—no internet required.
-
-## Security
-
-**Path Restriction**: This server only accesses files within your `BASE_DIR`. Any attempt to access files outside this directory (e.g., via `../` path traversal) will be rejected.
-
-**Local Only**: All processing happens on your machine. No network requests are made after the initial model download.
-
-**Model Verification**: The embedding model downloads from HuggingFace's official repository (`Xenova/all-MiniLM-L6-v2`). Verify integrity by checking the [official model card](https://huggingface.co/Xenova/all-MiniLM-L6-v2).
-
-## Configuration
-
-The server works out of the box with sensible defaults, but you can customize it through environment variables.
-
-### For Codex
-
-Add to `~/.codex/config.toml`:
-
-```toml
-[mcp_servers.local-rag]
-command = "npx"
-args = ["-y", "mcp-local-rag"]
-
-[mcp_servers.local-rag.env]
-BASE_DIR = "/path/to/your/documents"
-DB_PATH = "./lancedb"
-CACHE_DIR = "./models"
+```
+"Ingest the document at /Users/me/docs/api-spec.pdf"
 ```
 
-**Note:** The section name must be `mcp_servers` (with underscore). Using `mcp-servers` or `mcpservers` will cause Codex to ignore the configuration.
+Supports PDF, DOCX, TXT, and Markdown. The server extracts text, splits it into chunks, generates embeddings locally, and stores everything in a local vector database.
 
-### For Cursor
+Re-ingesting the same file replaces the old version automatically.
 
-Add to your Cursor settings:
-- **Global** (all projects): `~/.cursor/mcp.json`
-- **Project-specific**: `.cursor/mcp.json` in your project root
+### Searching Documents
+
+```
+"What does the API documentation say about authentication?"
+"Find information about rate limiting"
+"Search for error handling best practices"
+```
+
+The hybrid search combines keyword matching (BM25) with semantic search. This means `useEffect` finds documents containing that exact term, not just semantically similar React concepts.
+
+Results include text content, source file, and relevance score. Adjust result count with `limit` (1-20, default 10).
+
+### Managing Files
+
+```
+"List all ingested files"          # See what's indexed
+"Delete old-spec.pdf from RAG"     # Remove a file
+"Show RAG server status"           # Check system health
+```
+
+## How It Works
+
+**TL;DR:**
+- Documents are chunked intelligently (overlapping, boundary-aware)
+- Each chunk is embedded locally using Transformers.js
+- Search uses a weighted combination of BM25 + vector similarity
+- Results are filtered based on relevance gaps, not raw scores
+
+### Details
+
+When you ingest a document, the parser extracts text based on file type (PDF via `pdf-parse`, DOCX via `mammoth`, text files directly).
+
+The chunker splits text using LangChain's RecursiveCharacterTextSplitter—breaking on natural boundaries while keeping chunks around 512 characters with 100-character overlap.
+
+Each chunk goes through the Transformers.js embedding model (`all-MiniLM-L6-v2`), converting text into 384-dimensional vectors. Vectors are stored in LanceDB, a file-based vector database requiring no server process.
+
+When you search:
+1. Your query becomes a vector using the same model
+2. LanceDB performs both BM25 keyword search and vector similarity search
+3. Results are combined (default: 60% keyword, 40% semantic)
+4. Top matches return with original text and metadata
+
+The keyword-heavy default works well for developer documentation where exact terms matter.
+
+<details>
+<summary><strong>Configuration</strong></summary>
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `BASE_DIR` | Current directory | Document root directory (security boundary) |
+| `DB_PATH` | `./lancedb/` | Vector database location |
+| `CACHE_DIR` | `./models/` | Model cache directory |
+| `MODEL_NAME` | `Xenova/all-MiniLM-L6-v2` | HuggingFace model ID ([available models](https://huggingface.co/models?library=transformers.js&pipeline_tag=feature-extraction)) |
+| `MAX_FILE_SIZE` | `104857600` (100MB) | Maximum file size in bytes |
+| `CHUNK_SIZE` | `512` | Characters per chunk |
+| `CHUNK_OVERLAP` | `100` | Overlap between chunks |
+| `RAG_MAX_DISTANCE` | (not set) | Maximum distance threshold for results |
+| `RAG_GROUPING` | (not set) | `similar` (top group only) or `related` (top 2 groups) |
+| `RAG_HYBRID_WEIGHT` | `0.6` | BM25 vs semantic balance (0.0 = pure semantic, 1.0 = pure keyword) |
+
+### Client-Specific Setup
+
+**Cursor** — Global: `~/.cursor/mcp.json`, Project: `.cursor/mcp.json`
 
 ```json
 {
@@ -139,158 +170,126 @@ Add to your Cursor settings:
       "args": ["-y", "mcp-local-rag"],
       "env": {
         "BASE_DIR": "/path/to/your/documents",
-        "DB_PATH": "./lancedb",
-        "CACHE_DIR": "./models"
+        "RAG_HYBRID_WEIGHT": "0.6"
       }
     }
   }
 }
 ```
 
-### For Claude Code
+**Codex** — `~/.codex/config.toml` (note: must use `mcp_servers` with underscore)
 
-Run in your project directory to enable for that project:
+```toml
+[mcp_servers.local-rag]
+command = "npx"
+args = ["-y", "mcp-local-rag"]
 
-```bash
-cd /path/to/your/project
-claude mcp add local-rag --env BASE_DIR=/path/to/your/documents -- npx -y mcp-local-rag
+[mcp_servers.local-rag.env]
+BASE_DIR = "/path/to/your/documents"
 ```
 
-Or add globally for all projects:
-
-```bash
-claude mcp add local-rag --scope user --env BASE_DIR=/path/to/your/documents -- npx -y mcp-local-rag
-```
-
-**With additional environment variables:**
+**Claude Code** — With additional options:
 
 ```bash
 claude mcp add local-rag --scope user \
   --env BASE_DIR=/path/to/your/documents \
-  --env DB_PATH=./lancedb \
-  --env CACHE_DIR=./models \
+  --env RAG_HYBRID_WEIGHT=0.6 \
   -- npx -y mcp-local-rag
 ```
 
-### Environment Variables
+### First Run
 
-| Variable | Default | Description | Valid Range |
-|----------|---------|-------------|-------------|
-| `BASE_DIR` | Current directory | Document root directory. Server only accesses files within this path (prevents accidental system file access). | Any valid path |
-| `DB_PATH` | `./lancedb/` | Vector database storage location. Can grow large with many documents. | Any valid path |
-| `CACHE_DIR` | `./models/` | Model cache directory. After first download, model stays here for offline use. | Any valid path |
-| `MODEL_NAME` | `Xenova/all-MiniLM-L6-v2` | HuggingFace model identifier. Must be Transformers.js compatible. See [available models](https://huggingface.co/models?library=transformers.js&pipeline_tag=feature-extraction&sort=trending). **Note:** Changing models requires deleting your database (`rm -rf ./lancedb/`) and re-ingesting all documents. See FAQ for details. | HF model ID |
-| `MAX_FILE_SIZE` | `104857600` (100MB) | Maximum file size in bytes. Larger files rejected to prevent memory issues. | 1MB - 500MB |
-| `CHUNK_SIZE` | `512` | Characters per chunk. Larger = more context but slower processing. | 128 - 2048 |
-| `CHUNK_OVERLAP` | `100` | Overlap between chunks. Preserves context across boundaries. | 0 - (CHUNK_SIZE/2) |
-| `RAG_MAX_DISTANCE` | (not set) | Maximum distance threshold for search results. Results with distance greater than this value are excluded. Lower values mean stricter filtering (e.g., `0.5` for high relevance only). | Positive number |
-| `RAG_GROUPING` | (not set) | Grouping mode for quality filtering. `similar` returns only the most similar group (stops at first distance jump). `related` includes related groups (stops at second distance jump). | `similar` or `related` |
-| `RAG_HYBRID_WEIGHT` | `0.6` | Balance between keyword (BM25) and semantic search. `0.0` = pure semantic, `1.0` = pure keyword. Default `0.6` prioritizes keyword matches—ideal for code/technical terms. Use `0.3-0.4` for natural language queries. | `0.0` - `1.0` |
+The embedding model (~90MB) downloads on first use. Takes 1-2 minutes, then works offline.
 
-## Usage
+### Security
 
-**After configuration**, restart your MCP client:
-- **Cursor**: Fully quit and relaunch (Cmd+Q on Mac, not just closing windows)
-- **Codex**: Restart the IDE/extension
-- **Claude Code**: No restart needed—changes apply immediately
+- **Path restriction**: Only files within `BASE_DIR` are accessible
+- **Local only**: No network requests after model download
+- **Model source**: Official HuggingFace repository ([verify here](https://huggingface.co/Xenova/all-MiniLM-L6-v2))
 
-The server will appear as available tools that your AI assistant can use.
+</details>
 
-### Ingesting Documents
+<details>
+<summary><strong>Performance</strong></summary>
 
-**In Cursor**, the Composer Agent automatically uses MCP tools when needed:
+Tested on MacBook Pro M1 (16GB RAM), Node.js 22:
 
-```
-"Ingest the document at /Users/me/docs/api-spec.pdf"
-```
+**Query Speed**: ~1.2 seconds for 10,000 chunks (p90 < 3s)
 
-**In Codex CLI**, the assistant automatically uses configured MCP tools when needed:
+**Ingestion** (10MB PDF):
+- PDF parsing: ~8s
+- Chunking: ~2s
+- Embedding: ~30s
+- DB insertion: ~5s
 
-```bash
-codex "Ingest the document at /Users/me/docs/api-spec.pdf into the RAG system"
-```
+**Memory**: ~200MB idle, ~800MB peak (50MB file ingestion)
 
-**In Claude Code**, just ask naturally:
+**Concurrency**: Handles 5 parallel queries without degradation.
 
-```
-"Ingest the document at /Users/me/docs/api-spec.pdf"
-```
+</details>
 
-**Path Requirements**: The server requires **absolute paths** to files. Your AI assistant will typically convert natural language requests into absolute paths automatically. The `BASE_DIR` setting restricts access to only files within that directory tree for security, but you must still provide the full path.
+<details>
+<summary><strong>Troubleshooting</strong></summary>
 
-The server:
-1. Validates the file exists and is under 100MB
-2. Extracts text (handling PDF/DOCX/TXT/MD formats)
-3. Splits into chunks (512 chars, 100 char overlap)
-4. Generates embeddings for each chunk
-5. Stores in the vector database
+### "No results found"
 
-This takes roughly 5-10 seconds per MB on a standard laptop. You'll see a confirmation when complete, including how many chunks were created.
+Documents must be ingested first. Run `"List all ingested files"` to verify.
 
-### Searching Documents
+### Model download failed
 
-Ask questions in natural language:
+Check internet connection. If behind a proxy, configure network settings. The model can also be [downloaded manually](https://huggingface.co/Xenova/all-MiniLM-L6-v2).
 
-```
-"What does the API documentation say about authentication?"
-"Find information about rate limiting"
-"Search for error handling best practices"
-```
+### "File too large"
 
-The server uses **hybrid search** combining:
-1. **Keyword matching (BM25)**: Finds exact term matches—crucial for code terms like `ProjectLifetimeScope` or error codes
-2. **Semantic search**: Understands meaning, so "authentication" finds "login flow" content
+Default limit is 100MB. Split large files or increase `MAX_FILE_SIZE`.
 
-This hybrid approach means searching for `useEffect` finds documents containing that exact term, not just semantically similar React concepts.
+### Slow queries
 
-Results include the text content, which file it came from, and a relevance score. Your AI assistant then uses these results to answer your question.
+Check chunk count with `status`. Consider increasing `CHUNK_SIZE` to reduce the number of chunks (trade-off: larger chunks may reduce retrieval precision).
 
-You can adjust the number of results:
+### "Path outside BASE_DIR"
 
-```
-"Search for database optimization tips, return 5 results"   # Fewer, more precise
-"Search for database optimization tips, return 20 results"  # Broader exploration
-```
+Ensure file paths are within `BASE_DIR`. Use absolute paths.
 
-The limit parameter accepts 1-20 results. Recommended: 5 for precision, 10 for balance, 20 for broad exploration.
+### MCP client doesn't see tools
 
-### Managing Files
+1. Verify config file syntax
+2. Restart client completely (Cmd+Q on Mac for Cursor)
+3. Test directly: `npx mcp-local-rag` should run without errors
 
-See what's indexed:
+</details>
 
-```
-"List all ingested files"
-```
+<details>
+<summary><strong>FAQ</strong></summary>
 
-This shows each file's path, how many chunks it produced, and when it was ingested.
+**Is this really private?**
+Yes. After model download, nothing leaves your machine. Verify with network monitoring.
 
-Delete a file from the database:
+**Can I use this offline?**
+Yes, after the first model download (~90MB).
 
-```
-"Delete /Users/me/docs/old-spec.pdf from the RAG system"
-```
+**How does this compare to cloud RAG?**
+Cloud services offer better accuracy at scale but require sending data externally. This trades some accuracy for complete privacy and zero runtime cost.
 
-This permanently removes the file and all its chunks from the vector database. The operation is idempotent—deleting a file that doesn't exist succeeds without error.
+**What file formats are supported?**
+PDF, DOCX, TXT, Markdown. Not yet: Excel, PowerPoint, images, HTML.
 
-Check system status:
+**Can I change the embedding model?**
+Yes, but you must delete your database and re-ingest all documents. Different models produce incompatible vector dimensions.
 
-```
-"Show the RAG server status"
-```
+**GPU acceleration?**
+Transformers.js runs on CPU. GPU support is experimental. CPU performance is adequate for most use cases.
 
-This reports total documents, total chunks, current memory usage, and uptime.
+**Multi-user support?**
+No. Designed for single-user, local access. Multi-user would require authentication/access control.
 
-### Re-ingesting Files
+**How to backup?**
+Copy `DB_PATH` directory (default: `./lancedb/`).
 
-If you update a document, ingest it again:
+</details>
 
-```
-"Re-ingest api-spec.pdf with the latest changes"
-```
-
-The server automatically deletes old chunks for that file before adding new ones. No duplicates, no stale data.
-
-## Development
+<details>
+<summary><strong>Development</strong></summary>
 
 ### Building from Source
 
@@ -300,262 +299,51 @@ cd mcp-local-rag
 npm install
 ```
 
-### Running Tests
+### Testing
 
 ```bash
-# Run all tests
-npm test
-
-# Run with coverage
-npm run test:coverage
-
-# Watch mode for development
-npm run test:watch
+npm test              # Run all tests
+npm run test:coverage # With coverage
+npm run test:watch    # Watch mode
 ```
-
-The test suite includes:
-- Unit tests for each component
-- Integration tests for the full ingestion and search flow
-- Security tests for path traversal protection
-- Performance tests verifying query speed targets
 
 ### Code Quality
 
 ```bash
-# Type check
-npm run type-check
-
-# Lint and format
-npm run check:fix
-
-# Check circular dependencies
-npm run check:deps
-
-# Full quality check (runs everything)
-npm run check:all
+npm run type-check    # TypeScript check
+npm run check:fix     # Lint and format
+npm run check:deps    # Circular dependency check
+npm run check:all     # Full quality check
 ```
 
 ### Project Structure
 
 ```
 src/
-  index.ts          # Entry point, starts the MCP server
-  server/           # RAGServer class, MCP tool handlers
-  parser/           # Document parsing (PDF, DOCX, TXT, MD)
-  chunker/          # Text splitting logic
-  embedder/         # Embedding generation with Transformers.js
-  vectordb/         # LanceDB operations
-  __tests__/        # Test suites
+  index.ts      # Entry point
+  server/       # MCP tool handlers
+  parser/       # PDF, DOCX, TXT, MD parsing
+  chunker/      # Text splitting
+  embedder/     # Transformers.js embeddings
+  vectordb/     # LanceDB operations
+  __tests__/    # Test suites
 ```
 
-Each module has clear boundaries:
-- **Parser** validates file paths and extracts text
-- **Chunker** splits text into overlapping segments
-- **Embedder** generates 384-dimensional vectors
-- **VectorStore** handles all database operations
-- **RAGServer** orchestrates everything and exposes MCP tools
-
-## Performance
-
-**Test Environment**: MacBook Pro M1 (16GB RAM), tested with v0.1.3 on Node.js 22 (January 2025)
-
-**Query Performance**:
-- Average: 1.2 seconds for 10,000 indexed chunks (5 results)
-- Target: p90 < 3 seconds ✓
-
-**Ingestion Speed** (10MB PDF):
-- Total: ~45 seconds
-  - PDF parsing: ~8 seconds (17%)
-  - Text chunking: ~2 seconds (4%)
-  - Embedding generation: ~30 seconds (67%)
-  - Database insertion: ~5 seconds (11%)
-
-**Memory Usage**:
-- Baseline: ~200MB idle
-- Peak: ~800MB when ingesting 50MB file
-- Target: < 1GB ✓
-
-**Concurrent Queries**: Handles 5 parallel queries without degradation. LanceDB's async API allows non-blocking operations.
-
-**Note**: Your results will vary based on hardware, especially CPU speed (embeddings run on CPU, not GPU).
-
-## Troubleshooting
-
-### "No results found" when searching
-
-**Cause**: Documents must be ingested before searching.
-
-**Solution**:
-1. First ingest documents: `"Ingest /path/to/document.pdf"`
-2. Verify ingestion: `"List all ingested files"`
-3. Then search: `"Search for [your query]"`
-
-**Common mistake**: Trying to search immediately after configuration without ingesting any documents.
-
-### "Model download failed"
-
-The embedding model downloads from HuggingFace on first use (when you ingest or search for the first time). If you're behind a proxy or firewall, you might need to configure network settings.
-
-**When it happens**: Your first ingest or search operation will trigger the download. If it fails, you'll see a detailed error message with troubleshooting guidance (network issues, disk space, cache corruption).
-
-**What to do**: The error message provides specific recommendations. Common solutions:
-1. Check your internet connection and retry the operation
-2. Ensure you have sufficient disk space (~120MB needed)
-3. If problems persist, delete the cache directory and try again
-
-Alternatively, download the model manually:
-1. Visit https://huggingface.co/Xenova/all-MiniLM-L6-v2
-2. Download the model files
-3. Set CACHE_DIR to where you saved them
-
-### "File too large" error
-
-Default limit is 100MB. For larger files:
-- Split them into smaller documents
-- Or increase MAX_FILE_SIZE in your config (be aware of memory usage)
-
-### Slow query performance
-
-If queries take longer than expected:
-- Check how many chunks you have indexed (`status` command)
-- Consider the hardware (embeddings are CPU-intensive)
-- Try reducing CHUNK_SIZE to create fewer chunks
-
-### "Path outside BASE_DIR" error
-
-The server restricts file access to BASE_DIR for security. Make sure your file path is within that directory. Check for:
-- Correct BASE_DIR setting in your MCP config
-- Relative paths vs absolute paths
-- Typos in the file path
-
-### MCP client doesn't see the tools
-
-**For Cursor:**
-1. Open Settings → Features → Model Context Protocol
-2. Verify the server configuration is saved
-3. Restart Cursor completely
-4. Check the MCP connection status in the status bar
-
-**For Codex CLI:**
-1. Check `~/.codex/config.toml` to verify the configuration
-2. Ensure the section name is `[mcp_servers.local-rag]` (with underscore)
-3. Test the server directly: `npx mcp-local-rag` should run without errors
-4. Restart Codex CLI or IDE extension
-5. Check for error messages when Codex starts
-
-**For Claude Code:**
-1. Run `claude mcp list` to see configured servers
-2. Verify the server appears in the list
-3. Check `~/.config/claude/mcp_config.json` for syntax errors
-4. Test the server directly: `npx mcp-local-rag` should run without errors
-
-**Common issues:**
-- Invalid JSON syntax in config files
-- Wrong file paths in BASE_DIR setting
-- Server binary not found (try global install: `npm install -g mcp-local-rag`)
-- Firewall blocking local communication
-
-## How It Works
-
-When you ingest a document, the parser extracts text based on the file type. PDFs use `pdf-parse`, DOCX uses `mammoth`, and text files are read directly.
-
-The chunker then splits the text using LangChain's RecursiveCharacterTextSplitter. It tries to break on natural boundaries (paragraphs, sentences) while keeping chunks around 512 characters. Adjacent chunks overlap by 100 characters to preserve context.
-
-Each chunk goes through the Transformers.js embedding model, which converts text into a 384-dimensional vector representing its semantic meaning. This happens in batches of 8 chunks at a time for efficiency.
-
-Vectors are stored in LanceDB, a columnar vector database that works with local files. No server process, no complex setup. It's just a directory with data files.
-
-When you search, the server performs **hybrid search**:
-1. Your query becomes a vector using the same embedding model
-2. LanceDB performs both keyword search (BM25) and vector similarity search
-3. Results are combined using a weighted linear combination (default: 60% keyword, 40% semantic)
-4. The top matches return to your MCP client with their original text and metadata
-
-This hybrid approach gets the best of both worlds: exact keyword matches (essential for code terms, error codes, function names) and semantic understanding (so "authentication" finds "login flow" content). The default weight prioritizes keyword matches, which works well for developer documentation where exact terms matter.
-
-## FAQ
-
-**Is this really private?**
-
-Yes. After the initial model download, nothing leaves your machine. You can verify with network monitoring tools—no outbound requests during ingestion or search.
-
-**Can I use this offline?**
-
-Yes, once the model is cached. The first run needs internet to download the model (~90MB), but after that, everything works offline.
-
-**How does this compare to cloud RAG services?**
-
-Cloud services (OpenAI, Pinecone, etc.) typically offer better accuracy and scale. But they require sending your documents externally, ongoing costs, and internet connectivity. This project trades some accuracy for complete privacy and zero runtime cost.
-
-**What file formats are supported?**
-
-Currently supported:
-- **PDF**: `.pdf` (uses pdf-parse)
-- **Microsoft Word**: `.docx` (uses mammoth, not `.doc`)
-- **Plain Text**: `.txt`
-- **Markdown**: `.md`, `.markdown`
-
-**Not yet supported**:
-- Excel/CSV (`.xlsx`, `.csv`)
-- PowerPoint (`.pptx`)
-- Images with OCR (`.jpg`, `.png`)
-- HTML (`.html`)
-- Old Word documents (`.doc`)
-
-Want support for another format? [Open an issue](https://github.com/shinpr/mcp-local-rag/issues/new) with your use case.
-
-**Can I customize the embedding model?**
-
-Yes, set MODEL_NAME to any Transformers.js-compatible model from HuggingFace.
-
-However, switching models isn't as simple as changing a config value. Each model produces vectors of a specific dimension—`all-MiniLM-L6-v2` outputs 384 dimensions, while `multilingual-e5-small` outputs 384 and `embeddinggemma-300m` outputs 768. These vectors are fundamentally incompatible with each other.
-
-When you change models, you must:
-
-1. **Delete your existing database**: `rm -rf ./lancedb/` (or your custom DB_PATH)
-2. **Re-ingest all your documents** with the new model
-
-Simply re-ingesting without deleting won't work. LanceDB locks the vector dimension when you first insert data, and that schema persists even if you delete all documents. If you try to insert 768-dimensional vectors into a database that was created with 384-dimensional vectors, you'll get a dimension mismatch error.
-
-The good news: if you do forget to delete the database, LanceDB will give you a clear error message like "Query vector size 768 does not match index column size 384"—so you'll know exactly what went wrong.
-
-**How much does accuracy depend on the model?**
-
-`all-MiniLM-L6-v2` is optimized for English and performs well for technical documentation. For other languages, consider multilingual models like `multilingual-e5-small`. For higher accuracy, try larger models—but expect slower processing.
-
-**What about GPU acceleration?**
-
-Transformers.js runs on CPU by default. GPU support is experimental and varies by platform. For most use cases, CPU performance is adequate (embeddings are reasonably fast even without GPU).
-
-**Can multiple people share a database?**
-
-The current design assumes single-user, local access. For multi-user scenarios, you'd need to implement authentication and access control—both out of scope for this project's privacy-first design.
-
-**How do I back up my data?**
-
-Copy your DB_PATH directory (default: `./lancedb/`). That's your entire vector database. Copy BASE_DIR for your original documents. Both are just files—no special export needed.
+</details>
 
 ## Contributing
 
-Contributions are welcome. Before submitting a PR:
+Contributions welcome. Before submitting a PR:
 
-1. Run the test suite: `npm test`
-2. Ensure code quality: `npm run check:all`
+1. Run tests: `npm test`
+2. Check quality: `npm run check:all`
 3. Add tests for new features
-4. Update documentation if you change behavior
+4. Update docs if behavior changes
 
 ## License
 
-MIT License - see LICENSE file for details.
-
-Free for personal and commercial use. No attribution required, but appreciated.
+MIT License. Free for personal and commercial use.
 
 ## Acknowledgments
 
-Built with:
-- [Model Context Protocol](https://modelcontextprotocol.io/) by Anthropic
-- [LanceDB](https://lancedb.com/) for vector storage
-- [Transformers.js](https://huggingface.co/docs/transformers.js) by HuggingFace
-- [LangChain.js](https://js.langchain.com/) for text splitting
-
-Created as a practical tool for developers who want AI-powered document search without compromising privacy.
+Built with [Model Context Protocol](https://modelcontextprotocol.io/) by Anthropic, [LanceDB](https://lancedb.com/), [Transformers.js](https://huggingface.co/docs/transformers.js), and [LangChain.js](https://js.langchain.com/).
