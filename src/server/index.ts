@@ -7,7 +7,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprot
 import { DocumentChunker } from '../chunker/index.js'
 import { Embedder } from '../embedder/index.js'
 import { DocumentParser } from '../parser/index.js'
-import { type VectorChunk, VectorStore } from '../vectordb/index.js'
+import { type GroupingMode, type VectorChunk, VectorStore } from '../vectordb/index.js'
 
 // ============================================
 // Type Definitions
@@ -31,6 +31,10 @@ export interface RAGServerConfig {
   chunkSize: number
   /** Chunk overlap */
   chunkOverlap: number
+  /** Maximum distance threshold for quality filtering (optional) */
+  maxDistance?: number
+  /** Grouping mode for quality filtering (optional) */
+  grouping?: GroupingMode
 }
 
 /**
@@ -39,7 +43,7 @@ export interface RAGServerConfig {
 export interface QueryDocumentsInput {
   /** Natural language query */
   query: string
-  /** Number of results to retrieve (default 5) */
+  /** Number of results to retrieve (default 10) */
   limit?: number
 }
 
@@ -112,7 +116,18 @@ export class RAGServer {
     )
 
     // Component initialization
-    this.vectorStore = new VectorStore({ dbPath: config.dbPath, tableName: 'chunks' })
+    // Only pass quality filter settings if they are defined
+    const vectorStoreConfig: ConstructorParameters<typeof VectorStore>[0] = {
+      dbPath: config.dbPath,
+      tableName: 'chunks',
+    }
+    if (config.maxDistance !== undefined) {
+      vectorStoreConfig.maxDistance = config.maxDistance
+    }
+    if (config.grouping !== undefined) {
+      vectorStoreConfig.grouping = config.grouping
+    }
+    this.vectorStore = new VectorStore(vectorStoreConfig)
     this.embedder = new Embedder({
       modelPath: config.modelName,
       batchSize: 8,
@@ -152,7 +167,7 @@ export class RAGServer {
               limit: {
                 type: 'number',
                 description:
-                  'Maximum number of results to return (default: 5, max recommended: 20)',
+                  'Maximum number of results to return (default: 10). Recommended: 5 for precision, 10 for balance, 20 for broad exploration.',
               },
             },
             required: ['query'],
@@ -253,7 +268,7 @@ export class RAGServer {
       const queryVector = await this.embedder.embed(args.query)
 
       // Vector search
-      const searchResults = await this.vectorStore.search(queryVector, args.limit || 5)
+      const searchResults = await this.vectorStore.search(queryVector, args.limit || 10)
 
       // Format results
       const results: QueryResult[] = searchResults.map((result) => ({

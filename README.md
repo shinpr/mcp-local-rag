@@ -183,6 +183,8 @@ claude mcp add local-rag --scope user \
 | `MAX_FILE_SIZE` | `104857600` (100MB) | Maximum file size in bytes. Larger files rejected to prevent memory issues. | 1MB - 500MB |
 | `CHUNK_SIZE` | `512` | Characters per chunk. Larger = more context but slower processing. | 128 - 2048 |
 | `CHUNK_OVERLAP` | `100` | Overlap between chunks. Preserves context across boundaries. | 0 - (CHUNK_SIZE/2) |
+| `RAG_MAX_DISTANCE` | (not set) | Maximum distance threshold for search results. Results with distance greater than this value are excluded. Lower values mean stricter filtering (e.g., `0.5` for high relevance only). | Positive number |
+| `RAG_GROUPING` | (not set) | Grouping mode for quality filtering. `similar` returns only the most similar group (stops at first distance jump). `related` includes related groups (stops at second distance jump). | `similar` or `related` |
 
 ## Usage
 
@@ -237,17 +239,18 @@ Ask questions in natural language:
 The server:
 1. Converts your query to an embedding vector
 2. Searches the vector database for similar chunks
-3. Returns the top 5 matches with similarity scores
+3. Returns the top 10 matches with similarity scores (default)
 
 Results include the text content, which file it came from, and a relevance score. Your AI assistant then uses these results to answer your question.
 
-You can request more results:
+You can adjust the number of results:
 
 ```
-"Search for database optimization tips, return 10 results"
+"Search for database optimization tips, return 5 results"   # Fewer, more precise
+"Search for database optimization tips, return 20 results"  # Broader exploration
 ```
 
-The limit parameter accepts 1-20 results.
+The limit parameter accepts 1-20 results. Recommended: 5 for precision, 10 for balance, 20 for broad exploration.
 
 ### Managing Files
 

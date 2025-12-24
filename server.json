@@ -8,13 +8,13 @@
     "url": "https://github.com/shinpr/mcp-local-rag",
     "source": "github"
   },
-  "version": "0.2.3",
+  "version": "0.3.0",
   "packages": [
     {
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "mcp-local-rag",
-      "version": "0.2.3",
+      "version": "0.3.0",
       "transport": {
         "type": "stdio"
       },
@@ -64,6 +64,20 @@
         {
           "name": "CHUNK_OVERLAP",
           "description": "Overlap between consecutive chunks (defaults to 100)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        },
+        {
+          "name": "RAG_MAX_DISTANCE",
+          "description": "Maximum distance threshold for filtering search results. Results with distance greater than this value will be excluded. Lower values mean stricter filtering (e.g., 0.5 for high relevance only)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        },
+        {
+          "name": "RAG_GROUPING",
+          "description": "Grouping mode for quality filtering. 'similar' returns only the most similar group (stops at first distance jump). 'related' includes related groups (stops at second distance jump). Unset means no grouping filter",
           "isRequired": false,
           "format": "string",
           "isSecret": false

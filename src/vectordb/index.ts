@@ -7,6 +7,13 @@ import { type Connection, type Table, connect } from '@lancedb/lancedb'
 // ============================================
 
 /**
+ * Grouping mode for quality filtering
+ * - 'similar': Only return the most similar group (stops at first distance jump)
+ * - 'related': Include related groups (stops at second distance jump)
+ */
+export type GroupingMode = 'similar' | 'related'
+
+/**
  * VectorStore configuration
  */
 export interface VectorStoreConfig {
@@ -14,6 +21,10 @@ export interface VectorStoreConfig {
   dbPath: string
   /** Table name */
   tableName: string
+  /** Maximum distance threshold for filtering results (optional) */
+  maxDistance?: number
+  /** Grouping mode for quality filtering (optional) */
+  grouping?: GroupingMode
 }
 
 /**
@@ -200,13 +211,60 @@ export class VectorStore {
   }
 
   /**
-   * Execute vector search
+   * Apply grouping algorithm to filter results by distance jumps
+   *
+   * @param results - Search results sorted by distance (ascending)
+   * @param mode - Grouping mode ('similar' = 1 group, 'related' = 2 groups)
+   * @returns Filtered results
+   */
+  private applyGrouping(results: SearchResult[], mode: GroupingMode): SearchResult[] {
+    if (results.length <= 1) return results
+
+    const groups = mode === 'similar' ? 1 : 2
+
+    // Calculate gaps between consecutive results
+    const gaps: { index: number; gap: number }[] = []
+    for (let i = 0; i < results.length - 1; i++) {
+      const current = results[i]
+      const next = results[i + 1]
+      if (current && next) {
+        gaps.push({
+          index: i + 1,
+          gap: next.score - current.score,
+        })
+      }
+    }
+
+    // Sort gaps by size (descending) and take top (groups - 1)
+    const sortedGaps = [...gaps].sort((a, b) => b.gap - a.gap)
+    const cutPoints = sortedGaps
+      .slice(0, groups - 1)
+      .map((g) => g.index)
+      .sort((a, b) => a - b)
+
+    // If no cut points or insufficient gaps, return all results
+    if (cutPoints.length === 0) {
+      // For 'similar' mode with 1 group, cut at the first significant gap
+      const firstGap = sortedGaps[0]
+      if (mode === 'similar' && firstGap) {
+        // Find the largest gap
+        return results.slice(0, firstGap.index)
+      }
+      return results
+    }
+
+    // Return results up to the first cut point
+    return results.slice(0, cutPoints[0])
+  }
+
+  /**
+   * Execute vector search with quality filtering
    *
    * @param queryVector - Query vector (384 dimensions)
-   * @param limit - Number of results to retrieve (default 5)
-   * @returns Array of search results (sorted by score descending)
+   * @param limit - Number of results to retrieve (default 10)
+   * @returns Array of search results (sorted by distance ascending, filtered by quality settings)
    */
-  async search(queryVector: number[], limit = 5): Promise<SearchResult[]> {
+  async search(queryVector: number[], limit = 10): Promise<SearchResult[]> {
     if (!this.table) {
       // Return empty array if table doesn't exist
       console.error('VectorStore: Returning empty results as table does not exist')
@@ -224,17 +282,31 @@ export class VectorStore {
     }
 
     try {
-      // Use LanceDB's vector search API
-      const results = await this.table.vectorSearch(queryVector).limit(limit).toArray()
+      // Build vector search query
+      let query = this.table.vectorSearch(queryVector).limit(limit)
+
+      // Apply distance threshold if configured
+      if (this.config.maxDistance !== undefined) {
+        query = query.distanceRange(undefined, this.config.maxDistance)
+      }
+
+      const rawResults = await query.toArray()
 
       // Convert to SearchResult format
-      return results.map((result) => ({
+      let results: SearchResult[] = rawResults.map((result) => ({
         filePath: result.filePath as string,
         chunkIndex: result.chunkIndex as number,
         text: result.text as string,
         score: result._distance as number, // LanceDB returns distance score (closer to 0 means more similar)
         metadata: result.metadata as DocumentMetadata,
       }))
+
+      // Apply grouping filter if configured
+      if (this.config.grouping && results.length > 1) {
+        results = this.applyGrouping(results, this.config.grouping)
+      }
+
+      return results
     } catch (error) {
       throw new DatabaseError('Failed to search vectors', error as Error)
     }
