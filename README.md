@@ -3,8 +3,8 @@
 [![npm version](https://img.shields.io/npm/v/mcp-local-rag.svg)](https://www.npmjs.com/package/mcp-local-rag)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-Code-aware local RAG for developers using MCP.
-Hybrid search (BM25 + semantic) — fully private, zero setup.
+Local RAG for developers using MCP.
+Hybrid search (BM25 + semantic) for exact technical terms — fully private, zero setup.
 
 ## Features
 
