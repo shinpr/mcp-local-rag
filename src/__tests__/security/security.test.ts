@@ -20,8 +20,6 @@ const testConfig = {
   cacheDir: './tmp/models',
   baseDir: resolve('./'), // Project root (accessible to both tests/fixtures and tmp)
   maxFileSize: 100 * 1024 * 1024, // 100MB
-  chunkSize: 512,
-  chunkOverlap: 100,
 }
 
 // ============================================
@@ -206,24 +204,26 @@ describe('RAG MCP Server Security Test', () => {
         logs.push(args.join(' '))
       }
 
-      // Create test file (containing confidential information)
-      const testFile = resolve('./tmp/secret-document.txt')
-      await writeFile(
-        testFile,
-        'This is a secret document with confidential information: PASSWORD123'
-      )
+      try {
+        // Create test file (containing confidential information)
+        const testFile = resolve('./tmp/secret-document.txt')
+        await writeFile(
+          testFile,
+          'This is a secret document with confidential information: PASSWORD123'
+        )
 
-      // Ingest file
-      await server.handleIngestFile({ filePath: testFile })
+        // Ingest file
+        await server.handleIngestFile({ filePath: testFile })
 
-      // Verify document content not included in logs
-      const containsSecret = logs.some(
-        (log) => log.includes('PASSWORD123') || log.includes('confidential information')
-      )
-      expect(containsSecret).toBe(false)
-
-      // Restore console.log
-      console.log = originalLog
+        // Verify document content not included in logs
+        const containsSecret = logs.some(
+          (log) => log.includes('PASSWORD123') || log.includes('confidential information')
+        )
+        expect(containsSecret).toBe(false)
+      } finally {
+        // Restore console.log (always executed even if test fails)
+        console.log = originalLog
+      }
     })
 
     // AC interpretation: [Security requirement] Search queries not output to logs
@@ -236,22 +236,24 @@ describe('RAG MCP Server Security Test', () => {
         logs.push(args.join(' '))
       }
 
-      // Ingest sample file
-      const sampleFile = resolve(fixturesDir, 'sample.txt')
-      await server.handleIngestFile({ filePath: sampleFile })
+      try {
+        // Ingest sample file
+        const sampleFile = resolve(fixturesDir, 'sample.txt')
+        await server.handleIngestFile({ filePath: sampleFile })
 
-      // Search with confidential query
-      const secretQuery = 'secret query with confidential information PASSWORD123'
-      await server.handleQueryDocuments({ query: secretQuery, limit: 5 })
+        // Search with confidential query
+        const secretQuery = 'secret query with confidential information PASSWORD123'
+        await server.handleQueryDocuments({ query: secretQuery, limit: 5 })
 
-      // Verify search query not included in logs
-      const containsQuery = logs.some(
-        (log) => log.includes('PASSWORD123') || log.includes('confidential information')
-      )
-      expect(containsQuery).toBe(false)
-
-      // Restore console.log
-      console.log = originalLog
+        // Verify search query not included in logs
+        const containsQuery = logs.some(
+          (log) => log.includes('PASSWORD123') || log.includes('confidential information')
+        )
+        expect(containsQuery).toBe(false)
+      } finally {
+        // Restore console.log (always executed even if test fails)
+        console.log = originalLog
+      }
     })
 
     // AC interpretation: [Security requirement] Document content not included in error logs
@@ -264,22 +266,24 @@ describe('RAG MCP Server Security Test', () => {
         logs.push(args.join(' '))
       }
 
-      // Attempt to ingest non-existent file (error occurs)
-      const nonExistentFile = resolve('./tmp/nonexistent-document.txt')
-
       try {
-        await server.handleIngestFile({ filePath: nonExistentFile })
-      } catch (error) {
-        // Error is expected
+        // Attempt to ingest non-existent file (error occurs)
+        const nonExistentFile = resolve('./tmp/nonexistent-document.txt')
+
+        try {
+          await server.handleIngestFile({ filePath: nonExistentFile })
+        } catch {
+          // Error is expected
+        }
+
+        // Verify error logs do not contain confidential information (PASSWORD123, etc.)
+        // Note: File path itself is allowed (max 100 characters)
+        const containsPassword = logs.some((log) => log.includes('PASSWORD123'))
+        expect(containsPassword).toBe(false)
+      } finally {
+        // Restore console.error (always executed even if test fails)
+        console.error = originalError
       }
-
-      // Verify error logs do not contain confidential information (PASSWORD123, etc.)
-      // Note: File path itself is allowed (max 100 characters)
-      const containsPassword = logs.some((log) => log.includes('PASSWORD123'))
-      expect(containsPassword).toBe(false)
-
-      // Restore console.error
-      console.error = originalError
     })
   })
 

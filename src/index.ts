@@ -59,8 +59,6 @@ async function main(): Promise<void> {
       cacheDir: process.env['CACHE_DIR'] || './models/',
       baseDir: process.env['BASE_DIR'] || process.cwd(),
       maxFileSize: Number.parseInt(process.env['MAX_FILE_SIZE'] || '104857600', 10), // 100MB
-      chunkSize: Number.parseInt(process.env['CHUNK_SIZE'] || '512', 10),
-      chunkOverlap: Number.parseInt(process.env['CHUNK_OVERLAP'] || '100', 10),
     }
 
     // Add quality filter settings only if defined

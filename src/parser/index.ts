@@ -4,7 +4,7 @@ import { statSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { extname, isAbsolute, resolve } from 'node:path'
 import mammoth from 'mammoth'
-import { PDFParse } from 'pdf-parse'
+import { extractText, getDocumentProxy } from 'unpdf'
 
 // ============================================
 // Type Definitions
@@ -26,7 +26,7 @@ export interface ParserConfig {
 export class ValidationError extends Error {
   constructor(
     message: string,
-    public readonly cause?: Error
+    public override readonly cause?: Error
   ) {
     super(message)
     this.name = 'ValidationError'
@@ -39,7 +39,7 @@ export class ValidationError extends Error {
 export class FileOperationError extends Error {
   constructor(
     message: string,
-    public readonly cause?: Error
+    public override readonly cause?: Error
   ) {
     super(message)
     this.name = 'FileOperationError'
@@ -143,7 +143,7 @@ export class DocumentParser {
   }
 
   /**
-   * PDF parsing (using pdf-parse v2)
+   * PDF parsing (using unpdf with PDF.js engine)
    *
    * @param filePath - PDF file path
    * @returns Parsed text
@@ -152,10 +152,12 @@ export class DocumentParser {
   private async parsePdf(filePath: string): Promise<string> {
     try {
       const buffer = await readFile(filePath)
-      const parser = new PDFParse({ data: buffer })
-      const result = await parser.getText()
-      console.error(`Parsed PDF: ${filePath} (${result.text.length} characters)`)
-      return result.text
+      const pdf = await getDocumentProxy(new Uint8Array(buffer))
+      // Use mergePages: false to preserve line breaks for better sentence detection
+      const { text: pages } = await extractText(pdf, { mergePages: false })
+      const text = (pages as string[]).join('\n\n')
+      console.error(`Parsed PDF: ${filePath} (${text.length} characters, ${pdf.numPages} pages)`)
+      return text
     } catch (error) {
       throw new FileOperationError(`Failed to parse PDF: ${filePath}`, error as Error)
     }

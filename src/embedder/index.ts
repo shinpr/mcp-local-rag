@@ -28,7 +28,7 @@ export interface EmbedderConfig {
 export class EmbeddingError extends Error {
   constructor(
     message: string,
-    public readonly cause?: Error
+    public override readonly cause?: Error
   ) {
     super(message)
     this.name = 'EmbeddingError'

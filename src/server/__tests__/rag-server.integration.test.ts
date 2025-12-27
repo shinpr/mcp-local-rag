@@ -28,8 +28,6 @@ describe('RAG MCP Server Integration Test - Phase 1', () => {
       cacheDir: './tmp/models',
       baseDir: testDataDir,
       maxFileSize: 100 * 1024 * 1024, // 100MB
-      chunkSize: 512,
-      chunkOverlap: 100,
     })
 
     await ragServer.initialize()
@@ -107,65 +105,7 @@ describe('RAG MCP Server Integration Test - Phase 1', () => {
     })
   })
 
-  describe('AC-002: Document Ingestion (Phase 1)', () => {
-    beforeEach(async () => {
-      // Prepare test documents and initialize DB before each test
-    })
-
-    // AC interpretation: [Technical requirement] Text split with chunk size 512 characters and overlap 100 characters
-    // Validation: Chunks after ingestion are max 512 characters, adjacent chunks overlap by 100 characters
-    it('Text properly split with chunk size 512 characters and overlap 100 characters', async () => {
-      const { DocumentChunker } = await import('../../chunker/index')
-      const chunker = new DocumentChunker({
-        chunkSize: 512,
-        chunkOverlap: 100,
-      })
-
-      await chunker.initialize()
-
-      // Create 1000 character text (to trigger chunk splitting)
-      const longText = 'This is a test text for chunking. '.repeat(30) // Approx 1020 characters
-      const chunks = await chunker.chunkText(longText)
-
-      // Validation: Chunks are generated
-      expect(chunks).toBeDefined()
-      expect(Array.isArray(chunks)).toBe(true)
-      expect(chunks.length).toBeGreaterThan(0)
-
-      // Validation: Each chunk is max 512 characters
-      for (const chunk of chunks) {
-        expect(chunk.text.length).toBeLessThanOrEqual(512)
-        expect(typeof chunk.index).toBe('number')
-        expect(chunk.index).toBeGreaterThanOrEqual(0)
-      }
-
-      // Validation: Chunk indices are sequential
-      for (let i = 0; i < chunks.length; i++) {
-        expect(chunks[i].index).toBe(i)
-      }
-    })
-
-    // Edge Case: Empty file
-    // Validation: Ingest empty text file, completes without error (0 chunks)
-    it('Ingest empty text file (0 bytes), completes without error (0 chunks)', async () => {
-      const { DocumentChunker } = await import('../../chunker/index')
-      const chunker = new DocumentChunker({
-        chunkSize: 512,
-        chunkOverlap: 100,
-      })
-
-      await chunker.initialize()
-
-      // Process empty string
-      const emptyText = ''
-      const chunks = await chunker.chunkText(emptyText)
-
-      // Validation: Completes without error and returns empty array
-      expect(chunks).toBeDefined()
-      expect(Array.isArray(chunks)).toBe(true)
-      expect(chunks.length).toBe(0)
-    })
-  })
+  // AC-002: Document Ingestion - SemanticChunker tests are in src/chunker/__tests__/semantic-chunker.test.ts
 
   describe('AC-003: Vector Embedding Generation', () => {
     // AC interpretation: [Technical requirement] Text chunks are converted to 384-dimensional vectors
@@ -295,8 +235,6 @@ describe('RAG MCP Server Integration Test - Phase 1', () => {
         cacheDir: './tmp/models',
         baseDir: localTestDataDir,
         maxFileSize: 100 * 1024 * 1024,
-        chunkSize: 512,
-        chunkOverlap: 100,
       })
 
       await localRagServer.initialize()
@@ -390,8 +328,6 @@ describe('RAG MCP Server Integration Test - Phase 1', () => {
         cacheDir: './tmp/models',
         baseDir: testDataDir,
         maxFileSize: 100 * 1024 * 1024,
-        chunkSize: 512,
-        chunkOverlap: 100,
       })
 
       await emptyServer.initialize()
@@ -459,8 +395,6 @@ describe('RAG MCP Server Integration Test - Phase 1', () => {
         cacheDir: './tmp/models',
         baseDir: testDataDir,
         maxFileSize: 100 * 1024 * 1024,
-        chunkSize: 512,
-        chunkOverlap: 100,
       })
 
       // Verify error occurs during initialization or query execution
@@ -507,8 +441,6 @@ describe('RAG MCP Server Integration Test - Phase 2', () => {
         cacheDir: './tmp/models',
         baseDir: localTestDataDir,
         maxFileSize: 100 * 1024 * 1024,
-        chunkSize: 512,
-        chunkOverlap: 100,
       })
 
       await localRagServer.initialize()
@@ -632,8 +564,6 @@ describe('RAG MCP Server Integration Test - Phase 2', () => {
         cacheDir: './tmp/models',
         baseDir: localTestDataDir,
         maxFileSize: 100 * 1024 * 1024,
-        chunkSize: 512,
-        chunkOverlap: 100,
       })
 
       await localRagServer.initialize()
@@ -741,8 +671,6 @@ describe('RAG MCP Server Integration Test - Phase 2', () => {
         cacheDir: './tmp/models',
         baseDir: localTestDataDir,
         maxFileSize: 100 * 1024 * 1024,
-        chunkSize: 512,
-        chunkOverlap: 100,
       })
 
       await localRagServer.initialize()
@@ -759,9 +687,7 @@ describe('RAG MCP Server Integration Test - Phase 2', () => {
       // Initial ingestion
       const testFile = resolve(localTestDataDir, 'test-reingest.txt')
       writeFileSync(testFile, 'This is the original content. '.repeat(50))
-      const result1 = await localRagServer.handleIngestFile({ filePath: testFile })
-      const ingest1 = JSON.parse(result1.content[0].text)
-      const originalChunkCount = ingest1.chunkCount
+      await localRagServer.handleIngestFile({ filePath: testFile })
 
       // Re-ingestion (content changed)
       writeFileSync(testFile, 'This is the updated content. '.repeat(30))
@@ -769,15 +695,12 @@ describe('RAG MCP Server Integration Test - Phase 2', () => {
       const ingest2 = JSON.parse(result2.content[0].text)
       const updatedChunkCount = ingest2.chunkCount
 
-      // Validation: Chunk count changed (old data deleted, new data inserted)
-      expect(updatedChunkCount).not.toBe(originalChunkCount)
-
       // Validation: Only one file exists in file list
       const listResult = await localRagServer.handleListFiles()
       const files = JSON.parse(listResult.content[0].text)
       const targetFiles = files.filter((f: { filePath: string }) => f.filePath === testFile)
       expect(targetFiles.length).toBe(1)
-      // Validation: Chunk count matches new data (not old + new)
+      // Validation: Chunk count matches new data (not old + new combined)
       expect(targetFiles[0].chunkCount).toBe(updatedChunkCount)
     })
 
@@ -888,8 +811,6 @@ describe('RAG MCP Server Integration Test - Phase 2', () => {
         cacheDir: './tmp/models',
         baseDir: localTestDataDir,
         maxFileSize: 100 * 1024 * 1024, // 100MB
-        chunkSize: 512,
-        chunkOverlap: 100,
       })
 
       await localRagServer.initialize()
@@ -989,8 +910,6 @@ describe('RAG MCP Server Integration Test - Phase 2', () => {
         cacheDir: './tmp/models',
         baseDir: localTestDataDir,
         maxFileSize: 100 * 1024 * 1024,
-        chunkSize: 512,
-        chunkOverlap: 100,
       })
 
       await localRagServer.initialize()

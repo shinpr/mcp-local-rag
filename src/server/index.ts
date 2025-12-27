@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto'
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
-import { DocumentChunker } from '../chunker/index.js'
+import { SemanticChunker } from '../chunker/index.js'
 import { Embedder } from '../embedder/index.js'
 import { DocumentParser } from '../parser/index.js'
 import { type GroupingMode, type VectorChunk, VectorStore } from '../vectordb/index.js'
@@ -27,10 +27,6 @@ export interface RAGServerConfig {
   baseDir: string
   /** Maximum file size (100MB) */
   maxFileSize: number
-  /** Chunk size */
-  chunkSize: number
-  /** Chunk overlap */
-  chunkOverlap: number
   /** Maximum distance threshold for quality filtering (optional) */
   maxDistance?: number
   /** Grouping mode for quality filtering (optional) */
@@ -108,7 +104,7 @@ export class RAGServer {
   private readonly server: Server
   private readonly vectorStore: VectorStore
   private readonly embedder: Embedder
-  private readonly chunker: DocumentChunker
+  private readonly chunker: SemanticChunker
   private readonly parser: DocumentParser
 
   constructor(config: RAGServerConfig) {
@@ -135,13 +131,10 @@ export class RAGServer {
     this.vectorStore = new VectorStore(vectorStoreConfig)
     this.embedder = new Embedder({
       modelPath: config.modelName,
-      batchSize: 8,
+      batchSize: 16,
       cacheDir: config.cacheDir,
     })
-    this.chunker = new DocumentChunker({
-      chunkSize: config.chunkSize,
-      chunkOverlap: config.chunkOverlap,
-    })
+    this.chunker = new SemanticChunker()
     this.parser = new DocumentParser({
       baseDir: config.baseDir,
       maxFileSize: config.maxFileSize,
@@ -160,14 +153,13 @@ export class RAGServer {
         {
           name: 'query_documents',
           description:
-            'Search through previously ingested documents (PDF, DOCX, TXT, MD) using semantic search. Returns relevant passages from documents in the BASE_DIR. Documents must be ingested first using ingest_file.',
+            'Search ingested documents. Your query words are matched exactly (keyword search). Your query meaning is matched semantically (vector search). Preserve specific terms from the user. Add context if the query is ambiguous. Results include score (0 = most relevant, higher = less relevant).',
           inputSchema: {
             type: 'object',
             properties: {
               query: {
                 type: 'string',
-                description:
-                  'Natural language search query (e.g., "transformer architecture", "API documentation")',
+                description: 'Search query. Include specific terms and add context if needed.',
               },
               limit: {
                 type: 'number',
@@ -258,7 +250,6 @@ export class RAGServer {
    */
   async initialize(): Promise<void> {
     await this.vectorStore.initialize()
-    await this.chunker.initialize()
     console.error('RAGServer initialized')
   }
 
@@ -309,10 +300,10 @@ export class RAGServer {
       // Parse file
       const text = await this.parser.parseFile(args.filePath)
 
-      // Split text into chunks
-      const chunks = await this.chunker.chunkText(text)
+      // Split text into semantic chunks (embeddings are generated internally)
+      const chunks = await this.chunker.chunkText(text, this.embedder)
 
-      // Generate embeddings
+      // Generate embeddings for final chunks
       const embeddings = await this.embedder.embedBatch(chunks.map((chunk) => chunk.text))
 
       // Create backup (if existing data exists)

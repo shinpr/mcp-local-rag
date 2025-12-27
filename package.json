@@ -1,6 +1,6 @@
 {
   "name": "mcp-local-rag",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Local RAG MCP Server - Easy-to-setup document search with minimal configuration",
   "main": "dist/index.js",
   "bin": {
@@ -56,11 +56,9 @@
   "dependencies": {
     "@huggingface/transformers": "^3.7.6",
     "@lancedb/lancedb": "^0.22.2",
-    "@langchain/textsplitters": "^1.0.0",
     "@modelcontextprotocol/sdk": "^1.20.2",
-    "langchain": "^1.0.2",
     "mammoth": "^1.11.0",
-    "pdf-parse": "^2.4.5"
+    "unpdf": "^1.4.0"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",
