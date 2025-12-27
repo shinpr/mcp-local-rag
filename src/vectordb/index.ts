@@ -16,11 +16,8 @@ const GROUPING_BOUNDARY_STD_MULTIPLIER = 1.5
 /** Multiplier for candidate count in hybrid search (to allow reranking) */
 const HYBRID_SEARCH_CANDIDATE_MULTIPLIER = 2
 
-/** Maximum distance for dot product similarity (0 = identical, 2 = opposite) */
-const DOT_PRODUCT_MAX_DISTANCE = 2
-
 /** FTS index name (bump version when changing tokenizer settings) */
-const FTS_INDEX_NAME = 'fts_v1'
+const FTS_INDEX_NAME = 'fts_index_v2'
 
 /** Threshold for cleaning up old index versions (1 minute) */
 const FTS_CLEANUP_THRESHOLD_MS = 60 * 1000
@@ -328,12 +325,16 @@ export class VectorStore {
       return
     }
 
-    // Create new FTS index with ngram tokenizer for Japanese support
+    // Create new FTS index with ngram tokenizer for multilingual support
+    // - min=2: Capture Japanese bi-grams (e.g., "東京", "設計")
+    // - max=3: Balance between precision and index size
+    // - prefixOnly=false: Generate ngrams from all positions for proper CJK support
     await this.table.createIndex('text', {
       config: Index.fts({
         baseTokenizer: 'ngram',
         ngramMinLength: 2,
-        ngramMaxLength: 4,
+        ngramMaxLength: 3,
+        prefixOnly: false,
         stem: false,
       }),
       name: FTS_INDEX_NAME,
@@ -421,16 +422,19 @@ export class VectorStore {
 
   /**
    * Execute vector search with quality filtering
-   * Supports hybrid search (BM25 + vector) when FTS index is enabled
+   * Architecture: Semantic search → Filter (maxDistance, grouping) → Keyword boost
+   *
+   * This "prefetch then rerank" approach ensures:
+   * - maxDistance and grouping work on meaningful vector distances
+   * - Keyword matching acts as a boost, not a replacement for semantic similarity
    *
    * @param queryVector - Query vector (dimension depends on model)
-   * @param queryText - Optional query text for hybrid search (BM25)
+   * @param queryText - Optional query text for keyword boost (BM25)
    * @param limit - Number of results to retrieve (default 10)
    * @returns Array of search results (sorted by distance ascending, filtered by quality settings)
    */
   async search(queryVector: number[], queryText?: string, limit = 10): Promise<SearchResult[]> {
     if (!this.table) {
-      // Return empty array if table doesn't exist
       console.error('VectorStore: Returning empty results as table does not exist')
       return []
     }
@@ -440,127 +444,112 @@ export class VectorStore {
     }
 
     try {
-      let rawResults: Record<string, unknown>[]
+      // Step 1: Semantic (vector) search - always the primary search
+      const candidateLimit = limit * HYBRID_SEARCH_CANDIDATE_MULTIPLIER
+      let query = this.table.vectorSearch(queryVector).distanceType('dot').limit(candidateLimit)
 
-      // Use hybrid search if FTS is enabled, query text is provided, and hybridWeight > 0
-      const hybridWeight = this.config.hybridWeight ?? 0.6
-      if (this.ftsEnabled && queryText && queryText.trim().length > 0 && hybridWeight > 0) {
-        try {
-          const candidateLimit = limit * HYBRID_SEARCH_CANDIDATE_MULTIPLIER
-
-          // Hybrid search: combine FTS (BM25) and vector search
-          rawResults = await this.table
-            .search(queryText, 'fts', 'text')
-            .select(['filePath', 'chunkIndex', 'text', 'metadata'])
-            .limit(candidateLimit) // Get more candidates for reranking
-            .toArray()
-
-          // Also perform vector search
-          const vectorResults = await this.table
-            .vectorSearch(queryVector)
-            .distanceType('dot')
-            .limit(candidateLimit)
-            .toArray()
-
-          // Combine and rerank using linear combination (70% vector, 30% FTS)
-          rawResults = this.hybridRerank(rawResults, vectorResults, limit)
-        } catch (ftsError) {
-          // FTS search failed, fall back to vector-only search
-          console.error('VectorStore: FTS search failed, falling back to vector-only:', ftsError)
-          this.ftsEnabled = false
-
-          let query = this.table.vectorSearch(queryVector).distanceType('dot').limit(limit)
-          if (this.config.maxDistance !== undefined) {
-            query = query.distanceRange(undefined, this.config.maxDistance)
-          }
-          rawResults = await query.toArray()
-        }
-      } else {
-        // Vector-only search
-        let query = this.table.vectorSearch(queryVector).distanceType('dot').limit(limit)
-
-        // Apply distance threshold if configured
-        if (this.config.maxDistance !== undefined) {
-          query = query.distanceRange(undefined, this.config.maxDistance)
-        }
-
-        rawResults = await query.toArray()
+      // Apply distance threshold at query level
+      if (this.config.maxDistance !== undefined) {
+        query = query.distanceRange(undefined, this.config.maxDistance)
       }
+
+      const vectorResults = await query.toArray()
 
       // Convert to SearchResult format with type validation
-      let results: SearchResult[] = rawResults.map((result) => toSearchResult(result))
+      let results: SearchResult[] = vectorResults.map((result) => toSearchResult(result))
 
-      // Apply maxDistance filter (for hybrid search results that weren't filtered at query level)
-      if (this.config.maxDistance !== undefined) {
-        results = results.filter((result) => result.score <= this.config.maxDistance!)
-      }
-
-      // Apply grouping filter if configured
+      // Step 2: Apply grouping filter on vector distances (before keyword boost)
+      // Grouping is meaningful only on semantic distances, not after keyword boost
       if (this.config.grouping && results.length > 1) {
         results = this.applyGrouping(results, this.config.grouping)
       }
 
-      return results
+      // Step 3: Apply keyword boost if enabled
+      const hybridWeight = this.config.hybridWeight ?? 0.6
+      if (this.ftsEnabled && queryText && queryText.trim().length > 0 && hybridWeight > 0) {
+        try {
+          // Get unique filePaths from vector results to filter FTS search
+          const uniqueFilePaths = [...new Set(results.map((r) => r.filePath))]
+
+          // Build WHERE clause with IN for targeted FTS search
+          // Use backticks for column name (required for camelCase in LanceDB)
+          const escapedPaths = uniqueFilePaths.map((p) => `'${p.replace(/'/g, "''")}'`)
+          const whereClause = `\`filePath\` IN (${escapedPaths.join(', ')})`
+
+          const ftsResults = await this.table
+            .search(queryText, 'fts', 'text')
+            .where(whereClause)
+            .select(['filePath', 'chunkIndex', 'text', 'metadata', '_score'])
+            .limit(results.length * 2) // Enough to cover all vector results
+            .toArray()
+
+          results = this.applyKeywordBoost(results, ftsResults, hybridWeight)
+        } catch (ftsError) {
+          console.error('VectorStore: FTS search failed, using vector-only results:', ftsError)
+          this.ftsEnabled = false
+        }
+      }
+
+      // Return top results after all filtering and boosting
+      return results.slice(0, limit)
     } catch (error) {
       throw new DatabaseError('Failed to search vectors', error as Error)
     }
   }
 
   /**
-   * Rerank results from hybrid search using linear combination
-   * Weight is configurable via hybridWeight (default 0.6 = 60% BM25, 40% vector)
+   * Apply keyword boost to rerank vector search results
+   * Uses multiplicative formula: final_distance = distance / (1 + keyword_normalized * weight)
+   *
+   * This proportional boost ensures:
+   * - Keyword matches improve ranking without dominating semantic similarity
+   * - Documents without keyword matches keep their original vector distance
+   * - Higher weight = stronger influence of keyword matching
+   *
+   * @param vectorResults - Results from vector search (already filtered by maxDistance/grouping)
+   * @param ftsResults - Raw FTS results with BM25 scores
+   * @param weight - Boost weight (0-1, from hybridWeight config)
    */
-  private hybridRerank(
+  private applyKeywordBoost(
+    vectorResults: SearchResult[],
     ftsResults: Record<string, unknown>[],
-    vectorResults: Record<string, unknown>[],
-    limit: number
-  ): Record<string, unknown>[] {
-    const scoreMap = new Map<string, { result: Record<string, unknown>; score: number }>()
-
-    // Get weight from config (default 0.6 = BM25 60%, vector 40%)
-    const bm25Weight = this.config.hybridWeight ?? 0.6
-    const vectorWeight = 1 - bm25Weight
-
-    // Process vector results (lower distance = better, convert to 0-1 score)
-    for (let i = 0; i < vectorResults.length; i++) {
-      const result = vectorResults[i]
+    weight: number
+  ): SearchResult[] {
+    // Build FTS score map with normalized scores (0-1)
+    let maxBm25Score = 0
+    for (const result of ftsResults) {
       if (!result) continue
-      const key = `${result['filePath']}:${result['chunkIndex']}`
-      const distance = (result['_distance'] as number) ?? 1
-      // Convert distance to similarity score (0-1 range, higher is better)
-      const vectorScore = Math.max(0, 1 - distance / DOT_PRODUCT_MAX_DISTANCE)
-      scoreMap.set(key, { result, score: vectorScore * vectorWeight })
+      const score = (result['_score'] as number) ?? 0
+      if (score > maxBm25Score) maxBm25Score = score
     }
 
-    // Process FTS results (rank-based scoring)
-    for (let i = 0; i < ftsResults.length; i++) {
-      const result = ftsResults[i]
+    const ftsScoreMap = new Map<string, number>()
+    for (const result of ftsResults) {
       if (!result) continue
       const key = `${result['filePath']}:${result['chunkIndex']}`
-      // FTS score based on rank position (higher rank = higher score)
-      const ftsScore = 1 - i / ftsResults.length
+      const rawScore = (result['_score'] as number) ?? 0
+      const normalized = maxBm25Score > 0 ? rawScore / maxBm25Score : 0
+      ftsScoreMap.set(key, normalized)
+    }
 
-      if (scoreMap.has(key)) {
-        // Combine scores
-        const existing = scoreMap.get(key)
-        if (existing) {
-          existing.score += ftsScore * bm25Weight
-        }
-      } else {
-        scoreMap.set(key, { result, score: ftsScore * bm25Weight })
+    // Apply multiplicative boost to vector results
+    const boostedResults = vectorResults.map((result) => {
+      const key = `${result.filePath}:${result.chunkIndex}`
+      const keywordScore = ftsScoreMap.get(key) ?? 0
+
+      // Multiplicative boost: distance / (1 + keyword * weight)
+      // - If keyword matches (score=1) and weight=1: distance halved
+      // - If no keyword match (score=0): distance unchanged
+      const boostedDistance = result.score / (1 + keywordScore * weight)
+
+      return {
+        ...result,
+        score: boostedDistance,
       }
-    }
+    })
 
-    // Sort by combined score and return top results
-    const sortedResults = Array.from(scoreMap.values())
-      .sort((a, b) => b.score - a.score)
-      .slice(0, limit)
-      .map((item) => ({
-        ...item.result,
-        _distance: 1 - item.score, // Convert back to distance for consistency
-      }))
-
-    return sortedResults
+    // Re-sort by boosted distance (ascending = better)
+    return boostedResults.sort((a, b) => a.score - b.score)
   }
 
   /**

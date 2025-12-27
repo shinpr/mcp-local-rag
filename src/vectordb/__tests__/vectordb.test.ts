@@ -348,7 +348,7 @@ describe('VectorStore', () => {
       }
     })
 
-    it('should use keyword match order when hybridWeight=1', async () => {
+    it('should boost keyword matches when hybridWeight=1', async () => {
       const ftsOnlyDbPath = './tmp/test-vectordb-fts-only'
       const fs = await import('node:fs')
       if (fs.existsSync(ftsOnlyDbPath)) {
@@ -359,38 +359,36 @@ describe('VectorStore', () => {
         const store = new VectorStore({
           dbPath: ftsOnlyDbPath,
           tableName: 'chunks',
-          hybridWeight: 1, // FTS-only mode
+          hybridWeight: 1, // Maximum keyword boost
         })
         await store.initialize()
 
         const queryVector = createNormalizedVector(1)
 
-        // doc1: Has keyword, but vector is far from query
+        // doc1: Has keyword match, but farther vector distance
         const doc1 = createTestChunk(
           'UniqueKeyword appears in this document about something else',
           '/test/keyword-match.md',
           0,
-          createNormalizedVector(100) // Far from query
+          createNormalizedVector(5)
         )
 
-        // doc2: No keyword, but vector is close to query
+        // doc2: No keyword match, but closer vector distance
         const doc2 = createTestChunk(
           'This document has similar semantic meaning without the special term',
           '/test/vector-match.md',
           0,
-          createNormalizedVector(1) // Close to query
+          createNormalizedVector(3)
         )
 
         await store.insertChunks([doc1])
         await store.insertChunks([doc2])
 
-        // Search with keyword that matches doc1
         const results = await store.search(queryVector, 'UniqueKeyword', 10)
 
         expect(results).toHaveLength(2)
 
-        // With hybridWeight=1, keyword match should determine order
-        // doc1 (keyword match) should rank first
+        // Keyword match should boost doc1 to rank higher despite farther vector distance
         expect(results[0]?.filePath).toBe('/test/keyword-match.md')
         expect(results[1]?.filePath).toBe('/test/vector-match.md')
       } finally {
@@ -400,7 +398,7 @@ describe('VectorStore', () => {
       }
     })
 
-    it('should use hybrid ranking when hybridWeight=0.6 (default)', async () => {
+    it('should apply keyword boost with default hybridWeight=0.6', async () => {
       const hybridDbPath = './tmp/test-vectordb-hybrid'
       const fs = await import('node:fs')
       if (fs.existsSync(hybridDbPath)) {
@@ -417,32 +415,30 @@ describe('VectorStore', () => {
 
         const queryVector = createNormalizedVector(1)
 
-        // doc1: Has keyword, but vector is far from query
+        // doc1: Has keyword match, but farther vector distance
         const doc1 = createTestChunk(
           'UniqueKeyword appears in this document about something else',
           '/test/keyword-match.md',
           0,
-          createNormalizedVector(100) // Far from query
+          createNormalizedVector(5)
         )
 
-        // doc2: No keyword, but vector is close to query
+        // doc2: No keyword match, but closer vector distance
         const doc2 = createTestChunk(
           'This document has similar semantic meaning without the special term',
           '/test/vector-match.md',
           0,
-          createNormalizedVector(1) // Close to query
+          createNormalizedVector(3)
         )
 
         await store.insertChunks([doc1])
         await store.insertChunks([doc2])
 
-        // Search with keyword that matches doc1
         const results = await store.search(queryVector, 'UniqueKeyword', 10)
 
         expect(results).toHaveLength(2)
 
-        // With hybridWeight=0.6, keyword match is prioritized (60% weight)
-        // doc1 (keyword match) should rank first
+        // Keyword match should boost doc1 to rank higher despite farther vector distance
         expect(results[0]?.filePath).toBe('/test/keyword-match.md')
         expect(results[1]?.filePath).toBe('/test/vector-match.md')
       } finally {

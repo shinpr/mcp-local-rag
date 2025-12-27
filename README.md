@@ -125,7 +125,7 @@ Adjust these for your use case:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `RAG_HYBRID_WEIGHT` | `0.6` | Keyword vs semantic balance. Higher = more exact matching. |
+| `RAG_HYBRID_WEIGHT` | `0.6` | Keyword boost factor. 0 = semantic only, higher = stronger keyword boost. |
 | `RAG_GROUPING` | (not set) | `similar` for top group only, `related` for top 2 groups. |
 | `RAG_MAX_DISTANCE` | (not set) | Filter out low-relevance results (e.g., `0.5`). |
 
@@ -142,7 +142,7 @@ Example (stricter, code-focused):
 **TL;DR:**
 - Documents are chunked by semantic similarity, not fixed character counts
 - Each chunk is embedded locally using Transformers.js
-- Search uses a weighted combination of BM25 + vector similarity
+- Search uses semantic similarity with keyword boost for exact matches
 - Results are filtered based on relevance gaps, not raw scores
 
 ### Details
@@ -155,11 +155,11 @@ Each chunk goes through the Transformers.js embedding model (`all-MiniLM-L6-v2`)
 
 When you search:
 1. Your query becomes a vector using the same model
-2. LanceDB performs both BM25 keyword search and vector similarity search
-3. Results are combined (default: 60% keyword, 40% semantic)
-4. Top matches return with original text and metadata
+2. Semantic (vector) search finds the most relevant chunks
+3. Quality filters apply (distance threshold, grouping)
+4. Keyword matches boost rankings for exact term matching
 
-The keyword-heavy default works well for developer documentation where exact terms matter.
+The keyword boost ensures exact terms like `useEffect` or error codes rank higher when they match.
 
 <details>
 <summary><strong>Configuration</strong></summary>
