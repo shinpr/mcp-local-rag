@@ -11,6 +11,9 @@ Hybrid search (BM25 + semantic) for exact technical terms — fully private, zer
 - **Code-aware hybrid search**
   Keyword (BM25) + semantic search combined. Exact terms like `useEffect`, error codes, and class names are matched reliably—not just semantically guessed.
 
+- **Smart semantic chunking**
+  Chunks documents by meaning, not character count. Uses embedding similarity to find natural topic boundaries—keeping related content together and splitting where topics change.
+
 - **Quality-first result filtering**
   Groups results by relevance gaps instead of arbitrary top-K cutoffs. Get fewer but more trustworthy chunks.
 
@@ -137,16 +140,16 @@ Example (stricter, code-focused):
 ## How It Works
 
 **TL;DR:**
-- Documents are chunked intelligently (overlapping, boundary-aware)
+- Documents are chunked by semantic similarity, not fixed character counts
 - Each chunk is embedded locally using Transformers.js
 - Search uses a weighted combination of BM25 + vector similarity
 - Results are filtered based on relevance gaps, not raw scores
 
 ### Details
 
-When you ingest a document, the parser extracts text based on file type (PDF via `pdf-parse`, DOCX via `mammoth`, text files directly).
+When you ingest a document, the parser extracts text based on file type (PDF via `unpdf`, DOCX via `mammoth`, text files directly).
 
-The chunker splits text using LangChain's RecursiveCharacterTextSplitter—breaking on natural boundaries while keeping chunks around 512 characters with 100-character overlap.
+The semantic chunker splits text into sentences, then groups them using embedding similarity. It finds natural topic boundaries where the meaning shifts—keeping related content together instead of cutting at arbitrary character limits. This produces chunks that are coherent units of meaning, typically 500-1000 characters.
 
 Each chunk goes through the Transformers.js embedding model (`all-MiniLM-L6-v2`), converting text into 384-dimensional vectors. Vectors are stored in LanceDB, a file-based vector database requiring no server process.
 
@@ -170,8 +173,6 @@ The keyword-heavy default works well for developer documentation where exact ter
 | `CACHE_DIR` | `./models/` | Model cache directory |
 | `MODEL_NAME` | `Xenova/all-MiniLM-L6-v2` | HuggingFace model ID ([available models](https://huggingface.co/models?library=transformers.js&pipeline_tag=feature-extraction)) |
 | `MAX_FILE_SIZE` | `104857600` (100MB) | Maximum file size in bytes |
-| `CHUNK_SIZE` | `512` | Characters per chunk |
-| `CHUNK_OVERLAP` | `100` | Overlap between chunks |
 
 ### Client-Specific Setup
 
@@ -258,7 +259,7 @@ Default limit is 100MB. Split large files or increase `MAX_FILE_SIZE`.
 
 ### Slow queries
 
-Check chunk count with `status`. Consider increasing `CHUNK_SIZE` to reduce the number of chunks (trade-off: larger chunks may reduce retrieval precision).
+Check chunk count with `status`. Large documents with many chunks may slow queries. Consider splitting very large files.
 
 ### "Path outside BASE_DIR"
 
@@ -359,4 +360,4 @@ MIT License. Free for personal and commercial use.
 
 ## Acknowledgments
 
-Built with [Model Context Protocol](https://modelcontextprotocol.io/) by Anthropic, [LanceDB](https://lancedb.com/), [Transformers.js](https://huggingface.co/docs/transformers.js), and [LangChain.js](https://js.langchain.com/).
+Built with [Model Context Protocol](https://modelcontextprotocol.io/) by Anthropic, [LanceDB](https://lancedb.com/), and [Transformers.js](https://huggingface.co/docs/transformers.js).
