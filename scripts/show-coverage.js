@@ -7,7 +7,7 @@ const coverageFile = path.join(__dirname, '..', 'coverage', 'coverage-final.json
 
 if (!fs.existsSync(coverageFile)) {
   console.error('❌ Coverage report not found.')
-  console.error('   Please run npm run test:coverage first.')
+  console.error('   Please run pnpm run test:coverage first.')
   process.exit(1)
 }
 
