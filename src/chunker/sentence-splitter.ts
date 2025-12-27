@@ -1,37 +1,10 @@
 // Sentence Splitter for Semantic Chunking
 // Created: 2025-12-27
-// Purpose: Split text into sentences while preserving code blocks and handling multiple languages
+// Purpose: Split text into sentences using Intl.Segmenter (Unicode standard)
 
 // ============================================
 // Constants
 // ============================================
-
-/**
- * Common abbreviations that should not trigger sentence splits
- */
-const ABBREVIATIONS = new Set([
-  'mr',
-  'mrs',
-  'ms',
-  'dr',
-  'prof',
-  'sr',
-  'jr',
-  'vs',
-  'etc',
-  'inc',
-  'ltd',
-  'co',
-  'corp',
-  'e.g',
-  'i.e',
-  'cf',
-  'vol',
-  'no',
-  'pp',
-  'fig',
-  'eq',
-])
 
 /**
  * Placeholder for code blocks during processing
@@ -101,44 +74,24 @@ function restoreCodeBlocks(sentences: string[], blocks: CodeBlockInfo[]): string
   })
 }
 
-/**
- * Check if a period is likely part of an abbreviation
- */
-function isAbbreviation(text: string, periodIndex: number): boolean {
-  // Find the word before the period
-  let wordStart = periodIndex - 1
-  while (wordStart >= 0 && /[a-zA-Z.]/.test(text[wordStart] ?? '')) {
-    wordStart--
-  }
-  wordStart++
-
-  const word = text.slice(wordStart, periodIndex).toLowerCase()
-  return ABBREVIATIONS.has(word)
-}
-
-/**
- * Check if a period is part of a number (e.g., 3.14)
- */
-function isNumberDecimal(text: string, periodIndex: number): boolean {
-  const charBefore = text[periodIndex - 1]
-  const charAfter = text[periodIndex + 1]
-  return /\d/.test(charBefore ?? '') && /\d/.test(charAfter ?? '')
-}
-
 // ============================================
-// Main Function
+// Intl.Segmenter-based splitting
 // ============================================
 
+// Create segmenters for supported languages
+// Using 'und' (undetermined) as fallback for general Unicode support
+const segmenter = new Intl.Segmenter('und', { granularity: 'sentence' })
+
 /**
- * Split text into sentences
+ * Split text into sentences using Intl.Segmenter
  *
- * Handles:
- * - Sentence boundaries (. ! ?)
- * - Paragraph boundaries (\n\n)
- * - Markdown headings
- * - Code blocks (preserved as single units)
- * - Abbreviations (Mr., Dr., etc.)
- * - Decimal numbers (3.14)
+ * Uses the Unicode Text Segmentation standard (UAX #29) via Intl.Segmenter.
+ * This provides multilingual support for sentence boundary detection.
+ *
+ * Note: Intl.Segmenter may split on abbreviations like "Mr." or "e.g."
+ * These edge cases are acceptable for semantic chunking as:
+ * 1. Short fragments will be grouped with adjacent sentences by similarity
+ * 2. Fragments below minChunkLength are filtered out
  *
  * @param text - The text to split into sentences
  * @returns Array of sentences
@@ -152,8 +105,7 @@ export function splitIntoSentences(text: string): string[] {
   // Extract code blocks to protect them from splitting
   const { text: processedText, blocks } = extractCodeBlocks(text)
 
-  // Split on paragraph boundaries
-  // Also treat single newline after code block placeholder as paragraph boundary
+  // Split on paragraph boundaries first
   // biome-ignore lint/suspicious/noControlCharactersInRegex: Intentional use of NULL character as placeholder delimiter
   const paragraphs = processedText.split(/\n{2,}|\n(?=\S)|(?<=\u0000)\n/)
 
@@ -169,9 +121,14 @@ export function splitIntoSentences(text: string): string[] {
       continue
     }
 
-    // Split the paragraph into sentences
-    const paragraphSentences = splitParagraphIntoSentences(trimmedParagraph)
-    sentences.push(...paragraphSentences)
+    // Use Intl.Segmenter for sentence splitting
+    const segments = segmenter.segment(trimmedParagraph)
+    for (const segment of segments) {
+      const trimmed = segment.segment.trim()
+      if (trimmed) {
+        sentences.push(trimmed)
+      }
+    }
   }
 
   // Restore code blocks
@@ -179,80 +136,4 @@ export function splitIntoSentences(text: string): string[] {
 
   // Filter empty sentences and trim
   return restoredSentences.map((s) => s.trim()).filter((s) => s.length > 0)
-}
-
-/**
- * Find the first non-space character index after a given position
- */
-function findNextNonSpace(text: string, startIndex: number): number {
-  let idx = startIndex
-  while (idx < text.length && text[idx] === ' ') {
-    idx++
-  }
-  return idx
-}
-
-/**
- * Check if a character indicates a new sentence start
- * Accepts: uppercase letters, placeholders, or end of string
- */
-function isNewSentenceStart(char: string | undefined): boolean {
-  if (char === undefined) return true
-  // Uppercase letter
-  if (/[A-Z]/.test(char)) return true
-  // Code block placeholder
-  if (char === '\u0000') return true
-  return false
-}
-
-/**
- * Split a single paragraph into sentences
- */
-function splitParagraphIntoSentences(paragraph: string): string[] {
-  const sentences: string[] = []
-  let currentSentence = ''
-  let i = 0
-
-  while (i < paragraph.length) {
-    const char = paragraph[i] ?? ''
-    currentSentence += char
-
-    // Check for sentence-ending punctuation
-    const isSentenceEnd = char === '.' || char === '!' || char === '?'
-
-    if (isSentenceEnd) {
-      // Check if it's NOT an abbreviation or decimal
-      if (!isAbbreviation(paragraph, i) && !isNumberDecimal(paragraph, i)) {
-        const nextChar = paragraph[i + 1]
-
-        // End of string or newline
-        if (nextChar === undefined || nextChar === '\n') {
-          sentences.push(currentSentence.trim())
-          currentSentence = ''
-        }
-        // Followed by space(s)
-        else if (nextChar === ' ') {
-          // Find the first non-space character
-          const nextNonSpaceIdx = findNextNonSpace(paragraph, i + 1)
-          const charAfterSpaces = paragraph[nextNonSpaceIdx]
-
-          if (isNewSentenceStart(charAfterSpaces)) {
-            sentences.push(currentSentence.trim())
-            currentSentence = ''
-            // Skip all spaces
-            i = nextNonSpaceIdx - 1
-          }
-        }
-      }
-    }
-
-    i++
-  }
-
-  // Add any remaining text as a sentence
-  if (currentSentence.trim()) {
-    sentences.push(currentSentence.trim())
-  }
-
-  return sentences
 }
