@@ -310,24 +310,24 @@ Copy `DB_PATH` directory (default: `./lancedb/`).
 ```bash
 git clone https://github.com/shinpr/mcp-local-rag.git
 cd mcp-local-rag
-npm install
+pnpm install
 ```
 
 ### Testing
 
 ```bash
-npm test              # Run all tests
-npm run test:coverage # With coverage
-npm run test:watch    # Watch mode
+pnpm test              # Run all tests
+pnpm run test:coverage # With coverage
+pnpm run test:watch    # Watch mode
 ```
 
 ### Code Quality
 
 ```bash
-npm run type-check    # TypeScript check
-npm run check:fix     # Lint and format
-npm run check:deps    # Circular dependency check
-npm run check:all     # Full quality check
+pnpm run type-check    # TypeScript check
+pnpm run check:fix     # Lint and format
+pnpm run check:deps    # Circular dependency check
+pnpm run check:all     # Full quality check
 ```
 
 ### Project Structure
@@ -349,8 +349,8 @@ src/
 
 Contributions welcome. Before submitting a PR:
 
-1. Run tests: `npm test`
-2. Check quality: `npm run check:all`
+1. Run tests: `pnpm test`
+2. Check quality: `pnpm run check:all`
 3. Add tests for new features
 4. Update docs if behavior changes
 

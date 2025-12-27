@@ -1,6 +1,6 @@
 {
   "name": "mcp-local-rag",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Local RAG MCP Server - Easy-to-setup document search with minimal configuration",
   "main": "dist/index.js",
   "bin": {
@@ -36,7 +36,7 @@
     "test:coverage": "vitest run --coverage",
     "test:coverage:summary": "node scripts/show-coverage.js",
     "test:coverage:clean": "rm -rf coverage .vitest-cache",
-    "test:coverage:fresh": "npm run test:coverage:clean && npm run test:coverage",
+    "test:coverage:fresh": "pnpm run test:coverage:clean && pnpm run test:coverage",
     "test:watch": "vitest",
     "format": "biome format --write src",
     "format:check": "biome format src",
@@ -48,15 +48,15 @@
     "check:unused:all": "ts-prune --project tsconfig.json --ignore 'src/index.ts|__tests__|test|vitest'",
     "check:deps": "madge --circular --extensions ts src",
     "check:deps:graph": "madge --extensions ts --image graph.svg src",
-    "check:all": "npm run check && npm run lint && npm run format:check && npm run check:unused && npm run check:deps && npm run build && npm run test",
+    "check:all": "pnpm run check && pnpm run lint && pnpm run format:check && pnpm run check:unused && pnpm run check:deps && pnpm run build && pnpm run test",
     "cleanup:processes": "bash ./scripts/cleanup-test-processes.sh",
-    "test:safe": "npm test && npm run cleanup:processes",
+    "test:safe": "pnpm test && pnpm run cleanup:processes",
     "prepare": "husky"
   },
   "dependencies": {
     "@huggingface/transformers": "^3.7.6",
     "@lancedb/lancedb": "^0.22.2",
-    "@modelcontextprotocol/sdk": "^1.20.2",
+    "@modelcontextprotocol/sdk": "^1.25.1",
     "mammoth": "^1.11.0",
     "unpdf": "^1.4.0"
   },
