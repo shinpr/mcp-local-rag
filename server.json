@@ -8,13 +8,13 @@
     "url": "https://github.com/shinpr/mcp-local-rag",
     "source": "github"
   },
-  "version": "0.3.0",
+  "version": "0.4.0",
   "packages": [
     {
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "mcp-local-rag",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "transport": {
         "type": "stdio"
       },
@@ -50,20 +50,6 @@
         {
           "name": "MAX_FILE_SIZE",
           "description": "Maximum file size in bytes (defaults to 104857600 / 100MB)",
-          "isRequired": false,
-          "format": "string",
-          "isSecret": false
-        },
-        {
-          "name": "CHUNK_SIZE",
-          "description": "Text chunk size for splitting documents (defaults to 512)",
-          "isRequired": false,
-          "format": "string",
-          "isSecret": false
-        },
-        {
-          "name": "CHUNK_OVERLAP",
-          "description": "Overlap between consecutive chunks (defaults to 100)",
           "isRequired": false,
           "format": "string",
           "isSecret": false
