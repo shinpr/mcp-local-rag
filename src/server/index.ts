@@ -153,13 +153,13 @@ export class RAGServer {
         {
           name: 'query_documents',
           description:
-            'Search for relevant information in ingested documents using hybrid search (semantic + keyword). Query guidelines: Use the exact technical terms from the user\'s question. Include both the concept and specific identifiers (e.g., "OAuth authentication flow" not just "authentication"). For code-related queries, include the actual identifier names mentioned by the user.',
+            'Search ingested documents. Your query words are matched exactly (keyword search). Your query meaning is matched semantically (vector search). Preserve specific terms from the user. Add context if the query is ambiguous.',
           inputSchema: {
             type: 'object',
             properties: {
               query: {
                 type: 'string',
-                description: "Search query using exact technical terms from the user's question",
+                description: 'Search query. Include specific terms and add context if needed.',
               },
               limit: {
                 type: 'number',
