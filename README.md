@@ -4,12 +4,12 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 Local RAG for developers using MCP.
-Hybrid search (BM25 + semantic) for exact technical terms — fully private, zero setup.
+Semantic search with keyword boost for exact technical terms — fully private, zero setup.
 
 ## Features
 
-- **Code-aware hybrid search**
-  Keyword (BM25) + semantic search combined. Exact terms like `useEffect`, error codes, and class names are matched reliably—not just semantically guessed.
+- **Semantic search with keyword boost**
+  Vector search first, then keyword matching boosts exact matches. Terms like `useEffect`, error codes, and class names rank higher—not just semantically guessed.
 
 - **Smart semantic chunking**
   Chunks documents by meaning, not character count. Uses embedding similarity to find natural topic boundaries—keeping related content together and splitting where topics change.
@@ -82,7 +82,7 @@ You want AI to search your documents—technical specs, research papers, interna
 
 **Offline.** Works without internet after setup.
 
-**Code search.** Pure semantic search misses exact terms like `useEffect` or `ERR_CONNECTION_REFUSED`. Hybrid search catches both meaning and exact matches.
+**Code search.** Pure semantic search misses exact terms like `useEffect` or `ERR_CONNECTION_REFUSED`. Keyword boost catches both meaning and exact matches.
 
 ## Usage
 
@@ -107,7 +107,7 @@ Re-ingesting the same file replaces the old version automatically.
 "Search for error handling best practices"
 ```
 
-The hybrid search combines keyword matching (BM25) with semantic search. This means `useEffect` finds documents containing that exact term, not just semantically similar React concepts.
+Search uses semantic similarity with keyword boost. This means `useEffect` finds documents containing that exact term, not just semantically similar React concepts.
 
 Results include text content, source file, and relevance score. Adjust result count with `limit` (1-20, default 10).
 
