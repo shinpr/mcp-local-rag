@@ -19,24 +19,6 @@ export default defineConfig({
         singleFork: true,      // Single process execution to avoid onnxruntime-node threading issues
       }
     },
-    coverage: {
-      enabled: false,  // Disable coverage by default
-      provider: 'v8',
-      reporter: ['text', 'json', 'html', 'lcov'],
-      reportsDirectory: './coverage',
-      clean: true,             // Clear coverage files to prevent process residue
-      include: ['src/**/*.{js,ts,jsx,tsx}'],
-      exclude: [
-        'node_modules/**',
-        'dist/**',
-        '**/*.d.ts',
-        '**/*.config.*',
-        '**/mockData/**',
-        '**/__mocks__/**',
-      ],
-      // No coverage thresholds set for boilerplate
-      // Set appropriate values for each project
-    },
   },
   resolve: {
     alias: {

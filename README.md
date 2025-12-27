@@ -317,7 +317,6 @@ pnpm install
 
 ```bash
 pnpm test              # Run all tests
-pnpm run test:coverage # With coverage
 pnpm run test:watch    # Watch mode
 ```
 
