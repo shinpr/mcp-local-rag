@@ -31,150 +31,38 @@ export interface PageData {
   items: TextItemWithPosition[]
 }
 
-/**
- * Detected repeating pattern (header/footer candidate)
- */
-export interface RepeatPattern {
-  y: number
-  text: string
-  occurrences: number
-}
-
-// ============================================
-// Header/Footer Detection
-// ============================================
-
-/**
- * Normalize Y coordinate to handle slight variations
- */
-function normalizeY(y: number, tolerance: number): number {
-  return Math.round(y / tolerance) * tolerance
-}
-
-/**
- * Detect header/footer patterns based on text repetition across pages
- *
- * Algorithm:
- * 1. Group text items by normalized Y coordinate
- * 2. Count occurrences of identical text at same Y position
- * 3. Return patterns that appear on >= threshold of pages
- *
- * @param pages - Array of page data with positioned items
- * @param threshold - Minimum occurrence rate (0.6 = 60% of pages)
- * @param yTolerance - Y coordinate tolerance in points (default: 2)
- * @returns Detected repeat patterns (header/footer candidates)
- */
-export function detectHeaderFooterPatterns(
-  pages: PageData[],
-  threshold = 0.6,
-  yTolerance = 2
-): RepeatPattern[] {
-  if (pages.length < 2) {
-    // Need at least 2 pages to detect patterns
-    return []
-  }
-
-  // Map: "normalizedY:text" -> occurrences count
-  const patternCounts = new Map<string, { y: number; text: string; count: number }>()
-
-  for (const page of pages) {
-    // Track patterns per page (avoid counting duplicates within same page)
-    const seenOnPage = new Set<string>()
-
-    for (const item of page.items) {
-      const trimmedText = item.text.trim()
-      if (trimmedText.length === 0) continue
-
-      const normalizedY = normalizeY(item.y, yTolerance)
-      const key = `${normalizedY}:${trimmedText}`
-
-      if (seenOnPage.has(key)) continue
-      seenOnPage.add(key)
-
-      const existing = patternCounts.get(key)
-      if (existing) {
-        existing.count++
-      } else {
-        patternCounts.set(key, { y: normalizedY, text: trimmedText, count: 1 })
-      }
-    }
-  }
-
-  // Filter patterns that meet threshold
-  const minOccurrences = Math.ceil(pages.length * threshold)
-  const patterns: RepeatPattern[] = []
-
-  for (const { y, text, count } of patternCounts.values()) {
-    if (count >= minOccurrences) {
-      patterns.push({ y, text, occurrences: count })
-    }
-  }
-
-  return patterns
-}
-
-// ============================================
-// Header/Footer Filtering
-// ============================================
-
-/**
- * Filter out header/footer items based on detected patterns
- *
- * @param pages - Array of page data to filter
- * @param patterns - Detected repeat patterns to remove
- * @param yTolerance - Y coordinate tolerance (must match detection tolerance)
- * @returns Filtered page data with header/footer removed
- */
-export function filterHeaderFooter(
-  pages: PageData[],
-  patterns: RepeatPattern[],
-  yTolerance = 2
-): PageData[] {
-  if (patterns.length === 0) {
-    return pages
-  }
-
-  // Build lookup set for fast pattern matching
-  const patternSet = new Set(patterns.map((p) => `${p.y}:${p.text}`))
-
-  return pages.map((page) => ({
-    pageNum: page.pageNum,
-    items: page.items.filter((item) => {
-      const trimmedText = item.text.trim()
-      if (trimmedText.length === 0) return true // Keep empty items for spacing
-
-      const normalizedY = normalizeY(item.y, yTolerance)
-      const key = `${normalizedY}:${trimmedText}`
-
-      return !patternSet.has(key)
-    }),
-  }))
-}
-
 // ============================================
 // Text Joining
 // ============================================
 
 /**
- * Sort items by Y coordinate (top to bottom)
- * Higher Y = top of page, Lower Y = bottom of page
- */
-function sortItemsByY(items: TextItemWithPosition[]): TextItemWithPosition[] {
-  return [...items].sort((a, b) => b.y - a.y)
-}
-
-/**
- * Join page items into text (sorted by Y coordinate)
+ * Join page items into text
+ *
+ * Groups items by Y coordinate (same Y = same line),
+ * sorts each group by X coordinate (left to right),
+ * then joins groups with newlines (top to bottom).
  */
 function joinPageItems(items: TextItemWithPosition[]): string {
-  const sorted = sortItemsByY(items)
-  let text = ''
-  for (const item of sorted) {
-    text += item.text
-    if (item.hasEOL) text += '\n'
-    else text += ' '
+  // Group by Y coordinate (rounded to handle minor variations)
+  const yGroups = new Map<number, TextItemWithPosition[]>()
+  for (const item of items) {
+    const y = Math.round(item.y)
+    const group = yGroups.get(y) || []
+    group.push(item)
+    yGroups.set(y, group)
   }
-  return text.trim()
+
+  // Sort groups by Y descending (top to bottom), items by X ascending (left to right)
+  return [...yGroups.entries()]
+    .sort((a, b) => b[0] - a[0])
+    .map(([_, group]) =>
+      group
+        .sort((a, b) => a.x - b.x)
+        .map((i) => i.text)
+        .join(' ')
+    )
+    .join('\n')
+    .trim()
 }
 
 /**

@@ -529,8 +529,8 @@ describe('RAG MCP Server Integration Test - Phase 2', () => {
         expect((error as Error).message).toContain('Failed to parse DOCX')
       }
 
-      // Verify PDF file branching exists
-      // Verify FileOperationError occurs with invalid PDF file
+      // PDF uses parsePdf directly (not parseFile)
+      // Verify parseFile rejects PDF files
       const fakePdfFile = resolve(localTestDataDir, 'test-all-formats.pdf')
       writeFileSync(fakePdfFile, 'Not a real PDF file')
       try {
@@ -538,13 +538,13 @@ describe('RAG MCP Server Integration Test - Phase 2', () => {
         // Fail if error does not occur
         expect(false).toBe(true)
       } catch (error) {
-        // Verify FileOperationError occurs (PDF parse failure)
-        expect((error as Error).name).toBe('FileOperationError')
-        expect((error as Error).message).toContain('Failed to parse PDF')
+        // Verify ValidationError occurs (PDF not supported via parseFile)
+        expect((error as Error).name).toBe('ValidationError')
+        expect((error as Error).message).toContain('Unsupported file format')
       }
 
-      // Verify all 4 formats (PDF, DOCX, TXT, MD) are supported
-      // Verified that .pdf, .docx, .txt, .md exist as switch statement cases
+      // Verify all 3 formats (DOCX, TXT, MD) are supported via parseFile
+      // PDF is handled by parsePdf directly
     })
   })
 

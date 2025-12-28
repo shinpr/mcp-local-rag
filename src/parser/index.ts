@@ -6,14 +6,7 @@ import { extname, isAbsolute, resolve } from 'node:path'
 import mammoth from 'mammoth'
 import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs'
 import type { TextItem } from 'pdfjs-dist/types/src/display/api'
-import {
-  type EmbedderInterface,
-  type PageData,
-  detectHeaderFooterPatterns,
-  filterHeaderFooter,
-  filterPageBoundarySentences,
-  joinFilteredPages,
-} from './pdf-filter.js'
+import { type EmbedderInterface, type PageData, filterPageBoundarySentences } from './pdf-filter.js'
 
 // ============================================
 // Type Definitions
@@ -135,11 +128,9 @@ export class DocumentParser {
     this.validateFilePath(filePath)
     this.validateFileSize(filePath)
 
-    // Format detection
+    // Format detection (PDF uses parsePdf directly)
     const ext = extname(filePath).toLowerCase()
     switch (ext) {
-      case '.pdf':
-        return await this.parsePdf(filePath)
       case '.docx':
         return await this.parseDocx(filePath)
       case '.txt':
@@ -152,36 +143,19 @@ export class DocumentParser {
   }
 
   /**
-   * PDF parsing (using pdfjs-dist directly for low-level API access)
-   *
-   * Features:
-   * - Extracts text with position information (x, y, fontSize)
-   * - Detects and removes repeating header/footer patterns
-   * - Semantic header/footer detection using embedding similarity (when embedder provided)
-   * - Uses hasEOL for proper line break handling
-   *
-   * @param filePath - PDF file path
-   * @returns Parsed text with header/footer removed
-   * @throws FileOperationError - File read failed, parse failed
-   */
-  private async parsePdf(filePath: string): Promise<string> {
-    return this.parsePdfWithSections(filePath)
-  }
-
-  /**
    * PDF parsing with header/footer filtering
    *
    * Features:
    * - Extracts text with position information (x, y, fontSize)
-   * - Detects and removes repeating header/footer patterns
-   * - Semantic header/footer detection using embedding similarity (when embedder provided)
+   * - Semantic header/footer detection using embedding similarity
+   * - Uses hasEOL for proper line break handling
    *
    * @param filePath - PDF file path
-   * @param embedder - Optional embedder for semantic header/footer detection
+   * @param embedder - Embedder for semantic header/footer detection
    * @returns Parsed text with header/footer removed
    * @throws FileOperationError - File read failed, parse failed
    */
-  async parsePdfWithSections(filePath: string, embedder?: EmbedderInterface): Promise<string> {
+  async parsePdf(filePath: string, embedder: EmbedderInterface): Promise<string> {
     // Validation
     this.validateFilePath(filePath)
     this.validateFileSize(filePath)
@@ -213,29 +187,11 @@ export class DocumentParser {
         pages.push({ pageNum: i, items })
       }
 
-      // Detect and filter header/footer patterns (text-based exact match)
-      const patterns = detectHeaderFooterPatterns(pages)
-      const filteredPages = filterHeaderFooter(pages, patterns)
-
-      // Apply sentence-level header/footer filtering when embedder is available
+      // Apply sentence-level header/footer filtering
       // This handles variable content like page numbers ("7 of 75") using semantic similarity
-      let text: string
-      let sentenceFilterInfo = ''
-      if (embedder) {
-        text = await filterPageBoundarySentences(pages, embedder)
-        const unfilteredText = joinFilteredPages(pages)
-        if (text.length < unfilteredText.length) {
-          sentenceFilterInfo = ', sentence-level header/footer removed'
-        }
-      } else {
-        text = joinFilteredPages(filteredPages)
-      }
+      const text = await filterPageBoundarySentences(pages, embedder)
 
-      const patternInfo =
-        patterns.length > 0 ? `, removed ${patterns.length} header/footer patterns` : ''
-      console.error(
-        `Parsed PDF: ${filePath} (${text.length} characters, ${pdf.numPages} pages${patternInfo}${sentenceFilterInfo})`
-      )
+      console.error(`Parsed PDF: ${filePath} (${text.length} characters, ${pdf.numPages} pages)`)
 
       return text
     } catch (error) {

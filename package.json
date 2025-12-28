@@ -54,7 +54,7 @@
     "@lancedb/lancedb": "^0.22.2",
     "@modelcontextprotocol/sdk": "^1.25.1",
     "mammoth": "^1.11.0",
-    "pdfjs-dist": "^5.4.449"
+    "pdfjs-dist": "^5.4.530"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",

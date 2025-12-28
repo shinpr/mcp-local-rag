@@ -300,7 +300,7 @@ export class RAGServer {
       // Parse file (with header/footer filtering for PDFs)
       const isPdf = args.filePath.toLowerCase().endsWith('.pdf')
       const text = isPdf
-        ? await this.parser.parsePdfWithSections(args.filePath, this.embedder)
+        ? await this.parser.parsePdf(args.filePath, this.embedder)
         : await this.parser.parseFile(args.filePath)
 
       // Split text into semantic chunks

@@ -21,8 +21,8 @@ importers:
         specifier: ^1.11.0
         version: 1.11.0
       pdfjs-dist:
-        specifier: ^5.4.449
-        version: 5.4.449
+        specifier: ^5.4.530
+        version: 5.4.530
     devDependencies:
       '@biomejs/biome':
         specifier: ^1.9.4
@@ -2027,8 +2027,8 @@ packages:
     resolution: {integrity: sha512-//nshmD55c46FuFw26xV/xFAaB5HF9Xdap7HJBBnrKdAd6/GxDBaNA1870O79+9ueg61cZLSVc+OaFlfmObYVQ==}
     engines: {node: '>= 14.16'}
 
-  pdfjs-dist@5.4.449:
-    resolution: {integrity: sha512-CegnUaT0QwAyQMS+7o2POr4wWUNNe8VaKKlcuoRHeYo98cVnqPpwOXNSx6Trl6szH02JrRcsPgletV6GmF3LtQ==}
+  pdfjs-dist@5.4.530:
+    resolution: {integrity: sha512-r1hWsSIGGmyYUAHR26zSXkxYWLXLMd6AwqcaFYG9YUZ0GBf5GvcjJSeo512tabM4GYFhxhl5pMCmPr7Q72Rq2Q==}
     engines: {node: '>=20.16.0 || >=22.3.0'}
 
   picocolors@1.1.1:
@@ -4529,7 +4529,7 @@ snapshots:
 
   pathval@2.0.1: {}
 
-  pdfjs-dist@5.4.449:
+  pdfjs-dist@5.4.530:
     optionalDependencies:
       '@napi-rs/canvas': 0.1.88
 
