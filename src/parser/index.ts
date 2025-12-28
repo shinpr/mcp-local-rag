@@ -4,7 +4,16 @@ import { statSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { extname, isAbsolute, resolve } from 'node:path'
 import mammoth from 'mammoth'
-import { extractText, getDocumentProxy } from 'unpdf'
+import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs'
+import type { TextItem } from 'pdfjs-dist/types/src/display/api'
+import {
+  type EmbedderInterface,
+  type PageData,
+  detectHeaderFooterPatterns,
+  filterHeaderFooter,
+  filterPageBoundarySentences,
+  joinFilteredPages,
+} from './pdf-filter.js'
 
 // ============================================
 // Type Definitions
@@ -143,20 +152,91 @@ export class DocumentParser {
   }
 
   /**
-   * PDF parsing (using unpdf with PDF.js engine)
+   * PDF parsing (using pdfjs-dist directly for low-level API access)
+   *
+   * Features:
+   * - Extracts text with position information (x, y, fontSize)
+   * - Detects and removes repeating header/footer patterns
+   * - Semantic header/footer detection using embedding similarity (when embedder provided)
+   * - Uses hasEOL for proper line break handling
    *
    * @param filePath - PDF file path
-   * @returns Parsed text
+   * @returns Parsed text with header/footer removed
    * @throws FileOperationError - File read failed, parse failed
    */
   private async parsePdf(filePath: string): Promise<string> {
+    return this.parsePdfWithSections(filePath)
+  }
+
+  /**
+   * PDF parsing with header/footer filtering
+   *
+   * Features:
+   * - Extracts text with position information (x, y, fontSize)
+   * - Detects and removes repeating header/footer patterns
+   * - Semantic header/footer detection using embedding similarity (when embedder provided)
+   *
+   * @param filePath - PDF file path
+   * @param embedder - Optional embedder for semantic header/footer detection
+   * @returns Parsed text with header/footer removed
+   * @throws FileOperationError - File read failed, parse failed
+   */
+  async parsePdfWithSections(filePath: string, embedder?: EmbedderInterface): Promise<string> {
+    // Validation
+    this.validateFilePath(filePath)
+    this.validateFileSize(filePath)
+
     try {
       const buffer = await readFile(filePath)
-      const pdf = await getDocumentProxy(new Uint8Array(buffer))
-      // Use mergePages: false to preserve line breaks for better sentence detection
-      const { text: pages } = await extractText(pdf, { mergePages: false })
-      const text = (pages as string[]).join('\n\n')
-      console.error(`Parsed PDF: ${filePath} (${text.length} characters, ${pdf.numPages} pages)`)
+      const pdf = await getDocument({
+        data: new Uint8Array(buffer),
+        useSystemFonts: true,
+        isEvalSupported: false,
+      }).promise
+
+      // Extract text with position information from each page
+      const pages: PageData[] = []
+      for (let i = 1; i <= pdf.numPages; i++) {
+        const page = await pdf.getPage(i)
+        const textContent = await page.getTextContent()
+
+        const items = textContent.items
+          .filter((item): item is TextItem => 'str' in item)
+          .map((item) => ({
+            text: item.str,
+            x: item.transform[4],
+            y: item.transform[5],
+            fontSize: Math.abs(item.transform[0]),
+            hasEOL: item.hasEOL ?? false,
+          }))
+
+        pages.push({ pageNum: i, items })
+      }
+
+      // Detect and filter header/footer patterns (text-based exact match)
+      const patterns = detectHeaderFooterPatterns(pages)
+      const filteredPages = filterHeaderFooter(pages, patterns)
+
+      // Apply sentence-level header/footer filtering when embedder is available
+      // This handles variable content like page numbers ("7 of 75") using semantic similarity
+      let text: string
+      let sentenceFilterInfo = ''
+      if (embedder) {
+        text = await filterPageBoundarySentences(pages, embedder)
+        const unfilteredText = joinFilteredPages(pages)
+        if (text.length < unfilteredText.length) {
+          sentenceFilterInfo = ', sentence-level header/footer removed'
+        }
+      } else {
+        text = joinFilteredPages(filteredPages)
+      }
+
+      const patternInfo =
+        patterns.length > 0 ? `, removed ${patterns.length} header/footer patterns` : ''
+      console.error(
+        `Parsed PDF: ${filePath} (${text.length} characters, ${pdf.numPages} pages${patternInfo}${sentenceFilterInfo})`
+      )
+
       return text
     } catch (error) {
       throw new FileOperationError(`Failed to parse PDF: ${filePath}`, error as Error)

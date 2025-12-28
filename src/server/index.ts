@@ -297,10 +297,13 @@ export class RAGServer {
     let backup: VectorChunk[] | null = null
 
     try {
-      // Parse file
-      const text = await this.parser.parseFile(args.filePath)
+      // Parse file (with header/footer filtering for PDFs)
+      const isPdf = args.filePath.toLowerCase().endsWith('.pdf')
+      const text = isPdf
+        ? await this.parser.parsePdfWithSections(args.filePath, this.embedder)
+        : await this.parser.parseFile(args.filePath)
 
-      // Split text into semantic chunks (embeddings are generated internally)
+      // Split text into semantic chunks
       const chunks = await this.chunker.chunkText(text, this.embedder)
 
       // Generate embeddings for final chunks
