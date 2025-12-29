@@ -1,5 +1,4 @@
 // Semantic Chunker implementation using Max-Min algorithm
-// Created: 2025-12-27
 // Based on: "Max–Min semantic chunking of documents for RAG application" (Springer, 2025)
 
 import type { TextChunk } from './index.js'
@@ -48,6 +47,41 @@ const WINDOW_SIZE = 5
  * Set to 3x the paper's median chunk size for reasonable margin.
  */
 const MAX_SENTENCES = 15
+
+/**
+ * Check if a chunk is garbage (should be filtered out)
+ *
+ * Criteria (language-agnostic):
+ * 1. Empty after trimming
+ * 2. Contains alphanumeric -> valid content (keep)
+ * 3. Only decoration characters (----, ====, etc.) -> garbage
+ * 4. Single character repeated >80% of text -> garbage
+ *
+ * Note: Applied after minChunkLength filter
+ *
+ * @param text - Chunk text to check
+ * @returns true if chunk is garbage and should be removed
+ */
+export function isGarbageChunk(text: string): boolean {
+  const trimmed = text.trim()
+  if (trimmed.length === 0) return true
+
+  // If contains any alphanumeric, consider valid content
+  if (/[a-zA-Z0-9]/.test(trimmed)) return false
+
+  // Decoration line patterns only (----, ====, ****, etc.)
+  if (/^[\-=_.*#|~`@!%^&*()\[\]{}\\/<>:+\s]+$/.test(trimmed)) return true
+
+  // Excessive repetition of single character (>80%)
+  const charCounts = new Map<string, number>()
+  for (const char of trimmed) {
+    charCounts.set(char, (charCounts.get(char) ?? 0) + 1)
+  }
+  const maxCount = Math.max(...charCounts.values())
+  if (maxCount / trimmed.length > 0.8) return true
+
+  return false
+}
 
 // ============================================
 // Default Configuration
@@ -115,8 +149,8 @@ export class SemanticChunker {
     for (const group of sentenceGroups) {
       const chunkText = group.join(' ')
 
-      // Filter out chunks that are too short
-      if (chunkText.length >= this.config.minChunkLength) {
+      // Filter out chunks that are too short or garbage
+      if (chunkText.length >= this.config.minChunkLength && !isGarbageChunk(chunkText)) {
         chunks.push({
           text: chunkText,
           index: chunkIndex,

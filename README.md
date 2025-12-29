@@ -155,7 +155,7 @@ Keyword boost is applied *after* semantic filtering, so it improves precision wi
 
 ### Details
 
-When you ingest a document, the parser extracts text based on file type (PDF via `unpdf`, DOCX via `mammoth`, text files directly).
+When you ingest a document, the parser extracts text based on file type (PDF via `pdfjs-dist`, DOCX via `mammoth`, text files directly).
 
 The semantic chunker splits text into sentences, then groups them using embedding similarity. It finds natural topic boundaries where the meaning shifts—keeping related content together instead of cutting at arbitrary character limits. This produces chunks that are coherent units of meaning, typically 500-1000 characters. Markdown code blocks are kept intact—never split mid-block—preserving copy-pastable code in search results.
 

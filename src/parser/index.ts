@@ -4,7 +4,9 @@ import { statSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { extname, isAbsolute, resolve } from 'node:path'
 import mammoth from 'mammoth'
-import { extractText, getDocumentProxy } from 'unpdf'
+import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs'
+import type { TextItem } from 'pdfjs-dist/types/src/display/api'
+import { type EmbedderInterface, type PageData, filterPageBoundarySentences } from './pdf-filter.js'
 
 // ============================================
 // Type Definitions
@@ -126,11 +128,9 @@ export class DocumentParser {
     this.validateFilePath(filePath)
     this.validateFileSize(filePath)
 
-    // Format detection
+    // Format detection (PDF uses parsePdf directly)
     const ext = extname(filePath).toLowerCase()
     switch (ext) {
-      case '.pdf':
-        return await this.parsePdf(filePath)
       case '.docx':
         return await this.parseDocx(filePath)
       case '.txt':
@@ -143,20 +143,56 @@ export class DocumentParser {
   }
 
   /**
-   * PDF parsing (using unpdf with PDF.js engine)
+   * PDF parsing with header/footer filtering
+   *
+   * Features:
+   * - Extracts text with position information (x, y, fontSize)
+   * - Semantic header/footer detection using embedding similarity
+   * - Uses hasEOL for proper line break handling
    *
    * @param filePath - PDF file path
-   * @returns Parsed text
+   * @param embedder - Embedder for semantic header/footer detection
+   * @returns Parsed text with header/footer removed
    * @throws FileOperationError - File read failed, parse failed
    */
-  private async parsePdf(filePath: string): Promise<string> {
+  async parsePdf(filePath: string, embedder: EmbedderInterface): Promise<string> {
+    // Validation
+    this.validateFilePath(filePath)
+    this.validateFileSize(filePath)
+
     try {
       const buffer = await readFile(filePath)
-      const pdf = await getDocumentProxy(new Uint8Array(buffer))
-      // Use mergePages: false to preserve line breaks for better sentence detection
-      const { text: pages } = await extractText(pdf, { mergePages: false })
-      const text = (pages as string[]).join('\n\n')
+      const pdf = await getDocument({
+        data: new Uint8Array(buffer),
+        useSystemFonts: true,
+        isEvalSupported: false,
+      }).promise
+
+      // Extract text with position information from each page
+      const pages: PageData[] = []
+      for (let i = 1; i <= pdf.numPages; i++) {
+        const page = await pdf.getPage(i)
+        const textContent = await page.getTextContent()
+
+        const items = textContent.items
+          .filter((item): item is TextItem => 'str' in item)
+          .map((item) => ({
+            text: item.str,
+            x: item.transform[4],
+            y: item.transform[5],
+            fontSize: Math.abs(item.transform[0]),
+            hasEOL: item.hasEOL ?? false,
+          }))
+
+        pages.push({ pageNum: i, items })
+      }
+
+      // Apply sentence-level header/footer filtering
+      // This handles variable content like page numbers ("7 of 75") using semantic similarity
+      const text = await filterPageBoundarySentences(pages, embedder)
+
       console.error(`Parsed PDF: ${filePath} (${text.length} characters, ${pdf.numPages} pages)`)
+
       return text
     } catch (error) {
       throw new FileOperationError(`Failed to parse PDF: ${filePath}`, error as Error)

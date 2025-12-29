@@ -4,7 +4,7 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { TextChunk } from '../index.js'
-import { SemanticChunker, type SemanticChunkerConfig } from '../semantic-chunker.js'
+import { SemanticChunker, type SemanticChunkerConfig, isGarbageChunk } from '../semantic-chunker.js'
 
 // Mock embedder interface
 interface MockEmbedder {
@@ -339,6 +339,75 @@ Second topic is different. Second topic continues.`
       expect(result.length).toBeGreaterThanOrEqual(1)
       expect(result[0]?.text).toContain('First related')
       expect(result[0]?.text).not.toContain('unrelated topic')
+    })
+  })
+})
+
+// --------------------------------------------
+// isGarbageChunk tests
+// --------------------------------------------
+describe('isGarbageChunk', () => {
+  describe('should identify garbage', () => {
+    it('should return true for empty string', () => {
+      expect(isGarbageChunk('')).toBe(true)
+    })
+
+    it('should return true for whitespace only', () => {
+      expect(isGarbageChunk('   ')).toBe(true)
+      expect(isGarbageChunk('\n\t')).toBe(true)
+    })
+
+    it('should return true for decoration lines (dashes)', () => {
+      expect(isGarbageChunk('--------')).toBe(true)
+      expect(isGarbageChunk('-----------')).toBe(true)
+    })
+
+    it('should return true for decoration lines (equals)', () => {
+      expect(isGarbageChunk('========')).toBe(true)
+      expect(isGarbageChunk('===========')).toBe(true)
+    })
+
+    it('should return true for decoration lines (asterisks)', () => {
+      expect(isGarbageChunk('********')).toBe(true)
+      expect(isGarbageChunk('***')).toBe(true)
+    })
+
+    it('should return true for mixed decoration characters', () => {
+      expect(isGarbageChunk('---===---')).toBe(true)
+      expect(isGarbageChunk('***---***')).toBe(true)
+    })
+
+    it('should return true for excessive repetition (>80%)', () => {
+      expect(isGarbageChunk('ああああああああああ')).toBe(true) // 100% same char
+    })
+  })
+
+  describe('should identify valid content', () => {
+    it('should return false for text with alphanumeric', () => {
+      expect(isGarbageChunk('function foo() {}')).toBe(false)
+      expect(isGarbageChunk('Hello World')).toBe(false)
+    })
+
+    it('should return false for code with decorations', () => {
+      // These contain alphanumeric characters along with decorations
+      expect(isGarbageChunk('/* Section 1 ============ */')).toBe(false)
+      expect(isGarbageChunk('// ---------- Header ----------')).toBe(false)
+      expect(isGarbageChunk('/* TODO: fix this */')).toBe(false)
+    })
+
+    it('should return false for Japanese text', () => {
+      expect(isGarbageChunk('こんにちは')).toBe(false)
+      expect(isGarbageChunk('日本語のテキスト')).toBe(false)
+    })
+
+    it('should return false for numbers', () => {
+      expect(isGarbageChunk('12345')).toBe(false)
+      expect(isGarbageChunk('2024年')).toBe(false)
+    })
+
+    it('should return false for mixed content', () => {
+      expect(isGarbageChunk('Section 1: Introduction')).toBe(false)
+      expect(isGarbageChunk('Chapter 5 - Summary')).toBe(false)
     })
   })
 })
