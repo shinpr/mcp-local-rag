@@ -48,7 +48,8 @@ export class EmbeddingError extends Error {
  * - Batch processing (size 8)
  */
 export class Embedder {
-  private model: Awaited<ReturnType<typeof pipeline>> | null = null
+  // Using unknown to avoid TS2590 (union type too complex with @types/jsdom)
+  private model: unknown = null
   private initPromise: Promise<void> | null = null
   private readonly config: EmbedderConfig
 
@@ -71,6 +72,7 @@ export class Embedder {
 
       console.error(`Embedder: Setting cache directory to "${this.config.cacheDir}"`)
       console.error(`Embedder: Loading model "${this.config.modelPath}"...`)
+      // Use type assertion to avoid TS2590 (union type too complex with @types/jsdom)
       this.model = await pipeline('feature-extraction', this.config.modelPath)
       console.error('Embedder: Model loaded successfully')
     } catch (error) {

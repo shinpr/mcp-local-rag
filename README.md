@@ -86,8 +86,8 @@ You want AI to search your documents—technical specs, research papers, interna
 
 ## Usage
 
-The server provides 5 MCP tools: ingest, search, list, delete, status
-(`ingest_file`, `query_documents`, `list_files`, `delete_file`, `status`).
+The server provides 6 MCP tools: ingest file, ingest data, search, list, delete, status
+(`ingest_file`, `ingest_data`, `query_documents`, `list_files`, `delete_file`, `status`).
 
 ### Ingesting Documents
 
@@ -98,6 +98,21 @@ The server provides 5 MCP tools: ingest, search, list, delete, status
 Supports PDF, DOCX, TXT, and Markdown. The server extracts text, splits it into chunks, generates embeddings locally, and stores everything in a local vector database.
 
 Re-ingesting the same file replaces the old version automatically.
+
+### Ingesting HTML Content
+
+Use `ingest_data` to ingest HTML content directly (e.g., from web pages):
+
+```
+"Ingest this HTML content from https://example.com/docs"
+```
+
+The server extracts main content using Readability (removes navigation, ads, etc.), converts to Markdown, and indexes it. Perfect for:
+- Web documentation
+- HTML fetched via browser MCP tools
+- Clipboard content
+
+HTML is automatically cleaned—you get the article content, not the boilerplate.
 
 ### Searching Documents
 
@@ -301,7 +316,7 @@ Yes, after the first model download (~90MB).
 Cloud services offer better accuracy at scale but require sending data externally. This trades some accuracy for complete privacy and zero runtime cost.
 
 **What file formats are supported?**
-PDF, DOCX, TXT, Markdown. Not yet: Excel, PowerPoint, images, HTML.
+PDF, DOCX, TXT, Markdown, and HTML (via `ingest_data`). Not yet: Excel, PowerPoint, images.
 
 **Can I change the embedding model?**
 Yes, but you must delete your database and re-ingest all documents. Different models produce incompatible vector dimensions.
@@ -358,6 +373,26 @@ src/
 ```
 
 </details>
+
+## Agent Skills
+
+For Claude Code, Codex, and other AI assistants supporting [Agent Skills](https://agentskills.io/), install optimized prompts for RAG operations:
+
+```bash
+# Claude Code (project-level)
+npx mcp-local-rag-skills --claude-code
+
+# Claude Code (user-level)
+npx mcp-local-rag-skills --claude-code --global
+
+# Codex
+npx mcp-local-rag-skills --codex
+```
+
+Skills include:
+- **Query optimization**: Better search query formulation
+- **Result refinement**: Intelligent filtering and synthesis
+- **HTML ingestion**: Workflow for web content
 
 ## Contributing
 

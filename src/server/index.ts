@@ -6,8 +6,15 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
 import { SemanticChunker } from '../chunker/index.js'
 import { Embedder } from '../embedder/index.js'
+import { parseHtml } from '../parser/html-parser.js'
 import { DocumentParser } from '../parser/index.js'
 import { type GroupingMode, type VectorChunk, VectorStore } from '../vectordb/index.js'
+import {
+  type ContentFormat,
+  extractSourceFromPath,
+  isRawDataPath,
+  saveRawData,
+} from './raw-data-utils.js'
 
 // ============================================
 // Type Definitions
@@ -54,6 +61,26 @@ export interface IngestFileInput {
 }
 
 /**
+ * ingest_data tool input metadata
+ */
+export interface IngestDataMetadata {
+  /** Source identifier: URL ("https://...") or custom ID ("clipboard://2024-12-30") */
+  source: string
+  /** Content format */
+  format: ContentFormat
+}
+
+/**
+ * ingest_data tool input
+ */
+export interface IngestDataInput {
+  /** Content to ingest (text, HTML, or Markdown) */
+  content: string
+  /** Content metadata */
+  metadata: IngestDataMetadata
+}
+
+/**
  * delete_file tool input
  */
 export interface DeleteFileInput {
@@ -85,6 +112,8 @@ export interface QueryResult {
   text: string
   /** Similarity score */
   score: number
+  /** Original source (only for raw-data files, e.g., URLs ingested via ingest_data) */
+  source?: string
 }
 
 // ============================================
@@ -106,8 +135,10 @@ export class RAGServer {
   private readonly embedder: Embedder
   private readonly chunker: SemanticChunker
   private readonly parser: DocumentParser
+  private readonly dbPath: string
 
   constructor(config: RAGServerConfig) {
+    this.dbPath = config.dbPath
     this.server = new Server(
       { name: 'rag-mcp-server', version: '1.0.0' },
       { capabilities: { tools: {} } }
@@ -187,6 +218,37 @@ export class RAGServer {
           },
         },
         {
+          name: 'ingest_data',
+          description:
+            'Ingest content as a string, not from a file. Use for: fetched web pages (format: html), copied text (format: text), or markdown strings (format: markdown). The source identifier enables re-ingestion to update existing content. For files on disk, use ingest_file instead.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              content: {
+                type: 'string',
+                description: 'The content to ingest (text, HTML, or Markdown)',
+              },
+              metadata: {
+                type: 'object',
+                properties: {
+                  source: {
+                    type: 'string',
+                    description:
+                      'Source identifier. URL (e.g., "https://example.com/page") or custom ID (e.g., "clipboard://2024-12-30")',
+                  },
+                  format: {
+                    type: 'string',
+                    enum: ['text', 'html', 'markdown'],
+                    description: 'Content format: "text", "html", or "markdown"',
+                  },
+                },
+                required: ['source', 'format'],
+              },
+            },
+            required: ['content', 'metadata'],
+          },
+        },
+        {
           name: 'delete_file',
           description:
             'Delete a previously ingested file from the vector database. Removes all chunks and embeddings associated with the specified file. File path must be an absolute path. This operation is idempotent - deleting a non-existent file completes without error.',
@@ -230,6 +292,10 @@ export class RAGServer {
             return await this.handleIngestFile(
               request.params.arguments as unknown as IngestFileInput
             )
+          case 'ingest_data':
+            return await this.handleIngestData(
+              request.params.arguments as unknown as IngestDataInput
+            )
           case 'delete_file':
             return await this.handleDeleteFile(
               request.params.arguments as unknown as DeleteFileInput
@@ -266,13 +332,25 @@ export class RAGServer {
       // Hybrid search (vector + BM25 keyword matching)
       const searchResults = await this.vectorStore.search(queryVector, args.query, args.limit || 10)
 
-      // Format results
-      const results: QueryResult[] = searchResults.map((result) => ({
-        filePath: result.filePath,
-        chunkIndex: result.chunkIndex,
-        text: result.text,
-        score: result.score,
-      }))
+      // Format results with source restoration for raw-data files
+      const results: QueryResult[] = searchResults.map((result) => {
+        const queryResult: QueryResult = {
+          filePath: result.filePath,
+          chunkIndex: result.chunkIndex,
+          text: result.text,
+          score: result.score,
+        }
+
+        // Restore source for raw-data files (ingested via ingest_data)
+        if (isRawDataPath(result.filePath)) {
+          const source = extractSourceFromPath(result.filePath)
+          if (source) {
+            queryResult.source = source
+          }
+        }
+
+        return queryResult
+      })
 
       return {
         content: [
@@ -412,6 +490,63 @@ export class RAGServer {
       console.error('Failed to ingest file:', errorMessage)
 
       throw new Error(`Failed to ingest file: ${errorMessage}`)
+    }
+  }
+
+  /**
+   * ingest_data tool handler
+   * Saves raw content to raw-data directory and calls handleIngestFile internally
+   *
+   * For HTML content:
+   * - Parses HTML and extracts main content using Readability
+   * - Converts to Markdown for better chunking
+   * - Saves as .md file
+   */
+  async handleIngestData(
+    args: IngestDataInput
+  ): Promise<{ content: [{ type: 'text'; text: string }] }> {
+    try {
+      let contentToSave = args.content
+      let formatToSave: ContentFormat = args.metadata.format
+
+      // For HTML content, convert to Markdown first
+      if (args.metadata.format === 'html') {
+        console.error(`Parsing HTML from: ${args.metadata.source}`)
+        const markdown = await parseHtml(args.content, args.metadata.source)
+
+        if (!markdown.trim()) {
+          throw new Error(
+            'Failed to extract content from HTML. The page may have no readable content.'
+          )
+        }
+
+        contentToSave = markdown
+        formatToSave = 'markdown' // Save as .md file
+        console.error(`Converted HTML to Markdown: ${markdown.length} characters`)
+      }
+
+      // Save content to raw-data directory
+      const rawDataPath = await saveRawData(
+        this.dbPath,
+        args.metadata.source,
+        contentToSave,
+        formatToSave
+      )
+
+      console.error(`Saved raw data: ${args.metadata.source} -> ${rawDataPath}`)
+
+      // Call existing ingest_file internally
+      return await this.handleIngestFile({ filePath: rawDataPath })
+    } catch (error) {
+      // Error handling: suppress stack trace in production
+      const errorMessage =
+        process.env['NODE_ENV'] === 'production'
+          ? (error as Error).message
+          : (error as Error).stack || (error as Error).message
+
+      console.error('Failed to ingest data:', errorMessage)
+
+      throw new Error(`Failed to ingest data: ${errorMessage}`)
     }
   }
 
