@@ -471,82 +471,115 @@ describe('VectorStore', () => {
   describe('Grouping algorithm (statistical threshold)', () => {
     describe('Contract guarantees', () => {
       it('returns single result as-is without grouping', async () => {
-        const store = new VectorStore({
-          dbPath: testDbPath,
-          tableName: 'chunks',
-          grouping: 'similar',
-        })
-        await store.initialize()
+        const contractDbPath1 = './tmp/test-vectordb-contract-single'
+        if (fs.existsSync(contractDbPath1)) {
+          fs.rmSync(contractDbPath1, { recursive: true })
+        }
 
-        const chunk = createTestChunk(
-          'Only document',
-          '/test/only.txt',
-          0,
-          createNormalizedVector(1)
-        )
-        await store.insertChunks([chunk])
+        try {
+          const store = new VectorStore({
+            dbPath: contractDbPath1,
+            tableName: 'chunks',
+            grouping: 'similar',
+          })
+          await store.initialize()
 
-        const results = await store.search(createNormalizedVector(1), '', 10)
+          const chunk = createTestChunk(
+            'Only document',
+            '/test/only.txt',
+            0,
+            createNormalizedVector(1)
+          )
+          await store.insertChunks([chunk])
 
-        // Contract: Single result returned as-is
-        expect(results).toHaveLength(1)
-        expect(results[0]?.text).toBe('Only document')
+          const results = await store.search(createNormalizedVector(1), '', 10)
+
+          // Contract: Single result returned as-is
+          expect(results).toHaveLength(1)
+          expect(results[0]?.text).toBe('Only document')
+        } finally {
+          if (fs.existsSync(contractDbPath1)) {
+            fs.rmSync(contractDbPath1, { recursive: true })
+          }
+        }
       })
 
       it('returns all results when no significant gaps exist', async () => {
-        const store = new VectorStore({
-          dbPath: testDbPath,
-          tableName: 'chunks',
-          grouping: 'similar',
-        })
-        await store.initialize()
-
-        const baseVector = createNormalizedVector(1)
-
-        // All documents use identical vectors = all gaps are 0 = no significant gaps
-        for (let i = 0; i < 4; i++) {
-          const chunk = createTestChunk(`Doc ${i}`, `/test/doc${i}.txt`, 0, baseVector)
-          await store.insertChunks([chunk])
+        const contractDbPath2 = './tmp/test-vectordb-contract-no-gaps'
+        if (fs.existsSync(contractDbPath2)) {
+          fs.rmSync(contractDbPath2, { recursive: true })
         }
 
-        const results = await store.search(baseVector, '', 10)
+        try {
+          const store = new VectorStore({
+            dbPath: contractDbPath2,
+            tableName: 'chunks',
+            grouping: 'similar',
+          })
+          await store.initialize()
 
-        // Contract: No significant gaps → return all results
-        expect(results).toHaveLength(4)
+          const baseVector = createNormalizedVector(1)
+
+          // All documents use identical vectors = all gaps are 0 = no significant gaps
+          for (let i = 0; i < 4; i++) {
+            const chunk = createTestChunk(`Doc ${i}`, `/test/doc${i}.txt`, 0, baseVector)
+            await store.insertChunks([chunk])
+          }
+
+          const results = await store.search(baseVector, '', 10)
+
+          // Contract: No significant gaps → return all results
+          expect(results).toHaveLength(4)
+        } finally {
+          if (fs.existsSync(contractDbPath2)) {
+            fs.rmSync(contractDbPath2, { recursive: true })
+          }
+        }
       })
     })
 
     describe('Similar mode behavior', () => {
       it('returns first group only when clear boundary exists', async () => {
-        const store = new VectorStore({
-          dbPath: testDbPath,
-          tableName: 'chunks',
-          grouping: 'similar',
-        })
-        await store.initialize()
-
-        const baseVector = createNormalizedVector(1)
-
-        // Group 1: 3 documents with identical vectors (distance ~0)
-        for (let i = 0; i < 3; i++) {
-          const chunk = createTestChunk(`Group1 Doc ${i}`, `/test/group1-${i}.txt`, 0, baseVector)
-          await store.insertChunks([chunk])
+        const similarDbPath = './tmp/test-vectordb-similar-boundary'
+        if (fs.existsSync(similarDbPath)) {
+          fs.rmSync(similarDbPath, { recursive: true })
         }
 
-        // Group 2: 2 documents with very different vectors (large gap from Group 1)
-        const farVector = createNormalizedVector(100)
-        for (let i = 0; i < 2; i++) {
-          const chunk = createTestChunk(`Group2 Doc ${i}`, `/test/group2-${i}.txt`, 0, farVector)
-          await store.insertChunks([chunk])
+        try {
+          const store = new VectorStore({
+            dbPath: similarDbPath,
+            tableName: 'chunks',
+            grouping: 'similar',
+          })
+          await store.initialize()
+
+          const baseVector = createNormalizedVector(1)
+
+          // Group 1: 3 documents with identical vectors (distance ~0)
+          for (let i = 0; i < 3; i++) {
+            const chunk = createTestChunk(`Group1 Doc ${i}`, `/test/group1-${i}.txt`, 0, baseVector)
+            await store.insertChunks([chunk])
+          }
+
+          // Group 2: 2 documents with very different vectors (large gap from Group 1)
+          const farVector = createNormalizedVector(100)
+          for (let i = 0; i < 2; i++) {
+            const chunk = createTestChunk(`Group2 Doc ${i}`, `/test/group2-${i}.txt`, 0, farVector)
+            await store.insertChunks([chunk])
+          }
+
+          const results = await store.search(baseVector, '', 10)
+
+          // Contract: 'similar' mode cuts at first boundary
+          // Only Group 1 should be returned
+          expect(results).toHaveLength(3)
+          expect(results.every((r) => r.text.includes('Group1'))).toBe(true)
+          expect(results.some((r) => r.text.includes('Group2'))).toBe(false)
+        } finally {
+          if (fs.existsSync(similarDbPath)) {
+            fs.rmSync(similarDbPath, { recursive: true })
+          }
         }
-
-        const results = await store.search(baseVector, '', 10)
-
-        // Contract: 'similar' mode cuts at first boundary
-        // Only Group 1 should be returned
-        expect(results).toHaveLength(3)
-        expect(results.every((r) => r.text.includes('Group1'))).toBe(true)
-        expect(results.some((r) => r.text.includes('Group2'))).toBe(false)
       })
     })
 
