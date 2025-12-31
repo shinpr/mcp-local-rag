@@ -101,15 +101,15 @@ Re-ingesting the same file replaces the old version automatically.
 
 ### Ingesting HTML Content
 
-Use `ingest_data` to ingest HTML content directly (e.g., from web pages):
+Use `ingest_data` to ingest HTML content retrieved by the LLM (via web fetch, curl, browser tools, etc.):
 
 ```
-"Ingest this HTML content from https://example.com/docs"
+"Fetch https://example.com/docs and ingest the HTML"
 ```
 
 The server extracts main content using Readability (removes navigation, ads, etc.), converts to Markdown, and indexes it. Perfect for:
 - Web documentation
-- HTML fetched via browser MCP tools
+- HTML retrieved by the LLM
 - Clipboard content
 
 HTML is automatically cleaned—you get the article content, not the boilerplate.
@@ -183,6 +183,40 @@ When you search:
 4. Keyword matches boost rankings for exact term matching
 
 The keyword boost ensures exact terms like `useEffect` or error codes rank higher when they match.
+
+## Agent Skills
+
+[Agent Skills](https://agentskills.io/) provide optimized prompts that help AI assistants use RAG tools more effectively. Install skills for better query formulation, result interpretation, and ingestion workflows:
+
+```bash
+# Claude Code (project-level)
+npx mcp-local-rag-skills --claude-code
+
+# Claude Code (user-level)
+npx mcp-local-rag-skills --claude-code --global
+
+# Codex
+npx mcp-local-rag-skills --codex
+```
+
+Skills include:
+- **Query optimization**: Better search query formulation
+- **Result interpretation**: Score thresholds and filtering guidelines
+- **HTML ingestion**: Format selection and source naming
+
+### Ensuring Skill Activation
+
+Skills are loaded automatically in most cases, but for consistent behavior:
+
+**Option 1: Explicit invocation**
+Before RAG operations, explicitly request: `/mcp-local-rag`
+
+**Option 2: Add to agent instruction file**
+Add to your `AGENTS.md`, `CLAUDE.md`, or other agent instruction file:
+```
+When using query_documents, ingest_file, or ingest_data tools,
+first invoke the mcp-local-rag skill.
+```
 
 <details>
 <summary><strong>Configuration</strong></summary>
@@ -373,26 +407,6 @@ src/
 ```
 
 </details>
-
-## Agent Skills
-
-For Claude Code, Codex, and other AI assistants supporting [Agent Skills](https://agentskills.io/), install optimized prompts for RAG operations:
-
-```bash
-# Claude Code (project-level)
-npx mcp-local-rag-skills --claude-code
-
-# Claude Code (user-level)
-npx mcp-local-rag-skills --claude-code --global
-
-# Codex
-npx mcp-local-rag-skills --codex
-```
-
-Skills include:
-- **Query optimization**: Better search query formulation
-- **Result refinement**: Intelligent filtering and synthesis
-- **HTML ingestion**: Workflow for web content
 
 ## Contributing
 

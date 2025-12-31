@@ -1,6 +1,6 @@
 ---
 name: mcp-local-rag
-description: Optimizes RAG search and ingestion. Activate when using query_documents, ingest_file, ingest_data tools, or when search results have score > 0.5.
+description: Provides score interpretation (< 0.3 good, > 0.5 skip), query optimization, and source naming for query_documents, ingest_file, ingest_data tools. Use this skill when working with RAG, searching documents, ingesting files, saving web content, or handling PDF, HTML, DOCX, TXT, Markdown.
 ---
 
 # MCP Local RAG Skills
@@ -84,6 +84,11 @@ ingest_data({
   metadata: { source: "https://example.com/page", format: "html" }
 })
 ```
+
+**Format selection** — match the data you have:
+- HTML string → `format: "html"`
+- Markdown string → `format: "markdown"`
+- Other → `format: "text"`
 
 **Source format:**
 - Web page → Use URL: `https://example.com/page`
