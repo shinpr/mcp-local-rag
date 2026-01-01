@@ -20,6 +20,9 @@ importers:
       '@mozilla/readability':
         specifier: 0.6.0
         version: 0.6.0
+      jsdom:
+        specifier: ^27.4.0
+        version: 27.4.0
       mammoth:
         specifier: ^1.11.0
         version: 1.11.0
@@ -45,9 +48,6 @@ importers:
       husky:
         specifier: ^9.1.7
         version: 9.1.7
-      jsdom:
-        specifier: ^27.4.0
-        version: 27.4.0
       lint-staged:
         specifier: ^16.1.0
         version: 16.2.6
