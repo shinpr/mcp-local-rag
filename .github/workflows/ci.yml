@@ -47,3 +47,6 @@ jobs:
 
     - name: Run tests
       run: pnpm test
+
+    - name: Check production dependencies
+      run: npx report-missing-dependencies
