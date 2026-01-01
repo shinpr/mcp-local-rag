@@ -2,6 +2,8 @@
 
 [![npm version](https://img.shields.io/npm/v/mcp-local-rag.svg)](https://www.npmjs.com/package/mcp-local-rag)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.0-blue.svg?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
+[![MCP Registry](https://img.shields.io/badge/MCP-Registry-green.svg)](https://registry.modelcontextprotocol.io/)
 
 Local RAG for developers using MCP.
 Semantic search with keyword boost for exact technical terms — fully private, zero setup.
@@ -86,8 +88,8 @@ You want AI to search your documents—technical specs, research papers, interna
 
 ## Usage
 
-The server provides 5 MCP tools: ingest, search, list, delete, status
-(`ingest_file`, `query_documents`, `list_files`, `delete_file`, `status`).
+The server provides 6 MCP tools: ingest file, ingest data, search, list, delete, status
+(`ingest_file`, `ingest_data`, `query_documents`, `list_files`, `delete_file`, `status`).
 
 ### Ingesting Documents
 
@@ -98,6 +100,23 @@ The server provides 5 MCP tools: ingest, search, list, delete, status
 Supports PDF, DOCX, TXT, and Markdown. The server extracts text, splits it into chunks, generates embeddings locally, and stores everything in a local vector database.
 
 Re-ingesting the same file replaces the old version automatically.
+
+### Ingesting HTML Content
+
+Use `ingest_data` to ingest HTML content retrieved by your AI assistant (via web fetch, curl, browser tools, etc.):
+
+```
+"Fetch https://example.com/docs and ingest the HTML"
+```
+
+The server extracts main content using Readability (removes navigation, ads, etc.), converts to Markdown, and indexes it. Perfect for:
+- Web documentation
+- HTML retrieved by the AI assistant
+- Clipboard content
+
+HTML is automatically cleaned—you get the article content, not the boilerplate.
+
+> **Note:** The RAG server itself doesn't fetch web content—your AI assistant retrieves it and passes the HTML to `ingest_data`. This keeps the server fully local while letting you index any content your assistant can access. Please respect website terms of service and copyright when ingesting external content.
 
 ### Searching Documents
 
@@ -168,6 +187,42 @@ When you search:
 4. Keyword matches boost rankings for exact term matching
 
 The keyword boost ensures exact terms like `useEffect` or error codes rank higher when they match.
+
+## Agent Skills
+
+[Agent Skills](https://agentskills.io/) provide optimized prompts that help AI assistants use RAG tools more effectively. Install skills for better query formulation, result interpretation, and ingestion workflows:
+
+```bash
+# Claude Code (project-level)
+npx mcp-local-rag-skills --claude-code
+
+# Claude Code (user-level)
+npx mcp-local-rag-skills --claude-code --global
+
+# Codex
+npx mcp-local-rag-skills --codex
+```
+
+Skills include:
+- **Query optimization**: Better search query formulation
+- **Result interpretation**: Score thresholds and filtering guidelines
+- **HTML ingestion**: Format selection and source naming
+
+### Ensuring Skill Activation
+
+Skills are loaded automatically in most cases—AI assistants scan skill metadata and load relevant instructions when needed. For consistent behavior:
+
+**Option 1: Explicit request (natural language)**
+Before RAG operations, request in natural language:
+- "Use the mcp-local-rag skill for this search"
+- "Apply RAG best practices from skills"
+
+**Option 2: Add to agent instruction file**
+Add to your `AGENTS.md`, `CLAUDE.md`, or other agent instruction file:
+```
+When using query_documents, ingest_file, or ingest_data tools,
+apply the mcp-local-rag skill for optimal query formulation and result interpretation.
+```
 
 <details>
 <summary><strong>Configuration</strong></summary>
@@ -301,7 +356,7 @@ Yes, after the first model download (~90MB).
 Cloud services offer better accuracy at scale but require sending data externally. This trades some accuracy for complete privacy and zero runtime cost.
 
 **What file formats are supported?**
-PDF, DOCX, TXT, Markdown. Not yet: Excel, PowerPoint, images, HTML.
+PDF, DOCX, TXT, Markdown, and HTML (via `ingest_data`). Not yet: Excel, PowerPoint, images.
 
 **Can I change the embedding model?**
 Yes, but you must delete your database and re-ingest all documents. Different models produce incompatible vector dimensions.

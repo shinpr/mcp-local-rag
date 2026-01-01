@@ -1,13 +1,22 @@
 // RAGServer implementation with MCP tools
 
 import { randomUUID } from 'node:crypto'
+import { readFile, unlink } from 'node:fs/promises'
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
 import { SemanticChunker } from '../chunker/index.js'
 import { Embedder } from '../embedder/index.js'
+import { parseHtml } from '../parser/html-parser.js'
 import { DocumentParser } from '../parser/index.js'
 import { type GroupingMode, type VectorChunk, VectorStore } from '../vectordb/index.js'
+import {
+  type ContentFormat,
+  extractSourceFromPath,
+  generateRawDataPath,
+  isRawDataPath,
+  saveRawData,
+} from './raw-data-utils.js'
 
 // ============================================
 // Type Definitions
@@ -54,11 +63,34 @@ export interface IngestFileInput {
 }
 
 /**
+ * ingest_data tool input metadata
+ */
+export interface IngestDataMetadata {
+  /** Source identifier: URL ("https://...") or custom ID ("clipboard://2024-12-30") */
+  source: string
+  /** Content format */
+  format: ContentFormat
+}
+
+/**
+ * ingest_data tool input
+ */
+export interface IngestDataInput {
+  /** Content to ingest (text, HTML, or Markdown) */
+  content: string
+  /** Content metadata */
+  metadata: IngestDataMetadata
+}
+
+/**
  * delete_file tool input
+ * Either filePath or source must be provided
  */
 export interface DeleteFileInput {
-  /** File path */
-  filePath: string
+  /** File path (for files ingested via ingest_file) */
+  filePath?: string
+  /** Source identifier (for data ingested via ingest_data) */
+  source?: string
 }
 
 /**
@@ -85,6 +117,8 @@ export interface QueryResult {
   text: string
   /** Similarity score */
   score: number
+  /** Original source (only for raw-data files, e.g., URLs ingested via ingest_data) */
+  source?: string
 }
 
 // ============================================
@@ -106,8 +140,10 @@ export class RAGServer {
   private readonly embedder: Embedder
   private readonly chunker: SemanticChunker
   private readonly parser: DocumentParser
+  private readonly dbPath: string
 
   constructor(config: RAGServerConfig) {
+    this.dbPath = config.dbPath
     this.server = new Server(
       { name: 'rag-mcp-server', version: '1.0.0' },
       { capabilities: { tools: {} } }
@@ -187,19 +223,54 @@ export class RAGServer {
           },
         },
         {
+          name: 'ingest_data',
+          description:
+            'Ingest content as a string, not from a file. Use for: fetched web pages (format: html), copied text (format: text), or markdown strings (format: markdown). The source identifier enables re-ingestion to update existing content. For files on disk, use ingest_file instead.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              content: {
+                type: 'string',
+                description: 'The content to ingest (text, HTML, or Markdown)',
+              },
+              metadata: {
+                type: 'object',
+                properties: {
+                  source: {
+                    type: 'string',
+                    description:
+                      'Source identifier. For web pages, use the URL (e.g., "https://example.com/page"). For other content, use URL-scheme format: "{type}://{date}" or "{type}://{date}/{detail}". Examples: "clipboard://2024-12-30", "chat://2024-12-30/project-discussion", "note://2024-12-30/meeting".',
+                  },
+                  format: {
+                    type: 'string',
+                    enum: ['text', 'html', 'markdown'],
+                    description: 'Content format: "text", "html", or "markdown"',
+                  },
+                },
+                required: ['source', 'format'],
+              },
+            },
+            required: ['content', 'metadata'],
+          },
+        },
+        {
           name: 'delete_file',
           description:
-            'Delete a previously ingested file from the vector database. Removes all chunks and embeddings associated with the specified file. File path must be an absolute path. This operation is idempotent - deleting a non-existent file completes without error.',
+            'Delete a previously ingested file or data from the vector database. Use filePath for files ingested via ingest_file, or source for data ingested via ingest_data. Either filePath or source must be provided.',
           inputSchema: {
             type: 'object',
             properties: {
               filePath: {
                 type: 'string',
                 description:
-                  'Absolute path to the file to delete from the database. Example: "/Users/user/documents/manual.pdf"',
+                  'Absolute path to the file (for ingest_file). Example: "/Users/user/documents/manual.pdf"',
+              },
+              source: {
+                type: 'string',
+                description:
+                  'Source identifier used in ingest_data. Examples: "https://example.com/page", "clipboard://2024-12-30"',
               },
             },
-            required: ['filePath'],
           },
         },
         {
@@ -229,6 +300,10 @@ export class RAGServer {
           case 'ingest_file':
             return await this.handleIngestFile(
               request.params.arguments as unknown as IngestFileInput
+            )
+          case 'ingest_data':
+            return await this.handleIngestData(
+              request.params.arguments as unknown as IngestDataInput
             )
           case 'delete_file':
             return await this.handleDeleteFile(
@@ -266,13 +341,25 @@ export class RAGServer {
       // Hybrid search (vector + BM25 keyword matching)
       const searchResults = await this.vectorStore.search(queryVector, args.query, args.limit || 10)
 
-      // Format results
-      const results: QueryResult[] = searchResults.map((result) => ({
-        filePath: result.filePath,
-        chunkIndex: result.chunkIndex,
-        text: result.text,
-        score: result.score,
-      }))
+      // Format results with source restoration for raw-data files
+      const results: QueryResult[] = searchResults.map((result) => {
+        const queryResult: QueryResult = {
+          filePath: result.filePath,
+          chunkIndex: result.chunkIndex,
+          text: result.text,
+          score: result.score,
+        }
+
+        // Restore source for raw-data files (ingested via ingest_data)
+        if (isRawDataPath(result.filePath)) {
+          const source = extractSourceFromPath(result.filePath)
+          if (source) {
+            queryResult.source = source
+          }
+        }
+
+        return queryResult
+      })
 
       return {
         content: [
@@ -298,10 +385,19 @@ export class RAGServer {
 
     try {
       // Parse file (with header/footer filtering for PDFs)
+      // For raw-data files (from ingest_data), read directly without validation
+      // since the path is internally generated and content is already processed
       const isPdf = args.filePath.toLowerCase().endsWith('.pdf')
-      const text = isPdf
-        ? await this.parser.parsePdf(args.filePath, this.embedder)
-        : await this.parser.parseFile(args.filePath)
+      let text: string
+      if (isRawDataPath(args.filePath)) {
+        // Raw-data files: skip validation, read directly
+        text = await readFile(args.filePath, 'utf-8')
+        console.error(`Read raw-data file: ${args.filePath} (${text.length} characters)`)
+      } else if (isPdf) {
+        text = await this.parser.parsePdf(args.filePath, this.embedder)
+      } else {
+        text = await this.parser.parseFile(args.filePath)
+      }
 
       // Split text into semantic chunks
       const chunks = await this.chunker.chunkText(text, this.embedder)
@@ -416,16 +512,97 @@ export class RAGServer {
   }
 
   /**
-   * list_files tool handler (Phase 1: basic implementation)
+   * ingest_data tool handler
+   * Saves raw content to raw-data directory and calls handleIngestFile internally
+   *
+   * For HTML content:
+   * - Parses HTML and extracts main content using Readability
+   * - Converts to Markdown for better chunking
+   * - Saves as .md file
+   */
+  async handleIngestData(
+    args: IngestDataInput
+  ): Promise<{ content: [{ type: 'text'; text: string }] }> {
+    try {
+      let contentToSave = args.content
+      let formatToSave: ContentFormat = args.metadata.format
+
+      // For HTML content, convert to Markdown first
+      if (args.metadata.format === 'html') {
+        console.error(`Parsing HTML from: ${args.metadata.source}`)
+        const markdown = await parseHtml(args.content, args.metadata.source)
+
+        if (!markdown.trim()) {
+          throw new Error(
+            'Failed to extract content from HTML. The page may have no readable content.'
+          )
+        }
+
+        contentToSave = markdown
+        formatToSave = 'markdown' // Save as .md file
+        console.error(`Converted HTML to Markdown: ${markdown.length} characters`)
+      }
+
+      // Save content to raw-data directory
+      const rawDataPath = await saveRawData(
+        this.dbPath,
+        args.metadata.source,
+        contentToSave,
+        formatToSave
+      )
+
+      console.error(`Saved raw data: ${args.metadata.source} -> ${rawDataPath}`)
+
+      // Call existing ingest_file internally with rollback on failure
+      try {
+        return await this.handleIngestFile({ filePath: rawDataPath })
+      } catch (ingestError) {
+        // Rollback: delete the raw-data file if ingest fails
+        try {
+          await unlink(rawDataPath)
+          console.error(`Rolled back raw-data file: ${rawDataPath}`)
+        } catch {
+          console.warn(`Failed to rollback raw-data file: ${rawDataPath}`)
+        }
+        throw ingestError
+      }
+    } catch (error) {
+      // Error handling: suppress stack trace in production
+      const errorMessage =
+        process.env['NODE_ENV'] === 'production'
+          ? (error as Error).message
+          : (error as Error).stack || (error as Error).message
+
+      console.error('Failed to ingest data:', errorMessage)
+
+      throw new Error(`Failed to ingest data: ${errorMessage}`)
+    }
+  }
+
+  /**
+   * list_files tool handler
+   * Enriches raw-data files with original source information
    */
   async handleListFiles(): Promise<{ content: [{ type: 'text'; text: string }] }> {
     try {
       const files = await this.vectorStore.listFiles()
+
+      // Enrich raw-data files with source information
+      const enrichedFiles = files.map((file) => {
+        if (isRawDataPath(file.filePath)) {
+          const source = extractSourceFromPath(file.filePath)
+          if (source) {
+            return { ...file, source }
+          }
+        }
+        return file
+      })
+
       return {
         content: [
           {
             type: 'text',
-            text: JSON.stringify(files, null, 2),
+            text: JSON.stringify(enrichedFiles, null, 2),
           },
         ],
       }
@@ -457,20 +634,49 @@ export class RAGServer {
 
   /**
    * delete_file tool handler
+   * Deletes chunks from VectorDB and physical raw-data files
+   * Supports both filePath (for ingest_file) and source (for ingest_data)
    */
   async handleDeleteFile(
     args: DeleteFileInput
   ): Promise<{ content: [{ type: 'text'; text: string }] }> {
     try {
-      // Validate and normalize file path (S-002 security requirement)
-      this.parser.validateFilePath(args.filePath)
+      let targetPath: string
+      let skipValidation = false
+
+      if (args.source) {
+        // Generate raw-data path from source (extension is always .md)
+        // Internal path generation is secure, skip baseDir validation
+        targetPath = generateRawDataPath(this.dbPath, args.source, 'markdown')
+        skipValidation = true
+      } else if (args.filePath) {
+        targetPath = args.filePath
+      } else {
+        throw new Error('Either filePath or source must be provided')
+      }
+
+      // Only validate user-provided filePath (not internally generated paths)
+      if (!skipValidation) {
+        this.parser.validateFilePath(targetPath)
+      }
 
       // Delete chunks from vector database
-      await this.vectorStore.deleteChunks(args.filePath)
+      await this.vectorStore.deleteChunks(targetPath)
+
+      // Also delete physical raw-data file if applicable
+      if (isRawDataPath(targetPath)) {
+        try {
+          await unlink(targetPath)
+          console.error(`Deleted raw-data file: ${targetPath}`)
+        } catch {
+          // File may already be deleted, log warning only
+          console.warn(`Could not delete raw-data file (may not exist): ${targetPath}`)
+        }
+      }
 
       // Return success message
       const result = {
-        filePath: args.filePath,
+        filePath: targetPath,
         deleted: true,
         timestamp: new Date().toISOString(),
       }
