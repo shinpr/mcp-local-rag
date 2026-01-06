@@ -1,8 +1,32 @@
 #!/usr/bin/env node
 // Entry point for RAG MCP Server
 
+import { run as runSkillsInstall } from './bin/install-skills.js'
 import { RAGServer } from './server/index.js'
 import type { GroupingMode } from './vectordb/index.js'
+
+// ============================================
+// Subcommand Routing
+// ============================================
+
+const args = process.argv.slice(2)
+
+// Handle "skills" subcommand
+if (args[0] === 'skills') {
+  if (args[1] === 'install') {
+    // npx mcp-local-rag skills install [options]
+    runSkillsInstall(args.slice(2))
+    process.exit(0)
+  } else {
+    console.error('Unknown skills subcommand. Usage: npx mcp-local-rag skills install [options]')
+    console.error('Run "npx mcp-local-rag skills install --help" for more information.')
+    process.exit(1)
+  }
+}
+
+// ============================================
+// MCP Server (default behavior)
+// ============================================
 
 /**
  * Parse grouping mode from environment variable

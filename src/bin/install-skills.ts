@@ -1,5 +1,3 @@
-#!/usr/bin/env node
-
 /**
  * MCP Local RAG Skills Installer
  *
@@ -9,10 +7,10 @@
  * - Custom path
  *
  * Usage:
- *   npx mcp-local-rag-skills --claude-code          # Project-level
- *   npx mcp-local-rag-skills --claude-code --global # User-level
- *   npx mcp-local-rag-skills --codex                # Codex
- *   npx mcp-local-rag-skills --path /custom/path    # Custom
+ *   npx mcp-local-rag skills install --claude-code          # Project-level
+ *   npx mcp-local-rag skills install --claude-code --global # User-level
+ *   npx mcp-local-rag skills install --codex                # Codex
+ *   npx mcp-local-rag skills install --path /custom/path    # Custom
  */
 
 import { cpSync, existsSync, mkdirSync } from 'node:fs'
@@ -122,7 +120,7 @@ function printHelp(): void {
 MCP Local RAG Skills Installer
 
 Usage:
-  npx mcp-local-rag-skills [options]
+  npx mcp-local-rag skills install [options]
 
 Options:
   --claude-code          Install to project-level Claude Code skills
@@ -145,11 +143,11 @@ Options:
   --help, -h             Show this help message
 
 Examples:
-  npx mcp-local-rag-skills --claude-code
-  npx mcp-local-rag-skills --claude-code --global
-  npx mcp-local-rag-skills --codex
-  npx mcp-local-rag-skills --codex --project
-  npx mcp-local-rag-skills --path ./my-skills/
+  npx mcp-local-rag skills install --claude-code
+  npx mcp-local-rag skills install --claude-code --global
+  npx mcp-local-rag skills install --codex
+  npx mcp-local-rag skills install --codex --project
+  npx mcp-local-rag skills install --path ./my-skills/
 `)
 }
 
@@ -189,12 +187,14 @@ function install(targetPath: string): void {
 }
 
 // ============================================
-// Main
+// Exported Run Function
 // ============================================
 
-function main(): void {
-  const args = process.argv.slice(2)
-
+/**
+ * Run the skills installer with the given arguments
+ * @param args - Command line arguments (after "skills install")
+ */
+export function run(args: string[]): void {
   // Default to help if no args
   if (args.length === 0) {
     printHelp()
@@ -226,5 +226,3 @@ function main(): void {
   console.log('  - references/query-optimization.md')
   console.log('  - references/result-refinement.md')
 }
-
-main()
