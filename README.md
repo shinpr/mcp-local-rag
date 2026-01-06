@@ -194,13 +194,13 @@ The keyword boost ensures exact terms like `useEffect` or error codes rank highe
 
 ```bash
 # Claude Code (project-level)
-npx mcp-local-rag-skills --claude-code
+npx mcp-local-rag skills install --claude-code
 
 # Claude Code (user-level)
-npx mcp-local-rag-skills --claude-code --global
+npx mcp-local-rag skills install --claude-code --global
 
 # Codex
-npx mcp-local-rag-skills --codex
+npx mcp-local-rag skills install --codex
 ```
 
 Skills include:
