@@ -427,6 +427,10 @@ Contributions welcome. Before submitting a PR:
 
 MIT License. Free for personal and commercial use.
 
+## Blog Posts
+
+- [Building a Local RAG for Agentic Coding](https://www.norsica.jp/blog/local-rag-agentic-coding) — Technical deep-dive into the semantic chunking and hybrid search design.
+
 ## Acknowledgments
 
 Built with [Model Context Protocol](https://modelcontextprotocol.io/) by Anthropic, [LanceDB](https://lancedb.com/), and [Transformers.js](https://huggingface.co/docs/transformers.js).
