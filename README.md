@@ -97,7 +97,7 @@ The server provides 6 MCP tools: ingest file, ingest data, search, list, delete,
 "Ingest the document at /Users/me/docs/api-spec.pdf"
 ```
 
-Supports PDF, DOCX, TXT, and Markdown. The server extracts text, splits it into chunks, generates embeddings locally, and stores everything in a local vector database.
+Supports PDF, DOCX, TXT, Markdown, and JSON. The server extracts text, splits it into chunks, generates embeddings locally, and stores everything in a local vector database.
 
 Re-ingesting the same file replaces the old version automatically.
 
@@ -174,7 +174,7 @@ Keyword boost is applied *after* semantic filtering, so it improves precision wi
 
 ### Details
 
-When you ingest a document, the parser extracts text based on file type (PDF via `pdfjs-dist`, DOCX via `mammoth`, text files directly).
+When you ingest a document, the parser extracts text based on file type (PDF via `pdfjs-dist`, DOCX via `mammoth`, JSON converted to key-value text, text files directly).
 
 The semantic chunker splits text into sentences, then groups them using embedding similarity. It finds natural topic boundaries where the meaning shifts—keeping related content together instead of cutting at arbitrary character limits. This produces chunks that are coherent units of meaning, typically 500-1000 characters. Markdown code blocks are kept intact—never split mid-block—preserving copy-pastable code in search results.
 
@@ -356,7 +356,7 @@ Yes, after the first model download (~90MB).
 Cloud services offer better accuracy at scale but require sending data externally. This trades some accuracy for complete privacy and zero runtime cost.
 
 **What file formats are supported?**
-PDF, DOCX, TXT, Markdown, and HTML (via `ingest_data`). Not yet: Excel, PowerPoint, images.
+PDF, DOCX, TXT, Markdown, JSON, and HTML (via `ingest_data`). Not yet: Excel, PowerPoint, images.
 
 **Can I change the embedding model?**
 Yes, but you must delete your database and re-ingest all documents. Different models produce incompatible vector dimensions.
@@ -405,7 +405,7 @@ pnpm run check:all     # Full quality check
 src/
   index.ts      # Entry point
   server/       # MCP tool handlers
-  parser/       # PDF, DOCX, TXT, MD parsing
+  parser/       # PDF, DOCX, TXT, MD, JSON parsing
   chunker/      # Text splitting
   embedder/     # Transformers.js embeddings
   vectordb/     # LanceDB operations

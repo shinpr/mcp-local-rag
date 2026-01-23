@@ -493,10 +493,10 @@ describe('RAG MCP Server Integration Test - Phase 2', () => {
       }
     })
 
-    // AC interpretation: [Functional requirement] All formats (PDF/DOCX/TXT/MD) ingested successfully
-    // Validation: All 4 formats (PDF, DOCX, TXT, MD) ingested successfully
-    it('Sample files for all formats (PDF, DOCX, TXT, MD) ingested successfully', async () => {
-      // Test DocumentParser directly to verify all 4 formats are supported
+    // AC interpretation: [Functional requirement] All formats (PDF/DOCX/TXT/MD/JSON) ingested successfully
+    // Validation: All 5 formats (PDF, DOCX, TXT, MD, JSON) ingested successfully
+    it('Sample files for all formats (PDF, DOCX, TXT, MD, JSON) ingested successfully', async () => {
+      // Test DocumentParser directly to verify all 5 formats are supported
       const { DocumentParser } = await import('../../parser/index')
       const parser = new DocumentParser({
         baseDir: localTestDataDir,
@@ -514,6 +514,13 @@ describe('RAG MCP Server Integration Test - Phase 2', () => {
       writeFileSync(testMdFile, '# Test Markdown\n\nTest content for MD format')
       const mdContent = await parser.parseFile(testMdFile)
       expect(mdContent).toBe('# Test Markdown\n\nTest content for MD format')
+
+      // Test JSON file parsing
+      const testJsonFile = resolve(localTestDataDir, 'test-all-formats.json')
+      writeFileSync(testJsonFile, JSON.stringify({ name: 'Test', value: 42 }))
+      const jsonContent = await parser.parseFile(testJsonFile)
+      expect(jsonContent).toContain('name: Test')
+      expect(jsonContent).toContain('value: 42')
 
       // Verify DOCX file branching exists
       // Verify FileOperationError occurs with invalid DOCX file
@@ -543,7 +550,7 @@ describe('RAG MCP Server Integration Test - Phase 2', () => {
         expect((error as Error).message).toContain('Unsupported file format')
       }
 
-      // Verify all 3 formats (DOCX, TXT, MD) are supported via parseFile
+      // Verify all 4 formats (DOCX, TXT, MD, JSON) are supported via parseFile
       // PDF is handled by parsePdf directly
     })
   })

@@ -1,4 +1,4 @@
-// DocumentParser implementation with PDF/DOCX/TXT/MD support
+// DocumentParser implementation with PDF/DOCX/TXT/MD/JSON support
 
 import { statSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
@@ -53,12 +53,12 @@ export class FileOperationError extends Error {
 // ============================================
 
 /**
- * Document parser class (PDF/DOCX/TXT/MD support)
+ * Document parser class (PDF/DOCX/TXT/MD/JSON support)
  *
  * Responsibilities:
  * - File path validation (path traversal prevention)
  * - File size validation (100MB limit)
- * - Parse 4 formats (PDF/DOCX/TXT/MD)
+ * - Parse 5 formats (PDF/DOCX/TXT/MD/JSON)
  */
 export class DocumentParser {
   private readonly config: ParserConfig
@@ -137,6 +137,8 @@ export class DocumentParser {
         return await this.parseTxt(filePath)
       case '.md':
         return await this.parseMd(filePath)
+      case '.json':
+        return await this.parseJson(filePath)
       default:
         throw new ValidationError(`Unsupported file format: ${ext}`)
     }
@@ -248,5 +250,80 @@ export class DocumentParser {
     } catch (error) {
       throw new FileOperationError(`Failed to parse MD: ${filePath}`, error as Error)
     }
+  }
+
+  /**
+   * JSON parsing - converts JSON to searchable text format
+   *
+   * Converts JSON objects to a key-value text format optimized for semantic search:
+   * - Preserves field names for keyword matching
+   * - Flattens nested structures with dot notation
+   * - Handles arrays by joining values
+   *
+   * @param filePath - JSON file path
+   * @returns Parsed text in "key: value" format
+   * @throws FileOperationError - File read failed or invalid JSON
+   */
+  private async parseJson(filePath: string): Promise<string> {
+    try {
+      const content = await readFile(filePath, 'utf-8')
+      const data = JSON.parse(content)
+      const text = this.jsonToText(data)
+      console.error(`Parsed JSON: ${filePath} (${text.length} characters)`)
+      return text
+    } catch (error) {
+      if (error instanceof SyntaxError) {
+        throw new FileOperationError(`Failed to parse JSON (invalid syntax): ${filePath}`, error)
+      }
+      throw new FileOperationError(`Failed to parse JSON: ${filePath}`, error as Error)
+    }
+  }
+
+  /**
+   * Convert JSON value to searchable text format
+   *
+   * @param value - JSON value (object, array, or primitive)
+   * @param prefix - Key prefix for nested objects (dot notation)
+   * @returns Text representation
+   */
+  private jsonToText(value: unknown, prefix = ''): string {
+    if (value === null || value === undefined) {
+      return prefix ? `${prefix}: null` : ''
+    }
+
+    if (Array.isArray(value)) {
+      if (value.length === 0) {
+        return prefix ? `${prefix}: []` : ''
+      }
+      // Check if array contains objects
+      if (typeof value[0] === 'object' && value[0] !== null) {
+        // Array of objects: process each with index
+        return value
+          .map((item, index) =>
+            this.jsonToText(item, prefix ? `${prefix}[${index}]` : `[${index}]`)
+          )
+          .filter((text) => text.length > 0)
+          .join('\n')
+      }
+      // Array of primitives: join values
+      const joined = value.map((v) => String(v)).join(', ')
+      return prefix ? `${prefix}: ${joined}` : joined
+    }
+
+    if (typeof value === 'object') {
+      const lines: string[] = []
+      for (const [key, val] of Object.entries(value)) {
+        const newPrefix = prefix ? `${prefix}.${key}` : key
+        const text = this.jsonToText(val, newPrefix)
+        if (text.length > 0) {
+          lines.push(text)
+        }
+      }
+      return lines.join('\n')
+    }
+
+    // Primitive value
+    const strValue = String(value)
+    return prefix ? `${prefix}: ${strValue}` : strValue
   }
 }
