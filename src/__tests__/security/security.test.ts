@@ -76,7 +76,19 @@ describe('RAG MCP Server Security Test', () => {
     await mkdir(fixturesDir, { recursive: true })
     await writeFile(
       resolve(fixturesDir, 'sample.txt'),
-      'This is a sample text file for security testing. TypeScript is great.'
+      `This is a comprehensive sample text file for security testing purposes.
+
+TypeScript is a powerful programming language that adds static typing to JavaScript.
+It helps developers catch errors at compile time rather than runtime.
+Many large-scale applications use TypeScript for improved maintainability.
+
+Security testing is an essential part of software development.
+It ensures that applications are protected against common vulnerabilities.
+Proper security measures include input validation and authentication.
+
+The RAG (Retrieval-Augmented Generation) system processes documents efficiently.
+It uses vector embeddings to find semantically similar content.
+This approach provides accurate search results for natural language queries.`
     )
   })
 
@@ -209,7 +221,15 @@ describe('RAG MCP Server Security Test', () => {
         const testFile = resolve('./tmp/secret-document.txt')
         await writeFile(
           testFile,
-          'This is a secret document with confidential information: PASSWORD123'
+          `This is a secret document with confidential information: PASSWORD123.
+
+The document contains sensitive data that should never appear in logs.
+Proper logging practices require filtering out confidential information.
+Security best practices dictate that passwords should be masked in output.
+
+This paragraph provides additional content for proper semantic chunking.
+Multiple sentences ensure the document is processed correctly by the RAG system.
+The chunker requires sufficient text length to generate meaningful chunks.`
         )
 
         // Ingest file
@@ -291,19 +311,15 @@ describe('RAG MCP Server Security Test', () => {
   // S-004: MCP security best practices compliance
   // --------------------------------------------
   describe('S-004: MCP security best practices compliance', () => {
-    // AC interpretation: [Security requirement] Stack traces not included when errors occur in production environment
-    // Validation: When NODE_ENV=production and error occurs, stack trace is not included
-    it('Stack traces not included when errors occur in production environment (NODE_ENV=production)', async () => {
-      // Set environment variable
+    // Default behavior: Stack traces NOT included (secure by default for MCP servers)
+    it('Stack traces not included by default when NODE_ENV is not set', async () => {
       const originalEnv = process.env['NODE_ENV']
-      process.env['NODE_ENV'] = 'production'
+      process.env['NODE_ENV'] = undefined
 
-      // Attempt to ingest non-existent file (error occurs)
       const nonExistentFile = resolve('./tmp/nonexistent.txt')
 
       try {
         await server.handleIngestFile({ filePath: nonExistentFile })
-        // Fail if error does not occur
         expect.fail('Expected error to be thrown')
       } catch (error) {
         const errorMessage = (error as Error).message
@@ -312,6 +328,27 @@ describe('RAG MCP Server Security Test', () => {
         expect(errorMessage).not.toContain(' at ')
         expect(errorMessage).not.toContain('.ts:')
         expect(errorMessage).not.toContain('.js:')
+      }
+
+      // Restore environment variable
+      process.env['NODE_ENV'] = originalEnv
+    })
+
+    // Development mode: Stack traces ARE included for debugging
+    it('Stack traces included when NODE_ENV=development', async () => {
+      const originalEnv = process.env['NODE_ENV']
+      process.env['NODE_ENV'] = 'development'
+
+      const nonExistentFile = resolve('./tmp/nonexistent.txt')
+
+      try {
+        await server.handleIngestFile({ filePath: nonExistentFile })
+        expect.fail('Expected error to be thrown')
+      } catch (error) {
+        const errorMessage = (error as Error).message
+
+        // Verify stack trace IS included in development mode
+        expect(errorMessage).toContain(' at ')
       }
 
       // Restore environment variable

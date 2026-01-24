@@ -4,7 +4,12 @@ import { randomUUID } from 'node:crypto'
 import { readFile, unlink } from 'node:fs/promises'
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
-import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
+import {
+  CallToolRequestSchema,
+  ErrorCode,
+  ListToolsRequestSchema,
+  McpError,
+} from '@modelcontextprotocol/sdk/types.js'
 import { SemanticChunker } from '../chunker/index.js'
 import { Embedder } from '../embedder/index.js'
 import { parseHtml } from '../parser/html-parser.js'
@@ -402,6 +407,15 @@ export class RAGServer {
       // Split text into semantic chunks
       const chunks = await this.chunker.chunkText(text, this.embedder)
 
+      // Fail-fast: Prevent data loss when chunking produces 0 chunks
+      // This check must happen BEFORE delete to preserve existing data on re-ingest
+      if (chunks.length === 0) {
+        throw new McpError(
+          ErrorCode.InvalidParams,
+          `No chunks generated from file: ${args.filePath}. The file may be empty or all content was filtered (minimum 50 characters required). Existing data has been preserved.`
+        )
+      }
+
       // Generate embeddings for final chunks
       const embeddings = await this.embedder.embedBatch(chunks.map((chunk) => chunk.text))
 
@@ -499,11 +513,17 @@ export class RAGServer {
         ],
       }
     } catch (error) {
-      // Error handling: suppress stack trace in production
+      // Re-throw McpError as-is to preserve error code
+      if (error instanceof McpError) {
+        console.error('Failed to ingest file:', error.message)
+        throw error
+      }
+
+      // Error handling: show stack trace only in development mode (secure by default)
       const errorMessage =
-        process.env['NODE_ENV'] === 'production'
-          ? (error as Error).message
-          : (error as Error).stack || (error as Error).message
+        process.env['NODE_ENV'] === 'development'
+          ? (error as Error).stack || (error as Error).message
+          : (error as Error).message
 
       console.error('Failed to ingest file:', errorMessage)
 
@@ -567,11 +587,11 @@ export class RAGServer {
         throw ingestError
       }
     } catch (error) {
-      // Error handling: suppress stack trace in production
+      // Error handling: show stack trace only in development mode (secure by default)
       const errorMessage =
-        process.env['NODE_ENV'] === 'production'
-          ? (error as Error).message
-          : (error as Error).stack || (error as Error).message
+        process.env['NODE_ENV'] === 'development'
+          ? (error as Error).stack || (error as Error).message
+          : (error as Error).message
 
       console.error('Failed to ingest data:', errorMessage)
 
@@ -690,11 +710,11 @@ export class RAGServer {
         ],
       }
     } catch (error) {
-      // Error handling: suppress stack trace in production
+      // Error handling: show stack trace only in development mode (secure by default)
       const errorMessage =
-        process.env['NODE_ENV'] === 'production'
-          ? (error as Error).message
-          : (error as Error).stack || (error as Error).message
+        process.env['NODE_ENV'] === 'development'
+          ? (error as Error).stack || (error as Error).message
+          : (error as Error).message
 
       console.error('Failed to delete file:', errorMessage)
 

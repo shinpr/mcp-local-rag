@@ -793,6 +793,30 @@ describe('RAG MCP Server Integration Test - Phase 2', () => {
       // Note: Rollback behavior on error needs to be verified in unit test
       // by mocking VectorStore.insertChunks to cause error
     })
+
+    // AC interpretation: [Data protection] Prevent data loss when re-ingest results in 0 chunks
+    // Validation: When chunking produces 0 chunks, error is thrown before delete (preserves existing data)
+    it('Throws error when chunking produces 0 chunks (prevents data loss on re-ingest)', async () => {
+      // Initial ingestion with valid content
+      const testFile = resolve(localTestDataDir, 'test-empty-chunks.txt')
+      writeFileSync(testFile, 'This is valid content for initial ingestion. '.repeat(50))
+      const result1 = await localRagServer.handleIngestFile({ filePath: testFile })
+      const ingest1 = JSON.parse(result1.content[0].text)
+      expect(ingest1.chunkCount).toBeGreaterThan(0)
+
+      // Re-ingest with empty content (should fail, preserving original data)
+      writeFileSync(testFile, '')
+      await expect(localRagServer.handleIngestFile({ filePath: testFile })).rejects.toThrow(
+        /No.*chunks/i
+      )
+
+      // Validation: Original data is preserved (not deleted)
+      const listResult = await localRagServer.handleListFiles()
+      const files = JSON.parse(listResult.content[0].text)
+      const targetFiles = files.filter((f: { filePath: string }) => f.filePath === testFile)
+      expect(targetFiles.length).toBe(1)
+      expect(targetFiles[0].chunkCount).toBe(ingest1.chunkCount)
+    })
   })
 
   describe('AC-009: Error Handling (Complete)', () => {
@@ -838,8 +862,13 @@ describe('RAG MCP Server Integration Test - Phase 2', () => {
       const testFile = resolve(localTestDataDir, 'large-file.txt')
       // Creating actual 101MB file makes test slow,
       // so verify DocumentParser.validateFileSize applies 100MB limit
-      // Here, verify normal operation with small file
-      writeFileSync(testFile, 'Small file content for validation test.')
+      // Here, verify normal operation with small file (with enough content for chunking)
+      writeFileSync(
+        testFile,
+        'Small file content for validation test of file size limits. ' +
+          'This content needs to be long enough to generate at least one chunk. ' +
+          'The semantic chunker requires sufficient text content to process properly.'
+      )
 
       // Verify normal operation (under 100MB)
       await expect(localRagServer.handleIngestFile({ filePath: testFile })).resolves.toBeDefined()
@@ -863,7 +892,12 @@ describe('RAG MCP Server Integration Test - Phase 2', () => {
       // so verify error handling is implemented
       // Actual out of memory errors are detected by monitoring in production environment
       const testFile = resolve(localTestDataDir, 'memory-test.txt')
-      writeFileSync(testFile, 'Memory test content.')
+      writeFileSync(
+        testFile,
+        'Memory test content for verifying error handling implementation. ' +
+          'This content needs to be long enough to generate chunks properly. ' +
+          'The semantic chunker processes text into meaningful segments.'
+      )
 
       // Verify normal operation
       await expect(localRagServer.handleIngestFile({ filePath: testFile })).resolves.toBeDefined()
@@ -871,24 +905,37 @@ describe('RAG MCP Server Integration Test - Phase 2', () => {
       // Note: Actual out of memory error testing is done in mocks or E2E tests
     })
 
-    // AC interpretation: [Security] Error messages do not contain stack traces (production environment, S-004)
-    // Validation: When error occurs in production environment (NODE_ENV=production), stack trace is not included
-    it('Stack traces not included in error messages when error occurs in production environment (NODE_ENV=production) (S-004)', async () => {
-      // Simulate production environment
+    // AC interpretation: [Security] Error messages do not contain stack traces by default (S-004)
+    // MCP servers should be secure by default - only show stack traces when explicitly in development mode
+    it('Stack traces not included by default when NODE_ENV is not set (S-004)', async () => {
       const originalEnv = process.env['NODE_ENV']
-      process.env['NODE_ENV'] = 'production'
+      process.env['NODE_ENV'] = undefined
 
       try {
-        // Cause error with non-existent file
-        const nonExistentFile = resolve(localTestDataDir, 'nonexistent-prod.txt')
+        const nonExistentFile = resolve(localTestDataDir, 'nonexistent-default.txt')
         await localRagServer.handleIngestFile({ filePath: nonExistentFile })
       } catch (error) {
-        // Verify error message does not contain stack trace
         const errorMessage = (error as Error).message
         expect(errorMessage).not.toContain('at ')
         expect(errorMessage).not.toContain('.ts:')
       } finally {
-        // Restore original environment variable
+        process.env['NODE_ENV'] = originalEnv
+      }
+    })
+
+    // Development mode should include stack traces for debugging
+    it('Stack traces included when NODE_ENV=development (S-004)', async () => {
+      const originalEnv = process.env['NODE_ENV']
+      process.env['NODE_ENV'] = 'development'
+
+      try {
+        const nonExistentFile = resolve(localTestDataDir, 'nonexistent-dev.txt')
+        await localRagServer.handleIngestFile({ filePath: nonExistentFile })
+      } catch (error) {
+        const errorMessage = (error as Error).message
+        // In development mode, stack trace should be included
+        expect(errorMessage).toContain('at ')
+      } finally {
         process.env['NODE_ENV'] = originalEnv
       }
     })
