@@ -905,24 +905,37 @@ describe('RAG MCP Server Integration Test - Phase 2', () => {
       // Note: Actual out of memory error testing is done in mocks or E2E tests
     })
 
-    // AC interpretation: [Security] Error messages do not contain stack traces (production environment, S-004)
-    // Validation: When error occurs in production environment (NODE_ENV=production), stack trace is not included
-    it('Stack traces not included in error messages when error occurs in production environment (NODE_ENV=production) (S-004)', async () => {
-      // Simulate production environment
+    // AC interpretation: [Security] Error messages do not contain stack traces by default (S-004)
+    // MCP servers should be secure by default - only show stack traces when explicitly in development mode
+    it('Stack traces not included by default when NODE_ENV is not set (S-004)', async () => {
       const originalEnv = process.env['NODE_ENV']
-      process.env['NODE_ENV'] = 'production'
+      process.env['NODE_ENV'] = undefined
 
       try {
-        // Cause error with non-existent file
-        const nonExistentFile = resolve(localTestDataDir, 'nonexistent-prod.txt')
+        const nonExistentFile = resolve(localTestDataDir, 'nonexistent-default.txt')
         await localRagServer.handleIngestFile({ filePath: nonExistentFile })
       } catch (error) {
-        // Verify error message does not contain stack trace
         const errorMessage = (error as Error).message
         expect(errorMessage).not.toContain('at ')
         expect(errorMessage).not.toContain('.ts:')
       } finally {
-        // Restore original environment variable
+        process.env['NODE_ENV'] = originalEnv
+      }
+    })
+
+    // Development mode should include stack traces for debugging
+    it('Stack traces included when NODE_ENV=development (S-004)', async () => {
+      const originalEnv = process.env['NODE_ENV']
+      process.env['NODE_ENV'] = 'development'
+
+      try {
+        const nonExistentFile = resolve(localTestDataDir, 'nonexistent-dev.txt')
+        await localRagServer.handleIngestFile({ filePath: nonExistentFile })
+      } catch (error) {
+        const errorMessage = (error as Error).message
+        // In development mode, stack trace should be included
+        expect(errorMessage).toContain('at ')
+      } finally {
         process.env['NODE_ENV'] = originalEnv
       }
     })

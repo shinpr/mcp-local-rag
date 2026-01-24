@@ -311,19 +311,15 @@ The chunker requires sufficient text length to generate meaningful chunks.`
   // S-004: MCP security best practices compliance
   // --------------------------------------------
   describe('S-004: MCP security best practices compliance', () => {
-    // AC interpretation: [Security requirement] Stack traces not included when errors occur in production environment
-    // Validation: When NODE_ENV=production and error occurs, stack trace is not included
-    it('Stack traces not included when errors occur in production environment (NODE_ENV=production)', async () => {
-      // Set environment variable
+    // Default behavior: Stack traces NOT included (secure by default for MCP servers)
+    it('Stack traces not included by default when NODE_ENV is not set', async () => {
       const originalEnv = process.env['NODE_ENV']
-      process.env['NODE_ENV'] = 'production'
+      process.env['NODE_ENV'] = undefined
 
-      // Attempt to ingest non-existent file (error occurs)
       const nonExistentFile = resolve('./tmp/nonexistent.txt')
 
       try {
         await server.handleIngestFile({ filePath: nonExistentFile })
-        // Fail if error does not occur
         expect.fail('Expected error to be thrown')
       } catch (error) {
         const errorMessage = (error as Error).message
@@ -332,6 +328,27 @@ The chunker requires sufficient text length to generate meaningful chunks.`
         expect(errorMessage).not.toContain(' at ')
         expect(errorMessage).not.toContain('.ts:')
         expect(errorMessage).not.toContain('.js:')
+      }
+
+      // Restore environment variable
+      process.env['NODE_ENV'] = originalEnv
+    })
+
+    // Development mode: Stack traces ARE included for debugging
+    it('Stack traces included when NODE_ENV=development', async () => {
+      const originalEnv = process.env['NODE_ENV']
+      process.env['NODE_ENV'] = 'development'
+
+      const nonExistentFile = resolve('./tmp/nonexistent.txt')
+
+      try {
+        await server.handleIngestFile({ filePath: nonExistentFile })
+        expect.fail('Expected error to be thrown')
+      } catch (error) {
+        const errorMessage = (error as Error).message
+
+        // Verify stack trace IS included in development mode
+        expect(errorMessage).toContain(' at ')
       }
 
       // Restore environment variable
