@@ -402,6 +402,14 @@ export class RAGServer {
       // Split text into semantic chunks
       const chunks = await this.chunker.chunkText(text, this.embedder)
 
+      // Fail-fast: Prevent data loss when chunking produces 0 chunks
+      // This check must happen BEFORE delete to preserve existing data on re-ingest
+      if (chunks.length === 0) {
+        throw new Error(
+          `No chunks generated from file: ${args.filePath}. The file may be empty or contain no extractable content.`
+        )
+      }
+
       // Generate embeddings for final chunks
       const embeddings = await this.embedder.embedBatch(chunks.map((chunk) => chunk.text))
 

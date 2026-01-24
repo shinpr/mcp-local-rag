@@ -42,7 +42,10 @@ describe('ingest_data Tool', () => {
   // --------------------------------------------
   describe('Text Format Ingestion', () => {
     it('ingests plain text content', async () => {
-      const content = 'This is plain text content for testing the ingest_data tool.'
+      const content =
+        'This is plain text content for testing the ingest_data tool. ' +
+        'It needs to contain enough text to generate at least one chunk. ' +
+        'The semantic chunker requires substantial content to process properly.'
       const source = 'test://plain-text-test'
 
       const result = await server.handleIngestData({
@@ -60,7 +63,10 @@ describe('ingest_data Tool', () => {
     })
 
     it('saves raw text to raw-data directory', async () => {
-      const content = 'Content to verify file saving functionality.'
+      const content =
+        'Content to verify file saving functionality in the raw-data directory. ' +
+        'This content needs to be substantial for proper processing. ' +
+        'Multiple sentences ensure the semantic chunker works correctly.'
       const source = 'test://file-save-test'
 
       const result = await server.handleIngestData({
@@ -192,7 +198,10 @@ This is markdown content with **bold** and _italic_ text.
   // --------------------------------------------
   describe('Source Normalization', () => {
     it('normalizes URL sources (removes query string)', async () => {
-      const content = 'Test content for URL normalization'
+      const content =
+        'Test content for URL normalization testing. ' +
+        'This content needs to be long enough to generate at least one chunk. ' +
+        'The semantic chunker requires sufficient text to process properly.'
       const source1 = 'https://example.com/page?utm_source=google'
       const source2 = 'https://example.com/page?tracking=xyz'
 
@@ -201,7 +210,10 @@ This is markdown content with **bold** and _italic_ text.
         metadata: { source: source1, format: 'text' },
       })
       const result2 = await server.handleIngestData({
-        content: 'Updated content',
+        content:
+          'Updated content for URL normalization. ' +
+          'This updated content also needs to be long enough. ' +
+          'Multiple sentences ensure proper semantic chunking.',
         metadata: { source: source2, format: 'text' },
       })
 
@@ -219,24 +231,32 @@ This is markdown content with **bold** and _italic_ text.
   describe('Re-ingestion', () => {
     it('updates existing content when re-ingesting same source', async () => {
       const source = 'test://update-test'
+      const originalContent =
+        'Original content for re-ingestion testing. ' +
+        'This content needs to be long enough to generate chunks. ' +
+        'The semantic chunker processes text into meaningful segments.'
+      const updatedContent =
+        'Updated content after re-ingestion process. ' +
+        'This new content replaces the original content. ' +
+        'Re-ingestion functionality allows content updates.'
 
       // Initial ingestion
       await server.handleIngestData({
-        content: 'Original content',
+        content: originalContent,
         metadata: { source, format: 'text' },
       })
 
       // Re-ingestion with updated content
       const result = await server.handleIngestData({
-        content: 'Updated content after re-ingestion',
+        content: updatedContent,
         metadata: { source, format: 'text' },
       })
 
       const parsed = JSON.parse(result.content[0].text)
       const savedContent = await readFile(parsed.filePath, 'utf-8')
 
-      expect(savedContent).toBe('Updated content after re-ingestion')
-      expect(savedContent).not.toContain('Original')
+      expect(savedContent).toBe(updatedContent)
+      expect(savedContent).not.toContain('Original content for re-ingestion')
     })
   })
 
@@ -376,7 +396,10 @@ This is markdown content with **bold** and _italic_ text.
   // --------------------------------------------
   describe('Query Integration', () => {
     it('ingested data is searchable via query_documents', async () => {
-      const uniqueContent = 'UniqueSearchableContent12345 for integration testing'
+      const uniqueContent =
+        'UniqueSearchableContent12345 for integration testing purposes. ' +
+        'This content verifies that ingested data can be searched properly. ' +
+        'The RAG system should find this content using semantic search.'
       const source = 'test://query-integration-test'
 
       await server.handleIngestData({
@@ -396,7 +419,10 @@ This is markdown content with **bold** and _italic_ text.
 
     it('query results include source for raw-data files', async () => {
       const source = 'https://example.com/source-restoration-test'
-      const content = 'SourceRestorationTestContent98765 unique marker for this test'
+      const content =
+        'SourceRestorationTestContent98765 unique marker for this test. ' +
+        'This content verifies that source information is properly restored. ' +
+        'The query results should include the original source URL.'
 
       await server.handleIngestData({
         content,

@@ -76,7 +76,19 @@ describe('RAG MCP Server Security Test', () => {
     await mkdir(fixturesDir, { recursive: true })
     await writeFile(
       resolve(fixturesDir, 'sample.txt'),
-      'This is a sample text file for security testing. TypeScript is great.'
+      `This is a comprehensive sample text file for security testing purposes.
+
+TypeScript is a powerful programming language that adds static typing to JavaScript.
+It helps developers catch errors at compile time rather than runtime.
+Many large-scale applications use TypeScript for improved maintainability.
+
+Security testing is an essential part of software development.
+It ensures that applications are protected against common vulnerabilities.
+Proper security measures include input validation and authentication.
+
+The RAG (Retrieval-Augmented Generation) system processes documents efficiently.
+It uses vector embeddings to find semantically similar content.
+This approach provides accurate search results for natural language queries.`
     )
   })
 
@@ -209,7 +221,15 @@ describe('RAG MCP Server Security Test', () => {
         const testFile = resolve('./tmp/secret-document.txt')
         await writeFile(
           testFile,
-          'This is a secret document with confidential information: PASSWORD123'
+          `This is a secret document with confidential information: PASSWORD123.
+
+The document contains sensitive data that should never appear in logs.
+Proper logging practices require filtering out confidential information.
+Security best practices dictate that passwords should be masked in output.
+
+This paragraph provides additional content for proper semantic chunking.
+Multiple sentences ensure the document is processed correctly by the RAG system.
+The chunker requires sufficient text length to generate meaningful chunks.`
         )
 
         // Ingest file

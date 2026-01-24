@@ -793,6 +793,30 @@ describe('RAG MCP Server Integration Test - Phase 2', () => {
       // Note: Rollback behavior on error needs to be verified in unit test
       // by mocking VectorStore.insertChunks to cause error
     })
+
+    // AC interpretation: [Data protection] Prevent data loss when re-ingest results in 0 chunks
+    // Validation: When chunking produces 0 chunks, error is thrown before delete (preserves existing data)
+    it('Throws error when chunking produces 0 chunks (prevents data loss on re-ingest)', async () => {
+      // Initial ingestion with valid content
+      const testFile = resolve(localTestDataDir, 'test-empty-chunks.txt')
+      writeFileSync(testFile, 'This is valid content for initial ingestion. '.repeat(50))
+      const result1 = await localRagServer.handleIngestFile({ filePath: testFile })
+      const ingest1 = JSON.parse(result1.content[0].text)
+      expect(ingest1.chunkCount).toBeGreaterThan(0)
+
+      // Re-ingest with empty content (should fail, preserving original data)
+      writeFileSync(testFile, '')
+      await expect(localRagServer.handleIngestFile({ filePath: testFile })).rejects.toThrow(
+        /No.*chunks/i
+      )
+
+      // Validation: Original data is preserved (not deleted)
+      const listResult = await localRagServer.handleListFiles()
+      const files = JSON.parse(listResult.content[0].text)
+      const targetFiles = files.filter((f: { filePath: string }) => f.filePath === testFile)
+      expect(targetFiles.length).toBe(1)
+      expect(targetFiles[0].chunkCount).toBe(ingest1.chunkCount)
+    })
   })
 
   describe('AC-009: Error Handling (Complete)', () => {
@@ -838,8 +862,13 @@ describe('RAG MCP Server Integration Test - Phase 2', () => {
       const testFile = resolve(localTestDataDir, 'large-file.txt')
       // Creating actual 101MB file makes test slow,
       // so verify DocumentParser.validateFileSize applies 100MB limit
-      // Here, verify normal operation with small file
-      writeFileSync(testFile, 'Small file content for validation test.')
+      // Here, verify normal operation with small file (with enough content for chunking)
+      writeFileSync(
+        testFile,
+        'Small file content for validation test of file size limits. ' +
+          'This content needs to be long enough to generate at least one chunk. ' +
+          'The semantic chunker requires sufficient text content to process properly.'
+      )
 
       // Verify normal operation (under 100MB)
       await expect(localRagServer.handleIngestFile({ filePath: testFile })).resolves.toBeDefined()
@@ -863,7 +892,12 @@ describe('RAG MCP Server Integration Test - Phase 2', () => {
       // so verify error handling is implemented
       // Actual out of memory errors are detected by monitoring in production environment
       const testFile = resolve(localTestDataDir, 'memory-test.txt')
-      writeFileSync(testFile, 'Memory test content.')
+      writeFileSync(
+        testFile,
+        'Memory test content for verifying error handling implementation. ' +
+          'This content needs to be long enough to generate chunks properly. ' +
+          'The semantic chunker processes text into meaningful segments.'
+      )
 
       // Verify normal operation
       await expect(localRagServer.handleIngestFile({ filePath: testFile })).resolves.toBeDefined()
