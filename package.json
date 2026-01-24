@@ -44,6 +44,12 @@
     "start": "node dist/index.js",
     "dev": "tsx src/index.ts",
     "watch": "tsx watch src/index.ts",
+    "web": "tsx src/web/index.ts",
+    "web:dev": "tsx watch src/web/index.ts",
+    "web:build": "pnpm build && cd web-ui && pnpm build",
+    "web:start": "node dist/web/index.js",
+    "ui:dev": "cd web-ui && pnpm dev",
+    "ui:build": "cd web-ui && pnpm build",
     "type-check": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -54,7 +60,7 @@
     "check": "biome check src",
     "check:fix": "biome check --write src",
     "check:unused": "node scripts/check-unused-exports.js",
-    "check:unused:all": "ts-prune --project tsconfig.json --ignore 'src/index.ts|__tests__|test|vitest'",
+    "check:unused:all": "knip",
     "check:deps": "madge --circular --extensions ts src",
     "check:deps:graph": "madge --extensions ts --image graph.svg src",
     "check:all": "pnpm run check && pnpm run lint && pnpm run format:check && pnpm run check:unused && pnpm run check:deps && pnpm run build && pnpm run test",
@@ -64,24 +70,30 @@
   },
   "dependencies": {
     "@huggingface/transformers": "^3.7.6",
-    "@lancedb/lancedb": "^0.22.2",
-    "@modelcontextprotocol/sdk": "^1.25.1",
+    "@lancedb/lancedb": "^0.23.0",
+    "@modelcontextprotocol/sdk": "^1.25.3",
     "@mozilla/readability": "0.6.0",
+    "cors": "^2.8.5",
+    "express": "^4.21.2",
     "jsdom": "^27.4.0",
     "mammoth": "^1.11.0",
+    "multer": "^1.4.5-lts.1",
     "pdfjs-dist": "^5.4.530",
     "turndown": "7.2.2"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",
+    "@types/cors": "^2.8.17",
+    "@types/express": "^5.0.0",
     "@types/jsdom": "^27.0.0",
+    "@types/multer": "^1.4.13",
     "@types/node": "^20.0.0",
     "@types/turndown": "5.0.6",
     "husky": "^9.1.7",
-    "lint-staged": "^16.1.0",
+    "lint-staged": "^16.2.7",
     "madge": "^8.0.0",
     "ts-node": "^10.9.1",
-    "ts-prune": "^0.10.3",
+    "knip": "^5.61.0",
     "tsc-alias": "^1.8.7",
     "tsx": "^4.19.4",
     "typescript": "^5.0.0",
@@ -96,5 +108,12 @@
       "biome format --write --no-errors-on-unmatched"
     ]
   },
-  "mcpName": "io.github.shinpr/mcp-local-rag"
+  "mcpName": "io.github.shinpr/mcp-local-rag",
+  "pnpm": {
+    "overrides": {
+      "tar": ">=7.5.4",
+      "hono": ">=4.11.4",
+      "diff": ">=4.0.4"
+    }
+  }
 }

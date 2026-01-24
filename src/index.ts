@@ -16,17 +16,23 @@ if (args[0] === 'skills') {
   if (args[1] === 'install') {
     // npx mcp-local-rag skills install [options]
     runSkillsInstall(args.slice(2))
-    process.exit(0)
   } else {
     console.error('Unknown skills subcommand. Usage: npx mcp-local-rag skills install [options]')
     console.error('Run "npx mcp-local-rag skills install --help" for more information.')
     process.exit(1)
   }
+} else if (args[0] === 'web') {
+  // Handle "web" subcommand - launches HTTP server with web UI
+  import('./web/index.js').catch((error) => {
+    console.error('Failed to start web server:', error)
+    process.exit(1)
+  })
+} else {
+  // ============================================
+  // MCP Server (default behavior)
+  // ============================================
+  startMcpServer()
 }
-
-// ============================================
-// MCP Server (default behavior)
-// ============================================
 
 /**
  * Parse grouping mode from environment variable
@@ -72,6 +78,25 @@ function parseHybridWeight(value: string | undefined): number | undefined {
 }
 
 /**
+ * Start MCP Server
+ */
+function startMcpServer(): void {
+  // Global error handling
+  process.on('unhandledRejection', (reason, promise) => {
+    console.error('Unhandled Rejection at:', promise, 'reason:', reason)
+    process.exit(1)
+  })
+
+  process.on('uncaughtException', (error) => {
+    console.error('Uncaught Exception:', error)
+    process.exit(1)
+  })
+
+  // Execute main
+  main()
+}
+
+/**
  * Entry point - Start RAG MCP Server
  */
 async function main(): Promise<void> {
@@ -113,17 +138,3 @@ async function main(): Promise<void> {
     process.exit(1)
   }
 }
-
-// Global error handling
-process.on('unhandledRejection', (reason, promise) => {
-  console.error('Unhandled Rejection at:', promise, 'reason:', reason)
-  process.exit(1)
-})
-
-process.on('uncaughtException', (error) => {
-  console.error('Uncaught Exception:', error)
-  process.exit(1)
-})
-
-// Execute main
-main()
