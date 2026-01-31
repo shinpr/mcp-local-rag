@@ -25,9 +25,13 @@ Semantic search with keyword boost for exact technical terms — fully private, 
 - **Zero-friction setup**
   One `npx` command. No Docker, no Python, no servers to manage. Designed for Cursor, Codex, and Claude Code via MCP.
 
+- **More file formats**
+  Supports Office files (DOCX, PPTX, XLSX/XLS), source code, and common config files (JSON, YAML, INI, TOML).
+
 ## Quick Start
 
 Set `BASE_DIR` to the folder you want to search. Documents must live under it.
+To index Downloads, Documents, and Desktop, set `BASE_DIR` to your home folder.
 
 Add the MCP server to your AI coding tool:
 
@@ -88,7 +92,7 @@ You want AI to search your documents—technical specs, research papers, interna
 
 ## Usage
 
-The server provides 6 MCP tools: ingest file, ingest data, search, list, delete, status
+The server provides 6 MCP tools: ingest file (also supports directories), ingest data, search, list, delete, status
 (`ingest_file`, `ingest_data`, `query_documents`, `list_files`, `delete_file`, `status`).
 
 ### Ingesting Documents
@@ -97,7 +101,32 @@ The server provides 6 MCP tools: ingest file, ingest data, search, list, delete,
 "Ingest the document at /Users/me/docs/api-spec.pdf"
 ```
 
-Supports PDF, DOCX, TXT, and Markdown. The server extracts text, splits it into chunks, generates embeddings locally, and stores everything in a local vector database.
+Supports PDF, DOCX, PPTX, XLSX/XLS, TXT, Markdown, source code, and common config files (JSON, YAML, INI, TOML). The server extracts text, splits it into chunks, generates embeddings locally, and stores everything in a local vector database.
+
+You can also ingest a full directory:
+
+```
+"Ingest /Users/me/Downloads"
+```
+
+For large folders, you can limit to specific extensions (for example: `.md`, `.ts`) and control recursion.
+
+### Custom Parsers
+
+For new file types, add a custom parser. Create `config/file_parsers.json` or set
+`MCP_LOCAL_RAG_PARSERS` to point at your JSON file.
+
+Example:
+
+```json
+{
+  ".note": {
+    "module": "./dist/parser/custom/sample-note-parser.js"
+  }
+}
+```
+
+You can use the included sample parser at `src/parser/custom/sample-note-parser.ts`.
 
 Re-ingesting the same file replaces the old version automatically.
 
@@ -174,7 +203,7 @@ Keyword boost is applied *after* semantic filtering, so it improves precision wi
 
 ### Details
 
-When you ingest a document, the parser extracts text based on file type (PDF via `pdfjs-dist`, DOCX via `mammoth`, text files directly).
+When you ingest a document, the parser extracts text based on file type (PDF via `pdfjs-dist`, DOCX via `mammoth`, PPTX via XML extraction, XLSX via `xlsx`, text/code/config files directly).
 
 The semantic chunker splits text into sentences, then groups them using embedding similarity. It finds natural topic boundaries where the meaning shifts—keeping related content together instead of cutting at arbitrary character limits. This produces chunks that are coherent units of meaning, typically 500-1000 characters. Markdown code blocks are kept intact—never split mid-block—preserving copy-pastable code in search results.
 
@@ -356,7 +385,7 @@ Yes, after the first model download (~90MB).
 Cloud services offer better accuracy at scale but require sending data externally. This trades some accuracy for complete privacy and zero runtime cost.
 
 **What file formats are supported?**
-PDF, DOCX, TXT, Markdown, and HTML (via `ingest_data`). Not yet: Excel, PowerPoint, images.
+PDF, DOCX, PPTX, XLSX/XLS, TXT, Markdown, source code, JSON/YAML/TOML/INI, and HTML (via `ingest_data`).
 
 **Can I change the embedding model?**
 Yes, but you must delete your database and re-ingest all documents. Different models produce incompatible vector dimensions.
@@ -405,7 +434,7 @@ pnpm run check:all     # Full quality check
 src/
   index.ts      # Entry point
   server/       # MCP tool handlers
-  parser/       # PDF, DOCX, TXT, MD parsing
+  parser/       # PDF, DOCX, PPTX, XLSX, and text parsing
   chunker/      # Text splitting
   embedder/     # Transformers.js embeddings
   vectordb/     # LanceDB operations

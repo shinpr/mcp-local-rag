@@ -66,10 +66,12 @@
     "@lancedb/lancedb": "^0.22.2",
     "@modelcontextprotocol/sdk": "^1.25.1",
     "@mozilla/readability": "0.6.0",
+    "jszip": "^3.10.1",
     "jsdom": "^27.4.0",
     "mammoth": "^1.11.0",
     "pdfjs-dist": "^5.4.530",
-    "turndown": "7.2.2"
+    "turndown": "7.2.2",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",

@@ -1,16 +1,87 @@
-// DocumentParser implementation with PDF/DOCX/TXT/MD support
+// DocumentParser implementation with PDF/DOCX/PPTX/XLSX/TXT/MD and text-based config/code support
 
-import { statSync } from 'node:fs'
-import { readFile } from 'node:fs/promises'
+import { existsSync, statSync } from 'node:fs'
+import { readFile, readdir, stat } from 'node:fs/promises'
 import { extname, isAbsolute, resolve } from 'node:path'
+import { pathToFileURL } from 'node:url'
+import JSZip from 'jszip'
 import mammoth from 'mammoth'
 import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs'
 import type { TextItem } from 'pdfjs-dist/types/src/display/api'
+import * as XLSX from 'xlsx'
 import { type EmbedderInterface, type PageData, filterPageBoundarySentences } from './pdf-filter.js'
 
 // ============================================
 // Type Definitions
 // ============================================
+
+type CustomParser = (filePath: string) => Promise<string>
+
+interface CustomParserSpec {
+  module: string
+  export?: string
+}
+
+const MARKDOWN_EXTENSIONS = new Set(['.md', '.markdown', '.mdx'])
+const TEXT_EXTENSIONS = new Set(['.txt', '.log', '.rst'])
+const CODE_EXTENSIONS = new Set([
+  '.py',
+  '.pyi',
+  '.js',
+  '.jsx',
+  '.ts',
+  '.tsx',
+  '.java',
+  '.kt',
+  '.kts',
+  '.go',
+  '.rs',
+  '.c',
+  '.h',
+  '.hpp',
+  '.cpp',
+  '.cc',
+  '.cs',
+  '.rb',
+  '.php',
+  '.swift',
+  '.scala',
+  '.lua',
+  '.sh',
+  '.bash',
+  '.zsh',
+  '.ps1',
+  '.sql',
+  '.graphql',
+  '.gql',
+  '.vue',
+  '.svelte',
+  '.dart',
+  '.r',
+  '.m',
+  '.mm',
+  '.pl',
+  '.pm',
+  '.t',
+])
+const CONFIG_EXTENSIONS = new Set([
+  '.json',
+  '.jsonl',
+  '.yaml',
+  '.yml',
+  '.toml',
+  '.ini',
+  '.cfg',
+  '.conf',
+  '.config',
+  '.settings',
+  '.env',
+])
+const CSV_EXTENSIONS = new Set(['.csv', '.tsv'])
+const EXCEL_EXTENSIONS = new Set(['.xlsx', '.xls'])
+const POWERPOINT_EXTENSIONS = new Set(['.pptx'])
+
+const DEFAULT_PARSER_CONFIG = resolve(process.cwd(), 'config', 'file_parsers.json')
 
 /**
  * DocumentParser configuration
@@ -53,18 +124,22 @@ export class FileOperationError extends Error {
 // ============================================
 
 /**
- * Document parser class (PDF/DOCX/TXT/MD support)
+ * Document parser class (PDF/DOCX/PPTX/XLSX/TXT/MD + config/code support)
  *
  * Responsibilities:
  * - File path validation (path traversal prevention)
  * - File size validation (100MB limit)
- * - Parse 4 formats (PDF/DOCX/TXT/MD)
+ * - Parse common formats (PDF/DOCX/PPTX/XLSX/TXT/MD + config/code)
  */
 export class DocumentParser {
   private readonly config: ParserConfig
+  private readonly customParserConfigPath: string
+  private customParsersLoaded = false
+  private readonly customParsers = new Map<string, CustomParser>()
 
   constructor(config: ParserConfig) {
     this.config = config
+    this.customParserConfigPath = process.env['MCP_LOCAL_RAG_PARSERS'] || DEFAULT_PARSER_CONFIG
   }
 
   /**
@@ -116,6 +191,165 @@ export class DocumentParser {
   }
 
   /**
+   * Directory path validation (Absolute path requirement + Path traversal prevention)
+   *
+   * @param directoryPath - Directory path to validate (must be absolute)
+   * @throws ValidationError - When path is not absolute or outside BASE_DIR
+   */
+  validateDirectoryPath(directoryPath: string): void {
+    // Check if path is absolute
+    if (!isAbsolute(directoryPath)) {
+      throw new ValidationError(
+        `Directory path must be absolute path (received: ${directoryPath}). Please provide an absolute path within BASE_DIR.`
+      )
+    }
+
+    // Check if path is within BASE_DIR
+    const baseDir = resolve(this.config.baseDir)
+    const normalizedPath = resolve(directoryPath)
+
+    if (!normalizedPath.startsWith(baseDir)) {
+      throw new ValidationError(
+        `Directory path must be within BASE_DIR (${baseDir}). Received path outside BASE_DIR: ${directoryPath}`
+      )
+    }
+  }
+
+  private normalizeExtension(extension: string): string | null {
+    const trimmed = extension.trim()
+    if (!trimmed) {
+      return null
+    }
+    return trimmed.startsWith('.') ? trimmed.toLowerCase() : `.${trimmed.toLowerCase()}`
+  }
+
+  private async ensureCustomParsersLoaded(): Promise<void> {
+    if (this.customParsersLoaded) {
+      return
+    }
+
+    this.customParsersLoaded = true
+
+    if (!existsSync(this.customParserConfigPath)) {
+      return
+    }
+
+    try {
+      const raw = await readFile(this.customParserConfigPath, 'utf-8')
+      const data = JSON.parse(raw) as Record<string, string | CustomParserSpec>
+
+      for (const [extension, spec] of Object.entries(data)) {
+        const normalized = this.normalizeExtension(extension)
+        if (!normalized) {
+          continue
+        }
+
+        const moduleSpec: CustomParserSpec = typeof spec === 'string' ? { module: spec } : spec
+        if (!moduleSpec?.module) {
+          console.warn(`Custom parser for ${normalized} missing module path`)
+          continue
+        }
+
+        const isFilePath = moduleSpec.module.startsWith('.') || moduleSpec.module.startsWith('/')
+        const resolvedPath = isFilePath
+          ? resolve(process.cwd(), moduleSpec.module)
+          : moduleSpec.module
+        const importTarget = isFilePath ? pathToFileURL(resolvedPath).href : resolvedPath
+
+        try {
+          const mod = await import(importTarget)
+          const handler =
+            (moduleSpec.export && mod[moduleSpec.export]) ||
+            mod.default ||
+            mod.parseFile ||
+            mod.parse
+
+          if (typeof handler !== 'function') {
+            console.warn(`Custom parser for ${normalized} did not export a function`)
+            continue
+          }
+
+          this.customParsers.set(normalized, handler as CustomParser)
+        } catch (error) {
+          console.warn(`Failed to load custom parser for ${normalized}:`, error)
+        }
+      }
+    } catch (error) {
+      console.warn(`Failed to read custom parser config: ${this.customParserConfigPath}`, error)
+    }
+  }
+
+  async getSupportedExtensions(): Promise<string[]> {
+    await this.ensureCustomParsersLoaded()
+    const builtIn = new Set<string>([
+      '.pdf',
+      '.docx',
+      ...MARKDOWN_EXTENSIONS,
+      ...TEXT_EXTENSIONS,
+      ...CODE_EXTENSIONS,
+      ...CONFIG_EXTENSIONS,
+      ...CSV_EXTENSIONS,
+      ...EXCEL_EXTENSIONS,
+      ...POWERPOINT_EXTENSIONS,
+    ])
+
+    for (const customExt of this.customParsers.keys()) {
+      builtIn.add(customExt)
+    }
+
+    return Array.from(builtIn).sort()
+  }
+
+  async listFilesInDirectory(options: {
+    directoryPath: string
+    recursive?: boolean
+    includeHidden?: boolean
+    extensions?: string[]
+  }): Promise<string[]> {
+    const { directoryPath, recursive = true, includeHidden = false } = options
+    this.validateDirectoryPath(directoryPath)
+
+    const stats = await stat(directoryPath)
+    if (!stats.isDirectory()) {
+      throw new ValidationError(`Path is not a directory: ${directoryPath}`)
+    }
+
+    const supported = options.extensions
+      ? options.extensions
+          .map((ext) => this.normalizeExtension(ext))
+          .filter((ext): ext is string => Boolean(ext))
+      : await this.getSupportedExtensions()
+    const supportedSet = new Set(supported)
+
+    const results: string[] = []
+    const walk = async (dir: string): Promise<void> => {
+      const entries = await readdir(dir, { withFileTypes: true })
+      for (const entry of entries) {
+        if (!includeHidden && entry.name.startsWith('.')) {
+          continue
+        }
+        const fullPath = resolve(dir, entry.name)
+        if (entry.isDirectory()) {
+          if (recursive) {
+            await walk(fullPath)
+          }
+          continue
+        }
+        if (!entry.isFile()) {
+          continue
+        }
+        const ext = extname(entry.name).toLowerCase()
+        if (supportedSet.has(ext)) {
+          results.push(fullPath)
+        }
+      }
+    }
+
+    await walk(directoryPath)
+    return results
+  }
+
+  /**
    * File parsing (auto format detection)
    *
    * @param filePath - File path to parse
@@ -129,15 +363,37 @@ export class DocumentParser {
     this.validateFileSize(filePath)
 
     // Format detection (PDF uses parsePdf directly)
+    await this.ensureCustomParsersLoaded()
     const ext = extname(filePath).toLowerCase()
+
+    const customParser = this.customParsers.get(ext)
+    if (customParser) {
+      return await customParser(filePath)
+    }
+
     switch (ext) {
       case '.docx':
         return await this.parseDocx(filePath)
-      case '.txt':
-        return await this.parseTxt(filePath)
-      case '.md':
-        return await this.parseMd(filePath)
+      case '.pptx':
+        return await this.parsePptx(filePath)
+      case '.xlsx':
+      case '.xls':
+        return await this.parseXlsx(filePath)
       default:
+        if (ext === '.txt') {
+          return await this.parseTxt(filePath)
+        }
+        if (MARKDOWN_EXTENSIONS.has(ext)) {
+          return await this.parseMd(filePath)
+        }
+        if (
+          TEXT_EXTENSIONS.has(ext) ||
+          CODE_EXTENSIONS.has(ext) ||
+          CONFIG_EXTENSIONS.has(ext) ||
+          CSV_EXTENSIONS.has(ext)
+        ) {
+          return await this.parseText(filePath, 'TXT')
+        }
         throw new ValidationError(`Unsupported file format: ${ext}`)
     }
   }
@@ -217,6 +473,102 @@ export class DocumentParser {
   }
 
   /**
+   * PPTX parsing (slides text)
+   *
+   * @param filePath - PPTX file path
+   * @returns Parsed text
+   * @throws FileOperationError - File read failed, parse failed
+   */
+  private async parsePptx(filePath: string): Promise<string> {
+    try {
+      const buffer = await readFile(filePath)
+      const zip = await JSZip.loadAsync(buffer)
+      const slideEntries = Object.keys(zip.files)
+        .filter((name) => name.startsWith('ppt/slides/slide') && name.endsWith('.xml'))
+        .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
+
+      const notesEntries = Object.keys(zip.files)
+        .filter((name) => name.startsWith('ppt/notesSlides/notesSlide') && name.endsWith('.xml'))
+        .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
+
+      const sections: string[] = []
+      for (const name of [...slideEntries, ...notesEntries]) {
+        const xml = await zip.files[name]?.async('string')
+        if (!xml) {
+          continue
+        }
+        const text = this.extractPptxText(xml)
+        if (text.trim()) {
+          sections.push(text)
+        }
+      }
+
+      const combined = sections.join('\n\n')
+      console.error(`Parsed PPTX: ${filePath} (${combined.length} characters)`)
+      return combined
+    } catch (error) {
+      throw new FileOperationError(`Failed to parse PPTX: ${filePath}`, error as Error)
+    }
+  }
+
+  /**
+   * XLSX/XLS parsing (sheet text)
+   *
+   * @param filePath - Excel file path
+   * @returns Parsed text
+   * @throws FileOperationError - File read failed, parse failed
+   */
+  private async parseXlsx(filePath: string): Promise<string> {
+    try {
+      const buffer = await readFile(filePath)
+      const workbook = XLSX.read(buffer, { type: 'buffer' })
+      const sections: string[] = []
+      for (const sheetName of workbook.SheetNames) {
+        const sheet = workbook.Sheets[sheetName]
+        if (!sheet) {
+          continue
+        }
+        const csv = XLSX.utils.sheet_to_csv(sheet)
+        if (csv.trim()) {
+          sections.push(`Sheet: ${sheetName}\n${csv}`)
+        }
+      }
+      const combined = sections.join('\n\n')
+      console.error(`Parsed XLSX: ${filePath} (${combined.length} characters)`)
+      return combined
+    } catch (error) {
+      throw new FileOperationError(`Failed to parse XLSX: ${filePath}`, error as Error)
+    }
+  }
+
+  private decodeXmlEntities(text: string): string {
+    return text
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/&apos;/g, "'")
+      .replace(/&#39;/g, "'")
+      .replace(/&#x([0-9a-fA-F]+);/g, (_, hex) => String.fromCharCode(Number.parseInt(hex, 16)))
+      .replace(/&#([0-9]+);/g, (_, num) => String.fromCharCode(Number.parseInt(num, 10)))
+  }
+
+  private extractPptxText(xml: string): string {
+    const matches = Array.from(xml.matchAll(/<a:t[^>]*>(.*?)<\/a:t>/g))
+    return matches.map((match) => this.decodeXmlEntities(match[1] || '')).join(' ')
+  }
+
+  private async parseText(filePath: string, label: string): Promise<string> {
+    try {
+      const text = await readFile(filePath, 'utf-8')
+      console.error(`Parsed ${label}: ${filePath} (${text.length} characters)`)
+      return text
+    } catch (error) {
+      throw new FileOperationError(`Failed to parse ${label}: ${filePath}`, error as Error)
+    }
+  }
+
+  /**
    * TXT parsing (using fs.readFile)
    *
    * @param filePath - TXT file path
@@ -224,13 +576,7 @@ export class DocumentParser {
    * @throws FileOperationError - File read failed
    */
   private async parseTxt(filePath: string): Promise<string> {
-    try {
-      const text = await readFile(filePath, 'utf-8')
-      console.error(`Parsed TXT: ${filePath} (${text.length} characters)`)
-      return text
-    } catch (error) {
-      throw new FileOperationError(`Failed to parse TXT: ${filePath}`, error as Error)
-    }
+    return await this.parseText(filePath, 'TXT')
   }
 
   /**
@@ -241,12 +587,6 @@ export class DocumentParser {
    * @throws FileOperationError - File read failed
    */
   private async parseMd(filePath: string): Promise<string> {
-    try {
-      const text = await readFile(filePath, 'utf-8')
-      console.error(`Parsed MD: ${filePath} (${text.length} characters)`)
-      return text
-    } catch (error) {
-      throw new FileOperationError(`Failed to parse MD: ${filePath}`, error as Error)
-    }
+    return await this.parseText(filePath, 'MD')
   }
 }

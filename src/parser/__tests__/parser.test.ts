@@ -116,6 +116,33 @@ describe('DocumentParser', () => {
       expect(result).toBe(content)
     })
 
+    it('should parse JSON file successfully', async () => {
+      const filePath = join(testDir, 'test.json')
+      const content = '{"name":"local-rag","version":"1.0.0"}'
+      await writeFile(filePath, content, 'utf-8')
+
+      const result = await parser.parseFile(filePath)
+      expect(result).toBe(content)
+    })
+
+    it('should parse YAML file successfully', async () => {
+      const filePath = join(testDir, 'test.yaml')
+      const content = 'name: local-rag\nversion: 1.0.0'
+      await writeFile(filePath, content, 'utf-8')
+
+      const result = await parser.parseFile(filePath)
+      expect(result).toBe(content)
+    })
+
+    it('should parse source code file successfully', async () => {
+      const filePath = join(testDir, 'test.ts')
+      const content = 'export const value = 42'
+      await writeFile(filePath, content, 'utf-8')
+
+      const result = await parser.parseFile(filePath)
+      expect(result).toBe(content)
+    })
+
     it('should throw ValidationError for unsupported file format', async () => {
       const filePath = join(testDir, 'test.xyz')
       await writeFile(filePath, 'fake xyz content')
