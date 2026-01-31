@@ -10,7 +10,7 @@ const { execSync } = require('child_process')
 try {
   // Run ts-prune
   const output = execSync(
-    'npx ts-prune --project tsconfig.json --ignore "src/index.ts|__tests__|test|vitest"',
+    'npx ts-prune --project tsconfig.json --ignore "src/index.ts|__tests__|test|vitest|src/parser/custom"',
     { encoding: 'utf8' }
   )
 

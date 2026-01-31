@@ -2,7 +2,7 @@
 
 import { existsSync, statSync } from 'node:fs'
 import { readFile, readdir, stat } from 'node:fs/promises'
-import { extname, isAbsolute, resolve } from 'node:path'
+import { dirname, extname, isAbsolute, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import JSZip from 'jszip'
 import mammoth from 'mammoth'
@@ -80,6 +80,37 @@ const CONFIG_EXTENSIONS = new Set([
 const CSV_EXTENSIONS = new Set(['.csv', '.tsv'])
 const EXCEL_EXTENSIONS = new Set(['.xlsx', '.xls'])
 const POWERPOINT_EXTENSIONS = new Set(['.pptx'])
+const DEFAULT_EXCLUDES = new Set([
+  '.git',
+  '.hg',
+  '.svn',
+  'node_modules',
+  'dist',
+  'build',
+  'out',
+  '.next',
+  '.nuxt',
+  '.svelte-kit',
+  '.astro',
+  'target',
+  '.gradle',
+  '.mvn',
+  'bin',
+  'obj',
+  '.vs',
+  '.cache',
+  '.venv',
+  'venv',
+  '__pycache__',
+  '.pytest_cache',
+  '.mypy_cache',
+  '.ruff_cache',
+  'coverage',
+  'vendor',
+  '.DS_Store',
+  'Thumbs.db',
+  'desktop.ini',
+])
 
 const DEFAULT_PARSER_CONFIG = resolve(process.cwd(), 'config', 'file_parsers.json')
 
@@ -136,6 +167,9 @@ export class DocumentParser {
   private readonly customParserConfigPath: string
   private customParsersLoaded = false
   private readonly customParsers = new Map<string, CustomParser>()
+  private readonly customParserErrors = new Map<string, Error>()
+  private readonly customParserModules = new Map<string, string>()
+  private readonly customParserSpecs = new Map<string, CustomParserSpec>()
 
   constructor(config: ParserConfig) {
     this.config = config
@@ -247,14 +281,21 @@ export class DocumentParser {
         const moduleSpec: CustomParserSpec = typeof spec === 'string' ? { module: spec } : spec
         if (!moduleSpec?.module) {
           console.warn(`Custom parser for ${normalized} missing module path`)
+          this.customParserErrors.set(
+            normalized,
+            new Error(`Custom parser for ${normalized} missing module path`)
+          )
           continue
         }
+
+        this.customParserSpecs.set(normalized, moduleSpec)
 
         const isFilePath = moduleSpec.module.startsWith('.') || moduleSpec.module.startsWith('/')
         const resolvedPath = isFilePath
           ? resolve(process.cwd(), moduleSpec.module)
           : moduleSpec.module
         const importTarget = isFilePath ? pathToFileURL(resolvedPath).href : resolvedPath
+        this.customParserModules.set(normalized, resolvedPath)
 
         try {
           const mod = await import(importTarget)
@@ -266,17 +307,82 @@ export class DocumentParser {
 
           if (typeof handler !== 'function') {
             console.warn(`Custom parser for ${normalized} did not export a function`)
+            this.customParserErrors.set(
+              normalized,
+              new Error(`Custom parser for ${normalized} did not export a function`)
+            )
             continue
           }
 
           this.customParsers.set(normalized, handler as CustomParser)
+          this.customParserErrors.delete(normalized)
         } catch (error) {
           console.warn(`Failed to load custom parser for ${normalized}:`, error)
+          this.customParserErrors.set(normalized, error as Error)
         }
       }
     } catch (error) {
       console.warn(`Failed to read custom parser config: ${this.customParserConfigPath}`, error)
     }
+  }
+
+  private extractMissingModuleName(error: Error): string | null {
+    const message = error.message || ''
+    const match =
+      message.match(/Cannot find module '([^']+)'/) ||
+      message.match(/Cannot find module "([^"]+)"/) ||
+      message.match(/Cannot find package '([^']+)'/) ||
+      message.match(/Cannot find package "([^"]+)"/)
+    return match?.[1] ?? null
+  }
+
+  private extractUnknownFileExtension(error: Error): string | null {
+    const message = error.message || ''
+    const match = message.match(/Unknown file extension ["']?(\.[^"']+)["']?/)
+    return match?.[1] ?? null
+  }
+
+  private buildCustomParserHint(extension: string, error: Error): string {
+    const missingModule = this.extractMissingModuleName(error)
+    if (missingModule) {
+      const modulePath = this.customParserModules.get(extension)
+      const parserDir =
+        modulePath && (modulePath.startsWith('/') || modulePath.startsWith('.'))
+          ? dirname(modulePath)
+          : undefined
+      const installCmd = parserDir
+        ? `cd ${parserDir} && npm i ${missingModule}`
+        : `npm i ${missingModule}`
+      return `Missing dependency "${missingModule}". Install it where the parser lives (e.g. ${installCmd}) or bundle the parser.`
+    }
+
+    const unknownExtension = this.extractUnknownFileExtension(error)
+    if (unknownExtension) {
+      return `Node cannot import "${unknownExtension}" files. Compile the parser to JS or use a .mjs/.cjs file.`
+    }
+
+    if (error.message.includes('did not export a function')) {
+      const moduleSpec = this.customParserSpecs.get(extension)
+      const exportHint = moduleSpec?.export
+        ? `"${moduleSpec.export}"`
+        : 'default export, parseFile, or parse'
+      return `Ensure the module exports a function (${exportHint}).`
+    }
+
+    return 'Check the parser module path and its dependencies.'
+  }
+
+  private formatCustomParserError(
+    phase: 'load' | 'run',
+    extension: string,
+    error: Error,
+    filePath?: string
+  ): string {
+    const hint = this.buildCustomParserHint(extension, error)
+    if (phase === 'load') {
+      return `Custom parser for ${extension} failed to load. ${hint}`
+    }
+    return `Custom parser for ${extension} failed while parsing ${filePath || 'file'}. ${hint}`
   }
 
   async getSupportedExtensions(): Promise<string[]> {
@@ -305,8 +411,9 @@ export class DocumentParser {
     recursive?: boolean
     includeHidden?: boolean
     extensions?: string[]
+    excludes?: string[]
   }): Promise<string[]> {
-    const { directoryPath, recursive = true, includeHidden = false } = options
+    const { directoryPath, recursive = true, includeHidden = false, excludes = [] } = options
     this.validateDirectoryPath(directoryPath)
 
     const stats = await stat(directoryPath)
@@ -320,6 +427,7 @@ export class DocumentParser {
           .filter((ext): ext is string => Boolean(ext))
       : await this.getSupportedExtensions()
     const supportedSet = new Set(supported)
+    const excludePatterns = excludes.filter((pattern) => pattern.length > 0)
 
     const results: string[] = []
     const walk = async (dir: string): Promise<void> => {
@@ -329,6 +437,12 @@ export class DocumentParser {
           continue
         }
         const fullPath = resolve(dir, entry.name)
+        if (DEFAULT_EXCLUDES.has(entry.name)) {
+          continue
+        }
+        if (excludePatterns.some((pattern) => fullPath.includes(pattern))) {
+          continue
+        }
         if (entry.isDirectory()) {
           if (recursive) {
             await walk(fullPath)
@@ -366,9 +480,21 @@ export class DocumentParser {
     await this.ensureCustomParsersLoaded()
     const ext = extname(filePath).toLowerCase()
 
+    const loadError = this.customParserErrors.get(ext)
+    if (loadError) {
+      throw new FileOperationError(this.formatCustomParserError('load', ext, loadError), loadError)
+    }
+
     const customParser = this.customParsers.get(ext)
     if (customParser) {
-      return await customParser(filePath)
+      try {
+        return await customParser(filePath)
+      } catch (error) {
+        throw new FileOperationError(
+          this.formatCustomParserError('run', ext, error as Error, filePath),
+          error as Error
+        )
+      }
     }
 
     switch (ext) {

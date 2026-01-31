@@ -250,7 +250,7 @@ export class RAGServer {
         {
           name: 'ingest_file',
           description:
-            'Ingest a document file (PDF, DOCX, PPTX, XLSX/XLS, TXT, MD, JSON, YAML, config files, source code) into the vector database for semantic search. File path must be an absolute path within BASE_DIR. You can also pass a directory path to ingest all supported files inside it.',
+            'Ingest a document file (PDF, DOCX, PPTX, XLSX/XLS, TXT, MD, JSON, YAML, config files, source code) into the vector database for semantic search. File path must be an absolute path within BASE_DIR. You can also pass a directory path to ingest all supported files inside it (common dependency/build folders are skipped by default, e.g., node_modules, dist, build, target, bin, obj).',
           inputSchema: {
             type: 'object',
             properties: {

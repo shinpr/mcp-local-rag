@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Entry point for RAG MCP Server
 
+import { run as runBulkIngest } from './bin/ingest.js'
 import { run as runSkillsInstall } from './bin/install-skills.js'
 import { RAGServer } from './server/index.js'
 import type { GroupingMode } from './vectordb/index.js'
@@ -10,18 +11,31 @@ import type { GroupingMode } from './vectordb/index.js'
 // ============================================
 
 const args = process.argv.slice(2)
+let handled = false
 
 // Handle "skills" subcommand
 if (args[0] === 'skills') {
   if (args[1] === 'install') {
     // npx mcp-local-rag skills install [options]
     runSkillsInstall(args.slice(2))
+    handled = true
     process.exit(0)
   } else {
     console.error('Unknown skills subcommand. Usage: npx mcp-local-rag skills install [options]')
     console.error('Run "npx mcp-local-rag skills install --help" for more information.')
     process.exit(1)
   }
+}
+
+// Handle "ingest" subcommand
+if (args[0] === 'ingest') {
+  handled = true
+  runBulkIngest(args.slice(1))
+    .then(() => process.exit(0))
+    .catch((error) => {
+      console.error('Bulk ingest failed:', error)
+      process.exit(1)
+    })
 }
 
 // ============================================
@@ -125,5 +139,7 @@ process.on('uncaughtException', (error) => {
   process.exit(1)
 })
 
-// Execute main
-main()
+// Execute main (only if no subcommand)
+if (!handled) {
+  main()
+}

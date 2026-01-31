@@ -95,6 +95,30 @@ You want AI to search your documents—technical specs, research papers, interna
 The server provides 6 MCP tools: ingest file (also supports directories), ingest data, search, list, delete, status
 (`ingest_file`, `ingest_data`, `query_documents`, `list_files`, `delete_file`, `status`).
 
+### Bulk Ingest (CLI)
+
+For large collections (tens of thousands of files), use the companion CLI to avoid MCP timeouts:
+
+```
+npx mcp-local-rag ingest --path /Users/me/Desktop
+```
+
+Common options:
+
+```
+npx mcp-local-rag ingest --path /Users/me/Desktop --extensions .pdf,.md
+npx mcp-local-rag ingest --path /Users/me/Desktop --exclude node_modules,dist
+npx mcp-local-rag ingest --path /Users/me/Desktop --no-recursive --dry-run
+```
+
+The CLI reuses the same parser/chunker/embedder pipeline as the MCP server, but runs directly (no tool timeout).
+By default it skips files already indexed; use `--force` to re-ingest and replace existing chunks.
+Directory scans also skip common dependency/build folders by default (applies to MCP and CLI):
+`.git`, `node_modules`, `dist`, `build`, `out`, `.next`, `.nuxt`, `.svelte-kit`, `target`, `.gradle`,
+`.mvn`, `bin`, `obj`, `.vs`, `__pycache__`, `.venv`/`venv`, `coverage`, `vendor`, `.cache`.
+Use `--exclude` to add more; you can still ingest a specific file inside excluded folders by passing its path.
+Custom parsers work here too: set `MCP_LOCAL_RAG_PARSERS` or pass `--parsers` to the CLI.
+
 ### Ingesting Documents
 
 ```
@@ -110,23 +134,63 @@ You can also ingest a full directory:
 ```
 
 For large folders, you can limit to specific extensions (for example: `.md`, `.ts`) and control recursion.
+Directory scans skip common dependency/build folders by default (see above).
 
 ### Custom Parsers
 
-For new file types, add a custom parser. Create `config/file_parsers.json` or set
-`MCP_LOCAL_RAG_PARSERS` to point at your JSON file.
+For new file types, add a custom parser. Create a JSON file anywhere and set
+`MCP_LOCAL_RAG_PARSERS` to the **absolute path** in your MCP client config.
+If you run from source, you can also use `config/file_parsers.json` from the repo root.
 
-Example:
+Example (place this file somewhere you control, e.g. `~/.config/mcp-local-rag/file_parsers.json`):
 
 ```json
 {
   ".note": {
-    "module": "./dist/parser/custom/sample-note-parser.js"
+    "module": "/Users/me/.config/mcp-local-rag/parsers/note-parser.js",
+    "export": "parseFile"
   }
 }
 ```
 
-You can use the included sample parser at `src/parser/custom/sample-note-parser.ts`.
+Add `MCP_LOCAL_RAG_PARSERS=/Users/me/.config/mcp-local-rag/file_parsers.json`
+alongside `BASE_DIR` in your MCP client config.
+
+Minimal parser example (ESM):
+
+```js
+// /Users/me/.config/mcp-local-rag/parsers/note-parser.mjs
+import { readFile } from 'node:fs/promises'
+
+export async function parseFile(filePath) {
+  const raw = await readFile(filePath, 'utf-8')
+  return raw
+}
+```
+
+CommonJS is fine too:
+
+```js
+// /Users/me/.config/mcp-local-rag/parsers/note-parser.cjs
+const { readFile } = require('node:fs/promises')
+
+async function parseFile(filePath) {
+  const raw = await readFile(filePath, 'utf-8')
+  return raw
+}
+
+module.exports = { parseFile }
+```
+
+Notes:
+- The parser must return a string (the extracted text).
+- Use absolute paths in `file_parsers.json` to avoid working-directory issues.
+- If you need extra npm dependencies, install them alongside the parser or bundle it.
+- Restart the MCP server after changing the parser config.
+- If a custom parser fails to load, the server returns a clear error with fix hints (for example, missing dependency and install command).
+
+You can also use the included sample parser at `src/parser/custom/sample-note-parser.ts`
+(build it to JS and reference the compiled file).
 
 Re-ingesting the same file replaces the old version automatically.
 
