@@ -9,10 +9,14 @@ describe('DocumentParser', () => {
   let parser: DocumentParser
   const testDir = join(process.cwd(), 'tmp', 'test-parser')
   const maxFileSize = 100 * 1024 * 1024 // 100MB
+  let originalParserEnv: string | undefined
 
   beforeEach(async () => {
     // Create test directory
     await mkdir(testDir, { recursive: true })
+
+    originalParserEnv = process.env['MCP_LOCAL_RAG_PARSERS']
+    process.env['MCP_LOCAL_RAG_PARSERS'] = undefined
 
     parser = new DocumentParser({
       baseDir: testDir,
@@ -21,6 +25,12 @@ describe('DocumentParser', () => {
   })
 
   afterEach(async () => {
+    if (originalParserEnv === undefined) {
+      process.env['MCP_LOCAL_RAG_PARSERS'] = undefined
+    } else {
+      process.env['MCP_LOCAL_RAG_PARSERS'] = originalParserEnv
+    }
+
     // Cleanup test directory
     await rm(testDir, { recursive: true, force: true })
   })
@@ -116,6 +126,33 @@ describe('DocumentParser', () => {
       expect(result).toBe(content)
     })
 
+    it('should parse JSON file successfully', async () => {
+      const filePath = join(testDir, 'test.json')
+      const content = '{"name":"local-rag","version":"1.0.0"}'
+      await writeFile(filePath, content, 'utf-8')
+
+      const result = await parser.parseFile(filePath)
+      expect(result).toBe(content)
+    })
+
+    it('should parse YAML file successfully', async () => {
+      const filePath = join(testDir, 'test.yaml')
+      const content = 'name: local-rag\nversion: 1.0.0'
+      await writeFile(filePath, content, 'utf-8')
+
+      const result = await parser.parseFile(filePath)
+      expect(result).toBe(content)
+    })
+
+    it('should parse source code file successfully', async () => {
+      const filePath = join(testDir, 'test.ts')
+      const content = 'export const value = 42'
+      await writeFile(filePath, content, 'utf-8')
+
+      const result = await parser.parseFile(filePath)
+      expect(result).toBe(content)
+    })
+
     it('should throw ValidationError for unsupported file format', async () => {
       const filePath = join(testDir, 'test.xyz')
       await writeFile(filePath, 'fake xyz content')
@@ -147,6 +184,31 @@ describe('DocumentParser', () => {
     it('should throw FileOperationError for non-existent file', async () => {
       const nonExistentFile = join(testDir, 'nonexistent.txt')
       await expect(parser.parseFile(nonExistentFile)).rejects.toThrow(FileOperationError)
+    })
+
+    it('should surface custom parser load failures with guidance', async () => {
+      const configPath = join(testDir, 'file_parsers.json')
+      await writeFile(
+        configPath,
+        JSON.stringify({ '.note': { module: '/no/such/parser.js', export: 'parseFile' } }, null, 2),
+        'utf-8'
+      )
+
+      process.env['MCP_LOCAL_RAG_PARSERS'] = configPath
+      parser = new DocumentParser({
+        baseDir: testDir,
+        maxFileSize,
+      })
+
+      const filePath = join(testDir, 'test.note')
+      await writeFile(filePath, 'note content', 'utf-8')
+
+      await expect(parser.parseFile(filePath)).rejects.toThrow(
+        expect.objectContaining({
+          name: 'FileOperationError',
+          message: expect.stringMatching(/Custom parser for \.note failed to load/),
+        })
+      )
     })
   })
 

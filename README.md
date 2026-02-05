@@ -25,9 +25,13 @@ Semantic search with keyword boost for exact technical terms — fully private, 
 - **Zero-friction setup**
   One `npx` command. No Docker, no Python, no servers to manage. Designed for Cursor, Codex, and Claude Code via MCP.
 
+- **More file formats**
+  Supports Office files (DOCX, PPTX, XLSX/XLS), source code, and common config files (JSON, YAML, INI, TOML).
+
 ## Quick Start
 
 Set `BASE_DIR` to the folder you want to search. Documents must live under it.
+To index Downloads, Documents, and Desktop, set `BASE_DIR` to your home folder.
 
 Add the MCP server to your AI coding tool:
 
@@ -88,8 +92,32 @@ You want AI to search your documents—technical specs, research papers, interna
 
 ## Usage
 
-The server provides 6 MCP tools: ingest file, ingest data, search, list, delete, status
+The server provides 6 MCP tools: ingest file (also supports directories), ingest data, search, list, delete, status
 (`ingest_file`, `ingest_data`, `query_documents`, `list_files`, `delete_file`, `status`).
+
+### Bulk Ingest (CLI)
+
+For large collections (tens of thousands of files), use the companion CLI to avoid MCP timeouts:
+
+```
+npx mcp-local-rag ingest --path /Users/me/Desktop
+```
+
+Common options:
+
+```
+npx mcp-local-rag ingest --path /Users/me/Desktop --extensions .pdf,.md
+npx mcp-local-rag ingest --path /Users/me/Desktop --exclude node_modules,dist
+npx mcp-local-rag ingest --path /Users/me/Desktop --no-recursive --dry-run
+```
+
+The CLI reuses the same parser/chunker/embedder pipeline as the MCP server, but runs directly (no tool timeout).
+By default it skips files already indexed; use `--force` to re-ingest and replace existing chunks.
+Directory scans also skip common dependency/build folders by default (applies to MCP and CLI):
+`.git`, `node_modules`, `dist`, `build`, `out`, `.next`, `.nuxt`, `.svelte-kit`, `target`, `.gradle`,
+`.mvn`, `bin`, `obj`, `.vs`, `__pycache__`, `.venv`/`venv`, `coverage`, `vendor`, `.cache`.
+Use `--exclude` to add more; you can still ingest a specific file inside excluded folders by passing its path.
+Custom parsers work here too: set `MCP_LOCAL_RAG_PARSERS` or pass `--parsers` to the CLI.
 
 ### Ingesting Documents
 
@@ -97,7 +125,72 @@ The server provides 6 MCP tools: ingest file, ingest data, search, list, delete,
 "Ingest the document at /Users/me/docs/api-spec.pdf"
 ```
 
-Supports PDF, DOCX, TXT, and Markdown. The server extracts text, splits it into chunks, generates embeddings locally, and stores everything in a local vector database.
+Supports PDF, DOCX, PPTX, XLSX/XLS, TXT, Markdown, source code, and common config files (JSON, YAML, INI, TOML). The server extracts text, splits it into chunks, generates embeddings locally, and stores everything in a local vector database.
+
+You can also ingest a full directory:
+
+```
+"Ingest /Users/me/Downloads"
+```
+
+For large folders, you can limit to specific extensions (for example: `.md`, `.ts`) and control recursion.
+Directory scans skip common dependency/build folders by default (see above).
+
+### Custom Parsers
+
+For new file types, add a custom parser. Create a JSON file anywhere and set
+`MCP_LOCAL_RAG_PARSERS` to the **absolute path** in your MCP client config.
+If you run from source, you can also use `config/file_parsers.json` from the repo root.
+
+Example (place this file somewhere you control, e.g. `~/.config/mcp-local-rag/file_parsers.json`):
+
+```json
+{
+  ".note": {
+    "module": "/Users/me/.config/mcp-local-rag/parsers/note-parser.js",
+    "export": "parseFile"
+  }
+}
+```
+
+Add `MCP_LOCAL_RAG_PARSERS=/Users/me/.config/mcp-local-rag/file_parsers.json`
+alongside `BASE_DIR` in your MCP client config.
+
+Minimal parser example (ESM):
+
+```js
+// /Users/me/.config/mcp-local-rag/parsers/note-parser.mjs
+import { readFile } from 'node:fs/promises'
+
+export async function parseFile(filePath) {
+  const raw = await readFile(filePath, 'utf-8')
+  return raw
+}
+```
+
+CommonJS is fine too:
+
+```js
+// /Users/me/.config/mcp-local-rag/parsers/note-parser.cjs
+const { readFile } = require('node:fs/promises')
+
+async function parseFile(filePath) {
+  const raw = await readFile(filePath, 'utf-8')
+  return raw
+}
+
+module.exports = { parseFile }
+```
+
+Notes:
+- The parser must return a string (the extracted text).
+- Use absolute paths in `file_parsers.json` to avoid working-directory issues.
+- If you need extra npm dependencies, install them alongside the parser or bundle it.
+- Restart the MCP server after changing the parser config.
+- If a custom parser fails to load, the server returns a clear error with fix hints (for example, missing dependency and install command).
+
+You can also use the included sample parser at `src/parser/custom/sample-note-parser.ts`
+(build it to JS and reference the compiled file).
 
 Re-ingesting the same file replaces the old version automatically.
 
@@ -174,7 +267,7 @@ Keyword boost is applied *after* semantic filtering, so it improves precision wi
 
 ### Details
 
-When you ingest a document, the parser extracts text based on file type (PDF via `pdfjs-dist`, DOCX via `mammoth`, text files directly).
+When you ingest a document, the parser extracts text based on file type (PDF via `pdfjs-dist`, DOCX via `mammoth`, PPTX via XML extraction, XLSX via `xlsx`, text/code/config files directly).
 
 The semantic chunker splits text into sentences, then groups them using embedding similarity. It finds natural topic boundaries where the meaning shifts—keeping related content together instead of cutting at arbitrary character limits. This produces chunks that are coherent units of meaning, typically 500-1000 characters. Markdown code blocks are kept intact—never split mid-block—preserving copy-pastable code in search results.
 
@@ -356,7 +449,7 @@ Yes, after the first model download (~90MB).
 Cloud services offer better accuracy at scale but require sending data externally. This trades some accuracy for complete privacy and zero runtime cost.
 
 **What file formats are supported?**
-PDF, DOCX, TXT, Markdown, and HTML (via `ingest_data`). Not yet: Excel, PowerPoint, images.
+PDF, DOCX, PPTX, XLSX/XLS, TXT, Markdown, source code, JSON/YAML/TOML/INI, and HTML (via `ingest_data`).
 
 **Can I change the embedding model?**
 Yes, but you must delete your database and re-ingest all documents. Different models produce incompatible vector dimensions.
@@ -405,7 +498,7 @@ pnpm run check:all     # Full quality check
 src/
   index.ts      # Entry point
   server/       # MCP tool handlers
-  parser/       # PDF, DOCX, TXT, MD parsing
+  parser/       # PDF, DOCX, PPTX, XLSX, and text parsing
   chunker/      # Text splitting
   embedder/     # Transformers.js embeddings
   vectordb/     # LanceDB operations

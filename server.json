@@ -55,6 +55,13 @@
           "isSecret": false
         },
         {
+          "name": "MCP_LOCAL_RAG_PARSERS",
+          "description": "Path to a JSON file that maps file extensions to custom parsers",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        },
+        {
           "name": "RAG_MAX_DISTANCE",
           "description": "Maximum distance threshold for filtering search results. Results with distance greater than this value will be excluded. Lower values mean stricter filtering (e.g., 0.5 for high relevance only)",
           "isRequired": false,

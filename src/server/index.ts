@@ -1,7 +1,7 @@
 // RAGServer implementation with MCP tools
 
 import { randomUUID } from 'node:crypto'
-import { readFile, unlink } from 'node:fs/promises'
+import { readFile, stat, unlink } from 'node:fs/promises'
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import {
@@ -65,6 +65,26 @@ export interface QueryDocumentsInput {
 export interface IngestFileInput {
   /** File path */
   filePath: string
+  /** Recursive scan for directories (default true) */
+  recursive?: boolean
+  /** Include hidden files when ingesting directories (default false) */
+  includeHidden?: boolean
+  /** Restrict to extensions when ingesting directories (e.g., [".md", ".ts"]) */
+  extensions?: string[]
+}
+
+/**
+ * ingest_directory (via ingest_file when path is a directory)
+ */
+export interface IngestDirectoryInput {
+  /** Directory path */
+  directoryPath: string
+  /** Recursive scan (default true) */
+  recursive?: boolean
+  /** Include hidden files (default false) */
+  includeHidden?: boolean
+  /** Restrict to extensions (e.g., [".md", ".ts"]) */
+  extensions?: string[]
 }
 
 /**
@@ -111,6 +131,22 @@ export interface IngestResult {
 }
 
 /**
+ * ingest_directory result
+ */
+export interface IngestDirectoryResult {
+  /** Directory path */
+  directoryPath: string
+  /** Total files found */
+  filesProcessed: number
+  /** Files ingested successfully */
+  filesSucceeded: number
+  /** Files failed */
+  filesFailed: number
+  /** Error details for failed files */
+  failures: { filePath: string; error: string }[]
+}
+
+/**
  * query_documents tool output
  */
 export interface QueryResult {
@@ -134,7 +170,7 @@ export interface QueryResult {
  * RAG server compliant with MCP Protocol
  *
  * Responsibilities:
- * - MCP tool integration (4 tools)
+ * - MCP tool integration (6 tools)
  * - Tool handler implementation
  * - Error handling
  * - Initialization (LanceDB, Transformers.js)
@@ -214,14 +250,28 @@ export class RAGServer {
         {
           name: 'ingest_file',
           description:
-            'Ingest a document file (PDF, DOCX, TXT, MD) into the vector database for semantic search. File path must be an absolute path. Supports re-ingestion to update existing documents.',
+            'Ingest a document file (PDF, DOCX, PPTX, XLSX/XLS, TXT, MD, JSON, YAML, config files, source code) into the vector database for semantic search. File path must be an absolute path within BASE_DIR. You can also pass a directory path to ingest all supported files inside it (common dependency/build folders are skipped by default, e.g., node_modules, dist, build, target, bin, obj).',
           inputSchema: {
             type: 'object',
             properties: {
               filePath: {
                 type: 'string',
                 description:
-                  'Absolute path to the file to ingest. Example: "/Users/user/documents/manual.pdf"',
+                  'Absolute path to the file or directory to ingest. Example: "/Users/user/documents/manual.pdf" or "/Users/user/Documents"',
+              },
+              recursive: {
+                type: 'boolean',
+                description: 'When filePath is a directory, scan subfolders (default true).',
+              },
+              includeHidden: {
+                type: 'boolean',
+                description: 'When filePath is a directory, include hidden files (default false).',
+              },
+              extensions: {
+                type: 'array',
+                items: { type: 'string' },
+                description:
+                  'When filePath is a directory, limit files to these extensions (e.g., [".md", ".ts"]).',
               },
             },
             required: ['filePath'],
@@ -380,129 +430,209 @@ export class RAGServer {
     }
   }
 
+  private async ingestSingleFile(filePath: string): Promise<IngestResult> {
+    let backup: VectorChunk[] | null = null
+
+    // Parse file (with header/footer filtering for PDFs)
+    // For raw-data files (from ingest_data), read directly without validation
+    // since the path is internally generated and content is already processed
+    const isPdf = filePath.toLowerCase().endsWith('.pdf')
+    let text: string
+    if (isRawDataPath(filePath)) {
+      // Raw-data files: skip validation, read directly
+      text = await readFile(filePath, 'utf-8')
+      console.error(`Read raw-data file: ${filePath} (${text.length} characters)`)
+    } else if (isPdf) {
+      text = await this.parser.parsePdf(filePath, this.embedder)
+    } else {
+      text = await this.parser.parseFile(filePath)
+    }
+
+    // Split text into semantic chunks
+    const chunks = await this.chunker.chunkText(text, this.embedder)
+
+    // Fail-fast: Prevent data loss when chunking produces 0 chunks
+    // This check must happen BEFORE delete to preserve existing data on re-ingest
+    if (chunks.length === 0) {
+      throw new McpError(
+        ErrorCode.InvalidParams,
+        `No chunks generated from file: ${filePath}. The file may be empty or all content was filtered (minimum 50 characters required). Existing data has been preserved.`
+      )
+    }
+
+    // Generate embeddings for final chunks
+    const embeddings = await this.embedder.embedBatch(chunks.map((chunk) => chunk.text))
+
+    // Create backup (if existing data exists)
+    try {
+      const existingFiles = await this.vectorStore.listFiles()
+      const existingFile = existingFiles.find((file) => file.filePath === filePath)
+      if (existingFile && existingFile.chunkCount > 0) {
+        // Backup existing data (retrieve via search)
+        const queryVector = embeddings[0] || []
+        if (queryVector.length > 0) {
+          const allChunks = await this.vectorStore.search(queryVector, undefined, 20) // Retrieve max 20 items
+          backup = allChunks
+            .filter((chunk) => chunk.filePath === filePath)
+            .map((chunk) => ({
+              id: randomUUID(),
+              filePath: chunk.filePath,
+              chunkIndex: chunk.chunkIndex,
+              text: chunk.text,
+              vector: queryVector, // Use dummy vector since actual vector cannot be retrieved
+              metadata: chunk.metadata,
+              timestamp: new Date().toISOString(),
+            }))
+        }
+        console.error(`Backup created: ${backup?.length || 0} chunks for ${filePath}`)
+      }
+    } catch (error) {
+      // Backup creation failure is warning only (for new files)
+      console.warn('Failed to create backup (new file?):', error)
+    }
+
+    // Delete existing data
+    await this.vectorStore.deleteChunks(filePath)
+    console.error(`Deleted existing chunks for: ${filePath}`)
+
+    // Create vector chunks
+    const timestamp = new Date().toISOString()
+    const vectorChunks: VectorChunk[] = chunks.map((chunk, index) => {
+      const embedding = embeddings[index]
+      if (!embedding) {
+        throw new Error(`Missing embedding for chunk ${index}`)
+      }
+      return {
+        id: randomUUID(),
+        filePath,
+        chunkIndex: chunk.index,
+        text: chunk.text,
+        vector: embedding,
+        metadata: {
+          fileName: filePath.split('/').pop() || filePath,
+          fileSize: text.length,
+          fileType: filePath.split('.').pop() || '',
+        },
+        timestamp,
+      }
+    })
+
+    // Insert vectors (transaction processing)
+    try {
+      await this.vectorStore.insertChunks(vectorChunks)
+      console.error(`Inserted ${vectorChunks.length} chunks for: ${filePath}`)
+
+      // Delete backup on success
+      backup = null
+    } catch (insertError) {
+      // Rollback on error
+      if (backup && backup.length > 0) {
+        console.error('Ingestion failed, rolling back...', insertError)
+        try {
+          await this.vectorStore.insertChunks(backup)
+          console.error(`Rollback completed: ${backup.length} chunks restored`)
+        } catch (rollbackError) {
+          console.error('Rollback failed:', rollbackError)
+          throw new Error(
+            `Failed to ingest file and rollback failed: ${(insertError as Error).message}`
+          )
+        }
+      }
+      throw insertError
+    }
+
+    // Result
+    return {
+      filePath,
+      chunkCount: chunks.length,
+      timestamp,
+    }
+  }
+
+  private async ingestDirectory(input: IngestDirectoryInput): Promise<IngestDirectoryResult> {
+    const listOptions: {
+      directoryPath: string
+      recursive?: boolean
+      includeHidden?: boolean
+      extensions?: string[]
+    } = { directoryPath: input.directoryPath }
+    if (input.recursive !== undefined) {
+      listOptions.recursive = input.recursive
+    }
+    if (input.includeHidden !== undefined) {
+      listOptions.includeHidden = input.includeHidden
+    }
+    if (input.extensions !== undefined) {
+      listOptions.extensions = input.extensions
+    }
+
+    const files = await this.parser.listFilesInDirectory(listOptions)
+
+    const failures: { filePath: string; error: string }[] = []
+    let succeeded = 0
+
+    for (const filePath of files) {
+      try {
+        await this.ingestSingleFile(filePath)
+        succeeded += 1
+      } catch (error) {
+        failures.push({
+          filePath,
+          error: (error as Error).message,
+        })
+      }
+    }
+
+    return {
+      directoryPath: input.directoryPath,
+      filesProcessed: files.length,
+      filesSucceeded: succeeded,
+      filesFailed: failures.length,
+      failures,
+    }
+  }
+
   /**
    * ingest_file tool handler (re-ingestion support, transaction processing, rollback capability)
    */
   async handleIngestFile(
     args: IngestFileInput
   ): Promise<{ content: [{ type: 'text'; text: string }] }> {
-    let backup: VectorChunk[] | null = null
-
     try {
-      // Parse file (with header/footer filtering for PDFs)
-      // For raw-data files (from ingest_data), read directly without validation
-      // since the path is internally generated and content is already processed
-      const isPdf = args.filePath.toLowerCase().endsWith('.pdf')
-      let text: string
-      if (isRawDataPath(args.filePath)) {
-        // Raw-data files: skip validation, read directly
-        text = await readFile(args.filePath, 'utf-8')
-        console.error(`Read raw-data file: ${args.filePath} (${text.length} characters)`)
-      } else if (isPdf) {
-        text = await this.parser.parsePdf(args.filePath, this.embedder)
-      } else {
-        text = await this.parser.parseFile(args.filePath)
-      }
+      if (!isRawDataPath(args.filePath)) {
+        let statsResult: Awaited<ReturnType<typeof stat>> | null = null
+        try {
+          statsResult = await stat(args.filePath)
+        } catch {
+          statsResult = null
+        }
 
-      // Split text into semantic chunks
-      const chunks = await this.chunker.chunkText(text, this.embedder)
-
-      // Fail-fast: Prevent data loss when chunking produces 0 chunks
-      // This check must happen BEFORE delete to preserve existing data on re-ingest
-      if (chunks.length === 0) {
-        throw new McpError(
-          ErrorCode.InvalidParams,
-          `No chunks generated from file: ${args.filePath}. The file may be empty or all content was filtered (minimum 50 characters required). Existing data has been preserved.`
-        )
-      }
-
-      // Generate embeddings for final chunks
-      const embeddings = await this.embedder.embedBatch(chunks.map((chunk) => chunk.text))
-
-      // Create backup (if existing data exists)
-      try {
-        const existingFiles = await this.vectorStore.listFiles()
-        const existingFile = existingFiles.find((file) => file.filePath === args.filePath)
-        if (existingFile && existingFile.chunkCount > 0) {
-          // Backup existing data (retrieve via search)
-          const queryVector = embeddings[0] || []
-          if (queryVector.length > 0) {
-            const allChunks = await this.vectorStore.search(queryVector, undefined, 20) // Retrieve max 20 items
-            backup = allChunks
-              .filter((chunk) => chunk.filePath === args.filePath)
-              .map((chunk) => ({
-                id: randomUUID(),
-                filePath: chunk.filePath,
-                chunkIndex: chunk.chunkIndex,
-                text: chunk.text,
-                vector: queryVector, // Use dummy vector since actual vector cannot be retrieved
-                metadata: chunk.metadata,
-                timestamp: new Date().toISOString(),
-              }))
+        if (statsResult?.isDirectory()) {
+          const directoryInput: IngestDirectoryInput = { directoryPath: args.filePath }
+          if (args.recursive !== undefined) {
+            directoryInput.recursive = args.recursive
           }
-          console.error(`Backup created: ${backup?.length || 0} chunks for ${args.filePath}`)
-        }
-      } catch (error) {
-        // Backup creation failure is warning only (for new files)
-        console.warn('Failed to create backup (new file?):', error)
-      }
+          if (args.includeHidden !== undefined) {
+            directoryInput.includeHidden = args.includeHidden
+          }
+          if (args.extensions !== undefined) {
+            directoryInput.extensions = args.extensions
+          }
 
-      // Delete existing data
-      await this.vectorStore.deleteChunks(args.filePath)
-      console.error(`Deleted existing chunks for: ${args.filePath}`)
+          const result = await this.ingestDirectory(directoryInput)
 
-      // Create vector chunks
-      const timestamp = new Date().toISOString()
-      const vectorChunks: VectorChunk[] = chunks.map((chunk, index) => {
-        const embedding = embeddings[index]
-        if (!embedding) {
-          throw new Error(`Missing embedding for chunk ${index}`)
-        }
-        return {
-          id: randomUUID(),
-          filePath: args.filePath,
-          chunkIndex: chunk.index,
-          text: chunk.text,
-          vector: embedding,
-          metadata: {
-            fileName: args.filePath.split('/').pop() || args.filePath,
-            fileSize: text.length,
-            fileType: args.filePath.split('.').pop() || '',
-          },
-          timestamp,
-        }
-      })
-
-      // Insert vectors (transaction processing)
-      try {
-        await this.vectorStore.insertChunks(vectorChunks)
-        console.error(`Inserted ${vectorChunks.length} chunks for: ${args.filePath}`)
-
-        // Delete backup on success
-        backup = null
-      } catch (insertError) {
-        // Rollback on error
-        if (backup && backup.length > 0) {
-          console.error('Ingestion failed, rolling back...', insertError)
-          try {
-            await this.vectorStore.insertChunks(backup)
-            console.error(`Rollback completed: ${backup.length} chunks restored`)
-          } catch (rollbackError) {
-            console.error('Rollback failed:', rollbackError)
-            throw new Error(
-              `Failed to ingest file and rollback failed: ${(insertError as Error).message}`
-            )
+          return {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify(result, null, 2),
+              },
+            ],
           }
         }
-        throw insertError
       }
 
-      // Result
-      const result: IngestResult = {
-        filePath: args.filePath,
-        chunkCount: chunks.length,
-        timestamp,
-      }
+      const result = await this.ingestSingleFile(args.filePath)
 
       return {
         content: [
