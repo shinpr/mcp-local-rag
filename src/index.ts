@@ -1,129 +1,33 @@
 #!/usr/bin/env node
-// Entry point for RAG MCP Server
+// Entry point for mcp-local-rag
+// Routes to CLI subcommands or starts the MCP server
 
-import { run as runSkillsInstall } from './bin/install-skills.js'
-import { RAGServer } from './server/index.js'
-import type { GroupingMode } from './vectordb/index.js'
+import { handleCli } from './cli-main.js'
+import { startServer } from './server-main.js'
 
 // ============================================
-// Subcommand Routing
+// Routing
 // ============================================
+
+const SUBCOMMANDS = new Set(['skills'])
 
 const args = process.argv.slice(2)
+const firstArg = args[0]
 
-// Handle "skills" subcommand
-if (args[0] === 'skills') {
-  if (args[1] === 'install') {
-    // npx mcp-local-rag skills install [options]
-    runSkillsInstall(args.slice(2))
-    process.exit(0)
-  } else {
-    console.error('Unknown skills subcommand. Usage: npx mcp-local-rag skills install [options]')
-    console.error('Run "npx mcp-local-rag skills install --help" for more information.')
+if (firstArg && SUBCOMMANDS.has(firstArg)) {
+  // CLI subcommand
+  handleCli(args)
+} else {
+  // Default: start MCP server
+  process.on('unhandledRejection', (reason, promise) => {
+    console.error('Unhandled Rejection at:', promise, 'reason:', reason)
     process.exit(1)
-  }
-}
+  })
 
-// ============================================
-// MCP Server (default behavior)
-// ============================================
-
-/**
- * Parse grouping mode from environment variable
- */
-function parseGroupingMode(value: string | undefined): GroupingMode | undefined {
-  if (!value) return undefined
-  const normalized = value.toLowerCase().trim()
-  if (normalized === 'similar' || normalized === 'related') {
-    return normalized
-  }
-  console.error(
-    `Invalid RAG_GROUPING value: "${value}". Expected "similar" or "related". Ignoring.`
-  )
-  return undefined
-}
-
-/**
- * Parse max distance from environment variable
- */
-function parseMaxDistance(value: string | undefined): number | undefined {
-  if (!value) return undefined
-  const parsed = Number.parseFloat(value)
-  if (Number.isNaN(parsed) || parsed <= 0) {
-    console.error(`Invalid RAG_MAX_DISTANCE value: "${value}". Expected positive number. Ignoring.`)
-    return undefined
-  }
-  return parsed
-}
-
-/**
- * Parse hybrid weight from environment variable
- */
-function parseHybridWeight(value: string | undefined): number | undefined {
-  if (!value) return undefined
-  const parsed = Number.parseFloat(value)
-  if (Number.isNaN(parsed) || parsed < 0 || parsed > 1) {
-    console.error(
-      `Invalid RAG_HYBRID_WEIGHT value: "${value}". Expected 0.0-1.0. Using default (0.6).`
-    )
-    return undefined
-  }
-  return parsed
-}
-
-/**
- * Entry point - Start RAG MCP Server
- */
-async function main(): Promise<void> {
-  try {
-    // RAGServer configuration
-    const config: ConstructorParameters<typeof RAGServer>[0] = {
-      dbPath: process.env['DB_PATH'] || './lancedb/',
-      modelName: process.env['MODEL_NAME'] || 'Xenova/all-MiniLM-L6-v2',
-      cacheDir: process.env['CACHE_DIR'] || './models/',
-      baseDir: process.env['BASE_DIR'] || process.cwd(),
-      maxFileSize: Number.parseInt(process.env['MAX_FILE_SIZE'] || '104857600', 10), // 100MB
-    }
-
-    // Add quality filter settings only if defined
-    const maxDistance = parseMaxDistance(process.env['RAG_MAX_DISTANCE'])
-    const grouping = parseGroupingMode(process.env['RAG_GROUPING'])
-    const hybridWeight = parseHybridWeight(process.env['RAG_HYBRID_WEIGHT'])
-    if (maxDistance !== undefined) {
-      config.maxDistance = maxDistance
-    }
-    if (grouping !== undefined) {
-      config.grouping = grouping
-    }
-    if (hybridWeight !== undefined) {
-      config.hybridWeight = hybridWeight
-    }
-
-    console.error('Starting RAG MCP Server...')
-    console.error('Configuration:', config)
-
-    // Start RAGServer
-    const server = new RAGServer(config)
-    await server.initialize()
-    await server.run()
-
-    console.error('RAG MCP Server started successfully')
-  } catch (error) {
-    console.error('Failed to start RAG MCP Server:', error)
+  process.on('uncaughtException', (error) => {
+    console.error('Uncaught Exception:', error)
     process.exit(1)
-  }
+  })
+
+  startServer()
 }
-
-// Global error handling
-process.on('unhandledRejection', (reason, promise) => {
-  console.error('Unhandled Rejection at:', promise, 'reason:', reason)
-  process.exit(1)
-})
-
-process.on('uncaughtException', (error) => {
-  console.error('Uncaught Exception:', error)
-  process.exit(1)
-})
-
-// Execute main
-main()
