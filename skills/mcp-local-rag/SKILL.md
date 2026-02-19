@@ -10,6 +10,7 @@ description: Provides score interpretation (< 0.3 good, > 0.5 skip), query optim
 | Tool | Use When |
 |------|----------|
 | `ingest_file` | Local files (PDF, DOCX, TXT, MD) |
+| `ingest_directory` | Recursively ingest all files in a directory |
 | `ingest_data` | Raw content (HTML, text) with source URL |
 | `query_documents` | Semantic + keyword hybrid search |
 | `delete_file` / `list_files` / `status` | Management |
@@ -76,6 +77,13 @@ When to include vs skip—based on answer quality, not just score.
 ```
 ingest_file({ filePath: "/absolute/path/to/document.pdf" })
 ```
+
+### ingest_directory
+```
+ingest_directory({ directoryPath: "/absolute/path/to/docs" })
+ingest_directory({ directoryPath: "/absolute/path/to/docs", recursive: false })
+```
+Recursively scans for PDF, DOCX, TXT, MD files. Set `recursive: false` to skip subdirectories. Returns per-file results with success/failure counts.
 
 ### ingest_data
 ```
