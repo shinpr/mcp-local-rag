@@ -89,8 +89,8 @@ You want AI to search your documents—technical specs, research papers, interna
 
 ## Usage
 
-The server provides 6 MCP tools: ingest file, ingest data, search, list, delete, status
-(`ingest_file`, `ingest_data`, `query_documents`, `list_files`, `delete_file`, `status`).
+The server provides 7 MCP tools: ingest file, ingest directory, ingest data, search, list, delete, status
+(`ingest_file`, `ingest_directory`, `ingest_data`, `query_documents`, `list_files`, `delete_file`, `status`).
 
 ### Ingesting Documents
 
@@ -101,6 +101,14 @@ The server provides 6 MCP tools: ingest file, ingest data, search, list, delete,
 Supports PDF, DOCX, TXT, and Markdown. The server extracts text, splits it into chunks, generates embeddings locally, and stores everything in a local vector database.
 
 Re-ingesting the same file replaces the old version automatically.
+
+### Ingesting a Directory
+
+```
+"Ingest all documents from /Users/me/docs/project"
+```
+
+Recursively scans the directory for supported files (PDF, DOCX, TXT, MD) and ingests them all. Returns per-file results with success/failure counts. Use `recursive: false` to scan only the top-level directory.
 
 ### Ingesting HTML Content
 

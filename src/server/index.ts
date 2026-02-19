@@ -1,7 +1,8 @@
 // RAGServer implementation with MCP tools
 
 import { randomUUID } from 'node:crypto'
-import { readFile, unlink } from 'node:fs/promises'
+import { readFile, readdir, unlink } from 'node:fs/promises'
+import { extname, join } from 'node:path'
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import {
@@ -85,6 +86,34 @@ export interface IngestDataInput {
   content: string
   /** Content metadata */
   metadata: IngestDataMetadata
+}
+
+/**
+ * ingest_directory tool input
+ */
+export interface IngestDirectoryInput {
+  /** Absolute path to the directory */
+  directoryPath: string
+  /** Whether to recurse into subdirectories (default: true) */
+  recursive?: boolean
+}
+
+/**
+ * ingest_directory tool output
+ */
+export interface IngestDirectoryResult {
+  /** Directory path */
+  directoryPath: string
+  /** Total files found */
+  totalFiles: number
+  /** Successfully ingested files */
+  succeeded: number
+  /** Failed files */
+  failed: number
+  /** Per-file results */
+  results: Array<{ filePath: string; chunkCount?: number; error?: string }>
+  /** Timestamp */
+  timestamp: string
 }
 
 /**
@@ -259,6 +288,27 @@ export class RAGServer {
           },
         },
         {
+          name: 'ingest_directory',
+          description:
+            'Recursively ingest all supported document files (PDF, DOCX, TXT, MD) from a directory into the vector database. Directory path must be absolute. Skips unsupported file types. Returns per-file results.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              directoryPath: {
+                type: 'string',
+                description:
+                  'Absolute path to the directory to ingest. Example: "/Users/user/documents/project-docs"',
+              },
+              recursive: {
+                type: 'boolean',
+                description:
+                  'Whether to recurse into subdirectories (default: true)',
+              },
+            },
+            required: ['directoryPath'],
+          },
+        },
+        {
           name: 'delete_file',
           description:
             'Delete a previously ingested file or data from the vector database. Use filePath for files ingested via ingest_file, or source for data ingested via ingest_data. Either filePath or source must be provided.',
@@ -309,6 +359,10 @@ export class RAGServer {
           case 'ingest_data':
             return await this.handleIngestData(
               request.params.arguments as unknown as IngestDataInput
+            )
+          case 'ingest_directory':
+            return await this.handleIngestDirectory(
+              request.params.arguments as unknown as IngestDirectoryInput
             )
           case 'delete_file':
             return await this.handleDeleteFile(
@@ -528,6 +582,126 @@ export class RAGServer {
       console.error('Failed to ingest file:', errorMessage)
 
       throw new Error(`Failed to ingest file: ${errorMessage}`)
+    }
+  }
+
+  /**
+   * Supported file extensions for ingestion
+   */
+  private static readonly SUPPORTED_EXTENSIONS = new Set(['.pdf', '.docx', '.txt', '.md'])
+
+  /**
+   * Recursively collect files with supported extensions from a directory
+   */
+  private async collectFiles(dirPath: string, recursive: boolean): Promise<string[]> {
+    const files: string[] = []
+    const entries = await readdir(dirPath, { withFileTypes: true })
+
+    for (const entry of entries) {
+      const fullPath = join(dirPath, entry.name)
+      if (entry.isDirectory() && recursive) {
+        const subFiles = await this.collectFiles(fullPath, recursive)
+        files.push(...subFiles)
+      } else if (entry.isFile()) {
+        const ext = extname(entry.name).toLowerCase()
+        if (RAGServer.SUPPORTED_EXTENSIONS.has(ext)) {
+          files.push(fullPath)
+        }
+      }
+    }
+
+    return files
+  }
+
+  /**
+   * ingest_directory tool handler
+   * Recursively finds and ingests all supported files in a directory
+   */
+  async handleIngestDirectory(
+    args: IngestDirectoryInput
+  ): Promise<{ content: [{ type: 'text'; text: string }] }> {
+    try {
+      const recursive = args.recursive !== false
+
+      // Validate directory path is absolute
+      if (!args.directoryPath.startsWith('/') && !(/^[a-zA-Z]:[\\/]/.test(args.directoryPath))) {
+        throw new McpError(
+          ErrorCode.InvalidParams,
+          `Directory path must be absolute (received: ${args.directoryPath})`
+        )
+      }
+
+      console.error(`Scanning directory: ${args.directoryPath} (recursive: ${recursive})`)
+
+      // Collect all supported files
+      let files: string[]
+      try {
+        files = await this.collectFiles(args.directoryPath, recursive)
+      } catch (error) {
+        throw new McpError(
+          ErrorCode.InvalidParams,
+          `Failed to read directory: ${args.directoryPath} — ${(error as Error).message}`
+        )
+      }
+
+      if (files.length === 0) {
+        throw new McpError(
+          ErrorCode.InvalidParams,
+          `No supported files found in ${args.directoryPath}. Supported formats: PDF, DOCX, TXT, MD.`
+        )
+      }
+
+      console.error(`Found ${files.length} supported file(s), starting ingestion...`)
+
+      // Ingest each file, collecting results
+      const results: IngestDirectoryResult['results'] = []
+      let succeeded = 0
+      let failed = 0
+
+      for (const filePath of files) {
+        try {
+          const response = await this.handleIngestFile({ filePath })
+          const parsed = JSON.parse(response.content[0].text) as IngestResult
+          results.push({ filePath, chunkCount: parsed.chunkCount })
+          succeeded++
+          console.error(`[${succeeded + failed}/${files.length}] Ingested: ${filePath}`)
+        } catch (error) {
+          const msg = (error as Error).message
+          results.push({ filePath, error: msg })
+          failed++
+          console.error(`[${succeeded + failed}/${files.length}] Failed: ${filePath} — ${msg}`)
+        }
+      }
+
+      const result: IngestDirectoryResult = {
+        directoryPath: args.directoryPath,
+        totalFiles: files.length,
+        succeeded,
+        failed,
+        results,
+        timestamp: new Date().toISOString(),
+      }
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify(result, null, 2),
+          },
+        ],
+      }
+    } catch (error) {
+      if (error instanceof McpError) {
+        throw error
+      }
+
+      const errorMessage =
+        process.env['NODE_ENV'] === 'development'
+          ? (error as Error).stack || (error as Error).message
+          : (error as Error).message
+
+      console.error('Failed to ingest directory:', errorMessage)
+      throw new Error(`Failed to ingest directory: ${errorMessage}`)
     }
   }
 
