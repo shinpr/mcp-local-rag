@@ -14,7 +14,8 @@ import { SemanticChunker } from '../chunker/index.js'
 import { Embedder } from '../embedder/index.js'
 import { parseHtml } from '../parser/html-parser.js'
 import { DocumentParser } from '../parser/index.js'
-import { type GroupingMode, type VectorChunk, VectorStore } from '../vectordb/index.js'
+import { type VectorChunk, VectorStore } from '../vectordb/index.js'
+import { formatErrorMessage } from './error-utils.js'
 import {
   type ContentFormat,
   extractSourceFromPath,
@@ -22,123 +23,28 @@ import {
   isRawDataPath,
   saveRawData,
 } from './raw-data-utils.js'
+import { toolDefinitions } from './tool-definitions.js'
+import type {
+  DeleteFileInput,
+  IngestDataInput,
+  IngestFileInput,
+  IngestResult,
+  QueryDocumentsInput,
+  QueryResult,
+  RAGServerConfig,
+} from './types.js'
 
-// ============================================
-// Type Definitions
-// ============================================
+export type {
+  RAGServerConfig,
+  QueryDocumentsInput,
+  IngestFileInput,
+  IngestDataInput,
+  DeleteFileInput,
+  IngestResult,
+  QueryResult,
+} from './types.js'
 
-/**
- * RAGServer configuration
- */
-export interface RAGServerConfig {
-  /** LanceDB database path */
-  dbPath: string
-  /** Transformers.js model path */
-  modelName: string
-  /** Model cache directory */
-  cacheDir: string
-  /** Document base directory */
-  baseDir: string
-  /** Maximum file size (100MB) */
-  maxFileSize: number
-  /** Maximum distance threshold for quality filtering (optional) */
-  maxDistance?: number
-  /** Grouping mode for quality filtering (optional) */
-  grouping?: GroupingMode
-  /** Hybrid search weight for BM25 (0.0 = vector only, 1.0 = BM25 only, default 0.6) */
-  hybridWeight?: number
-}
-
-/**
- * query_documents tool input
- */
-export interface QueryDocumentsInput {
-  /** Natural language query */
-  query: string
-  /** Number of results to retrieve (default 10) */
-  limit?: number
-}
-
-/**
- * ingest_file tool input
- */
-export interface IngestFileInput {
-  /** File path */
-  filePath: string
-}
-
-/**
- * ingest_data tool input metadata
- */
-export interface IngestDataMetadata {
-  /** Source identifier: URL ("https://...") or custom ID ("clipboard://2024-12-30") */
-  source: string
-  /** Content format */
-  format: ContentFormat
-}
-
-/**
- * ingest_data tool input
- */
-export interface IngestDataInput {
-  /** Content to ingest (text, HTML, or Markdown) */
-  content: string
-  /** Content metadata */
-  metadata: IngestDataMetadata
-}
-
-/**
- * delete_file tool input
- * Either filePath or source must be provided
- */
-export interface DeleteFileInput {
-  /** File path (for files ingested via ingest_file) */
-  filePath?: string
-  /** Source identifier (for data ingested via ingest_data) */
-  source?: string
-}
-
-/**
- * ingest_file tool output
- */
-export interface IngestResult {
-  /** File path */
-  filePath: string
-  /** Chunk count */
-  chunkCount: number
-  /** Timestamp */
-  timestamp: string
-}
-
-/**
- * query_documents tool output
- */
-export interface QueryResult {
-  /** File path */
-  filePath: string
-  /** Chunk index */
-  chunkIndex: number
-  /** Text */
-  text: string
-  /** Similarity score */
-  score: number
-  /** Original source (only for raw-data files, e.g., URLs ingested via ingest_data) */
-  source?: string
-}
-
-// ============================================
-// RAGServer Class
-// ============================================
-
-/**
- * RAG server compliant with MCP Protocol
- *
- * Responsibilities:
- * - MCP tool integration (4 tools)
- * - Tool handler implementation
- * - Error handling
- * - Initialization (LanceDB, Transformers.js)
- */
+/** RAG server compliant with MCP Protocol */
 export class RAGServer {
   private readonly server: Server
   private readonly vectorStore: VectorStore
@@ -190,107 +96,7 @@ export class RAGServer {
   private setupHandlers(): void {
     // Tool list
     this.server.setRequestHandler(ListToolsRequestSchema, async () => ({
-      tools: [
-        {
-          name: 'query_documents',
-          description:
-            'Search ingested documents. Your query words are matched exactly (keyword search). Your query meaning is matched semantically (vector search). Preserve specific terms from the user. Add context if the query is ambiguous. Results include score (0 = most relevant, higher = less relevant).',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              query: {
-                type: 'string',
-                description: 'Search query. Include specific terms and add context if needed.',
-              },
-              limit: {
-                type: 'number',
-                description:
-                  'Maximum number of results to return (default: 10). Recommended: 5 for precision, 10 for balance, 20 for broad exploration.',
-              },
-            },
-            required: ['query'],
-          },
-        },
-        {
-          name: 'ingest_file',
-          description:
-            'Ingest a document file (PDF, DOCX, TXT, MD) into the vector database for semantic search. File path must be an absolute path. Supports re-ingestion to update existing documents.',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              filePath: {
-                type: 'string',
-                description:
-                  'Absolute path to the file to ingest. Example: "/Users/user/documents/manual.pdf"',
-              },
-            },
-            required: ['filePath'],
-          },
-        },
-        {
-          name: 'ingest_data',
-          description:
-            'Ingest content as a string, not from a file. Use for: fetched web pages (format: html), copied text (format: text), or markdown strings (format: markdown). The source identifier enables re-ingestion to update existing content. For files on disk, use ingest_file instead.',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              content: {
-                type: 'string',
-                description: 'The content to ingest (text, HTML, or Markdown)',
-              },
-              metadata: {
-                type: 'object',
-                properties: {
-                  source: {
-                    type: 'string',
-                    description:
-                      'Source identifier. For web pages, use the URL (e.g., "https://example.com/page"). For other content, use URL-scheme format: "{type}://{date}" or "{type}://{date}/{detail}". Examples: "clipboard://2024-12-30", "chat://2024-12-30/project-discussion", "note://2024-12-30/meeting".',
-                  },
-                  format: {
-                    type: 'string',
-                    enum: ['text', 'html', 'markdown'],
-                    description: 'Content format: "text", "html", or "markdown"',
-                  },
-                },
-                required: ['source', 'format'],
-              },
-            },
-            required: ['content', 'metadata'],
-          },
-        },
-        {
-          name: 'delete_file',
-          description:
-            'Delete a previously ingested file or data from the vector database. Use filePath for files ingested via ingest_file, or source for data ingested via ingest_data. Either filePath or source must be provided.',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              filePath: {
-                type: 'string',
-                description:
-                  'Absolute path to the file (for ingest_file). Example: "/Users/user/documents/manual.pdf"',
-              },
-              source: {
-                type: 'string',
-                description:
-                  'Source identifier used in ingest_data. Examples: "https://example.com/page", "clipboard://2024-12-30"',
-              },
-            },
-          },
-        },
-        {
-          name: 'list_files',
-          description:
-            'List all ingested files in the vector database. Returns file paths and chunk counts for each document.',
-          inputSchema: { type: 'object', properties: {} },
-        },
-        {
-          name: 'status',
-          description:
-            'Get system status including total documents, total chunks, database size, and configuration information.',
-          inputSchema: { type: 'object', properties: {} },
-        },
-      ],
+      tools: toolDefinitions,
     }))
 
     // Tool invocation
@@ -519,11 +325,7 @@ export class RAGServer {
         throw error
       }
 
-      // Error handling: show stack trace only in development mode (secure by default)
-      const errorMessage =
-        process.env['NODE_ENV'] === 'development'
-          ? (error as Error).stack || (error as Error).message
-          : (error as Error).message
+      const errorMessage = formatErrorMessage(error)
 
       console.error('Failed to ingest file:', errorMessage)
 
@@ -587,11 +389,7 @@ export class RAGServer {
         throw ingestError
       }
     } catch (error) {
-      // Error handling: show stack trace only in development mode (secure by default)
-      const errorMessage =
-        process.env['NODE_ENV'] === 'development'
-          ? (error as Error).stack || (error as Error).message
-          : (error as Error).message
+      const errorMessage = formatErrorMessage(error)
 
       console.error('Failed to ingest data:', errorMessage)
 
@@ -710,11 +508,7 @@ export class RAGServer {
         ],
       }
     } catch (error) {
-      // Error handling: show stack trace only in development mode (secure by default)
-      const errorMessage =
-        process.env['NODE_ENV'] === 'development'
-          ? (error as Error).stack || (error as Error).message
-          : (error as Error).message
+      const errorMessage = formatErrorMessage(error)
 
       console.error('Failed to delete file:', errorMessage)
 
