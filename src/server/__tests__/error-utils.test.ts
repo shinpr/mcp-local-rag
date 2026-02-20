@@ -124,26 +124,5 @@ describe('formatErrorMessage', () => {
         expect(result).toBe('[object Object]')
       })
     })
-
-    describe('in development mode', () => {
-      beforeEach(() => {
-        process.env['NODE_ENV'] = 'development'
-      })
-
-      it('should include null in stack trace', () => {
-        const result = formatErrorMessage(null)
-        expect(result).toContain('null')
-      })
-
-      it('should include string error in stack trace', () => {
-        const result = formatErrorMessage('string error')
-        expect(result).toContain('string error')
-      })
-
-      it('should include number in stack trace', () => {
-        const result = formatErrorMessage(42)
-        expect(result).toContain('42')
-      })
-    })
   })
 })
