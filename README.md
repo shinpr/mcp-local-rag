@@ -417,12 +417,7 @@ src/
 
 ## Contributing
 
-Contributions welcome. Before submitting a PR:
-
-1. Run tests: `pnpm test`
-2. Check quality: `pnpm run check:all`
-3. Add tests for new features
-4. Update docs if behavior changes
+Contributions welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for setup and guidelines.
 
 ## License
 
