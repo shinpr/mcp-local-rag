@@ -465,7 +465,7 @@ export class RAGServer {
 
       // Only validate user-provided filePath (not internally generated paths)
       if (!skipValidation) {
-        this.parser.validateFilePath(targetPath)
+        await this.parser.validateFilePath(targetPath)
       }
 
       // Delete chunks from vector database
