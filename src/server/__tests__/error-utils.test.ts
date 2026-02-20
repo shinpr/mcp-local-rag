@@ -70,12 +70,59 @@ describe('formatErrorMessage', () => {
   })
 
   describe('with non-Error objects', () => {
-    it('should handle string errors cast as Error', () => {
-      // The function casts to Error, matching the original inline pattern behavior
+    it('should preserve message from object with string message property', () => {
       const error = { message: 'Custom error object', stack: undefined }
       process.env['NODE_ENV'] = 'production'
       const result = formatErrorMessage(error)
       expect(result).toBe('Custom error object')
+    })
+  })
+
+  describe('with non-Error thrown values', () => {
+    describe('in production mode', () => {
+      beforeEach(() => {
+        process.env['NODE_ENV'] = 'production'
+      })
+
+      it('should return "null" when error is null', () => {
+        const result = formatErrorMessage(null)
+        expect(result).toBe('null')
+      })
+
+      it('should return "undefined" when error is undefined', () => {
+        const result = formatErrorMessage(undefined)
+        expect(result).toBe('undefined')
+      })
+
+      it('should return the string itself when error is a string', () => {
+        const result = formatErrorMessage('string error')
+        expect(result).toBe('string error')
+      })
+
+      it('should return stringified number when error is a number', () => {
+        const result = formatErrorMessage(42)
+        expect(result).toBe('42')
+      })
+
+      it('should return empty string when error is empty string', () => {
+        const result = formatErrorMessage('')
+        expect(result).toBe('')
+      })
+
+      it('should return message when object has string message property', () => {
+        const result = formatErrorMessage({ message: 'obj error' })
+        expect(result).toBe('obj error')
+      })
+
+      it('should return stringified object when object has non-string message', () => {
+        const result = formatErrorMessage({ message: 123 })
+        expect(result).toBe('[object Object]')
+      })
+
+      it('should return stringified object when object has no message', () => {
+        const result = formatErrorMessage({ custom: true })
+        expect(result).toBe('[object Object]')
+      })
     })
   })
 })
