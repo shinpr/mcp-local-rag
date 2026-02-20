@@ -36,7 +36,7 @@ export type GroupingMode = 'similar' | 'related'
 /**
  * VectorStore configuration
  */
-export interface VectorStoreConfig {
+interface VectorStoreConfig {
   /** LanceDB database path */
   dbPath: string
   /** Table name */
@@ -52,7 +52,7 @@ export interface VectorStoreConfig {
 /**
  * Document metadata
  */
-export interface DocumentMetadata {
+interface DocumentMetadata {
   /** File name */
   fileName: string
   /** File size in bytes */
@@ -84,7 +84,7 @@ export interface VectorChunk {
 /**
  * Search result
  */
-export interface SearchResult {
+interface SearchResult {
   /** File path */
   filePath: string
   /** Chunk index */
@@ -164,7 +164,7 @@ function toSearchResult(raw: unknown): SearchResult {
 /**
  * Database error
  */
-export class DatabaseError extends Error {
+class DatabaseError extends Error {
   constructor(
     message: string,
     public override readonly cause?: Error
