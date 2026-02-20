@@ -15,7 +15,7 @@ export type { EmbedderInterface }
 /**
  * Text item with position information from PDF
  */
-export interface TextItemWithPosition {
+interface TextItemWithPosition {
   text: string
   x: number
   y: number
@@ -259,7 +259,7 @@ function medianPairwiseSimilarity(embeddings: number[][]): number {
 /**
  * Configuration for sentence-level pattern detection
  */
-export interface SentencePatternConfig {
+interface SentencePatternConfig {
   /** Similarity threshold for pattern detection (default: 0.85) */
   similarityThreshold: number
   /** Minimum pages required for pattern detection (default: 3) */
@@ -269,7 +269,7 @@ export interface SentencePatternConfig {
 }
 
 /** Default configuration for sentence-level pattern detection */
-export const DEFAULT_SENTENCE_PATTERN_CONFIG: SentencePatternConfig = {
+const DEFAULT_SENTENCE_PATTERN_CONFIG: SentencePatternConfig = {
   similarityThreshold: 0.85,
   minPages: 3,
   samplePages: 5,
@@ -278,7 +278,7 @@ export const DEFAULT_SENTENCE_PATTERN_CONFIG: SentencePatternConfig = {
 /**
  * Result of sentence-level pattern detection
  */
-export interface SentencePatternResult {
+interface SentencePatternResult {
   /** Whether first sentences should be removed (detected as header) */
   removeFirstSentence: boolean
   /** Whether last sentences should be removed (detected as footer) */

@@ -46,7 +46,7 @@ export interface IngestFileInput {
 /**
  * ingest_data tool input metadata
  */
-export interface IngestDataMetadata {
+interface IngestDataMetadata {
   /** Source identifier: URL ("https://...") or custom ID ("clipboard://2024-12-30") */
   source: string
   /** Content format */
