@@ -94,7 +94,12 @@ describe('DocumentParser', () => {
       await symlink('/nonexistent/path/to/file.txt', linkPath)
 
       // Should reject because symlink target cannot be resolved
-      await expect(parser.validateFilePath(linkPath)).rejects.toThrow(ValidationError)
+      await expect(parser.validateFilePath(linkPath)).rejects.toThrow(
+        expect.objectContaining({
+          name: 'ValidationError',
+          message: expect.stringMatching(/Cannot resolve|broken symlink/),
+        })
+      )
     })
 
     it('should accept non-symlink file within baseDir (regression guard)', async () => {

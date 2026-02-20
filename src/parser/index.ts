@@ -62,6 +62,7 @@ export class FileOperationError extends Error {
  */
 export class DocumentParser {
   private readonly config: ParserConfig
+  /** Lazily cached realpath of baseDir. Assumes baseDir is stable for the process lifetime. */
   private resolvedBaseDir: string | null = null
 
   constructor(config: ParserConfig) {
@@ -109,7 +110,9 @@ export class DocumentParser {
         )
       }
 
-      // File doesn't exist at all - fall back to resolve() for path validation
+      // File doesn't exist at all - fall back to resolve() for path validation.
+      // Note: resolve() is string-based and cannot detect symlinked parent directories.
+      // This is acceptable because non-existent files will fail at subsequent readFile/statSync.
       resolvedPath = resolve(filePath)
     }
 

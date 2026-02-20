@@ -181,9 +181,8 @@ This approach provides accurate search results for natural language queries.`
 
     // AC interpretation: [Security requirement] Access outside baseDir via symbolic links is rejected
     // Validation: Calling ingest_file with symbolic link pointing outside baseDir returns ValidationError
-    // Note: Uses .txt extension to ensure the test validates symlink defense (BASE_DIR check),
-    // not file extension filtering. Previously used link_to_etc_passwd (no extension) which
-    // was caught by "Unsupported file format" before the symlink was ever followed.
+    // Uses .txt extension to ensure the test validates symlink defense (BASE_DIR check),
+    // not file extension filtering.
     it('Symbolic link pointing outside baseDir rejected with ValidationError about BASE_DIR', async () => {
       const parser = new DocumentParser({
         baseDir: fixturesDir,
@@ -201,11 +200,8 @@ This approach provides accurate search results for natural language queries.`
 
       // Create symbolic link with .txt extension: fixturesDir/link.txt -> outsideDir/secret.txt
       const linkPath = resolve(fixturesDir, 'link.txt')
-      try {
-        await symlink(outsideFile, linkPath)
-      } catch {
-        // Ignore symlink creation failure (if already exists)
-      }
+      await rm(linkPath, { force: true })
+      await symlink(outsideFile, linkPath)
 
       try {
         // Verify: ValidationError is thrown with BASE_DIR message (symlink defense),
