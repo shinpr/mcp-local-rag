@@ -3,10 +3,6 @@
 import type { GroupingMode } from '../vectordb/index.js'
 import type { ContentFormat } from './raw-data-utils.js'
 
-// ============================================
-// Type Definitions
-// ============================================
-
 /**
  * RAGServer configuration
  */
