@@ -15,7 +15,7 @@ import { type EmbedderInterface, type PageData, filterPageBoundarySentences } fr
 /**
  * DocumentParser configuration
  */
-export interface ParserConfig {
+interface ParserConfig {
   /** Security: allowed base directory */
   baseDir: string
   /** Maximum file size (100MB) */
