@@ -1,8 +1,8 @@
 // DocumentParser implementation with PDF/DOCX/TXT/MD support
 
 import { statSync } from 'node:fs'
-import { readFile } from 'node:fs/promises'
-import { extname, isAbsolute, resolve } from 'node:path'
+import { lstat, readFile, realpath } from 'node:fs/promises'
+import { extname, isAbsolute, resolve, sep } from 'node:path'
 import mammoth from 'mammoth'
 import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs'
 import type { TextItem } from 'pdfjs-dist/types/src/display/api'
@@ -62,6 +62,7 @@ export class FileOperationError extends Error {
  */
 export class DocumentParser {
   private readonly config: ParserConfig
+  private resolvedBaseDir: string | null = null
 
   constructor(config: ParserConfig) {
     this.config = config
@@ -73,21 +74,49 @@ export class DocumentParser {
    * @param filePath - File path to validate (must be absolute)
    * @throws ValidationError - When path is not absolute or outside BASE_DIR
    */
-  validateFilePath(filePath: string): void {
-    // Check if path is absolute
+  async validateFilePath(filePath: string): Promise<void> {
+    // Check if path is absolute (fast-fail without syscall)
     if (!isAbsolute(filePath)) {
       throw new ValidationError(
         `File path must be absolute path (received: ${filePath}). Please provide an absolute path within BASE_DIR.`
       )
     }
 
-    // Check if path is within BASE_DIR
-    const baseDir = resolve(this.config.baseDir)
-    const normalizedPath = resolve(filePath)
+    // Lazily resolve and cache the real baseDir path (follows symlinks)
+    if (!this.resolvedBaseDir) {
+      const resolved = await realpath(resolve(this.config.baseDir))
+      // Ensure trailing separator for safe prefix comparison
+      this.resolvedBaseDir = resolved.endsWith(sep) ? resolved : resolved + sep
+    }
 
-    if (!normalizedPath.startsWith(baseDir)) {
+    // Resolve the real path of the file (follows symlinks)
+    let resolvedPath: string
+    try {
+      resolvedPath = await realpath(filePath)
+    } catch (error) {
+      // realpath fails if path doesn't exist on filesystem.
+      // Distinguish broken symlinks from genuinely non-existent paths:
+      // - Broken symlink: lstat succeeds (symlink entry exists) -> reject
+      // - Non-existent path: lstat fails -> fall back to resolve() for validation
+      const isSymlink = await lstat(filePath)
+        .then((stats) => stats.isSymbolicLink())
+        .catch(() => false)
+
+      if (isSymlink) {
+        throw new ValidationError(
+          `Cannot resolve file path: ${filePath}. The file may not exist or is a broken symlink.`,
+          error as Error
+        )
+      }
+
+      // File doesn't exist at all - fall back to resolve() for path validation
+      resolvedPath = resolve(filePath)
+    }
+
+    // Check if resolved path is within BASE_DIR
+    if (!resolvedPath.startsWith(this.resolvedBaseDir)) {
       throw new ValidationError(
-        `File path must be within BASE_DIR (${baseDir}). Received path outside BASE_DIR: ${filePath}`
+        `File path must be within BASE_DIR (${this.resolvedBaseDir}). Received path outside BASE_DIR: ${filePath}`
       )
     }
   }
@@ -125,7 +154,7 @@ export class DocumentParser {
    */
   async parseFile(filePath: string): Promise<string> {
     // Validation
-    this.validateFilePath(filePath)
+    await this.validateFilePath(filePath)
     this.validateFileSize(filePath)
 
     // Format detection (PDF uses parsePdf directly)
@@ -157,7 +186,7 @@ export class DocumentParser {
    */
   async parsePdf(filePath: string, embedder: EmbedderInterface): Promise<string> {
     // Validation
-    this.validateFilePath(filePath)
+    await this.validateFilePath(filePath)
     this.validateFileSize(filePath)
 
     try {
