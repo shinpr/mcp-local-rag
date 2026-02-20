@@ -1,6 +1,6 @@
 // DocumentParser Unit Test
 
-import { mkdir, rm, writeFile } from 'node:fs/promises'
+import { mkdir, rm, symlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { DocumentParser, FileOperationError, ValidationError } from '../index'
@@ -26,18 +26,24 @@ describe('DocumentParser', () => {
   })
 
   describe('validateFilePath', () => {
-    it('should accept valid absolute path within baseDir', () => {
+    const outsideDir = join(process.cwd(), 'tmp', 'test-parser-outside')
+
+    afterEach(async () => {
+      await rm(outsideDir, { recursive: true, force: true })
+    })
+
+    it('should accept valid absolute path within baseDir', async () => {
       const validPath = join(testDir, 'test.txt')
-      expect(() => parser.validateFilePath(validPath)).not.toThrow()
+      await expect(parser.validateFilePath(validPath)).resolves.toBeUndefined()
     })
 
-    it('should accept nested absolute path within baseDir', () => {
+    it('should accept nested absolute path within baseDir', async () => {
       const validPath = join(testDir, 'subdir', 'test.txt')
-      expect(() => parser.validateFilePath(validPath)).not.toThrow()
+      await expect(parser.validateFilePath(validPath)).resolves.toBeUndefined()
     })
 
-    it('should reject relative path', () => {
-      expect(() => parser.validateFilePath('test.txt')).toThrow(
+    it('should reject relative path', async () => {
+      await expect(parser.validateFilePath('test.txt')).rejects.toThrow(
         expect.objectContaining({
           name: 'ValidationError',
           message: expect.stringMatching(/absolute path/),
@@ -45,8 +51,8 @@ describe('DocumentParser', () => {
       )
     })
 
-    it('should reject relative path traversal attack (../)', () => {
-      expect(() => parser.validateFilePath('../outside.txt')).toThrow(
+    it('should reject relative path traversal attack (../)', async () => {
+      await expect(parser.validateFilePath('../outside.txt')).rejects.toThrow(
         expect.objectContaining({
           name: 'ValidationError',
           message: expect.stringMatching(/absolute path/),
@@ -54,13 +60,55 @@ describe('DocumentParser', () => {
       )
     })
 
-    it('should reject absolute path outside baseDir', () => {
-      expect(() => parser.validateFilePath('/etc/passwd')).toThrow(
+    it('should reject absolute path outside baseDir', async () => {
+      await expect(parser.validateFilePath('/etc/passwd')).rejects.toThrow(
         expect.objectContaining({
           name: 'ValidationError',
           message: expect.stringMatching(/outside BASE_DIR/),
         })
       )
+    })
+
+    it('should reject symlink pointing outside baseDir', async () => {
+      // Create outside directory and target file
+      await mkdir(outsideDir, { recursive: true })
+      const outsideFile = join(outsideDir, 'secret.txt')
+      await writeFile(outsideFile, 'secret content')
+
+      // Create symlink inside testDir with .txt extension pointing to outside file
+      const linkPath = join(testDir, 'evil-link.txt')
+      await symlink(outsideFile, linkPath)
+
+      // Should reject because resolved path is outside baseDir
+      await expect(parser.validateFilePath(linkPath)).rejects.toThrow(
+        expect.objectContaining({
+          name: 'ValidationError',
+          message: expect.stringMatching(/BASE_DIR/),
+        })
+      )
+    })
+
+    it('should reject broken symlink', async () => {
+      // Create symlink pointing to non-existent file
+      const linkPath = join(testDir, 'broken-link.txt')
+      await symlink('/nonexistent/path/to/file.txt', linkPath)
+
+      // Should reject because symlink target cannot be resolved
+      await expect(parser.validateFilePath(linkPath)).rejects.toThrow(
+        expect.objectContaining({
+          name: 'ValidationError',
+          message: expect.stringMatching(/Cannot resolve|broken symlink/),
+        })
+      )
+    })
+
+    it('should accept non-symlink file within baseDir (regression guard)', async () => {
+      // Create a real file inside testDir
+      const filePath = join(testDir, 'real-file.txt')
+      await writeFile(filePath, 'real content')
+
+      // Should still work after async conversion
+      await expect(parser.validateFilePath(filePath)).resolves.toBeUndefined()
     })
   })
 

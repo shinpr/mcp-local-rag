@@ -181,24 +181,42 @@ This approach provides accurate search results for natural language queries.`
 
     // AC interpretation: [Security requirement] Access outside baseDir via symbolic links is rejected
     // Validation: Calling ingest_file with symbolic link pointing outside baseDir returns ValidationError
-    it('Symbolic link pointing outside baseDir (e.g., link_to_etc_passwd) rejected with ValidationError', async () => {
+    // Uses .txt extension to ensure the test validates symlink defense (BASE_DIR check),
+    // not file extension filtering.
+    it('Symbolic link pointing outside baseDir rejected with ValidationError about BASE_DIR', async () => {
       const parser = new DocumentParser({
         baseDir: fixturesDir,
         maxFileSize: 100 * 1024 * 1024,
       })
 
-      // Create symbolic link (/etc/passwd → tmp/test-security-fixtures/link_to_etc_passwd)
-      const linkPath = resolve(fixturesDir, 'link_to_etc_passwd')
-      try {
-        await symlink('/etc/passwd', linkPath)
-      } catch (error) {
-        // Ignore symlink creation failure (if already exists)
-      }
+      // Create a target file outside fixturesDir (but within tmp/)
+      const outsideDir = resolve('./tmp/test-security-outside')
+      const outsideFile = resolve(outsideDir, 'secret.txt')
+      await mkdir(outsideDir, { recursive: true })
+      await writeFile(
+        outsideFile,
+        'This file is outside baseDir and should not be accessible via symlink.'
+      )
 
-      await expect(parser.parseFile(linkPath)).rejects.toThrow(ValidationError)
-
-      // Cleanup
+      // Create symbolic link with .txt extension: fixturesDir/link.txt -> outsideDir/secret.txt
+      const linkPath = resolve(fixturesDir, 'link.txt')
       await rm(linkPath, { force: true })
+      await symlink(outsideFile, linkPath)
+
+      try {
+        // Verify: ValidationError is thrown with BASE_DIR message (symlink defense),
+        // NOT "Unsupported file format" (extension filtering)
+        await expect(parser.parseFile(linkPath)).rejects.toThrow(
+          expect.objectContaining({
+            name: 'ValidationError',
+            message: expect.stringMatching(/BASE_DIR/),
+          })
+        )
+      } finally {
+        // Cleanup: symlink and outside directory
+        await rm(linkPath, { force: true })
+        await rm(outsideDir, { recursive: true, force: true })
+      }
     })
   })
 
