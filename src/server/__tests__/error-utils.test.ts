@@ -70,8 +70,7 @@ describe('formatErrorMessage', () => {
   })
 
   describe('with non-Error objects', () => {
-    it('should handle string errors cast as Error', () => {
-      // The function casts to Error, matching the original inline pattern behavior
+    it('should preserve message from object with string message property', () => {
       const error = { message: 'Custom error object', stack: undefined }
       process.env['NODE_ENV'] = 'production'
       const result = formatErrorMessage(error)

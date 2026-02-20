@@ -4,7 +4,18 @@
  * Shows only error message in production for security (secure by default).
  */
 export function formatErrorMessage(error: unknown): string {
-  return process.env['NODE_ENV'] === 'development'
-    ? (error as Error).stack || (error as Error).message
-    : (error as Error).message
+  let err: Error
+  if (error instanceof Error) {
+    err = error
+  } else if (
+    error !== null &&
+    typeof error === 'object' &&
+    'message' in error &&
+    typeof (error as { message: unknown }).message === 'string'
+  ) {
+    err = new Error((error as { message: string }).message)
+  } else {
+    err = new Error(String(error))
+  }
+  return process.env['NODE_ENV'] === 'development' ? err.stack || err.message : err.message
 }
