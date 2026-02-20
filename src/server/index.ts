@@ -34,16 +34,6 @@ import type {
   RAGServerConfig,
 } from './types.js'
 
-export type {
-  RAGServerConfig,
-  QueryDocumentsInput,
-  IngestFileInput,
-  IngestDataInput,
-  DeleteFileInput,
-  IngestResult,
-  QueryResult,
-} from './types.js'
-
 /** RAG server compliant with MCP Protocol */
 export class RAGServer {
   private readonly server: Server
