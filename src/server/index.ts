@@ -38,26 +38,13 @@ export type {
   RAGServerConfig,
   QueryDocumentsInput,
   IngestFileInput,
-  IngestDataMetadata,
   IngestDataInput,
   DeleteFileInput,
   IngestResult,
   QueryResult,
 } from './types.js'
 
-// ============================================
-// RAGServer Class
-// ============================================
-
-/**
- * RAG server compliant with MCP Protocol
- *
- * Responsibilities:
- * - MCP tool integration (4 tools)
- * - Tool handler implementation
- * - Error handling
- * - Initialization (LanceDB, Transformers.js)
- */
+/** RAG server compliant with MCP Protocol */
 export class RAGServer {
   private readonly server: Server
   private readonly vectorStore: VectorStore
