@@ -15,6 +15,7 @@ import { Embedder } from '../embedder/index.js'
 import { parseHtml } from '../parser/html-parser.js'
 import { DocumentParser } from '../parser/index.js'
 import { type VectorChunk, VectorStore } from '../vectordb/index.js'
+import { formatErrorMessage } from './error-utils.js'
 import {
   type ContentFormat,
   extractSourceFromPath,
@@ -436,11 +437,7 @@ export class RAGServer {
         throw error
       }
 
-      // Error handling: show stack trace only in development mode (secure by default)
-      const errorMessage =
-        process.env['NODE_ENV'] === 'development'
-          ? (error as Error).stack || (error as Error).message
-          : (error as Error).message
+      const errorMessage = formatErrorMessage(error)
 
       console.error('Failed to ingest file:', errorMessage)
 
@@ -504,11 +501,7 @@ export class RAGServer {
         throw ingestError
       }
     } catch (error) {
-      // Error handling: show stack trace only in development mode (secure by default)
-      const errorMessage =
-        process.env['NODE_ENV'] === 'development'
-          ? (error as Error).stack || (error as Error).message
-          : (error as Error).message
+      const errorMessage = formatErrorMessage(error)
 
       console.error('Failed to ingest data:', errorMessage)
 
@@ -627,11 +620,7 @@ export class RAGServer {
         ],
       }
     } catch (error) {
-      // Error handling: show stack trace only in development mode (secure by default)
-      const errorMessage =
-        process.env['NODE_ENV'] === 'development'
-          ? (error as Error).stack || (error as Error).message
-          : (error as Error).message
+      const errorMessage = formatErrorMessage(error)
 
       console.error('Failed to delete file:', errorMessage)
 
