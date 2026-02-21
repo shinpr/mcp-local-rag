@@ -65,6 +65,9 @@ export class RAGServer {
     if (config.hybridWeight !== undefined) {
       vectorStoreConfig.hybridWeight = config.hybridWeight
     }
+    if (config.maxFiles !== undefined) {
+      vectorStoreConfig.maxFiles = config.maxFiles
+    }
     this.vectorStore = new VectorStore(vectorStoreConfig)
     this.embedder = new Embedder({
       modelPath: config.modelName,

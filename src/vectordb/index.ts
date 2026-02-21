@@ -47,6 +47,8 @@ interface VectorStoreConfig {
   grouping?: GroupingMode
   /** Hybrid search weight for BM25 (0.0 = vector only, 1.0 = BM25 only, default 0.6) */
   hybridWeight?: number
+  /** Maximum number of files to keep in results (optional, filters by best score per file) */
+  maxFiles?: number
 }
 
 /**
@@ -421,8 +423,45 @@ export class VectorStore {
   }
 
   /**
+   * Apply file-based filter to limit results to chunks from the top N files.
+   *
+   * Ranks files by their best (lowest distance) chunk score and keeps only
+   * chunks belonging to the top `maxFiles` files.
+   *
+   * @param results - Search results sorted by distance (ascending)
+   * @param maxFiles - Maximum number of files to keep
+   * @returns Filtered results preserving original order
+   */
+  private applyFileFilter(results: SearchResult[], maxFiles: number): SearchResult[] {
+    if (results.length === 0) return results
+
+    // Find the best (lowest) score per file
+    const fileScores = new Map<string, number>()
+    for (const result of results) {
+      const current = fileScores.get(result.filePath)
+      if (current === undefined || result.score < current) {
+        fileScores.set(result.filePath, result.score)
+      }
+    }
+
+    // If we have fewer or equal files than maxFiles, return all
+    if (fileScores.size <= maxFiles) return results
+
+    // Sort files by best score (ascending) and take top N
+    const topFiles = new Set(
+      [...fileScores.entries()]
+        .sort((a, b) => a[1] - b[1])
+        .slice(0, maxFiles)
+        .map(([filePath]) => filePath)
+    )
+
+    // Filter results to only include chunks from top files
+    return results.filter((result) => topFiles.has(result.filePath))
+  }
+
+  /**
    * Execute vector search with quality filtering
-   * Architecture: Semantic search → Filter (maxDistance, grouping) → Keyword boost
+   * Architecture: Semantic search → Filter (maxDistance, grouping) → Keyword boost → File filter (maxFiles)
    *
    * This "prefetch then rerank" approach ensures:
    * - maxDistance and grouping work on meaningful vector distances
@@ -488,6 +527,13 @@ export class VectorStore {
           console.error('VectorStore: FTS search failed, using vector-only results:', ftsError)
           this.ftsEnabled = false
         }
+      }
+
+      // Step 4: Apply file filter after keyword boost
+      // Unlike grouping (which depends on raw semantic distance gaps), maxFiles selects
+      // the "most relevant files" — this should respect the final ranking including keyword boost
+      if (this.config.maxFiles !== undefined && results.length > 0) {
+        results = this.applyFileFilter(results, this.config.maxFiles)
       }
 
       // Return top results after all filtering and boosting

@@ -23,6 +23,8 @@ export interface RAGServerConfig {
   grouping?: GroupingMode
   /** Hybrid search weight for BM25 (0.0 = vector only, 1.0 = BM25 only, default 0.6) */
   hybridWeight?: number
+  /** Maximum number of files to keep in search results (optional) */
+  maxFiles?: number
 }
 
 /**

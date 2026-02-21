@@ -148,6 +148,7 @@ Adjust these for your use case:
 | `RAG_HYBRID_WEIGHT` | `0.6` | Keyword boost factor. 0 = semantic only, higher = stronger keyword boost. |
 | `RAG_GROUPING` | (not set) | `similar` for top group only, `related` for top 2 groups. |
 | `RAG_MAX_DISTANCE` | (not set) | Filter out low-relevance results (e.g., `0.5`). |
+| `RAG_MAX_FILES` | (not set) | Limit results to top N files (e.g., `1` for single best file). |
 
 ### Code-focused tuning
 
