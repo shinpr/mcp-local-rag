@@ -463,7 +463,7 @@ export class RAGServer {
       const filesInBaseDir = baseDirFiles.map((filePath) => {
         const entry = ingestedMap.get(filePath)
         return entry
-          ? { filePath, ingested: true, chunkCount: entry.chunkCount }
+          ? { filePath, ingested: true, chunkCount: entry.chunkCount, timestamp: entry.timestamp }
           : { filePath, ingested: false }
       })
 
