@@ -22,6 +22,8 @@ import {
   extractSourceFromPath,
   generateRawDataPath,
   isRawDataPath,
+  loadMetaJson,
+  saveMetaJson,
   saveRawData,
 } from './raw-data-utils.js'
 import { toolDefinitions } from './tool-definitions.js'
@@ -199,9 +201,15 @@ export class RAGServer {
       if (isRawDataPath(args.filePath)) {
         // Raw-data files: skip validation, read directly
         text = await readFile(args.filePath, 'utf-8')
-        // Raw-data files are .md, extract title from markdown content
-        const titleResult = extractMarkdownTitle(text, args.filePath.split('/').pop() || '')
-        title = titleResult.title
+        // Prefer title from .meta.json sidecar (preserves original HTML title),
+        // fall back to markdown extraction when sidecar is absent
+        const meta = await loadMetaJson(args.filePath)
+        if (meta?.title) {
+          title = meta.title
+        } else {
+          const titleResult = extractMarkdownTitle(text, args.filePath.split('/').pop() || '')
+          title = titleResult.title
+        }
         console.error(`Read raw-data file: ${args.filePath} (${text.length} characters)`)
       } else if (isPdf) {
         const result = await this.parser.parsePdf(args.filePath, this.embedder)
@@ -354,6 +362,7 @@ export class RAGServer {
     try {
       let contentToSave = args.content
       let formatToSave: ContentFormat = args.metadata.format
+      let extractedTitle: string | null = null
 
       // For HTML content, convert to Markdown first
       if (args.metadata.format === 'html') {
@@ -366,6 +375,7 @@ export class RAGServer {
           )
         }
 
+        extractedTitle = title
         // Preserve title in saved markdown so re-ingestion can recover it
         if (title) {
           contentToSave = `# ${title}\n\n${markdown}`
@@ -383,6 +393,13 @@ export class RAGServer {
         contentToSave,
         formatToSave
       )
+
+      // Save metadata sidecar (.meta.json) alongside the raw-data file
+      await saveMetaJson(rawDataPath, {
+        title: extractedTitle,
+        source: args.metadata.source,
+        format: args.metadata.format,
+      })
 
       console.error(`Saved raw data: ${args.metadata.source} -> ${rawDataPath}`)
 

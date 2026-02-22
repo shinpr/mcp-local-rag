@@ -1,7 +1,7 @@
 // Raw Data Utilities for ingest_data tool
 // Handles: base64url encoding, source normalization, file saving, source extraction
 
-import { mkdir, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 
 // ============================================
@@ -192,4 +192,64 @@ export function extractSourceFromPath(filePath: string): string | null {
 
   const encoded = fileName.slice(0, dotIndex)
   return decodeBase64Url(encoded)
+}
+
+// ============================================
+// Meta JSON Sidecar Files
+// ============================================
+
+/**
+ * Metadata stored alongside each raw-data .md file as a .meta.json sidecar
+ */
+export interface RawDataMeta {
+  title: string | null
+  source: string
+  format: ContentFormat
+}
+
+/**
+ * Generate the .meta.json sidecar path for a given .md file path
+ * Replaces the trailing `.md` extension with `.meta.json`
+ *
+ * @param mdPath - Path to the .md raw-data file
+ * @returns Path to the corresponding .meta.json file
+ */
+export function generateMetaJsonPath(mdPath: string): string {
+  return mdPath.replace(/\.md$/, '.meta.json')
+}
+
+/**
+ * Save metadata as a JSON sidecar file alongside a raw-data .md file
+ *
+ * @param mdPath - Path to the .md raw-data file
+ * @param meta - Metadata to persist
+ */
+export async function saveMetaJson(mdPath: string, meta: RawDataMeta): Promise<void> {
+  const metaPath = generateMetaJsonPath(mdPath)
+  await writeFile(metaPath, JSON.stringify(meta, null, 2), 'utf-8')
+}
+
+/**
+ * Load metadata from a .meta.json sidecar file
+ * Returns null when the sidecar file does not exist (ENOENT).
+ * All other read errors are re-thrown (fail-fast).
+ *
+ * @param mdPath - Path to the .md raw-data file
+ * @returns Parsed metadata or null if file does not exist
+ */
+export async function loadMetaJson(mdPath: string): Promise<RawDataMeta | null> {
+  const metaPath = generateMetaJsonPath(mdPath)
+  try {
+    const content = await readFile(metaPath, 'utf-8')
+    return JSON.parse(content) as RawDataMeta
+  } catch (error: unknown) {
+    if (
+      error instanceof Error &&
+      'code' in error &&
+      (error as NodeJS.ErrnoException).code === 'ENOENT'
+    ) {
+      return null
+    }
+    throw error
+  }
 }
