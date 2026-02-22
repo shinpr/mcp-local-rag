@@ -70,6 +70,8 @@ export interface VectorChunk {
   vector: number[]
   /** Metadata */
   metadata: DocumentMetadata
+  /** Document title extracted from file content (display-only, not used for scoring) */
+  fileTitle: string | null
   /** Ingestion timestamp (ISO 8601 format) */
   timestamp: string
 }
@@ -88,6 +90,8 @@ export interface SearchResult {
   score: number
   /** Metadata */
   metadata: DocumentMetadata
+  /** Document title extracted from file content (display-only, not used for scoring) */
+  fileTitle: string | null
 }
 
 /**
@@ -98,6 +102,8 @@ export interface LanceDBRawResult {
   chunkIndex: number
   text: string
   metadata: DocumentMetadata
+  /** Document title (optional - existing rows lack this field before migration) */
+  fileTitle?: string | null
   _distance?: number
   _score?: number
 }
@@ -147,6 +153,7 @@ export function toSearchResult(raw: unknown): SearchResult {
     text: raw.text,
     score: raw._distance ?? raw._score ?? 0,
     metadata: raw.metadata,
+    fileTitle: raw.fileTitle || null,
   }
 }
 

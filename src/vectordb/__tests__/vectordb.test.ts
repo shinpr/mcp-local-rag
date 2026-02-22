@@ -3,6 +3,7 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { type VectorChunk, VectorStore } from '../index.js'
+import { isLanceDBRawResult, toSearchResult } from '../types.js'
 
 describe('VectorStore', () => {
   const testDbPath = './tmp/test-vectordb'
@@ -41,6 +42,7 @@ describe('VectorStore', () => {
         fileSize: text.length,
         fileType: path.extname(filePath).slice(1),
       },
+      fileTitle: null,
       timestamp: new Date().toISOString(),
     }
   }
@@ -1055,6 +1057,184 @@ describe('VectorStore', () => {
           }
           if (fs.existsSync(relatedDbPath)) {
             fs.rmSync(relatedDbPath, { recursive: true })
+          }
+        }
+      })
+    })
+  })
+
+  describe('fileTitle support', () => {
+    describe('toSearchResult fileTitle handling', () => {
+      it('should include fileTitle when present in raw result', () => {
+        const raw = {
+          filePath: '/test/doc.md',
+          chunkIndex: 0,
+          text: 'Test content',
+          metadata: { fileName: 'doc.md', fileSize: 100, fileType: 'md' },
+          _distance: 0.5,
+          fileTitle: 'My Document',
+        }
+
+        const result = toSearchResult(raw)
+        expect(result.fileTitle).toBe('My Document')
+      })
+
+      it('should default fileTitle to null when not present in raw result', () => {
+        const raw = {
+          filePath: '/test/doc.md',
+          chunkIndex: 0,
+          text: 'Test content',
+          metadata: { fileName: 'doc.md', fileSize: 100, fileType: 'md' },
+          _distance: 0.5,
+        }
+
+        const result = toSearchResult(raw)
+        expect(result.fileTitle).toBe(null)
+      })
+    })
+
+    describe('isLanceDBRawResult backward compatibility', () => {
+      it('should accept results without fileTitle (regression guard)', () => {
+        const rawWithoutTitle = {
+          filePath: '/test/doc.md',
+          chunkIndex: 0,
+          text: 'Test content',
+          metadata: { fileName: 'doc.md', fileSize: 100, fileType: 'md' },
+          _distance: 0.5,
+        }
+
+        expect(isLanceDBRawResult(rawWithoutTitle)).toBe(true)
+      })
+
+      it('should accept results with fileTitle', () => {
+        const rawWithTitle = {
+          filePath: '/test/doc.md',
+          chunkIndex: 0,
+          text: 'Test content',
+          metadata: { fileName: 'doc.md', fileSize: 100, fileType: 'md' },
+          _distance: 0.5,
+          fileTitle: 'My Document',
+        }
+
+        expect(isLanceDBRawResult(rawWithTitle)).toBe(true)
+      })
+    })
+
+    describe('Schema migration (ensureSchemaVersion)', () => {
+      it('should add fileTitle column when missing from existing table', async () => {
+        const dbPath = './tmp/test-vectordb-schema-migration'
+        if (fs.existsSync(dbPath)) {
+          fs.rmSync(dbPath, { recursive: true })
+        }
+
+        try {
+          // Step 1: Create a LanceDB table WITHOUT fileTitle column
+          // (simulates a database created before the fileTitle feature)
+          const { connect: lanceConnect } = await import('@lancedb/lancedb')
+          const db = await lanceConnect(dbPath)
+          const oldRecord = {
+            id: randomUUID(),
+            filePath: '/test/old-doc.txt',
+            chunkIndex: 0,
+            text: 'Old document without fileTitle',
+            vector: createNormalizedVector(1),
+            metadata: {
+              fileName: 'old-doc.txt',
+              fileSize: 100,
+              fileType: 'txt',
+            },
+            timestamp: new Date().toISOString(),
+            // NOTE: No fileTitle field -- simulates pre-migration schema
+          }
+          await db.createTable('chunks', [oldRecord])
+
+          // Step 2: Create a VectorStore that will run migration on initialize()
+          const newStore = new VectorStore({
+            dbPath,
+            tableName: 'chunks',
+          })
+          await newStore.initialize()
+
+          // Step 3: Insert a new chunk WITH fileTitle -- should succeed after migration
+          const newChunk: VectorChunk = {
+            id: randomUUID(),
+            filePath: '/test/new-doc.txt',
+            chunkIndex: 0,
+            text: 'New document with fileTitle',
+            vector: createNormalizedVector(2),
+            metadata: {
+              fileName: 'new-doc.txt',
+              fileSize: 100,
+              fileType: 'txt',
+            },
+            fileTitle: 'New Document Title',
+            timestamp: new Date().toISOString(),
+          }
+          await newStore.insertChunks([newChunk])
+
+          // Step 4: Verify search returns results with fileTitle field
+          const results = await newStore.search(createNormalizedVector(2), '', 10)
+          expect(results.length).toBeGreaterThanOrEqual(1)
+
+          // The new document should have fileTitle
+          const newDocResult = results.find((r) => r.filePath === '/test/new-doc.txt')
+          expect(newDocResult).toBeDefined()
+          expect(newDocResult!.fileTitle).toBe('New Document Title')
+
+          // The old document should have fileTitle = null (migrated default)
+          const oldDocResult = results.find((r) => r.filePath === '/test/old-doc.txt')
+          expect(oldDocResult).toBeDefined()
+          expect(oldDocResult!.fileTitle).toBe(null)
+        } finally {
+          if (fs.existsSync(dbPath)) {
+            fs.rmSync(dbPath, { recursive: true })
+          }
+        }
+      })
+
+      it('should be idempotent (running migration twice does nothing on second call)', async () => {
+        const dbPath = './tmp/test-vectordb-schema-idempotent'
+        if (fs.existsSync(dbPath)) {
+          fs.rmSync(dbPath, { recursive: true })
+        }
+
+        try {
+          // First initialization with data
+          const store1 = new VectorStore({
+            dbPath,
+            tableName: 'chunks',
+          })
+          await store1.initialize()
+
+          const chunk = createTestChunk(
+            'Test document',
+            '/test/doc.txt',
+            0,
+            createNormalizedVector(1)
+          )
+          await store1.insertChunks([chunk])
+
+          // Second initialization (should not throw)
+          const store2 = new VectorStore({
+            dbPath,
+            tableName: 'chunks',
+          })
+          await store2.initialize()
+
+          // Third initialization (should still not throw)
+          const store3 = new VectorStore({
+            dbPath,
+            tableName: 'chunks',
+          })
+          await store3.initialize()
+
+          // Search should still work
+          const results = await store3.search(createNormalizedVector(1), '', 10)
+          expect(results).toHaveLength(1)
+          expect(results[0]?.filePath).toBe('/test/doc.txt')
+        } finally {
+          if (fs.existsSync(dbPath)) {
+            fs.rmSync(dbPath, { recursive: true })
           }
         }
       })

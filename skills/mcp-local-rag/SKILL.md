@@ -70,6 +70,16 @@ When to include vs skip—based on answer quality, not just score.
 - Score > 0.7
 - Mentions term without explanation
 
+### fileTitle
+
+Each result includes `fileTitle` (document title extracted from content). Null when extraction fails.
+
+| Use | How |
+|-----|-----|
+| Disambiguate chunks | Use fileTitle to identify which document the chunk belongs to |
+| Group related chunks | Same fileTitle = same document context |
+| Deprioritize mismatches | fileTitle unrelated to query AND score > 0.5 → rank lower |
+
 ## Ingestion
 
 ### ingest_file

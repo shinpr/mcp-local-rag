@@ -29,9 +29,10 @@ describe('HTML Parser', () => {
 
       const result = await parseHtml(html, 'https://example.com/article')
 
-      // Should contain the main content
-      expect(result).toContain('Main Title')
-      expect(result).toContain('This is the main content of the article')
+      // Should return {content, title} object
+      expect(result.content).toContain('Main Title')
+      expect(result.content).toContain('This is the main content of the article')
+      expect(typeof result.title).toBe('string')
     })
 
     it('converts HTML to Markdown format', async () => {
@@ -54,12 +55,12 @@ describe('HTML Parser', () => {
 
       const result = await parseHtml(html, 'https://example.com/page')
 
-      // Should have Markdown heading syntax (h1 may become ## if no title extracted)
-      expect(result).toMatch(/^##?\s+Heading 1/m)
-      expect(result).toMatch(/^##\s+Heading 2/m)
+      // Should have Markdown heading syntax
+      expect(result.content).toMatch(/^##?\s+Heading 1/m)
+      expect(result.content).toMatch(/^##\s+Heading 2/m)
       // Should have list items
-      expect(result).toContain('Item 1')
-      expect(result).toContain('Item 2')
+      expect(result.content).toContain('Item 1')
+      expect(result.content).toContain('Item 2')
     })
 
     it('preserves links in Markdown format', async () => {
@@ -77,7 +78,7 @@ describe('HTML Parser', () => {
       const result = await parseHtml(html, 'https://example.com/page')
 
       // Should have Markdown link syntax
-      expect(result).toContain('[this link](https://example.com/link)')
+      expect(result.content).toContain('[this link](https://example.com/link)')
     })
 
     it('preserves code blocks', async () => {
@@ -96,8 +97,53 @@ console.log(x);</code></pre>
       const result = await parseHtml(html, 'https://example.com/page')
 
       // Should preserve code content
-      expect(result).toContain('const x = 1')
-      expect(result).toContain('console.log(x)')
+      expect(result.content).toContain('const x = 1')
+      expect(result.content).toContain('console.log(x)')
+    })
+  })
+
+  // --------------------------------------------
+  // Title Extraction
+  // --------------------------------------------
+  describe('Title Extraction', () => {
+    it('should return title separately from content', async () => {
+      const html = `
+        <!DOCTYPE html>
+        <html>
+          <head><title>Test Page</title></head>
+          <body>
+            <article>
+              <h1>Article Title</h1>
+              <p>This is the main content of the article with enough text for Readability.</p>
+            </article>
+          </body>
+        </html>
+      `
+
+      const result = await parseHtml(html, 'https://example.com/article')
+
+      // Title should be returned separately
+      expect(result.title).toBe('Test Page')
+      // Content should NOT start with # {title} prefix
+      expect(result.content).not.toMatch(/^# Article Title/)
+    })
+
+    it('should use URL-derived filename when Readability cannot extract title', async () => {
+      const html = `
+        <!DOCTYPE html>
+        <html>
+          <body>
+            <div>
+              <p>Some minimal content without any clear title or article structure.</p>
+            </div>
+          </body>
+        </html>
+      `
+
+      const result = await parseHtml(html, 'https://example.com/page')
+
+      // When Readability has no title, URL-derived filename is used as fallback
+      expect(result.title).toBe('page')
     })
   })
 
@@ -125,11 +171,11 @@ console.log(x);</code></pre>
       const result = await parseHtml(html, 'https://example.com/page')
 
       // Should contain article content
-      expect(result).toContain('Article Title')
-      expect(result).toContain('Article content here')
+      expect(result.content).toContain('Article Title')
+      expect(result.content).toContain('Article content here')
       // Navigation should be removed
-      expect(result).not.toContain('Home')
-      expect(result).not.toContain('About')
+      expect(result.content).not.toContain('Home')
+      expect(result.content).not.toContain('About')
     })
 
     it('removes footer elements', async () => {
@@ -152,11 +198,11 @@ console.log(x);</code></pre>
       const result = await parseHtml(html, 'https://example.com/page')
 
       // Should contain main content
-      expect(result).toContain('Main Content')
-      expect(result).toContain('Important information')
+      expect(result.content).toContain('Main Content')
+      expect(result.content).toContain('Important information')
       // Footer should be removed
-      expect(result).not.toContain('Copyright 2024')
-      expect(result).not.toContain('All rights reserved')
+      expect(result.content).not.toContain('Copyright 2024')
+      expect(result.content).not.toContain('All rights reserved')
     })
 
     it('removes sidebar elements', async () => {
@@ -179,11 +225,11 @@ console.log(x);</code></pre>
       const result = await parseHtml(html, 'https://example.com/page')
 
       // Should contain main article
-      expect(result).toContain('Main Article')
-      expect(result).toContain('main article content')
+      expect(result.content).toContain('Main Article')
+      expect(result.content).toContain('main article content')
       // Sidebar should be removed
-      expect(result).not.toContain('Related Posts')
-      expect(result).not.toContain('Post 1')
+      expect(result.content).not.toContain('Related Posts')
+      expect(result.content).not.toContain('Post 1')
     })
   })
 
@@ -196,8 +242,9 @@ console.log(x);</code></pre>
 
       const result = await parseHtml(html, 'https://example.com/page')
 
-      // Should return empty string or minimal content
-      expect(typeof result).toBe('string')
+      // Should return {content, title} with empty values
+      expect(result.content).toBe('')
+      expect(result.title).toBe('')
     })
 
     it('handles HTML with only whitespace', async () => {
@@ -205,7 +252,8 @@ console.log(x);</code></pre>
 
       const result = await parseHtml(html, 'https://example.com/page')
 
-      expect(typeof result).toBe('string')
+      expect(result.content).toBe('')
+      expect(result.title).toBe('')
     })
 
     it('handles malformed HTML', async () => {
@@ -214,7 +262,7 @@ console.log(x);</code></pre>
       const result = await parseHtml(html, 'https://example.com/page')
 
       // Should still extract content
-      expect(result).toContain('Unclosed paragraph')
+      expect(result.content).toContain('Unclosed paragraph')
     })
 
     it('handles HTML without article tag', async () => {
@@ -233,8 +281,8 @@ console.log(x);</code></pre>
       const result = await parseHtml(html, 'https://example.com/page')
 
       // Should still extract content
-      expect(result).toContain('Page Title')
-      expect(result).toContain('Some content without article wrapper')
+      expect(result.content).toContain('Page Title')
+      expect(result.content).toContain('Some content without article wrapper')
     })
 
     it('handles HTML with only navigation (no main content)', async () => {
@@ -252,8 +300,9 @@ console.log(x);</code></pre>
 
       const result = await parseHtml(html, 'https://example.com/page')
 
-      // Should return something (possibly empty or minimal)
-      expect(typeof result).toBe('string')
+      // Should return {content, title} object
+      expect(typeof result.content).toBe('string')
+      expect(typeof result.title).toBe('string')
     })
   })
 
@@ -276,8 +325,8 @@ console.log(x);</code></pre>
 
       const result = await parseHtml(html, 'https://example.com/ja/page')
 
-      expect(result).toContain('日本語タイトル')
-      expect(result).toContain('これは日本語のコンテンツです')
+      expect(result.content).toContain('日本語タイトル')
+      expect(result.content).toContain('これは日本語のコンテンツです')
     })
 
     it('handles mixed language content', async () => {
@@ -296,9 +345,9 @@ console.log(x);</code></pre>
 
       const result = await parseHtml(html, 'https://example.com/docs')
 
-      expect(result).toContain('API Documentation')
-      expect(result).toContain('APIの使い方について説明します')
-      expect(result).toContain('fetch')
+      expect(result.content).toContain('API Documentation')
+      expect(result.content).toContain('APIの使い方について説明します')
+      expect(result.content).toContain('fetch')
     })
 
     it('handles emoji content', async () => {
@@ -316,8 +365,8 @@ console.log(x);</code></pre>
 
       const result = await parseHtml(html, 'https://example.com/page')
 
-      expect(result).toContain('👋')
-      expect(result).toContain('🎉')
+      expect(result.content).toContain('👋')
+      expect(result.content).toContain('🎉')
     })
   })
 
@@ -354,10 +403,11 @@ console.log(x);</code></pre>
 
       const result = await parseHtml(html, 'https://example.com/blog/rag-system')
 
-      expect(result).toContain('How to Build a RAG System')
-      expect(result).toContain('Document Ingestion')
-      expect(result).toContain('Vector Embeddings')
-      expect(result).toContain('parse and chunk your documents')
+      // Readability extracts article title from <h1>, not <title> tag
+      expect(result.title).toBe('How to Build a RAG System')
+      expect(result.content).toContain('Document Ingestion')
+      expect(result.content).toContain('Vector Embeddings')
+      expect(result.content).toContain('parse and chunk your documents')
     })
 
     it('handles documentation page structure', async () => {
@@ -387,10 +437,10 @@ console.log(x);</code></pre>
 
       const result = await parseHtml(html, 'https://example.com/docs/api')
 
-      expect(result).toContain('API Reference')
+      expect(result.content).toContain('API Reference')
       // Note: Turndown escapes underscores in some contexts
-      expect(result.replace(/\\_/g, '_')).toContain('query_documents')
-      expect(result).toContain('semantic search')
+      expect(result.content.replace(/\\_/g, '_')).toContain('query_documents')
+      expect(result.content).toContain('semantic search')
     })
   })
 })

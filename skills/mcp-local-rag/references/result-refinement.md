@@ -43,6 +43,7 @@ If unresolved → Note discrepancy to user
 
 Single chunks may lack context ("as described above").
 
+- Use `fileTitle` as the chunk's document-level context—it identifies the source document's topic
 - Note when information is partial
 - Group multiple chunks from same `filePath` as coherent sections
 

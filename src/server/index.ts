@@ -14,13 +14,17 @@ import { SemanticChunker } from '../chunker/index.js'
 import { Embedder } from '../embedder/index.js'
 import { parseHtml } from '../parser/html-parser.js'
 import { DocumentParser } from '../parser/index.js'
+import { extractMarkdownTitle, extractTxtTitle } from '../parser/title-extractor.js'
 import { type VectorChunk, VectorStore } from '../vectordb/index.js'
 import { formatErrorMessage } from './error-utils.js'
 import {
   type ContentFormat,
   extractSourceFromPath,
+  generateMetaJsonPath,
   generateRawDataPath,
   isRawDataPath,
+  loadMetaJson,
+  saveMetaJson,
   saveRawData,
 } from './raw-data-utils.js'
 import { toolDefinitions } from './tool-definitions.js'
@@ -152,6 +156,7 @@ export class RAGServer {
           chunkIndex: result.chunkIndex,
           text: result.text,
           score: result.score,
+          fileTitle: result.fileTitle ?? null,
         }
 
         // Restore source for raw-data files (ingested via ingest_data)
@@ -193,14 +198,21 @@ export class RAGServer {
       // since the path is internally generated and content is already processed
       const isPdf = args.filePath.toLowerCase().endsWith('.pdf')
       let text: string
+      let title: string | null = null
       if (isRawDataPath(args.filePath)) {
         // Raw-data files: skip validation, read directly
         text = await readFile(args.filePath, 'utf-8')
+        const meta = await loadMetaJson(args.filePath)
+        title = meta?.title ?? null
         console.error(`Read raw-data file: ${args.filePath} (${text.length} characters)`)
       } else if (isPdf) {
-        text = await this.parser.parsePdf(args.filePath, this.embedder)
+        const result = await this.parser.parsePdf(args.filePath, this.embedder)
+        text = result.content
+        title = result.title || null
       } else {
-        text = await this.parser.parseFile(args.filePath)
+        const result = await this.parser.parseFile(args.filePath)
+        text = result.content
+        title = result.title || null
       }
 
       // Split text into semantic chunks
@@ -236,6 +248,7 @@ export class RAGServer {
                 text: chunk.text,
                 vector: queryVector, // Use dummy vector since actual vector cannot be retrieved
                 metadata: chunk.metadata,
+                fileTitle: chunk.fileTitle ?? null,
                 timestamp: new Date().toISOString(),
               }))
           }
@@ -268,6 +281,7 @@ export class RAGServer {
             fileSize: text.length,
             fileType: args.filePath.split('.').pop() || '',
           },
+          fileTitle: title || null,
           timestamp,
         }
       })
@@ -301,6 +315,7 @@ export class RAGServer {
         filePath: args.filePath,
         chunkCount: chunks.length,
         timestamp,
+        fileTitle: title || null,
       }
 
       return {
@@ -341,11 +356,15 @@ export class RAGServer {
     try {
       let contentToSave = args.content
       let formatToSave: ContentFormat = args.metadata.format
+      let title: string | null = null
 
-      // For HTML content, convert to Markdown first
+      // Per-format title extraction and content preparation
       if (args.metadata.format === 'html') {
         console.error(`Parsing HTML from: ${args.metadata.source}`)
-        const markdown = await parseHtml(args.content, args.metadata.source)
+        const { content: markdown, title: htmlTitle } = await parseHtml(
+          args.content,
+          args.metadata.source
+        )
 
         if (!markdown.trim()) {
           throw new Error(
@@ -353,9 +372,17 @@ export class RAGServer {
           )
         }
 
+        title = htmlTitle || null
         contentToSave = markdown
         formatToSave = 'markdown' // Save as .md file
         console.error(`Converted HTML to Markdown: ${markdown.length} characters`)
+      } else if (args.metadata.format === 'markdown') {
+        const result = extractMarkdownTitle(args.content, args.metadata.source)
+        title = result.source !== 'filename' ? result.title : null
+      } else {
+        // text format
+        const result = extractTxtTitle(args.content, args.metadata.source)
+        title = result.source !== 'filename' ? result.title : null
       }
 
       // Save content to raw-data directory
@@ -366,15 +393,23 @@ export class RAGServer {
         formatToSave
       )
 
+      // Save metadata sidecar (.meta.json) alongside the raw-data file
+      await saveMetaJson(rawDataPath, {
+        title,
+        source: args.metadata.source,
+        format: args.metadata.format,
+      })
+
       console.error(`Saved raw data: ${args.metadata.source} -> ${rawDataPath}`)
 
       // Call existing ingest_file internally with rollback on failure
       try {
         return await this.handleIngestFile({ filePath: rawDataPath })
       } catch (ingestError) {
-        // Rollback: delete the raw-data file if ingest fails
+        // Rollback: delete the raw-data file and .meta.json if ingest fails
         try {
           await unlink(rawDataPath)
+          await unlink(generateMetaJsonPath(rawDataPath))
           console.error(`Rolled back raw-data file: ${rawDataPath}`)
         } catch {
           console.warn(`Failed to rollback raw-data file: ${rawDataPath}`)
@@ -480,8 +515,13 @@ export class RAGServer {
           await unlink(targetPath)
           console.error(`Deleted raw-data file: ${targetPath}`)
         } catch {
-          // File may already be deleted, log warning only
           console.warn(`Could not delete raw-data file (may not exist): ${targetPath}`)
+        }
+        try {
+          await unlink(generateMetaJsonPath(targetPath))
+          console.error(`Deleted meta.json: ${generateMetaJsonPath(targetPath)}`)
+        } catch {
+          // .meta.json may not exist for old data, silently ignore
         }
       }
 

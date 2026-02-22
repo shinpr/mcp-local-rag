@@ -62,11 +62,12 @@ ingest_data({
 
 ## Search Results
 
-Results from HTML include `source` field:
+Results from HTML include `source` and `fileTitle` fields:
 ```json
 {
   "filePath": "raw-data/abc123.html",
   "source": "https://example.com/page",
+  "fileTitle": "Getting Started Guide",
   "text": "...",
   "score": 0.25
 }
