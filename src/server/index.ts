@@ -14,6 +14,7 @@ import { SemanticChunker } from '../chunker/index.js'
 import { Embedder } from '../embedder/index.js'
 import { parseHtml } from '../parser/html-parser.js'
 import { DocumentParser } from '../parser/index.js'
+import { extractMarkdownTitle } from '../parser/title-extractor.js'
 import { type VectorChunk, VectorStore } from '../vectordb/index.js'
 import { formatErrorMessage } from './error-utils.js'
 import {
@@ -152,6 +153,7 @@ export class RAGServer {
           chunkIndex: result.chunkIndex,
           text: result.text,
           score: result.score,
+          fileTitle: result.fileTitle ?? null,
         }
 
         // Restore source for raw-data files (ingested via ingest_data)
@@ -193,14 +195,22 @@ export class RAGServer {
       // since the path is internally generated and content is already processed
       const isPdf = args.filePath.toLowerCase().endsWith('.pdf')
       let text: string
+      let title: string | null = null
       if (isRawDataPath(args.filePath)) {
         // Raw-data files: skip validation, read directly
         text = await readFile(args.filePath, 'utf-8')
+        // Raw-data files are .md, extract title from markdown content
+        const titleResult = extractMarkdownTitle(text, args.filePath.split('/').pop() || '')
+        title = titleResult.title
         console.error(`Read raw-data file: ${args.filePath} (${text.length} characters)`)
       } else if (isPdf) {
-        text = await this.parser.parsePdf(args.filePath, this.embedder)
+        const result = await this.parser.parsePdf(args.filePath, this.embedder)
+        text = result.content
+        title = result.title || null
       } else {
-        text = await this.parser.parseFile(args.filePath)
+        const result = await this.parser.parseFile(args.filePath)
+        text = result.content
+        title = result.title || null
       }
 
       // Split text into semantic chunks
@@ -236,6 +246,7 @@ export class RAGServer {
                 text: chunk.text,
                 vector: queryVector, // Use dummy vector since actual vector cannot be retrieved
                 metadata: chunk.metadata,
+                fileTitle: chunk.fileTitle ?? null,
                 timestamp: new Date().toISOString(),
               }))
           }
@@ -268,6 +279,7 @@ export class RAGServer {
             fileSize: text.length,
             fileType: args.filePath.split('.').pop() || '',
           },
+          fileTitle: title || null,
           timestamp,
         }
       })
@@ -301,6 +313,7 @@ export class RAGServer {
         filePath: args.filePath,
         chunkCount: chunks.length,
         timestamp,
+        fileTitle: title || null,
       }
 
       return {
@@ -345,7 +358,7 @@ export class RAGServer {
       // For HTML content, convert to Markdown first
       if (args.metadata.format === 'html') {
         console.error(`Parsing HTML from: ${args.metadata.source}`)
-        const markdown = await parseHtml(args.content, args.metadata.source)
+        const { content: markdown, title } = await parseHtml(args.content, args.metadata.source)
 
         if (!markdown.trim()) {
           throw new Error(
@@ -353,7 +366,12 @@ export class RAGServer {
           )
         }
 
-        contentToSave = markdown
+        // Preserve title in saved markdown so re-ingestion can recover it
+        if (title) {
+          contentToSave = `# ${title}\n\n${markdown}`
+        } else {
+          contentToSave = markdown
+        }
         formatToSave = 'markdown' // Save as .md file
         console.error(`Converted HTML to Markdown: ${markdown.length} characters`)
       }

@@ -506,14 +506,14 @@ describe('RAG MCP Server Integration Test - Phase 2', () => {
       // Test TXT file parsing
       const testTxtFile = resolve(localTestDataDir, 'test-all-formats.txt')
       writeFileSync(testTxtFile, 'Test content for TXT format')
-      const txtContent = await parser.parseFile(testTxtFile)
-      expect(txtContent).toBe('Test content for TXT format')
+      const txtResult = await parser.parseFile(testTxtFile)
+      expect(txtResult.content).toBe('Test content for TXT format')
 
       // Test MD file parsing
       const testMdFile = resolve(localTestDataDir, 'test-all-formats.md')
       writeFileSync(testMdFile, '# Test Markdown\n\nTest content for MD format')
-      const mdContent = await parser.parseFile(testMdFile)
-      expect(mdContent).toBe('# Test Markdown\n\nTest content for MD format')
+      const mdResult = await parser.parseFile(testMdFile)
+      expect(mdResult.content).toBe('# Test Markdown\n\nTest content for MD format')
 
       // Verify DOCX file branching exists
       // Verify FileOperationError occurs with invalid DOCX file

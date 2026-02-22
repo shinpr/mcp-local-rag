@@ -86,6 +86,8 @@ export interface IngestResult {
   chunkCount: number
   /** Timestamp */
   timestamp: string
+  /** Document title extracted from file content (display-only, not used for scoring) */
+  fileTitle?: string | null
 }
 
 /**
@@ -102,4 +104,6 @@ export interface QueryResult {
   score: number
   /** Original source (only for raw-data files, e.g., URLs ingested via ingest_data) */
   source?: string
+  /** Document title extracted from file content (display-only, not used for scoring) */
+  fileTitle?: string | null
 }
