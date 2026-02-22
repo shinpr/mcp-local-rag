@@ -55,6 +55,9 @@ export class VectorStore {
 
         // Ensure FTS index exists (migration for existing databases)
         await this.ensureFtsIndex()
+
+        // Ensure schema is up to date (add new columns for existing tables)
+        await this.ensureSchemaVersion()
       } else {
         // Create new table (schema auto-defined on first data insertion)
         console.error(
@@ -126,7 +129,16 @@ export class VectorStore {
           throw new DatabaseError('VectorStore is not initialized. Call initialize() first.')
         }
         // LanceDB's createTable API accepts data as Record<string, unknown>[]
-        const records = chunks.map((chunk) => chunk as unknown as Record<string, unknown>)
+        // Note: LanceDB cannot infer Arrow type from null values, so we must
+        // ensure fileTitle has a non-null sample value for schema inference.
+        // Use empty string for null values during table creation only.
+        const records = chunks.map((chunk) => {
+          const record = chunk as unknown as Record<string, unknown>
+          return {
+            ...record,
+            fileTitle: record['fileTitle'] ?? '',
+          }
+        })
         this.table = await this.db.createTable(this.config.tableName, records)
         console.error(`VectorStore: Created table "${this.config.tableName}"`)
 
@@ -190,6 +202,25 @@ export class VectorStore {
         await this.table.dropIndex(idx.name)
         console.error(`VectorStore: Dropped old FTS index "${idx.name}"`)
       }
+    }
+  }
+
+  /**
+   * Ensure schema is up to date by adding missing columns.
+   * Uses table.addColumns() API for top-level column additions.
+   * Idempotent: checks for column existence before adding.
+   */
+  private async ensureSchemaVersion(): Promise<void> {
+    if (!this.table) {
+      return
+    }
+
+    const schema = await this.table.schema()
+    const hasFileTitle = schema.fields.some((f: { name: string }) => f.name === 'fileTitle')
+
+    if (!hasFileTitle) {
+      await this.table.addColumns([{ name: 'fileTitle', valueSql: 'cast(NULL as string)' }])
+      console.error('VectorStore: Migrated schema - added fileTitle column')
     }
   }
 
