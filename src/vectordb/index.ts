@@ -1,180 +1,20 @@
 // VectorStore implementation with LanceDB integration
 
 import { type Connection, Index, type Table, connect } from '@lancedb/lancedb'
+import { applyFileFilter, applyGrouping, applyKeywordBoost } from './search-filters.js'
+import {
+  DatabaseError,
+  FTS_CLEANUP_THRESHOLD_MS,
+  FTS_INDEX_NAME,
+  HYBRID_SEARCH_CANDIDATE_MULTIPLIER,
+  type SearchResult,
+  type VectorChunk,
+  type VectorStoreConfig,
+  toSearchResult,
+} from './types.js'
 
-// ============================================
-// Constants
-// ============================================
-
-/**
- * Standard deviation multiplier for detecting group boundaries.
- * A gap is considered a "boundary" if it exceeds mean + k*std.
- * Value of 1.5 means gaps > 1.5 standard deviations above mean are boundaries.
- */
-const GROUPING_BOUNDARY_STD_MULTIPLIER = 1.5
-
-/** Multiplier for candidate count in hybrid search (to allow reranking) */
-const HYBRID_SEARCH_CANDIDATE_MULTIPLIER = 2
-
-/** FTS index name (bump version when changing tokenizer settings) */
-const FTS_INDEX_NAME = 'fts_index_v2'
-
-/** Threshold for cleaning up old index versions (1 minute) */
-const FTS_CLEANUP_THRESHOLD_MS = 60 * 1000
-
-// ============================================
-// Type Definitions
-// ============================================
-
-/**
- * Grouping mode for quality filtering
- * - 'similar': Only return the most similar group (stops at first distance jump)
- * - 'related': Include related groups (stops at second distance jump)
- */
-export type GroupingMode = 'similar' | 'related'
-
-/**
- * VectorStore configuration
- */
-interface VectorStoreConfig {
-  /** LanceDB database path */
-  dbPath: string
-  /** Table name */
-  tableName: string
-  /** Maximum distance threshold for filtering results (optional) */
-  maxDistance?: number
-  /** Grouping mode for quality filtering (optional) */
-  grouping?: GroupingMode
-  /** Hybrid search weight for BM25 (0.0 = vector only, 1.0 = BM25 only, default 0.6) */
-  hybridWeight?: number
-  /** Maximum number of files to keep in results (optional, filters by best score per file) */
-  maxFiles?: number
-}
-
-/**
- * Document metadata
- */
-interface DocumentMetadata {
-  /** File name */
-  fileName: string
-  /** File size in bytes */
-  fileSize: number
-  /** File type (extension) */
-  fileType: string
-}
-
-/**
- * Vector chunk
- */
-export interface VectorChunk {
-  /** Chunk ID (UUID) */
-  id: string
-  /** File path (absolute) */
-  filePath: string
-  /** Chunk index (zero-based) */
-  chunkIndex: number
-  /** Chunk text */
-  text: string
-  /** Embedding vector (dimension depends on model) */
-  vector: number[]
-  /** Metadata */
-  metadata: DocumentMetadata
-  /** Ingestion timestamp (ISO 8601 format) */
-  timestamp: string
-}
-
-/**
- * Search result
- */
-interface SearchResult {
-  /** File path */
-  filePath: string
-  /** Chunk index */
-  chunkIndex: number
-  /** Chunk text */
-  text: string
-  /** Distance score using dot product (0 = identical, 1 = orthogonal, 2 = opposite) */
-  score: number
-  /** Metadata */
-  metadata: DocumentMetadata
-}
-
-/**
- * Raw result from LanceDB query (internal type)
- */
-interface LanceDBRawResult {
-  filePath: string
-  chunkIndex: number
-  text: string
-  metadata: DocumentMetadata
-  _distance?: number
-  _score?: number
-}
-
-// ============================================
-// Type Guards
-// ============================================
-
-/**
- * Type guard for DocumentMetadata
- */
-function isDocumentMetadata(value: unknown): value is DocumentMetadata {
-  if (typeof value !== 'object' || value === null) return false
-  const obj = value as Record<string, unknown>
-  return (
-    typeof obj['fileName'] === 'string' &&
-    typeof obj['fileSize'] === 'number' &&
-    typeof obj['fileType'] === 'string'
-  )
-}
-
-/**
- * Type guard for LanceDB raw search result
- */
-function isLanceDBRawResult(value: unknown): value is LanceDBRawResult {
-  if (typeof value !== 'object' || value === null) return false
-  const obj = value as Record<string, unknown>
-  return (
-    typeof obj['filePath'] === 'string' &&
-    typeof obj['chunkIndex'] === 'number' &&
-    typeof obj['text'] === 'string' &&
-    isDocumentMetadata(obj['metadata'])
-  )
-}
-
-/**
- * Convert LanceDB raw result to SearchResult with type validation
- * @throws DatabaseError if the result is invalid
- */
-function toSearchResult(raw: unknown): SearchResult {
-  if (!isLanceDBRawResult(raw)) {
-    throw new DatabaseError('Invalid search result format from LanceDB')
-  }
-  return {
-    filePath: raw.filePath,
-    chunkIndex: raw.chunkIndex,
-    text: raw.text,
-    score: raw._distance ?? raw._score ?? 0,
-    metadata: raw.metadata,
-  }
-}
-
-// ============================================
-// Error Classes
-// ============================================
-
-/**
- * Database error
- */
-class DatabaseError extends Error {
-  constructor(
-    message: string,
-    public override readonly cause?: Error
-  ) {
-    super(message)
-    this.name = 'DatabaseError'
-  }
-}
+// Re-export public API
+export type { GroupingMode, SearchResult, VectorChunk } from './types.js'
 
 // ============================================
 // VectorStore Class
@@ -369,97 +209,6 @@ export class VectorStore {
   }
 
   /**
-   * Apply grouping algorithm to filter results by detecting group boundaries.
-   *
-   * Uses statistical threshold (mean + k*std) to identify significant gaps (group boundaries).
-   * - 'similar': Returns only the first group (cuts at first boundary)
-   * - 'related': Returns up to 2 groups (cuts at second boundary)
-   *
-   * @param results - Search results sorted by distance (ascending)
-   * @param mode - Grouping mode ('similar' = 1 group, 'related' = 2 groups)
-   * @returns Filtered results
-   */
-  private applyGrouping(results: SearchResult[], mode: GroupingMode): SearchResult[] {
-    if (results.length <= 1) return results
-
-    // Calculate gaps between consecutive results with their indices
-    const gaps: { index: number; gap: number }[] = []
-    for (let i = 0; i < results.length - 1; i++) {
-      const current = results[i]
-      const next = results[i + 1]
-      if (current !== undefined && next !== undefined) {
-        gaps.push({ index: i + 1, gap: next.score - current.score })
-      }
-    }
-
-    if (gaps.length === 0) return results
-
-    // Calculate statistical threshold to identify significant gaps (group boundaries)
-    const gapValues = gaps.map((g) => g.gap)
-    const mean = gapValues.reduce((a, b) => a + b, 0) / gapValues.length
-    const variance = gapValues.reduce((a, b) => a + (b - mean) ** 2, 0) / gapValues.length
-    const std = Math.sqrt(variance)
-    const threshold = mean + GROUPING_BOUNDARY_STD_MULTIPLIER * std
-
-    // Find all significant gaps (group boundaries)
-    const boundaries = gaps.filter((g) => g.gap > threshold).map((g) => g.index)
-
-    // If no boundaries found, return all results
-    if (boundaries.length === 0) return results
-
-    // Determine how many groups to include based on mode
-    // 'similar': 1 group (cut at first boundary)
-    // 'related': 2 groups (cut at second boundary, or return all if only 1 boundary)
-    const groupsToInclude = mode === 'similar' ? 1 : 2
-    const boundaryIndex = groupsToInclude - 1
-
-    // If we don't have enough boundaries, return all results for 'related' mode
-    if (boundaryIndex >= boundaries.length) {
-      return mode === 'related' ? results : results.slice(0, boundaries[0])
-    }
-
-    // Cut at the appropriate boundary
-    return results.slice(0, boundaries[boundaryIndex])
-  }
-
-  /**
-   * Apply file-based filter to limit results to chunks from the top N files.
-   *
-   * Ranks files by their best (lowest distance) chunk score and keeps only
-   * chunks belonging to the top `maxFiles` files.
-   *
-   * @param results - Search results sorted by distance (ascending)
-   * @param maxFiles - Maximum number of files to keep
-   * @returns Filtered results preserving original order
-   */
-  private applyFileFilter(results: SearchResult[], maxFiles: number): SearchResult[] {
-    if (results.length === 0) return results
-
-    // Find the best (lowest) score per file
-    const fileScores = new Map<string, number>()
-    for (const result of results) {
-      const current = fileScores.get(result.filePath)
-      if (current === undefined || result.score < current) {
-        fileScores.set(result.filePath, result.score)
-      }
-    }
-
-    // If we have fewer or equal files than maxFiles, return all
-    if (fileScores.size <= maxFiles) return results
-
-    // Sort files by best score (ascending) and take top N
-    const topFiles = new Set(
-      [...fileScores.entries()]
-        .sort((a, b) => a[1] - b[1])
-        .slice(0, maxFiles)
-        .map(([filePath]) => filePath)
-    )
-
-    // Filter results to only include chunks from top files
-    return results.filter((result) => topFiles.has(result.filePath))
-  }
-
-  /**
    * Execute vector search with quality filtering
    * Architecture: Semantic search → Filter (maxDistance, grouping) → Keyword boost → File filter (maxFiles)
    *
@@ -500,7 +249,7 @@ export class VectorStore {
       // Step 2: Apply grouping filter on vector distances (before keyword boost)
       // Grouping is meaningful only on semantic distances, not after keyword boost
       if (this.config.grouping && results.length > 1) {
-        results = this.applyGrouping(results, this.config.grouping)
+        results = applyGrouping(results, this.config.grouping)
       }
 
       // Step 3: Apply keyword boost if enabled
@@ -522,7 +271,7 @@ export class VectorStore {
             .limit(results.length * 2) // Enough to cover all vector results
             .toArray()
 
-          results = this.applyKeywordBoost(results, ftsResults, hybridWeight)
+          results = applyKeywordBoost(results, ftsResults, hybridWeight)
         } catch (ftsError) {
           console.error('VectorStore: FTS search failed, using vector-only results:', ftsError)
           this.ftsEnabled = false
@@ -533,7 +282,7 @@ export class VectorStore {
       // Unlike grouping (which depends on raw semantic distance gaps), maxFiles selects
       // the "most relevant files" — this should respect the final ranking including keyword boost
       if (this.config.maxFiles !== undefined && results.length > 0) {
-        results = this.applyFileFilter(results, this.config.maxFiles)
+        results = applyFileFilter(results, this.config.maxFiles)
       }
 
       // Return top results after all filtering and boosting
@@ -541,61 +290,6 @@ export class VectorStore {
     } catch (error) {
       throw new DatabaseError('Failed to search vectors', error as Error)
     }
-  }
-
-  /**
-   * Apply keyword boost to rerank vector search results
-   * Uses multiplicative formula: final_distance = distance / (1 + keyword_normalized * weight)
-   *
-   * This proportional boost ensures:
-   * - Keyword matches improve ranking without dominating semantic similarity
-   * - Documents without keyword matches keep their original vector distance
-   * - Higher weight = stronger influence of keyword matching
-   *
-   * @param vectorResults - Results from vector search (already filtered by maxDistance/grouping)
-   * @param ftsResults - Raw FTS results with BM25 scores
-   * @param weight - Boost weight (0-1, from hybridWeight config)
-   */
-  private applyKeywordBoost(
-    vectorResults: SearchResult[],
-    ftsResults: Record<string, unknown>[],
-    weight: number
-  ): SearchResult[] {
-    // Build FTS score map with normalized scores (0-1)
-    let maxBm25Score = 0
-    for (const result of ftsResults) {
-      if (!result) continue
-      const score = (result['_score'] as number) ?? 0
-      if (score > maxBm25Score) maxBm25Score = score
-    }
-
-    const ftsScoreMap = new Map<string, number>()
-    for (const result of ftsResults) {
-      if (!result) continue
-      const key = `${result['filePath']}:${result['chunkIndex']}`
-      const rawScore = (result['_score'] as number) ?? 0
-      const normalized = maxBm25Score > 0 ? rawScore / maxBm25Score : 0
-      ftsScoreMap.set(key, normalized)
-    }
-
-    // Apply multiplicative boost to vector results
-    const boostedResults = vectorResults.map((result) => {
-      const key = `${result.filePath}:${result.chunkIndex}`
-      const keywordScore = ftsScoreMap.get(key) ?? 0
-
-      // Multiplicative boost: distance / (1 + keyword * weight)
-      // - If keyword matches (score=1) and weight=1: distance halved
-      // - If no keyword match (score=0): distance unchanged
-      const boostedDistance = result.score / (1 + keywordScore * weight)
-
-      return {
-        ...result,
-        score: boostedDistance,
-      }
-    })
-
-    // Re-sort by boosted distance (ascending = better)
-    return boostedResults.sort((a, b) => a.score - b.score)
   }
 
   /**
