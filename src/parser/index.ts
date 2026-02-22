@@ -248,15 +248,20 @@ export class DocumentParser {
       const text = filteredPages.filter((t) => t.length > 0).join('\n\n')
 
       // Extract title from filtered page 1 via semantic chunking
+      // Isolated try-catch: title extraction failure should not abort PDF ingestion
       const fileName = basename(filePath)
       let firstPageChunkText: string | undefined
-      const filteredPage1 = filteredPages[0]
-      if (filteredPage1 && filteredPage1.trim().length > 0) {
-        const chunker = new SemanticChunker()
-        const page1Chunks = await chunker.chunkText(filteredPage1, embedder)
-        if (page1Chunks.length > 0) {
-          firstPageChunkText = (page1Chunks[0] as { text: string }).text
+      try {
+        const filteredPage1 = filteredPages[0]
+        if (filteredPage1 && filteredPage1.trim().length > 0) {
+          const chunker = new SemanticChunker()
+          const page1Chunks = await chunker.chunkText(filteredPage1, embedder)
+          if (page1Chunks.length > 0) {
+            firstPageChunkText = (page1Chunks[0] as { text: string }).text
+          }
         }
+      } catch (titleError) {
+        console.error(`Title extraction failed, falling back to filename: ${titleError}`)
       }
       const titleResult = extractPdfTitle(metadataTitle, firstPageChunkText, fileName)
 
