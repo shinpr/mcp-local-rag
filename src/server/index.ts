@@ -1,7 +1,8 @@
 // RAGServer implementation with MCP tools
 
 import { randomUUID } from 'node:crypto'
-import { readFile, unlink } from 'node:fs/promises'
+import { readFile, readdir, unlink } from 'node:fs/promises'
+import { extname, join } from 'node:path'
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import {
@@ -46,9 +47,11 @@ export class RAGServer {
   private readonly chunker: SemanticChunker
   private readonly parser: DocumentParser
   private readonly dbPath: string
+  private readonly baseDir: string
 
   constructor(config: RAGServerConfig) {
     this.dbPath = config.dbPath
+    this.baseDir = config.baseDir
     this.server = new Server(
       { name: 'rag-mcp-server', version: '1.0.0' },
       { capabilities: { tools: {} } }
@@ -427,28 +430,59 @@ export class RAGServer {
 
   /**
    * list_files tool handler
-   * Enriches raw-data files with original source information
+   * Scans BASE_DIR for supported files and cross-references with ingested documents
    */
   async handleListFiles(): Promise<{ content: [{ type: 'text'; text: string }] }> {
     try {
-      const files = await this.vectorStore.listFiles()
+      const SUPPORTED_EXTENSIONS = new Set(['.pdf', '.docx', '.txt', '.md'])
 
-      // Enrich raw-data files with source information
-      const enrichedFiles = files.map((file) => {
-        if (isRawDataPath(file.filePath)) {
-          const source = extractSourceFromPath(file.filePath)
-          if (source) {
-            return { ...file, source }
-          }
-        }
-        return file
+      // Get all ingested entries from the vector store
+      const ingested = await this.vectorStore.listFiles()
+      const ingestedMap = new Map(ingested.map((f) => [f.filePath, f]))
+
+      // Scan BASE_DIR recursively for supported files
+      let baseDirFiles: string[] = []
+      try {
+        const entries = await readdir(this.baseDir, { recursive: true, withFileTypes: true })
+        baseDirFiles = entries
+          .filter((e) => e.isFile() && SUPPORTED_EXTENSIONS.has(extname(e.name).toLowerCase()))
+          .map((e) => {
+            // parentPath is the Node 21+ name; path is the deprecated Node 20 alias
+            // biome-ignore lint/suspicious/noExplicitAny: parentPath not yet in @types/node@20
+            const dir = (e as any).parentPath ?? e.path
+            return join(dir, e.name)
+          })
+          .sort()
+      } catch (err) {
+        console.error('Failed to scan baseDir:', err)
+      }
+
+      const baseDirSet = new Set(baseDirFiles)
+
+      // Files in BASE_DIR with ingestion status
+      const filesInBaseDir = baseDirFiles.map((filePath) => {
+        const entry = ingestedMap.get(filePath)
+        return entry
+          ? { filePath, ingested: true, chunkCount: entry.chunkCount, timestamp: entry.timestamp }
+          : { filePath, ingested: false }
       })
+
+      // Ingested items that are not physical files in BASE_DIR (web pages, clipboard, etc.)
+      const otherIngested = ingested
+        .filter((f) => !baseDirSet.has(f.filePath))
+        .map((f) => {
+          if (isRawDataPath(f.filePath)) {
+            const source = extractSourceFromPath(f.filePath)
+            if (source) return { source, chunkCount: f.chunkCount }
+          }
+          return { filePath: f.filePath, chunkCount: f.chunkCount }
+        })
 
       return {
         content: [
           {
             type: 'text',
-            text: JSON.stringify(enrichedFiles, null, 2),
+            text: JSON.stringify({ baseDir: this.baseDir, filesInBaseDir, otherIngested }, null, 2),
           },
         ],
       }

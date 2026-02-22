@@ -98,7 +98,7 @@ export const toolDefinitions: Tool[] = [
   {
     name: 'list_files',
     description:
-      'List all ingested files in the vector database. Returns file paths and chunk counts for each document.',
+      'List all files in BASE_DIR (PDF, DOCX, TXT, MD) and show which are ingested into the vector database. Also lists any other ingested items (web pages, clipboard content, etc.) that are outside BASE_DIR.',
     inputSchema: { type: 'object', properties: {} },
   },
   {
