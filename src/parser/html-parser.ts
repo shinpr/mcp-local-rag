@@ -4,6 +4,7 @@
 import { Readability } from '@mozilla/readability'
 import { JSDOM } from 'jsdom'
 import TurndownService from 'turndown'
+import { extractHtmlTitle } from './title-extractor.js'
 
 // ============================================
 // Type Definitions
@@ -59,15 +60,19 @@ function createTurndownService(): TurndownService {
  * 1. HTML string → JSDOM (DOM creation)
  * 2. JSDOM → Readability (main content extraction, noise removal)
  * 3. Readability result → Turndown (Markdown conversion)
+ * 4. Title extracted separately via extractHtmlTitle (NOT prepended to content)
  *
  * @param html - Raw HTML string
  * @param url - Source URL (used for resolving relative links)
- * @returns Markdown string of extracted content
+ * @returns Object with content (markdown) and title (extracted separately)
  */
-export async function parseHtml(html: string, url: string): Promise<string> {
+export async function parseHtml(
+  html: string,
+  url: string
+): Promise<{ content: string; title: string }> {
   // Handle empty or whitespace-only HTML
   if (!html || html.trim().length === 0) {
-    return ''
+    return { content: '', title: '' }
   }
 
   try {
@@ -93,27 +98,26 @@ export async function parseHtml(html: string, url: string): Promise<string> {
       // Try to get body content directly
       const bodyContent = document.body?.innerHTML || ''
       if (!bodyContent.trim()) {
-        return ''
+        return { content: '', title: '' }
       }
 
       // Convert raw body HTML to Markdown
       const turndownService = createTurndownService()
-      return turndownService.turndown(bodyContent).trim()
+      return { content: turndownService.turndown(bodyContent).trim(), title: '' }
     }
 
     // Convert extracted HTML content to Markdown
     const turndownService = createTurndownService()
     const markdown = turndownService.turndown(article.content)
 
-    // Add title if available
-    if (article.title) {
-      return `# ${article.title}\n\n${markdown}`.trim()
-    }
+    // Extract title separately (NOT prepended to markdown content)
+    const titleResult = extractHtmlTitle(article.title || '', '')
+    const title = titleResult.title !== '' ? titleResult.title : ''
 
-    return markdown.trim()
+    return { content: markdown.trim(), title }
   } catch (error) {
-    // Log error but don't throw - return empty string for graceful degradation
+    // Log error but don't throw - return empty values for graceful degradation
     console.error('Failed to parse HTML:', error)
-    return ''
+    return { content: '', title: '' }
   }
 }

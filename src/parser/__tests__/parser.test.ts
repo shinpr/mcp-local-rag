@@ -146,22 +146,24 @@ describe('DocumentParser', () => {
   })
 
   describe('parseFile', () => {
-    it('should parse TXT file successfully', async () => {
+    it('should parse TXT file and return ParseResult', async () => {
       const filePath = join(testDir, 'test.txt')
       const content = 'This is a test TXT file.'
       await writeFile(filePath, content, 'utf-8')
 
       const result = await parser.parseFile(filePath)
-      expect(result).toBe(content)
+      expect(result.content).toBe(content)
+      expect(typeof result.title).toBe('string')
     })
 
-    it('should parse MD file successfully', async () => {
+    it('should parse MD file and return ParseResult', async () => {
       const filePath = join(testDir, 'test.md')
       const content = '# Markdown Test\n\nThis is a **test** MD file.'
       await writeFile(filePath, content, 'utf-8')
 
       const result = await parser.parseFile(filePath)
-      expect(result).toBe(content)
+      expect(result.content).toBe(content)
+      expect(typeof result.title).toBe('string')
     })
 
     it('should throw ValidationError for unsupported file format', async () => {
@@ -199,13 +201,14 @@ describe('DocumentParser', () => {
   })
 
   describe('parseTxt', () => {
-    it('should parse UTF-8 text file', async () => {
+    it('should parse UTF-8 text file and return ParseResult', async () => {
       const filePath = join(testDir, 'utf8.txt')
       const content = 'Hello, World! Hello, World!'
       await writeFile(filePath, content, 'utf-8')
 
       const result = await parser.parseFile(filePath)
-      expect(result).toBe(content)
+      expect(result.content).toBe(content)
+      expect(typeof result.title).toBe('string')
     })
 
     it('should handle empty file', async () => {
@@ -213,18 +216,61 @@ describe('DocumentParser', () => {
       await writeFile(filePath, '', 'utf-8')
 
       const result = await parser.parseFile(filePath)
-      expect(result).toBe('')
+      expect(result.content).toBe('')
     })
   })
 
   describe('parseMd', () => {
-    it('should parse markdown file with formatting', async () => {
+    it('should parse markdown file with formatting and return ParseResult', async () => {
       const filePath = join(testDir, 'formatted.md')
       const content = '# Title\n\n## Subtitle\n\n- Item 1\n- Item 2\n\n**Bold** and *italic*.'
       await writeFile(filePath, content, 'utf-8')
 
       const result = await parser.parseFile(filePath)
-      expect(result).toBe(content)
+      expect(result.content).toBe(content)
+      expect(typeof result.title).toBe('string')
+    })
+  })
+
+  // --------------------------------------------
+  // Title Extraction per Format
+  // --------------------------------------------
+  describe('Title extraction per format', () => {
+    it('should extract title from markdown frontmatter', async () => {
+      const filePath = join(testDir, 'with-frontmatter.md')
+      const content = '---\ntitle: My Document Title\n---\n\nContent here.'
+      await writeFile(filePath, content, 'utf-8')
+
+      const result = await parser.parseFile(filePath)
+      expect(result.title).toBe('My Document Title')
+      expect(result.content).toBe(content)
+    })
+
+    it('should extract title from first heading in markdown', async () => {
+      const filePath = join(testDir, 'with-heading.md')
+      const content = '# My Heading\n\nContent here.'
+      await writeFile(filePath, content, 'utf-8')
+
+      const result = await parser.parseFile(filePath)
+      expect(result.title).toBe('My Heading')
+    })
+
+    it('should extract title from first line of txt', async () => {
+      const filePath = join(testDir, 'titled.txt')
+      const content = 'Document Title\n\nThis is the body text.'
+      await writeFile(filePath, content, 'utf-8')
+
+      const result = await parser.parseFile(filePath)
+      expect(result.title).toBe('Document Title')
+    })
+
+    it('should fall back to file name for txt without title pattern', async () => {
+      const filePath = join(testDir, 'my-notes.txt')
+      const content = 'Line one\nLine two\nLine three'
+      await writeFile(filePath, content, 'utf-8')
+
+      const result = await parser.parseFile(filePath)
+      expect(result.title).toBe('my notes')
     })
   })
 })

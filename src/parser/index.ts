@@ -2,16 +2,32 @@
 
 import { statSync } from 'node:fs'
 import { lstat, readFile, realpath } from 'node:fs/promises'
-import { extname, isAbsolute, resolve, sep } from 'node:path'
+import { basename, extname, isAbsolute, resolve, sep } from 'node:path'
 import mammoth from 'mammoth'
 import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs'
 import type { TextItem } from 'pdfjs-dist/types/src/display/api'
 import { type EmbedderInterface, type PageData, filterPageBoundarySentences } from './pdf-filter.js'
-import { type TitleExtractionResult, extractTitle } from './title-extractor.js'
+import {
+  type TitleExtractionResult,
+  extractDocxTitle,
+  extractMarkdownTitle,
+  extractPdfTitle,
+  extractTitle,
+  extractTxtTitle,
+} from './title-extractor.js'
 
 // ============================================
 // Type Definitions
 // ============================================
+
+/**
+ * Result from parsing a document, containing both content and extracted title.
+ * Title is display-only metadata (NOT used for search scoring).
+ */
+export interface ParseResult {
+  content: string
+  title: string
+}
 
 /**
  * DocumentParser configuration
@@ -152,11 +168,11 @@ export class DocumentParser {
    * File parsing (auto format detection)
    *
    * @param filePath - File path to parse
-   * @returns Parsed text
+   * @returns ParseResult with content and extracted title
    * @throws ValidationError - Path traversal, size exceeded, unsupported format
    * @throws FileOperationError - File read failed, parse failed
    */
-  async parseFile(filePath: string): Promise<string> {
+  async parseFile(filePath: string): Promise<ParseResult> {
     // Validation
     await this.validateFilePath(filePath)
     this.validateFileSize(filePath)
@@ -182,13 +198,14 @@ export class DocumentParser {
    * - Extracts text with position information (x, y, fontSize)
    * - Semantic header/footer detection using embedding similarity
    * - Uses hasEOL for proper line break handling
+   * - Extracts document title from PDF metadata and first page font heuristic
    *
    * @param filePath - PDF file path
    * @param embedder - Embedder for semantic header/footer detection
-   * @returns Parsed text with header/footer removed
+   * @returns ParseResult with content and extracted title
    * @throws FileOperationError - File read failed, parse failed
    */
-  async parsePdf(filePath: string, embedder: EmbedderInterface): Promise<string> {
+  async parsePdf(filePath: string, embedder: EmbedderInterface): Promise<ParseResult> {
     // Validation
     await this.validateFilePath(filePath)
     this.validateFileSize(filePath)
@@ -200,6 +217,12 @@ export class DocumentParser {
         useSystemFonts: true,
         isEvalSupported: false,
       }).promise
+
+      // Extract metadata for title extraction
+      const metadata = await pdf.getMetadata()
+      const metadataTitle = (metadata?.info as Record<string, unknown>)?.['Title'] as
+        | string
+        | undefined
 
       // Extract text with position information from each page
       const pages: PageData[] = []
@@ -220,13 +243,26 @@ export class DocumentParser {
         pages.push({ pageNum: i, items })
       }
 
+      // Collect first page items for font size heuristic title extraction
+      const firstPageItems =
+        pages.length > 0
+          ? (pages[0] as PageData).items.map((item) => ({
+              text: item.text,
+              fontSize: item.fontSize,
+            }))
+          : []
+
       // Apply sentence-level header/footer filtering
       // This handles variable content like page numbers ("7 of 75") using semantic similarity
       const text = await filterPageBoundarySentences(pages, embedder)
 
+      // Extract title from PDF metadata + first page font heuristic
+      const fileName = basename(filePath)
+      const titleResult = extractPdfTitle(metadataTitle, firstPageItems, fileName)
+
       console.error(`Parsed PDF: ${filePath} (${text.length} characters, ${pdf.numPages} pages)`)
 
-      return text
+      return { content: text, title: titleResult.title }
     } catch (error) {
       throw new FileOperationError(`Failed to parse PDF: ${filePath}`, error as Error)
     }
@@ -235,15 +271,25 @@ export class DocumentParser {
   /**
    * DOCX parsing (using mammoth)
    *
+   * Uses extractRawText for content and convertToHtml additionally for title detection.
+   *
    * @param filePath - DOCX file path
-   * @returns Parsed text
+   * @returns ParseResult with content and extracted title
    * @throws FileOperationError - File read failed, parse failed
    */
-  private async parseDocx(filePath: string): Promise<string> {
+  private async parseDocx(filePath: string): Promise<ParseResult> {
     try {
+      // Use extractRawText for content (unchanged behavior)
       const result = await mammoth.extractRawText({ path: filePath })
-      console.error(`Parsed DOCX: ${filePath} (${result.value.length} characters)`)
-      return result.value
+      const rawText = result.value
+
+      // Use convertToHtml additionally for title extraction (first <h1>)
+      const htmlResult = await mammoth.convertToHtml({ path: filePath })
+      const fileName = basename(filePath)
+      const titleResult = extractDocxTitle(htmlResult.value, fileName)
+
+      console.error(`Parsed DOCX: ${filePath} (${rawText.length} characters)`)
+      return { content: rawText, title: titleResult.title }
     } catch (error) {
       throw new FileOperationError(`Failed to parse DOCX: ${filePath}`, error as Error)
     }
@@ -253,14 +299,16 @@ export class DocumentParser {
    * TXT parsing (using fs.readFile)
    *
    * @param filePath - TXT file path
-   * @returns Parsed text
+   * @returns ParseResult with content and extracted title
    * @throws FileOperationError - File read failed
    */
-  private async parseTxt(filePath: string): Promise<string> {
+  private async parseTxt(filePath: string): Promise<ParseResult> {
     try {
       const text = await readFile(filePath, 'utf-8')
+      const fileName = basename(filePath)
+      const titleResult = extractTxtTitle(text, fileName)
       console.error(`Parsed TXT: ${filePath} (${text.length} characters)`)
-      return text
+      return { content: text, title: titleResult.title }
     } catch (error) {
       throw new FileOperationError(`Failed to parse TXT: ${filePath}`, error as Error)
     }
@@ -270,14 +318,16 @@ export class DocumentParser {
    * MD parsing (using fs.readFile)
    *
    * @param filePath - MD file path
-   * @returns Parsed text
+   * @returns ParseResult with content and extracted title
    * @throws FileOperationError - File read failed
    */
-  private async parseMd(filePath: string): Promise<string> {
+  private async parseMd(filePath: string): Promise<ParseResult> {
     try {
       const text = await readFile(filePath, 'utf-8')
+      const fileName = basename(filePath)
+      const titleResult = extractMarkdownTitle(text, fileName)
       console.error(`Parsed MD: ${filePath} (${text.length} characters)`)
-      return text
+      return { content: text, title: titleResult.title }
     } catch (error) {
       throw new FileOperationError(`Failed to parse MD: ${filePath}`, error as Error)
     }
