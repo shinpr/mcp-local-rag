@@ -202,15 +202,8 @@ export class RAGServer {
       if (isRawDataPath(args.filePath)) {
         // Raw-data files: skip validation, read directly
         text = await readFile(args.filePath, 'utf-8')
-        // Prefer title from .meta.json sidecar (preserves original HTML title),
-        // fall back to markdown extraction when sidecar is absent
         const meta = await loadMetaJson(args.filePath)
-        if (meta?.title) {
-          title = meta.title
-        } else {
-          const titleResult = extractMarkdownTitle(text, args.filePath.split('/').pop() || '')
-          title = titleResult.title
-        }
+        title = meta?.title ?? null
         console.error(`Read raw-data file: ${args.filePath} (${text.length} characters)`)
       } else if (isPdf) {
         const result = await this.parser.parsePdf(args.filePath, this.embedder)
