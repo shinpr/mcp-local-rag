@@ -134,7 +134,7 @@ Results include text content, source file, document title, and relevance score. 
 ### Managing Files
 
 ```
-"List all ingested files"          # See what's indexed
+"List all files in BASE_DIR and their ingested status"   # See what's indexed
 "Delete old-spec.pdf from RAG"     # Remove a file
 "Show RAG server status"           # Check system health
 ```
