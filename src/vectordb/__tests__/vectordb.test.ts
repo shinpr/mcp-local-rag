@@ -450,6 +450,292 @@ describe('VectorStore', () => {
   })
 
   /**
+   * File Filter Contract:
+   *
+   * Given: Search results with filePath and distance score
+   *
+   * Algorithm:
+   * 1. Find the best (lowest) distance score per file
+   * 2. Rank files by their best score (ascending)
+   * 3. Keep only chunks from the top N files
+   *
+   * Guarantees:
+   * - If maxFiles is undefined: no filtering (all results returned)
+   * - If maxFiles >= unique file count: all results returned
+   * - If maxFiles < unique file count: only top N files' chunks returned
+   * - Chunk order within retained files is preserved
+   */
+  describe('File filter (maxFiles)', () => {
+    it('precondition: seed distance produces expected score ordering', async () => {
+      const dbPath = './tmp/test-vectordb-maxfiles-precondition'
+      if (fs.existsSync(dbPath)) {
+        fs.rmSync(dbPath, { recursive: true })
+      }
+
+      try {
+        const store = new VectorStore({
+          dbPath,
+          tableName: 'chunks',
+        })
+        await store.initialize()
+
+        const queryVector = createNormalizedVector(1)
+
+        // Insert chunks with seeds 1, 2, 50 to verify distance ordering
+        await store.insertChunks([
+          createTestChunk('seed1', '/test/s1.txt', 0, createNormalizedVector(1)),
+        ])
+        await store.insertChunks([
+          createTestChunk('seed2', '/test/s2.txt', 0, createNormalizedVector(2)),
+        ])
+        await store.insertChunks([
+          createTestChunk('seed50', '/test/s50.txt', 0, createNormalizedVector(50)),
+        ])
+
+        const results = await store.search(queryVector, '', 10)
+
+        // Verify: seed 1 < seed 2 < seed 50 in distance
+        const score1 = results.find((r) => r.filePath === '/test/s1.txt')?.score ?? 999
+        const score2 = results.find((r) => r.filePath === '/test/s2.txt')?.score ?? 999
+        const score50 = results.find((r) => r.filePath === '/test/s50.txt')?.score ?? 999
+        expect(score1).toBeLessThan(score2)
+        expect(score2).toBeLessThan(score50)
+      } finally {
+        if (fs.existsSync(dbPath)) {
+          fs.rmSync(dbPath, { recursive: true })
+        }
+      }
+    })
+
+    it('returns only chunks from best-scoring file when maxFiles=1', async () => {
+      const dbPath = './tmp/test-vectordb-maxfiles-1'
+      if (fs.existsSync(dbPath)) {
+        fs.rmSync(dbPath, { recursive: true })
+      }
+
+      try {
+        const store = new VectorStore({
+          dbPath,
+          tableName: 'chunks',
+          maxFiles: 1,
+        })
+        await store.initialize()
+
+        const queryVector = createNormalizedVector(1)
+
+        // File A: 2 chunks, close to query vector
+        const fileAChunk0 = createTestChunk(
+          'File A chunk 0',
+          '/test/fileA.txt',
+          0,
+          createNormalizedVector(1) // Close to query
+        )
+        const fileAChunk1 = createTestChunk(
+          'File A chunk 1',
+          '/test/fileA.txt',
+          1,
+          createNormalizedVector(2)
+        )
+
+        // File B: 2 chunks, far from query vector
+        const fileBChunk0 = createTestChunk(
+          'File B chunk 0',
+          '/test/fileB.txt',
+          0,
+          createNormalizedVector(50) // Far from query
+        )
+        const fileBChunk1 = createTestChunk(
+          'File B chunk 1',
+          '/test/fileB.txt',
+          1,
+          createNormalizedVector(60)
+        )
+
+        await store.insertChunks([fileAChunk0, fileAChunk1])
+        await store.insertChunks([fileBChunk0, fileBChunk1])
+
+        const results = await store.search(queryVector, '', 10)
+
+        // Only File A chunks should remain (2 chunks inserted)
+        expect(results).toHaveLength(2)
+        expect(results.every((r) => r.filePath === '/test/fileA.txt')).toBe(true)
+        expect(results.some((r) => r.filePath === '/test/fileB.txt')).toBe(false)
+
+        // Chunk order within retained file is preserved
+        expect(results[0]?.chunkIndex).toBe(0)
+        expect(results[1]?.chunkIndex).toBe(1)
+      } finally {
+        if (fs.existsSync(dbPath)) {
+          fs.rmSync(dbPath, { recursive: true })
+        }
+      }
+    })
+
+    it('returns chunks from top 2 files when maxFiles=2', async () => {
+      const dbPath = './tmp/test-vectordb-maxfiles-2'
+      if (fs.existsSync(dbPath)) {
+        fs.rmSync(dbPath, { recursive: true })
+      }
+
+      try {
+        const store = new VectorStore({
+          dbPath,
+          tableName: 'chunks',
+          maxFiles: 2,
+        })
+        await store.initialize()
+
+        const queryVector = createNormalizedVector(1)
+
+        // File A: close to query (seed=1, distance~0)
+        await store.insertChunks([
+          createTestChunk('File A chunk', '/test/fileA.txt', 0, createNormalizedVector(1)),
+        ])
+
+        // File B: medium distance (seed=2, distance~0.46)
+        await store.insertChunks([
+          createTestChunk('File B chunk', '/test/fileB.txt', 0, createNormalizedVector(2)),
+        ])
+
+        // File C: far from query (seed=3, distance~1.41)
+        await store.insertChunks([
+          createTestChunk('File C chunk', '/test/fileC.txt', 0, createNormalizedVector(3)),
+        ])
+
+        const results = await store.search(queryVector, '', 10)
+
+        // File A and File B should remain, File C excluded
+        expect(results.length).toBe(2)
+        const filePaths = results.map((r) => r.filePath)
+        expect(filePaths).toContain('/test/fileA.txt')
+        expect(filePaths).toContain('/test/fileB.txt')
+        expect(filePaths).not.toContain('/test/fileC.txt')
+      } finally {
+        if (fs.existsSync(dbPath)) {
+          fs.rmSync(dbPath, { recursive: true })
+        }
+      }
+    })
+
+    it('returns all results when maxFiles is not set', async () => {
+      const dbPath = './tmp/test-vectordb-maxfiles-unset'
+      if (fs.existsSync(dbPath)) {
+        fs.rmSync(dbPath, { recursive: true })
+      }
+
+      try {
+        const store = new VectorStore({
+          dbPath,
+          tableName: 'chunks',
+          // maxFiles not set
+        })
+        await store.initialize()
+
+        const queryVector = createNormalizedVector(1)
+
+        await store.insertChunks([
+          createTestChunk('File A chunk', '/test/fileA.txt', 0, createNormalizedVector(1)),
+        ])
+        await store.insertChunks([
+          createTestChunk('File B chunk', '/test/fileB.txt', 0, createNormalizedVector(10)),
+        ])
+        await store.insertChunks([
+          createTestChunk('File C chunk', '/test/fileC.txt', 0, createNormalizedVector(50)),
+        ])
+
+        const results = await store.search(queryVector, '', 10)
+
+        // All 3 files should be returned
+        expect(results).toHaveLength(3)
+        const filePaths = results.map((r) => r.filePath)
+        expect(filePaths).toContain('/test/fileA.txt')
+        expect(filePaths).toContain('/test/fileB.txt')
+        expect(filePaths).toContain('/test/fileC.txt')
+      } finally {
+        if (fs.existsSync(dbPath)) {
+          fs.rmSync(dbPath, { recursive: true })
+        }
+      }
+    })
+
+    it('returns all results when maxFiles >= unique file count', async () => {
+      const dbPath = './tmp/test-vectordb-maxfiles-exceeds'
+      if (fs.existsSync(dbPath)) {
+        fs.rmSync(dbPath, { recursive: true })
+      }
+
+      try {
+        const store = new VectorStore({
+          dbPath,
+          tableName: 'chunks',
+          maxFiles: 5, // More than the 2 files we'll insert
+        })
+        await store.initialize()
+
+        const queryVector = createNormalizedVector(1)
+
+        await store.insertChunks([
+          createTestChunk('File A chunk', '/test/fileA.txt', 0, createNormalizedVector(1)),
+        ])
+        await store.insertChunks([
+          createTestChunk('File B chunk', '/test/fileB.txt', 0, createNormalizedVector(10)),
+        ])
+
+        const results = await store.search(queryVector, '', 10)
+
+        // All files returned since maxFiles > unique files
+        expect(results).toHaveLength(2)
+      } finally {
+        if (fs.existsSync(dbPath)) {
+          fs.rmSync(dbPath, { recursive: true })
+        }
+      }
+    })
+
+    it('composes correctly with grouping (grouping reduces, then maxFiles further filters)', async () => {
+      const dbPath = './tmp/test-vectordb-grouping-maxfiles'
+      if (fs.existsSync(dbPath)) {
+        fs.rmSync(dbPath, { recursive: true })
+      }
+
+      try {
+        const store = new VectorStore({
+          dbPath,
+          tableName: 'chunks',
+          grouping: 'similar', // Cuts at first boundary
+          maxFiles: 1, // Then keep only 1 file
+        })
+        await store.initialize()
+
+        const queryVector = createNormalizedVector(1)
+
+        // Group 1: 2 files, both close to query (identical vectors = same group)
+        await store.insertChunks([
+          createTestChunk('File A in group 1', '/test/fileA.txt', 0, createNormalizedVector(1)),
+        ])
+        await store.insertChunks([
+          createTestChunk('File B in group 1', '/test/fileB.txt', 0, createNormalizedVector(1)),
+        ])
+
+        // Group 2: far from query (creates clear boundary)
+        await store.insertChunks([
+          createTestChunk('File C in group 2', '/test/fileC.txt', 0, createNormalizedVector(200)),
+        ])
+
+        const results = await store.search(queryVector, '', 10)
+
+        // Grouping should remove File C (group 2), then maxFiles=1 keeps only 1 file from group 1
+        expect(results).toHaveLength(1)
+        expect(results[0]?.filePath).not.toBe('/test/fileC.txt')
+      } finally {
+        if (fs.existsSync(dbPath)) {
+          fs.rmSync(dbPath, { recursive: true })
+        }
+      }
+    })
+  })
+
+  /**
    * Grouping Algorithm Contract:
    *
    * Given: Search results sorted by distance score (ascending)

@@ -35,6 +35,21 @@ function parseMaxDistance(value: string | undefined): number | undefined {
 }
 
 /**
+ * Parse max files from environment variable
+ */
+function parseMaxFiles(value: string | undefined): number | undefined {
+  if (!value) return undefined
+  const parsed = Number.parseInt(value, 10)
+  if (Number.isNaN(parsed) || parsed < 1) {
+    console.error(
+      `Invalid RAG_MAX_FILES value: "${value}". Expected positive integer (>= 1). Ignoring.`
+    )
+    return undefined
+  }
+  return parsed
+}
+
+/**
  * Parse hybrid weight from environment variable
  */
 function parseHybridWeight(value: string | undefined): number | undefined {
@@ -70,12 +85,16 @@ export async function startServer(): Promise<void> {
     // Add quality filter settings only if defined
     const maxDistance = parseMaxDistance(process.env['RAG_MAX_DISTANCE'])
     const grouping = parseGroupingMode(process.env['RAG_GROUPING'])
+    const maxFiles = parseMaxFiles(process.env['RAG_MAX_FILES'])
     const hybridWeight = parseHybridWeight(process.env['RAG_HYBRID_WEIGHT'])
     if (maxDistance !== undefined) {
       config.maxDistance = maxDistance
     }
     if (grouping !== undefined) {
       config.grouping = grouping
+    }
+    if (maxFiles !== undefined) {
+      config.maxFiles = maxFiles
     }
     if (hybridWeight !== undefined) {
       config.hybridWeight = hybridWeight

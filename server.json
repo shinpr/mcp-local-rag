@@ -67,6 +67,13 @@
           "isRequired": false,
           "format": "string",
           "isSecret": false
+        },
+        {
+          "name": "RAG_MAX_FILES",
+          "description": "Maximum number of files to keep in search results. Results are filtered to include only chunks from the top N best-scoring files. For example, 1 returns only the single best-matching file's chunks. Unset means no file filtering.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
         }
       ],
       "features": {
