@@ -431,13 +431,13 @@ describe('pdf-filter', () => {
         })),
       }))
 
-    it('should return joined text when pages < minPages', async () => {
+    it('should return per-page text when pages < minPages', async () => {
       const pages = createPagesWithSentences([['Single page content.']])
       const embedder = createMockEmbedder([])
 
       const result = await filterPageBoundarySentences(pages, embedder)
 
-      expect(result).toBe('Single page content.')
+      expect(result).toEqual(['Single page content.'])
       expect(embedder.embedBatch).not.toHaveBeenCalled()
     })
 
@@ -467,12 +467,13 @@ describe('pdf-filter', () => {
       }
 
       const result = await filterPageBoundarySentences(pages, embedder, { minPages: 3 })
+      const joined = result.join('\n\n')
 
       // Should not contain "Header pattern"
-      expect(result).not.toContain('Header pattern')
-      expect(result).toContain('Page 1 content')
-      expect(result).toContain('Page 2 content')
-      expect(result).toContain('Page 3 content')
+      expect(joined).not.toContain('Header pattern')
+      expect(joined).toContain('Page 1 content')
+      expect(joined).toContain('Page 2 content')
+      expect(joined).toContain('Page 3 content')
     })
 
     it('should remove detected footer sentences', async () => {
@@ -499,9 +500,10 @@ describe('pdf-filter', () => {
       }
 
       const result = await filterPageBoundarySentences(pages, embedder, { minPages: 3 })
+      const joined = result.join('\n\n')
 
-      expect(result).not.toContain('Footer pattern')
-      expect(result).toContain('Page 1 content')
+      expect(joined).not.toContain('Footer pattern')
+      expect(joined).toContain('Page 1 content')
     })
 
     it('should preserve content when no patterns detected', async () => {
@@ -521,10 +523,11 @@ describe('pdf-filter', () => {
       }
 
       const result = await filterPageBoundarySentences(pages, embedder, { minPages: 3 })
+      const joined = result.join('\n\n')
 
-      expect(result).toContain('Unique A')
-      expect(result).toContain('Content A')
-      expect(result).toContain('End A')
+      expect(joined).toContain('Unique A')
+      expect(joined).toContain('Content A')
+      expect(joined).toContain('End A')
     })
   })
 })

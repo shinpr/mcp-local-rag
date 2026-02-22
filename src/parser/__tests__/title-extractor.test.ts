@@ -164,50 +164,59 @@ describe('Title Extractor', () => {
   // --------------------------------------------
   describe('extractPdfTitle', () => {
     it('should use PDF metadata title when available', () => {
-      const result = extractPdfTitle('Annual Report 2024', [], 'report.pdf')
+      const result = extractPdfTitle('Annual Report 2024', 'Some chunk text', 'report.pdf')
 
       expect(result.title).toBe('Annual Report 2024')
       expect(result.source).toBe('metadata')
     })
 
-    it('should use largest font text on first page when no metadata title', () => {
-      const items = [
-        { text: 'Small body text', fontSize: 12 },
-        { text: 'Large Title Text', fontSize: 24 },
-        { text: 'Another small text', fontSize: 10 },
-      ]
-      const result = extractPdfTitle(undefined, items, 'report.pdf')
+    it('should use first page chunk text when no metadata title', () => {
+      const result = extractPdfTitle(undefined, 'The Unity Game Designer Playbook', 'report.pdf')
 
-      expect(result.title).toBe('Large Title Text')
+      expect(result.title).toBe('The Unity Game Designer Playbook')
       expect(result.source).toBe('content')
     })
 
-    it('should fall back to file name when no metadata and no items', () => {
-      const result = extractPdfTitle(undefined, [], 'annual-report.pdf')
+    it('should fall back to file name when no metadata and no chunk text', () => {
+      const result = extractPdfTitle(undefined, undefined, 'annual-report.pdf')
 
       expect(result.title).toBe('annual report')
       expect(result.source).toBe('filename')
     })
 
     it('should ignore metadata title if it looks like a file path', () => {
-      const result = extractPdfTitle('/home/user/document.pdf', [], 'my-doc.pdf')
+      const result = extractPdfTitle('/home/user/document.pdf', undefined, 'my-doc.pdf')
 
       expect(result.title).toBe('my doc')
       expect(result.source).toBe('filename')
     })
 
     it('should ignore metadata title if it contains backslash path', () => {
-      const result = extractPdfTitle('C:\\Users\\doc.pdf', [], 'my-doc.pdf')
+      const result = extractPdfTitle('C:\\Users\\doc.pdf', undefined, 'my-doc.pdf')
 
       expect(result.title).toBe('my doc')
       expect(result.source).toBe('filename')
     })
 
     it('should ignore metadata title if it is empty or whitespace', () => {
-      const result = extractPdfTitle('   ', [], 'my-doc.pdf')
+      const result = extractPdfTitle('   ', undefined, 'my-doc.pdf')
 
       expect(result.title).toBe('my doc')
       expect(result.source).toBe('filename')
+    })
+
+    it('should prefer metadata over chunk text when both available', () => {
+      const result = extractPdfTitle('Metadata Title', 'Chunk Title', 'fallback.pdf')
+
+      expect(result.title).toBe('Metadata Title')
+      expect(result.source).toBe('metadata')
+    })
+
+    it('should fall back from file-path metadata to chunk text', () => {
+      const result = extractPdfTitle('/usr/local/doc.pdf', 'Real Title From Content', 'my-doc.pdf')
+
+      expect(result.title).toBe('Real Title From Content')
+      expect(result.source).toBe('content')
     })
   })
 

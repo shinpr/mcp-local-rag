@@ -6,6 +6,7 @@ import { basename, extname, isAbsolute, resolve, sep } from 'node:path'
 import mammoth from 'mammoth'
 import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs'
 import type { TextItem } from 'pdfjs-dist/types/src/display/api'
+import { SemanticChunker } from '../chunker/index.js'
 import { type EmbedderInterface, type PageData, filterPageBoundarySentences } from './pdf-filter.js'
 import {
   extractDocxTitle,
@@ -241,22 +242,23 @@ export class DocumentParser {
         pages.push({ pageNum: i, items })
       }
 
-      // Collect first page items for font size heuristic title extraction
-      const firstPageItems =
-        pages.length > 0
-          ? (pages[0] as PageData).items.map((item) => ({
-              text: item.text,
-              fontSize: item.fontSize,
-            }))
-          : []
-
-      // Apply sentence-level header/footer filtering
+      // Apply sentence-level header/footer filtering (returns per-page filtered text)
       // This handles variable content like page numbers ("7 of 75") using semantic similarity
-      const text = await filterPageBoundarySentences(pages, embedder)
+      const filteredPages = await filterPageBoundarySentences(pages, embedder)
+      const text = filteredPages.filter((t) => t.length > 0).join('\n\n')
 
-      // Extract title from PDF metadata + first page font heuristic
+      // Extract title from filtered page 1 via semantic chunking
       const fileName = basename(filePath)
-      const titleResult = extractPdfTitle(metadataTitle, firstPageItems, fileName)
+      let firstPageChunkText: string | undefined
+      const filteredPage1 = filteredPages[0]
+      if (filteredPage1 && filteredPage1.trim().length > 0) {
+        const chunker = new SemanticChunker()
+        const page1Chunks = await chunker.chunkText(filteredPage1, embedder)
+        if (page1Chunks.length > 0) {
+          firstPageChunkText = (page1Chunks[0] as { text: string }).text
+        }
+      }
+      const titleResult = extractPdfTitle(metadataTitle, firstPageChunkText, fileName)
 
       console.error(`Parsed PDF: ${filePath} (${text.length} characters, ${pdf.numPages} pages)`)
 

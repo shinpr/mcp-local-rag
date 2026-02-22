@@ -110,19 +110,19 @@ export function extractHtmlTitle(
 }
 
 /**
- * Extract title from PDF metadata and first page items
- * Priority: PDF metadata /Title -> largest font text on page 1 -> file name
+ * Extract title from PDF metadata or first page chunk text
+ * Priority: PDF metadata /Title -> first page chunk 0 text -> file name
  *
  * Rejects metadata titles that look like file paths (contain / or \) or are empty/whitespace-only.
  *
  * @param metadataTitle - PDF metadata /Title value (may be undefined)
- * @param firstPageItems - Text items from first page with font size
+ * @param firstPageChunkText - Text of chunk 0 from semantic chunking of page 1 (may be undefined)
  * @param fileName - File name for fallback
  * @returns Title extraction result
  */
 export function extractPdfTitle(
   metadataTitle: string | undefined,
-  firstPageItems: Array<{ text: string; fontSize: number }>,
+  firstPageChunkText: string | undefined,
   fileName: string
 ): TitleExtractionResult {
   // 1. Try PDF metadata title (reject file paths and empty values)
@@ -134,17 +134,9 @@ export function extractPdfTitle(
     }
   }
 
-  // 2. Try largest font text on first page
-  if (firstPageItems.length > 0) {
-    let largestItem = firstPageItems[0] as { text: string; fontSize: number }
-    for (const item of firstPageItems) {
-      if (item.fontSize > largestItem.fontSize) {
-        largestItem = item
-      }
-    }
-    if (largestItem.text.trim().length > 0) {
-      return { title: largestItem.text.trim(), source: 'content' }
-    }
+  // 2. Try first chunk from page 1 semantic chunking
+  if (firstPageChunkText && firstPageChunkText.trim().length > 0) {
+    return { title: firstPageChunkText.trim(), source: 'content' }
   }
 
   // 3. Fall back to file name

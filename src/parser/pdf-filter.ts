@@ -387,36 +387,37 @@ export async function detectSentencePatterns(
 }
 
 /**
- * Filter page boundary sentences and join into text
+ * Filter page boundary sentences and return per-page filtered text
  *
  * This is the main entry point for sentence-level header/footer filtering.
  * It detects and removes repeating sentence patterns at page boundaries.
+ * Returns an array of filtered text per page, preserving page boundaries.
  *
  * Use this instead of joinFilteredPages when embedder is available.
  *
  * @param pages - Array of page data
  * @param embedder - Embedder for generating embeddings
  * @param config - Configuration options
- * @returns Filtered text with header/footer sentences removed
+ * @returns Array of filtered text strings, one per page
  */
 export async function filterPageBoundarySentences(
   pages: PageData[],
   embedder: EmbedderInterface,
   config: Partial<SentencePatternConfig> = {}
-): Promise<string> {
+): Promise<string[]> {
   const cfg = { ...DEFAULT_SENTENCE_PATTERN_CONFIG, ...config }
 
   // Need minimum pages to detect patterns
   if (pages.length < cfg.minPages) {
-    return joinFilteredPages(pages)
+    return pages.map((page) => joinFilteredPages([page]))
   }
 
   // Detect patterns
   const patterns = await detectSentencePatterns(pages, embedder, cfg)
 
-  // If no patterns detected, return normally joined text
+  // If no patterns detected, return normally joined text per page
   if (!patterns.removeFirstSentence && !patterns.removeLastSentence) {
-    return joinFilteredPages(pages)
+    return pages.map((page) => joinFilteredPages([page]))
   }
 
   // Split each page into sentences with Y coordinate (merged by Y)
@@ -439,9 +440,6 @@ export async function filterPageBoundarySentences(
     return cleaned
   })
 
-  // Join back into final text
-  return cleanedPageSentences
-    .map((sentences) => sentences.map((s) => s.text).join(' '))
-    .filter((text) => text.length > 0)
-    .join('\n\n')
+  // Return per-page filtered text
+  return cleanedPageSentences.map((sentences) => sentences.map((s) => s.text).join(' '))
 }
