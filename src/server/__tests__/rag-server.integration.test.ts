@@ -8,7 +8,7 @@ import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { RAGServer } from '../index.js'
-import { generateMetaJsonPath, generateRawDataPath, loadMetaJson } from '../raw-data-utils.js'
+import { generateMetaJsonPath, generateRawDataPath } from '../raw-data-utils.js'
 
 // ============================================
 // MVP Phase 1: Core Functionality Integration Test
@@ -1089,8 +1089,7 @@ describe('RAG MCP Server Integration Test - Phase 2', () => {
 
       const ingestData = JSON.parse(ingestResult.content[0].text)
       expect(ingestData.chunkCount).toBeGreaterThan(0)
-      expect(ingestData.fileTitle).toBeDefined()
-      expect(ingestData.fileTitle).not.toBe('')
+      expect(ingestData.fileTitle).toBe('RAG Architecture Guide')
 
       // Query and verify fileTitle appears in results
       const queryResult = await localRagServer.handleQueryDocuments({
@@ -1101,11 +1100,11 @@ describe('RAG MCP Server Integration Test - Phase 2', () => {
       const results = JSON.parse(queryResult.content[0].text)
       expect(results.length).toBeGreaterThan(0)
 
-      // Verify fileTitle is present in search results
-      const hasFileTitle = results.some(
-        (r: { fileTitle?: string | null }) => r.fileTitle && r.fileTitle.length > 0
+      // Verify fileTitle has the exact expected value in search results
+      const relevantResult = results.find(
+        (r: { fileTitle?: string | null }) => r.fileTitle === 'RAG Architecture Guide'
       )
-      expect(hasFileTitle).toBe(true)
+      expect(relevantResult).toBeDefined()
     })
   })
 
@@ -1169,15 +1168,12 @@ describe('RAG MCP Server Integration Test - Phase 2', () => {
       )
       const metaJsonPath = generateMetaJsonPath(rawDataPath)
 
-      // Verify .meta.json exists and has correct content
-      const meta = await loadMetaJson(rawDataPath)
-      expect(meta).not.toBeNull()
-      expect(meta!.title).toBe('Meta JSON Test Page')
-      expect(meta!.format).toBe('html')
-      expect(meta!.source).toBe('https://example.com/meta-json-test')
-
-      // Verify .meta.json file actually exists on disk
+      // Verify .meta.json exists and has correct content (read raw file, not via loadMetaJson)
       expect(existsSync(metaJsonPath)).toBe(true)
+      const metaRaw = JSON.parse(await readFile(metaJsonPath, 'utf-8'))
+      expect(metaRaw.title).toBe('Meta JSON Test Page')
+      expect(metaRaw.format).toBe('html')
+      expect(metaRaw.source).toBe('https://example.com/meta-json-test')
     })
 
     // Test 2: ingest_data markdown creates .meta.json with title from H1
@@ -1198,16 +1194,16 @@ describe('RAG MCP Server Integration Test - Phase 2', () => {
         },
       })
 
-      // Verify .meta.json
+      // Verify .meta.json (read raw file, not via loadMetaJson)
       const rawDataPath = generateRawDataPath(
         localTestDbPath,
         'https://example.com/markdown-meta-test',
         'markdown'
       )
-      const meta = await loadMetaJson(rawDataPath)
-      expect(meta).not.toBeNull()
-      expect(meta!.title).toBe('My Markdown Title')
-      expect(meta!.format).toBe('markdown')
+      const metaJsonPath = generateMetaJsonPath(rawDataPath)
+      const metaRaw = JSON.parse(await readFile(metaJsonPath, 'utf-8'))
+      expect(metaRaw.title).toBe('My Markdown Title')
+      expect(metaRaw.format).toBe('markdown')
     })
 
     // Test 3: ingest_data text creates .meta.json with title from first line
@@ -1228,16 +1224,16 @@ describe('RAG MCP Server Integration Test - Phase 2', () => {
         },
       })
 
-      // Verify .meta.json
+      // Verify .meta.json (read raw file, not via loadMetaJson)
       const rawDataPath = generateRawDataPath(
         localTestDbPath,
         'https://example.com/text-meta-test',
         'markdown'
       )
-      const meta = await loadMetaJson(rawDataPath)
-      expect(meta).not.toBeNull()
-      expect(meta!.title).toBe('My Text Document Title')
-      expect(meta!.format).toBe('text')
+      const metaJsonPath = generateMetaJsonPath(rawDataPath)
+      const metaRaw = JSON.parse(await readFile(metaJsonPath, 'utf-8'))
+      expect(metaRaw.title).toBe('My Text Document Title')
+      expect(metaRaw.format).toBe('text')
     })
 
     // Test 4: ingest_data HTML -> query returns correct fileTitle without H1 duplication
