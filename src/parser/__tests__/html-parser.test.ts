@@ -123,12 +123,12 @@ console.log(x);</code></pre>
       const result = await parseHtml(html, 'https://example.com/article')
 
       // Title should be returned separately
-      expect(result.title).toBeTruthy()
+      expect(result.title).toBe('Test Page')
       // Content should NOT start with # {title} prefix
       expect(result.content).not.toMatch(/^# Article Title/)
     })
 
-    it('should return empty title when Readability cannot extract title', async () => {
+    it('should use URL-derived filename when Readability cannot extract title', async () => {
       const html = `
         <!DOCTYPE html>
         <html>
@@ -142,8 +142,8 @@ console.log(x);</code></pre>
 
       const result = await parseHtml(html, 'https://example.com/page')
 
-      // When Readability falls back to body, title should be empty
-      expect(result.title).toBe('')
+      // When Readability has no title, URL-derived filename is used as fallback
+      expect(result.title).toBe('page')
     })
   })
 
@@ -403,8 +403,8 @@ console.log(x);</code></pre>
 
       const result = await parseHtml(html, 'https://example.com/blog/rag-system')
 
-      // Title is extracted separately by Readability
-      expect(result.title).toBeTruthy()
+      // Readability extracts article title from <h1>, not <title> tag
+      expect(result.title).toBe('How to Build a RAG System')
       expect(result.content).toContain('Document Ingestion')
       expect(result.content).toContain('Vector Embeddings')
       expect(result.content).toContain('parse and chunk your documents')

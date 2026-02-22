@@ -131,7 +131,8 @@ export class VectorStore {
         // LanceDB's createTable API accepts data as Record<string, unknown>[]
         // Note: LanceDB cannot infer Arrow type from null values, so we must
         // ensure fileTitle has a non-null sample value for schema inference.
-        // Use empty string for null values during table creation only.
+        // Empty string is used as a placeholder; toSearchResult() normalizes
+        // '' back to null on read for consistency with the migration path.
         const records = chunks.map((chunk) => {
           const record = chunk as unknown as Record<string, unknown>
           return {

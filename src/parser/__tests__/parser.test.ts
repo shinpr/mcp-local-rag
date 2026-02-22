@@ -153,7 +153,7 @@ describe('DocumentParser', () => {
 
       const result = await parser.parseFile(filePath)
       expect(result.content).toBe(content)
-      expect(typeof result.title).toBe('string')
+      expect(result.title).toBe('test')
     })
 
     it('should parse MD file and return ParseResult', async () => {
@@ -163,7 +163,7 @@ describe('DocumentParser', () => {
 
       const result = await parser.parseFile(filePath)
       expect(result.content).toBe(content)
-      expect(typeof result.title).toBe('string')
+      expect(result.title).toBe('Markdown Test')
     })
 
     it('should throw ValidationError for unsupported file format', async () => {
@@ -208,7 +208,7 @@ describe('DocumentParser', () => {
 
       const result = await parser.parseFile(filePath)
       expect(result.content).toBe(content)
-      expect(typeof result.title).toBe('string')
+      expect(result.title).toBe('utf8')
     })
 
     it('should handle empty file', async () => {
@@ -228,7 +228,7 @@ describe('DocumentParser', () => {
 
       const result = await parser.parseFile(filePath)
       expect(result.content).toBe(content)
-      expect(typeof result.title).toBe('string')
+      expect(result.title).toBe('Title')
     })
   })
 

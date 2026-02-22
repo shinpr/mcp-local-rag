@@ -8,11 +8,9 @@ import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs'
 import type { TextItem } from 'pdfjs-dist/types/src/display/api'
 import { type EmbedderInterface, type PageData, filterPageBoundarySentences } from './pdf-filter.js'
 import {
-  type TitleExtractionResult,
   extractDocxTitle,
   extractMarkdownTitle,
   extractPdfTitle,
-  extractTitle,
   extractTxtTitle,
 } from './title-extractor.js'
 
@@ -279,12 +277,15 @@ export class DocumentParser {
    */
   private async parseDocx(filePath: string): Promise<ParseResult> {
     try {
+      // Read file once and pass buffer to both mammoth calls
+      const buffer = await readFile(filePath)
+
       // Use extractRawText for content (unchanged behavior)
-      const result = await mammoth.extractRawText({ path: filePath })
+      const result = await mammoth.extractRawText({ buffer })
       const rawText = result.value
 
       // Use convertToHtml additionally for title extraction (first <h1>)
-      const htmlResult = await mammoth.convertToHtml({ path: filePath })
+      const htmlResult = await mammoth.convertToHtml({ buffer })
       const fileName = basename(filePath)
       const titleResult = extractDocxTitle(htmlResult.value, fileName)
 
@@ -331,18 +332,5 @@ export class DocumentParser {
     } catch (error) {
       throw new FileOperationError(`Failed to parse MD: ${filePath}`, error as Error)
     }
-  }
-
-  /**
-   * Extract a display title from document content based on format
-   *
-   * This is a convenience method that delegates to format-specific title extractors.
-   * The title is display-only metadata (NOT used for search scoring).
-   *
-   * @param params - Format-specific parameters for title extraction
-   * @returns Title extraction result with title string and source indicator
-   */
-  extractTitle(...args: Parameters<typeof extractTitle>): TitleExtractionResult {
-    return extractTitle(...args)
   }
 }

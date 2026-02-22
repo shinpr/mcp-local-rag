@@ -111,8 +111,15 @@ export async function parseHtml(
     const markdown = turndownService.turndown(article.content)
 
     // Extract title separately (NOT prepended to markdown content)
-    const titleResult = extractHtmlTitle(article.title || '', '')
-    const title = titleResult.title !== '' ? titleResult.title : ''
+    // Use URL-derived filename as fallback when Readability has no title
+    let urlFileName = ''
+    try {
+      urlFileName = new URL(url).pathname.split('/').filter(Boolean).pop() || ''
+    } catch {
+      // Non-URL string, empty fallback
+    }
+    const titleResult = extractHtmlTitle(article.title || '', urlFileName)
+    const title = titleResult.title
 
     return { content: markdown.trim(), title }
   } catch (error) {

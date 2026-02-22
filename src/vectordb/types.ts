@@ -153,7 +153,7 @@ export function toSearchResult(raw: unknown): SearchResult {
     text: raw.text,
     score: raw._distance ?? raw._score ?? 0,
     metadata: raw.metadata,
-    fileTitle: raw.fileTitle ?? null,
+    fileTitle: raw.fileTitle || null,
   }
 }
 
