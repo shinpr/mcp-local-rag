@@ -129,7 +129,7 @@ HTML is automatically cleaned—you get the article content, not the boilerplate
 
 Search uses semantic similarity with keyword boost. This means `useEffect` finds documents containing that exact term, not just semantically similar React concepts.
 
-Results include text content, source file, and relevance score. Adjust result count with `limit` (1-20, default 10).
+Results include text content, source file, document title, and relevance score. The document title provides context for each chunk, helping identify which document a result belongs to. Adjust result count with `limit` (1-20, default 10).
 
 ### Managing Files
 
