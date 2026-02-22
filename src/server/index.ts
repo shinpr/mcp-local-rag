@@ -14,12 +14,13 @@ import { SemanticChunker } from '../chunker/index.js'
 import { Embedder } from '../embedder/index.js'
 import { parseHtml } from '../parser/html-parser.js'
 import { DocumentParser } from '../parser/index.js'
-import { extractMarkdownTitle } from '../parser/title-extractor.js'
+import { extractMarkdownTitle, extractTxtTitle } from '../parser/title-extractor.js'
 import { type VectorChunk, VectorStore } from '../vectordb/index.js'
 import { formatErrorMessage } from './error-utils.js'
 import {
   type ContentFormat,
   extractSourceFromPath,
+  generateMetaJsonPath,
   generateRawDataPath,
   isRawDataPath,
   loadMetaJson,
@@ -362,12 +363,15 @@ export class RAGServer {
     try {
       let contentToSave = args.content
       let formatToSave: ContentFormat = args.metadata.format
-      let extractedTitle: string | null = null
+      let title: string | null = null
 
-      // For HTML content, convert to Markdown first
+      // Per-format title extraction and content preparation
       if (args.metadata.format === 'html') {
         console.error(`Parsing HTML from: ${args.metadata.source}`)
-        const { content: markdown, title } = await parseHtml(args.content, args.metadata.source)
+        const { content: markdown, title: htmlTitle } = await parseHtml(
+          args.content,
+          args.metadata.source
+        )
 
         if (!markdown.trim()) {
           throw new Error(
@@ -375,15 +379,17 @@ export class RAGServer {
           )
         }
 
-        extractedTitle = title
-        // Preserve title in saved markdown so re-ingestion can recover it
-        if (title) {
-          contentToSave = `# ${title}\n\n${markdown}`
-        } else {
-          contentToSave = markdown
-        }
+        title = htmlTitle || null
+        contentToSave = markdown
         formatToSave = 'markdown' // Save as .md file
         console.error(`Converted HTML to Markdown: ${markdown.length} characters`)
+      } else if (args.metadata.format === 'markdown') {
+        const result = extractMarkdownTitle(args.content, args.metadata.source)
+        title = result.source !== 'filename' ? result.title : null
+      } else {
+        // text format
+        const result = extractTxtTitle(args.content, args.metadata.source)
+        title = result.source !== 'filename' ? result.title : null
       }
 
       // Save content to raw-data directory
@@ -396,7 +402,7 @@ export class RAGServer {
 
       // Save metadata sidecar (.meta.json) alongside the raw-data file
       await saveMetaJson(rawDataPath, {
-        title: extractedTitle,
+        title,
         source: args.metadata.source,
         format: args.metadata.format,
       })
@@ -407,9 +413,10 @@ export class RAGServer {
       try {
         return await this.handleIngestFile({ filePath: rawDataPath })
       } catch (ingestError) {
-        // Rollback: delete the raw-data file if ingest fails
+        // Rollback: delete the raw-data file and .meta.json if ingest fails
         try {
           await unlink(rawDataPath)
+          await unlink(generateMetaJsonPath(rawDataPath))
           console.error(`Rolled back raw-data file: ${rawDataPath}`)
         } catch {
           console.warn(`Failed to rollback raw-data file: ${rawDataPath}`)
