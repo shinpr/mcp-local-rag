@@ -1,6 +1,6 @@
 {
   "name": "mcp-local-rag",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Local RAG MCP Server - Easy-to-setup document search with minimal configuration",
   "main": "dist/index.js",
   "bin": {
