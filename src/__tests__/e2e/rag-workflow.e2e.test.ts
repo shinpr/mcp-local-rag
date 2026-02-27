@@ -48,12 +48,15 @@ describe('RAG MCP Server E2E Test', () => {
             'TypeScript is a strongly typed programming language.'
         )
 
+        // 2b. Wait for background ingestion to complete
         const ingestResult = await ragServer.handleIngestFile({ filePath: txtFile })
         expect(ingestResult.content[0].text).toBeDefined()
 
         const ingestData = JSON.parse(ingestResult.content[0].text)
-        expect(ingestData.chunkCount).toBeGreaterThan(0)
+        expect(ingestData.status).toBe('started')
         expect(ingestData.filePath).toBe(txtFile)
+
+        await ragServer.waitForIngestion(txtFile)
 
         // 3. Search with natural language query
         const queryResult = await ragServer.handleQueryDocuments({
@@ -114,7 +117,8 @@ describe('RAG MCP Server E2E Test', () => {
         expect(ingestResult.content[0].text).toBeDefined()
 
         const ingestData = JSON.parse(ingestResult.content[0].text)
-        expect(ingestData.chunkCount).toBeGreaterThan(0)
+        expect(ingestData.status).toBe('started')
+        await ragServer.waitForIngestion(docxFile)
 
         // 3. Search with natural language query
         const queryResult = await ragServer.handleQueryDocuments({
@@ -161,6 +165,7 @@ describe('RAG MCP Server E2E Test', () => {
           'TypeScript is a strongly typed programming language that builds on JavaScript. It provides better tooling at any scale.'
         )
         await ragServer.handleIngestFile({ filePath: v1File })
+        await ragServer.waitForIngestion(v1File)
 
         // 3. Verify search with old content
         const queryResult1 = await ragServer.handleQueryDocuments({
@@ -178,6 +183,7 @@ describe('RAG MCP Server E2E Test', () => {
 
         // 5. Re-ingest file
         await ragServer.handleIngestFile({ filePath: v1File })
+        await ragServer.waitForIngestion(v1File)
 
         // 6. Verify search with new content
         const queryResult2 = await ragServer.handleQueryDocuments({

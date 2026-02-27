@@ -102,9 +102,10 @@ This approach provides accurate search results for natural language queries.`
       const monitor = createNetworkMonitor()
 
       try {
-        // Ingest file
+        // Ingest file and wait for background ingestion to complete
         const sampleFile = resolve(fixturesDir, 'sample.txt')
         await server.handleIngestFile({ filePath: sampleFile })
+        await server.waitForIngestion(sampleFile)
 
         // Execute search
         await server.handleQueryDocuments({ query: 'TypeScript', limit: 5 })
@@ -143,6 +144,7 @@ This approach provides accurate search results for natural language queries.`
         // Execute LanceDB operations
         const sampleFile = resolve(fixturesDir, 'sample.txt')
         await server.handleIngestFile({ filePath: sampleFile })
+        await server.waitForIngestion(sampleFile)
         await server.handleQueryDocuments({ query: 'TypeScript', limit: 5 })
 
         // Verify no external communication occurred
@@ -275,9 +277,10 @@ The chunker requires sufficient text length to generate meaningful chunks.`
       }
 
       try {
-        // Ingest sample file
+        // Ingest sample file and wait for background ingestion to complete
         const sampleFile = resolve(fixturesDir, 'sample.txt')
         await server.handleIngestFile({ filePath: sampleFile })
+        await server.waitForIngestion(sampleFile)
 
         // Search with confidential query
         const secretQuery = 'secret query with confidential information PASSWORD123'
@@ -334,10 +337,11 @@ The chunker requires sufficient text length to generate meaningful chunks.`
       const originalEnv = process.env['NODE_ENV']
       process.env['NODE_ENV'] = undefined
 
-      const nonExistentFile = resolve('./tmp/nonexistent.txt')
+      // Use a path outside BASE_DIR so validateFilePath throws synchronously
+      const outsidePath = '/nonexistent/outside-base-dir-file.txt'
 
       try {
-        await server.handleIngestFile({ filePath: nonExistentFile })
+        await server.handleIngestFile({ filePath: outsidePath })
         expect.fail('Expected error to be thrown')
       } catch (error) {
         const errorMessage = (error as Error).message
@@ -357,10 +361,11 @@ The chunker requires sufficient text length to generate meaningful chunks.`
       const originalEnv = process.env['NODE_ENV']
       process.env['NODE_ENV'] = 'development'
 
-      const nonExistentFile = resolve('./tmp/nonexistent.txt')
+      // Use a path outside BASE_DIR so validateFilePath throws synchronously
+      const outsidePath = '/nonexistent/outside-base-dir-file.txt'
 
       try {
-        await server.handleIngestFile({ filePath: nonExistentFile })
+        await server.handleIngestFile({ filePath: outsidePath })
         expect.fail('Expected error to be thrown')
       } catch (error) {
         const errorMessage = (error as Error).message

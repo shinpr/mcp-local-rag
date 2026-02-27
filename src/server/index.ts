@@ -2,7 +2,7 @@
 
 import { randomUUID } from 'node:crypto'
 import { readFile, readdir, unlink } from 'node:fs/promises'
-import { extname, join, resolve } from 'node:path'
+import { extname, join, resolve, sep } from 'node:path'
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import {
@@ -34,7 +34,9 @@ import type {
   FileEntry,
   IngestDataInput,
   IngestFileInput,
-  IngestResult,
+  IngestInProgressResult,
+  IngestStartedResult,
+  IngestionJob,
   ListFilesResult,
   QueryDocumentsInput,
   QueryResult,
@@ -53,6 +55,11 @@ export class RAGServer {
   private readonly baseDir: string
   // Used by handleListFiles filter to exclude system-managed directories
   private readonly excludePaths: string[]
+
+  // In-memory tracking of active and failed ingestion jobs, keyed by filePath
+  private readonly ingestionJobs: Map<string, IngestionJob> = new Map()
+  // Promises for pending background ingestions, keyed by filePath
+  private readonly pendingIngestions: Map<string, Promise<void>> = new Map()
 
   constructor(config: RAGServerConfig) {
     this.dbPath = config.dbPath
@@ -194,32 +201,31 @@ export class RAGServer {
   }
 
   /**
-   * ingest_file tool handler (re-ingestion support, transaction processing, rollback capability)
+   * Core ingestion logic executed in the background.
+   * On success the job is removed from ingestionJobs (DB is source of truth).
+   * On failure the job status is set to 'failed' with an error message.
+   * For raw-data paths a failure triggers rollback (file + .meta.json deletion).
    */
-  async handleIngestFile(
-    args: IngestFileInput
-  ): Promise<{ content: [{ type: 'text'; text: string }] }> {
+  private async _executeFileIngestion(filePath: string): Promise<void> {
     let backup: VectorChunk[] | null = null
 
     try {
-      // Parse file (with header/footer filtering for PDFs)
-      // For raw-data files (from ingest_data), read directly without validation
-      // since the path is internally generated and content is already processed
-      const isPdf = args.filePath.toLowerCase().endsWith('.pdf')
+      // Parse file
+      const isPdf = filePath.toLowerCase().endsWith('.pdf')
       let text: string
       let title: string | null = null
-      if (isRawDataPath(args.filePath)) {
-        // Raw-data files: skip validation, read directly
-        text = await readFile(args.filePath, 'utf-8')
-        const meta = await loadMetaJson(args.filePath)
+
+      if (isRawDataPath(filePath)) {
+        text = await readFile(filePath, 'utf-8')
+        const meta = await loadMetaJson(filePath)
         title = meta?.title ?? null
-        console.error(`Read raw-data file: ${args.filePath} (${text.length} characters)`)
+        console.error(`Read raw-data file: ${filePath} (${text.length} characters)`)
       } else if (isPdf) {
-        const result = await this.parser.parsePdf(args.filePath, this.embedder)
+        const result = await this.parser.parsePdf(filePath, this.embedder)
         text = result.content
         title = result.title || null
       } else {
-        const result = await this.parser.parseFile(args.filePath)
+        const result = await this.parser.parseFile(filePath)
         text = result.content
         title = result.title || null
       }
@@ -232,7 +238,7 @@ export class RAGServer {
       if (chunks.length === 0) {
         throw new McpError(
           ErrorCode.InvalidParams,
-          `No chunks generated from file: ${args.filePath}. The file may be empty or all content was filtered (minimum 50 characters required). Existing data has been preserved.`
+          `No chunks generated from file: ${filePath}. The file may be empty or all content was filtered (minimum 50 characters required). Existing data has been preserved.`
         )
       }
 
@@ -242,35 +248,33 @@ export class RAGServer {
       // Create backup (if existing data exists)
       try {
         const existingFiles = await this.vectorStore.listFiles()
-        const existingFile = existingFiles.find((file) => file.filePath === args.filePath)
+        const existingFile = existingFiles.find((file) => file.filePath === filePath)
         if (existingFile && existingFile.chunkCount > 0) {
-          // Backup existing data (retrieve via search)
           const queryVector = embeddings[0] || []
           if (queryVector.length > 0) {
-            const allChunks = await this.vectorStore.search(queryVector, undefined, 20) // Retrieve max 20 items
+            const allChunks = await this.vectorStore.search(queryVector, undefined, 20)
             backup = allChunks
-              .filter((chunk) => chunk.filePath === args.filePath)
+              .filter((chunk) => chunk.filePath === filePath)
               .map((chunk) => ({
                 id: randomUUID(),
                 filePath: chunk.filePath,
                 chunkIndex: chunk.chunkIndex,
                 text: chunk.text,
-                vector: queryVector, // Use dummy vector since actual vector cannot be retrieved
+                vector: queryVector,
                 metadata: chunk.metadata,
                 fileTitle: chunk.fileTitle ?? null,
                 timestamp: new Date().toISOString(),
               }))
           }
-          console.error(`Backup created: ${backup?.length || 0} chunks for ${args.filePath}`)
+          console.error(`Backup created: ${backup?.length || 0} chunks for ${filePath}`)
         }
       } catch (error) {
-        // Backup creation failure is warning only (for new files)
         console.warn('Failed to create backup (new file?):', error)
       }
 
       // Delete existing data
-      await this.vectorStore.deleteChunks(args.filePath)
-      console.error(`Deleted existing chunks for: ${args.filePath}`)
+      await this.vectorStore.deleteChunks(filePath)
+      console.error(`Deleted existing chunks for: ${filePath}`)
 
       // Create vector chunks
       const timestamp = new Date().toISOString()
@@ -281,29 +285,26 @@ export class RAGServer {
         }
         return {
           id: randomUUID(),
-          filePath: args.filePath,
+          filePath,
           chunkIndex: chunk.index,
           text: chunk.text,
           vector: embedding,
           metadata: {
-            fileName: args.filePath.split('/').pop() || args.filePath,
+            fileName: filePath.split('/').pop() || filePath,
             fileSize: text.length,
-            fileType: args.filePath.split('.').pop() || '',
+            fileType: filePath.split('.').pop() || '',
           },
           fileTitle: title || null,
           timestamp,
         }
       })
 
-      // Insert vectors (transaction processing)
+      // Insert vectors (with rollback on failure)
       try {
         await this.vectorStore.insertChunks(vectorChunks)
-        console.error(`Inserted ${vectorChunks.length} chunks for: ${args.filePath}`)
-
-        // Delete backup on success
+        console.error(`Inserted ${vectorChunks.length} chunks for: ${filePath}`)
         backup = null
       } catch (insertError) {
-        // Rollback on error
         if (backup && backup.length > 0) {
           console.error('Ingestion failed, rolling back...', insertError)
           try {
@@ -319,40 +320,99 @@ export class RAGServer {
         throw insertError
       }
 
-      // Result
-      const result: IngestResult = {
-        filePath: args.filePath,
-        chunkCount: chunks.length,
-        timestamp,
-        fileTitle: title || null,
-      }
-
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify(result, null, 2),
-          },
-        ],
-      }
+      // Success: remove job (DB is now the source of truth)
+      this.ingestionJobs.delete(filePath)
+      console.error(`Background ingestion completed: ${filePath}`)
     } catch (error) {
-      // Re-throw McpError as-is to preserve error code
-      if (error instanceof McpError) {
-        console.error('Failed to ingest file:', error.message)
-        throw error
+      // Update job to failed state
+      const job = this.ingestionJobs.get(filePath)
+      if (job) {
+        job.status = 'failed'
+        job.error = formatErrorMessage(error)
       }
 
-      const errorMessage = formatErrorMessage(error)
+      // Raw-data files are owned by the server — clean them up on failure so
+      // orphaned files don't accumulate in the raw-data directory.
+      if (isRawDataPath(filePath)) {
+        try {
+          await unlink(filePath)
+          await unlink(generateMetaJsonPath(filePath))
+          console.error(`Rolled back raw-data file: ${filePath}`)
+        } catch {
+          console.warn(`Failed to rollback raw-data file: ${filePath}`)
+        }
+      }
 
-      console.error('Failed to ingest file:', errorMessage)
-
-      throw new Error(`Failed to ingest file: ${errorMessage}`)
+      console.error(`Background ingestion failed for ${filePath}:`, error)
     }
   }
 
   /**
-   * ingest_data tool handler
-   * Saves raw content to raw-data directory and calls handleIngestFile internally
+   * Register an ingestion job and start background processing.
+   * Returns the 'started' MCP response. Shared by handleIngestFile and handleIngestData.
+   */
+  private _startIngestionJob(
+    filePath: string,
+    displayName: string
+  ): { content: [{ type: 'text'; text: string }] } {
+    const startedAt = new Date().toISOString()
+    const job: IngestionJob = { filePath, status: 'processing', startedAt }
+    this.ingestionJobs.set(filePath, job)
+
+    const ingestionPromise = this._executeFileIngestion(filePath)
+    this.pendingIngestions.set(filePath, ingestionPromise)
+    ingestionPromise.finally(() => this.pendingIngestions.delete(filePath))
+
+    const result: IngestStartedResult = {
+      filePath,
+      status: 'started',
+      message: `Ingestion started for: ${displayName}. Use list_files to monitor progress.`,
+      startedAt,
+    }
+    return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] }
+  }
+
+  /**
+   * ingest_file tool handler.
+   * Validates the file path immediately, then starts ingestion in the background
+   * and returns a 'started' response without waiting for completion.
+   * If the same file is already being ingested, returns an 'in_progress' response.
+   */
+  async handleIngestFile(
+    args: IngestFileInput
+  ): Promise<{ content: [{ type: 'text'; text: string }] }> {
+    // Duplicate-ingest guard
+    const existingJob = this.ingestionJobs.get(args.filePath)
+    if (existingJob?.status === 'processing') {
+      const result: IngestInProgressResult = {
+        filePath: args.filePath,
+        status: 'in_progress',
+        message: `Ingestion already in progress for: ${args.filePath}. Use list_files to monitor progress.`,
+        startedAt: existingJob.startedAt,
+      }
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] }
+    }
+
+    // Clear any previous failed job for this path
+    this.ingestionJobs.delete(args.filePath)
+
+    try {
+      // Validate path upfront (fast I/O check) so obvious errors surface immediately
+      if (!isRawDataPath(args.filePath)) {
+        await this.parser.validateFilePath(args.filePath)
+      }
+    } catch (error) {
+      if (error instanceof McpError) throw error
+      throw new Error(`Failed to ingest file: ${formatErrorMessage(error)}`)
+    }
+
+    return this._startIngestionJob(args.filePath, args.filePath)
+  }
+
+  /**
+   * ingest_data tool handler.
+   * Saves raw content to raw-data directory synchronously, then starts ingestion
+   * in the background and returns a 'started' response without waiting for completion.
    *
    * For HTML content:
    * - Parses HTML and extracts main content using Readability
@@ -363,11 +423,32 @@ export class RAGServer {
     args: IngestDataInput
   ): Promise<{ content: [{ type: 'text'; text: string }] }> {
     try {
-      let contentToSave = args.content
-      let formatToSave: ContentFormat = args.metadata.format
-      let title: string | null = null
+      // Determine the storage format upfront so the duplicate guard can run
+      // before expensive content processing (e.g. HTML parsing via Readability).
+      // HTML is always converted to Markdown before saving.
+      const formatToSave: ContentFormat =
+        args.metadata.format === 'html' ? 'markdown' : args.metadata.format
+      const rawDataPath = generateRawDataPath(this.dbPath, args.metadata.source, formatToSave)
+
+      // Duplicate-ingest guard — checked early to avoid wasted work
+      const existingJob = this.ingestionJobs.get(rawDataPath)
+      if (existingJob?.status === 'processing') {
+        const result: IngestInProgressResult = {
+          filePath: rawDataPath,
+          status: 'in_progress',
+          message: `Ingestion already in progress for: ${args.metadata.source}. Use list_files to monitor progress.`,
+          startedAt: existingJob.startedAt,
+        }
+        return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] }
+      }
+
+      // Clear any previous failed job for this path
+      this.ingestionJobs.delete(rawDataPath)
 
       // Per-format title extraction and content preparation
+      let contentToSave = args.content
+      let title: string | null = null
+
       if (args.metadata.format === 'html') {
         console.error(`Parsing HTML from: ${args.metadata.source}`)
         const { content: markdown, title: htmlTitle } = await parseHtml(
@@ -383,7 +464,6 @@ export class RAGServer {
 
         title = htmlTitle || null
         contentToSave = markdown
-        formatToSave = 'markdown' // Save as .md file
         console.error(`Converted HTML to Markdown: ${markdown.length} characters`)
       } else if (args.metadata.format === 'markdown') {
         const result = extractMarkdownTitle(args.content, args.metadata.source)
@@ -394,13 +474,8 @@ export class RAGServer {
         title = result.source !== 'filename' ? result.title : null
       }
 
-      // Save content to raw-data directory
-      const rawDataPath = await saveRawData(
-        this.dbPath,
-        args.metadata.source,
-        contentToSave,
-        formatToSave
-      )
+      // Save content to raw-data directory (uses the same path as rawDataPath)
+      await saveRawData(this.dbPath, args.metadata.source, contentToSave, formatToSave)
 
       // Save metadata sidecar (.meta.json) alongside the raw-data file
       await saveMetaJson(rawDataPath, {
@@ -411,20 +486,7 @@ export class RAGServer {
 
       console.error(`Saved raw data: ${args.metadata.source} -> ${rawDataPath}`)
 
-      // Call existing ingest_file internally with rollback on failure
-      try {
-        return await this.handleIngestFile({ filePath: rawDataPath })
-      } catch (ingestError) {
-        // Rollback: delete the raw-data file and .meta.json if ingest fails
-        try {
-          await unlink(rawDataPath)
-          await unlink(generateMetaJsonPath(rawDataPath))
-          console.error(`Rolled back raw-data file: ${rawDataPath}`)
-        } catch {
-          console.warn(`Failed to rollback raw-data file: ${rawDataPath}`)
-        }
-        throw ingestError
-      }
+      return this._startIngestionJob(rawDataPath, args.metadata.source)
     } catch (error) {
       const errorMessage = formatErrorMessage(error)
 
@@ -435,8 +497,9 @@ export class RAGServer {
   }
 
   /**
-   * list_files tool handler
-   * Scans BASE_DIR for supported files and cross-references with ingested documents
+   * list_files tool handler.
+   * Scans BASE_DIR for supported files, cross-references with ingested documents,
+   * and overlays any active or failed ingestion jobs.
    */
   async handleListFiles(): Promise<{ content: [{ type: 'text'; text: string }] }> {
     try {
@@ -445,8 +508,6 @@ export class RAGServer {
       const ingestedMap = new Map(ingested.map((f) => [f.filePath, f]))
 
       // Scan BASE_DIR recursively for supported files.
-      // Errors propagate to the outer catch: if readdir fails, ingest_file and
-      // delete_file won't work either, so surfacing the error is appropriate.
       const entries = await readdir(this.baseDir, { recursive: true, withFileTypes: true })
       const baseDirFiles = entries
         .filter((e) => e.isFile() && SUPPORTED_EXTENSIONS.has(extname(e.name).toLowerCase()))
@@ -461,12 +522,49 @@ export class RAGServer {
 
       const baseDirSet = new Set(baseDirFiles)
 
-      // Files in BASE_DIR with ingestion status
+      // Files in BASE_DIR with ingestion status, overlaid with active/failed jobs
       const files: FileEntry[] = baseDirFiles.map((filePath) => {
-        const entry = ingestedMap.get(filePath)
-        return entry
-          ? { filePath, ingested: true, chunkCount: entry.chunkCount, timestamp: entry.timestamp }
-          : { filePath, ingested: false }
+        const dbEntry = ingestedMap.get(filePath)
+        const job = this.ingestionJobs.get(filePath)
+
+        if (dbEntry) {
+          // Already ingested — show existing data, overlaid with re-ingestion status
+          if (job?.status === 'processing') {
+            return {
+              filePath,
+              ingested: true,
+              chunkCount: dbEntry.chunkCount,
+              timestamp: dbEntry.timestamp,
+              ingesting: true,
+              startedAt: job.startedAt,
+            }
+          }
+          if (job?.status === 'failed') {
+            return {
+              filePath,
+              ingested: true,
+              chunkCount: dbEntry.chunkCount,
+              timestamp: dbEntry.timestamp,
+              failed: true,
+              error: job.error ?? 'Unknown error',
+            }
+          }
+          return {
+            filePath,
+            ingested: true,
+            chunkCount: dbEntry.chunkCount,
+            timestamp: dbEntry.timestamp,
+          }
+        }
+
+        // Not yet ingested — may have an active or failed job
+        if (job?.status === 'processing') {
+          return { filePath, ingested: false, ingesting: true, startedAt: job.startedAt }
+        }
+        if (job?.status === 'failed') {
+          return { filePath, ingested: false, failed: true, error: job.error ?? 'Unknown error' }
+        }
+        return { filePath, ingested: false }
       })
 
       // Content ingested via ingest_data (web pages, clipboard, etc.) plus any
@@ -474,12 +572,72 @@ export class RAGServer {
       const sources: SourceEntry[] = ingested
         .filter((f) => !baseDirSet.has(f.filePath))
         .map((f) => {
+          const job = this.ingestionJobs.get(f.filePath)
           if (isRawDataPath(f.filePath)) {
             const source = extractSourceFromPath(f.filePath)
-            if (source) return { source, chunkCount: f.chunkCount, timestamp: f.timestamp }
+            if (source) {
+              if (job?.status === 'processing') {
+                return {
+                  source,
+                  chunkCount: f.chunkCount,
+                  timestamp: f.timestamp,
+                  ingesting: true,
+                  startedAt: job.startedAt,
+                }
+              }
+              if (job?.status === 'failed') {
+                return {
+                  source,
+                  chunkCount: f.chunkCount,
+                  timestamp: f.timestamp,
+                  failed: true,
+                  error: job.error ?? 'Unknown error',
+                }
+              }
+              return { source, chunkCount: f.chunkCount, timestamp: f.timestamp }
+            }
           }
           return { filePath: f.filePath, chunkCount: f.chunkCount, timestamp: f.timestamp }
         })
+
+      // Append active/failed ingest_data jobs not yet present in the DB
+      for (const [jobFilePath, job] of this.ingestionJobs) {
+        if (baseDirSet.has(jobFilePath) || ingestedMap.has(jobFilePath)) continue
+        if (!isRawDataPath(jobFilePath)) continue
+        const source = extractSourceFromPath(jobFilePath)
+        if (!source) continue
+        if (job.status === 'processing') {
+          sources.push({ source, ingesting: true, startedAt: job.startedAt })
+        } else if (job.status === 'failed') {
+          sources.push({ source, failed: true, error: job.error ?? 'Unknown error' })
+        }
+      }
+
+      // Append active/failed jobs for files within BASE_DIR that were not found in the
+      // filesystem scan (e.g., the file does not exist or was deleted before ingestion
+      // could run). This makes failed ingest attempts visible via list_files.
+      const resolvedBaseDir = resolve(this.baseDir)
+      const baseDirPrefix = resolvedBaseDir.endsWith(sep) ? resolvedBaseDir : resolvedBaseDir + sep
+      for (const [jobFilePath, job] of this.ingestionJobs) {
+        if (isRawDataPath(jobFilePath)) continue
+        if (baseDirSet.has(jobFilePath) || ingestedMap.has(jobFilePath)) continue
+        if (!jobFilePath.startsWith(baseDirPrefix)) continue
+        if (job.status === 'processing') {
+          files.push({
+            filePath: jobFilePath,
+            ingested: false,
+            ingesting: true,
+            startedAt: job.startedAt,
+          })
+        } else if (job.status === 'failed') {
+          files.push({
+            filePath: jobFilePath,
+            ingested: false,
+            failed: true,
+            error: job.error ?? 'Unknown error',
+          })
+        }
+      }
 
       const result: ListFilesResult = { baseDir: this.baseDir, files, sources }
       return {
@@ -539,6 +697,19 @@ export class RAGServer {
         await this.parser.validateFilePath(targetPath)
       }
 
+      // Block deletion while an ingestion job is actively running for this path.
+      // Without this guard, the background job would re-insert chunks after the
+      // delete completes, causing the file to silently reappear.
+      const activeJob = this.ingestionJobs.get(targetPath)
+      if (activeJob?.status === 'processing') {
+        throw new Error(
+          `Cannot delete while ingestion is in progress for: ${targetPath}. Wait for ingestion to complete, then retry.`
+        )
+      }
+
+      // Clear any lingering failed job for this path since the user is deleting it
+      this.ingestionJobs.delete(targetPath)
+
       // Delete chunks from vector database
       await this.vectorStore.deleteChunks(targetPath)
 
@@ -580,6 +751,18 @@ export class RAGServer {
 
       throw new Error(`Failed to delete file: ${errorMessage}`)
     }
+  }
+
+  /**
+   * Wait for a background ingestion to complete.
+   * Resolves immediately if no ingestion is pending for the given file path.
+   *
+   * Useful for programmatic consumers that need synchronous completion semantics,
+   * and for tests that must await ingestion before asserting on results.
+   */
+  async waitForIngestion(filePath: string): Promise<void> {
+    const pending = this.pendingIngestions.get(filePath)
+    if (pending) await pending
   }
 
   /**

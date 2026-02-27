@@ -77,24 +77,75 @@ export interface DeleteFileInput {
 }
 
 /**
- * ingest_file tool output
+ * Status of an in-progress or failed ingestion job
  */
-export interface IngestResult {
-  /** File path */
+export type IngestionJobStatus = 'processing' | 'failed'
+
+/**
+ * In-memory record tracking an active or failed ingestion job
+ */
+export interface IngestionJob {
+  /** File path being ingested */
   filePath: string
-  /** Chunk count */
-  chunkCount: number
-  /** Timestamp */
-  timestamp: string
-  /** Document title extracted from file content (display-only, not used for scoring) */
-  fileTitle: string | null
+  /** Current status */
+  status: IngestionJobStatus
+  /** ISO timestamp when ingestion was started */
+  startedAt: string
+  /** Error message (only set when status is 'failed') */
+  error?: string
+}
+
+/**
+ * Immediate response returned when ingestion is accepted and started in the background
+ */
+export interface IngestStartedResult {
+  /** File path being ingested */
+  filePath: string
+  /** Always 'started' */
+  status: 'started'
+  /** Human-readable message */
+  message: string
+  /** ISO timestamp when ingestion was started */
+  startedAt: string
+}
+
+/**
+ * Response returned when the same file is submitted while already being ingested
+ */
+export interface IngestInProgressResult {
+  /** File path being ingested */
+  filePath: string
+  /** Always 'in_progress' */
+  status: 'in_progress'
+  /** Human-readable message */
+  message: string
+  /** ISO timestamp when ingestion was originally started */
+  startedAt: string
 }
 
 /**
  * list_files tool output — entry for a file found in BASE_DIR
  */
 export type FileEntry =
+  | {
+      filePath: string
+      ingested: true
+      chunkCount: number
+      timestamp: string
+      ingesting: true
+      startedAt: string
+    }
+  | {
+      filePath: string
+      ingested: true
+      chunkCount: number
+      timestamp: string
+      failed: true
+      error: string
+    }
   | { filePath: string; ingested: true; chunkCount: number; timestamp: string }
+  | { filePath: string; ingested: false; ingesting: true; startedAt: string }
+  | { filePath: string; ingested: false; failed: true; error: string }
   | { filePath: string; ingested: false }
 
 /**
@@ -102,7 +153,11 @@ export type FileEntry =
  * or an orphaned DB entry whose file no longer exists on disk
  */
 export type SourceEntry =
+  | { source: string; chunkCount: number; timestamp: string; ingesting: true; startedAt: string }
+  | { source: string; chunkCount: number; timestamp: string; failed: true; error: string }
   | { source: string; chunkCount: number; timestamp: string }
+  | { source: string; ingesting: true; startedAt: string }
+  | { source: string; failed: true; error: string }
   | { filePath: string; chunkCount: number; timestamp: string }
 
 /**

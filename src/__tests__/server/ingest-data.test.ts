@@ -57,9 +57,16 @@ describe('ingest_data Tool', () => {
       })
 
       const parsed = JSON.parse(result.content[0].text)
-      expect(parsed.chunkCount).toBeGreaterThan(0)
+      // Ingestion starts in the background — response is 'started'
+      expect(parsed.status).toBe('started')
       expect(parsed.filePath).toContain('raw-data')
       expect(parsed.filePath).toMatch(/\.md$/) // All formats use .md extension
+
+      // Wait for background ingestion and verify via list_files
+      await server.waitForIngestion(parsed.filePath)
+      const list = JSON.parse((await server.handleListFiles()).content[0].text)
+      const entry = list.sources.find((s: { source?: string }) => s.source === source)
+      expect(entry?.chunkCount).toBeGreaterThan(0)
     })
 
     it('saves raw text to raw-data directory', async () => {
@@ -77,9 +84,12 @@ describe('ingest_data Tool', () => {
         },
       })
 
+      // Raw-data file is written synchronously before background ingestion starts
       const parsed = JSON.parse(result.content[0].text)
       const savedContent = await readFile(parsed.filePath, 'utf-8')
       expect(savedContent).toBe(content)
+
+      await server.waitForIngestion(parsed.filePath)
     })
   })
 
@@ -108,8 +118,13 @@ This is markdown content with **bold** and _italic_ text.
       })
 
       const parsed = JSON.parse(result.content[0].text)
-      expect(parsed.chunkCount).toBeGreaterThan(0)
+      expect(parsed.status).toBe('started')
       expect(parsed.filePath).toMatch(/\.md$/)
+
+      await server.waitForIngestion(parsed.filePath)
+      const list = JSON.parse((await server.handleListFiles()).content[0].text)
+      const entry = list.sources.find((s: { source?: string }) => s.source === source)
+      expect(entry?.chunkCount).toBeGreaterThan(0)
     })
   })
 
@@ -140,9 +155,14 @@ This is markdown content with **bold** and _italic_ text.
       })
 
       const parsed = JSON.parse(result.content[0].text)
-      expect(parsed.chunkCount).toBeGreaterThan(0)
+      expect(parsed.status).toBe('started')
       // HTML is converted to markdown, so saved as .md
       expect(parsed.filePath).toMatch(/\.md$/)
+
+      await server.waitForIngestion(parsed.filePath)
+      const list = JSON.parse((await server.handleListFiles()).content[0].text)
+      const entry = list.sources.find((s: { source?: string }) => s.source === source)
+      expect(entry?.chunkCount).toBeGreaterThan(0)
     })
 
     it('extracts main content from HTML and removes noise', async () => {
@@ -169,18 +189,22 @@ This is markdown content with **bold** and _italic_ text.
         },
       })
 
+      // Raw-data file is written synchronously — content can be checked immediately
       const parsed = JSON.parse(result.content[0].text)
       const savedContent = await readFile(parsed.filePath, 'utf-8')
 
       // Main content should be present
       expect(savedContent).toContain('Main Article Title')
       expect(savedContent).toContain('main content that should be extracted')
+
+      await server.waitForIngestion(parsed.filePath)
     })
 
     it('throws error for HTML with no extractable content', async () => {
       const html = '<html><body></body></html>'
       const source = 'https://example.com/empty-html'
 
+      // HTML parsing is synchronous — error surfaces immediately
       await expect(
         server.handleIngestData({
           content: html,
@@ -209,6 +233,8 @@ This is markdown content with **bold** and _italic_ text.
         content,
         metadata: { source: source1, format: 'text' },
       })
+      // source2 normalizes to the same path as source1; if source1's job is still
+      // running the response will be 'in_progress' — both responses include filePath
       const result2 = await server.handleIngestData({
         content:
           'Updated content for URL normalization. ' +
@@ -222,6 +248,8 @@ This is markdown content with **bold** and _italic_ text.
 
       // Same normalized source should result in same file path
       expect(parsed1.filePath).toBe(parsed2.filePath)
+
+      await server.waitForIngestion(parsed1.filePath)
     })
   })
 
@@ -240,11 +268,13 @@ This is markdown content with **bold** and _italic_ text.
         'This new content replaces the original content. ' +
         'Re-ingestion functionality allows content updates.'
 
-      // Initial ingestion
-      await server.handleIngestData({
+      // Initial ingestion — must complete before re-ingesting the same path
+      const initResult = await server.handleIngestData({
         content: originalContent,
         metadata: { source, format: 'text' },
       })
+      const initParsed = JSON.parse(initResult.content[0].text)
+      await server.waitForIngestion(initParsed.filePath)
 
       // Re-ingestion with updated content
       const result = await server.handleIngestData({
@@ -252,11 +282,14 @@ This is markdown content with **bold** and _italic_ text.
         metadata: { source, format: 'text' },
       })
 
+      // Raw-data file is overwritten synchronously
       const parsed = JSON.parse(result.content[0].text)
       const savedContent = await readFile(parsed.filePath, 'utf-8')
 
       expect(savedContent).toBe(updatedContent)
       expect(savedContent).not.toContain('Original content for re-ingestion')
+
+      await server.waitForIngestion(parsed.filePath)
     })
   })
 
@@ -272,10 +305,14 @@ This is markdown content with **bold** and _italic_ text.
         'It needs to be substantial enough to create at least one chunk. ' +
         'The semantic chunker requires sufficient content to process properly.'
 
-      await server.handleIngestData({
+      const ingestResult = await server.handleIngestData({
         content,
         metadata: { source, format: 'text' },
       })
+      const { filePath } = JSON.parse(ingestResult.content[0].text)
+
+      // Wait for ingestion to complete so chunkCount is available
+      await server.waitForIngestion(filePath)
 
       const listResult = await server.handleListFiles()
       const files = JSON.parse(listResult.content[0].text)
@@ -317,9 +354,12 @@ This is markdown content with **bold** and _italic_ text.
       const parsed = JSON.parse(ingestResult.content[0].text)
       const filePath = parsed.filePath
 
-      // Verify file exists
+      // Verify file exists (raw-data file is written synchronously)
       const { stat } = await import('node:fs/promises')
       await expect(stat(filePath)).resolves.toBeDefined()
+
+      // Wait for background ingestion to finish before deleting
+      await server.waitForIngestion(filePath)
 
       // Delete via handleDeleteFile
       await server.handleDeleteFile({ filePath })
@@ -342,6 +382,9 @@ This is markdown content with **bold** and _italic_ text.
       const parsed = JSON.parse(ingestResult.content[0].text)
       const filePath = parsed.filePath
 
+      // Wait for background ingestion to finish before manually deleting the file
+      await server.waitForIngestion(filePath)
+
       // Manually delete the file first
       const { unlink } = await import('node:fs/promises')
       await unlink(filePath)
@@ -356,13 +399,15 @@ This is markdown content with **bold** and _italic_ text.
         'Content for testing deletion by source parameter. ' +
         'This needs to be long enough to create chunks for the test to work properly.'
 
-      // Ingest the data
-      await server.handleIngestData({
+      // Ingest the data and wait for completion so it appears in list_files
+      const ingestResult = await server.handleIngestData({
         content,
         metadata: { source, format: 'text' },
       })
+      const { filePath } = JSON.parse(ingestResult.content[0].text)
+      await server.waitForIngestion(filePath)
 
-      // Verify it's in list_files (under sources)
+      // Verify it's in list_files (under sources) with chunkCount
       const listBefore = await server.handleListFiles()
       const filesBefore = JSON.parse(listBefore.content[0].text)
       const targetBefore = filesBefore.sources.find((f: { source: string }) => f.source === source)
@@ -398,10 +443,14 @@ This is markdown content with **bold** and _italic_ text.
         'The RAG system should find this content using semantic search.'
       const source = 'test://query-integration-test'
 
-      await server.handleIngestData({
+      const ingestResult = await server.handleIngestData({
         content: uniqueContent,
         metadata: { source, format: 'text' },
       })
+      const { filePath } = JSON.parse(ingestResult.content[0].text)
+
+      // Wait for data to be in the vector DB before querying
+      await server.waitForIngestion(filePath)
 
       const queryResult = await server.handleQueryDocuments({
         query: 'UniqueSearchableContent12345',
@@ -420,10 +469,14 @@ This is markdown content with **bold** and _italic_ text.
         'This content verifies that source information is properly restored. ' +
         'The query results should include the original source URL.'
 
-      await server.handleIngestData({
+      const ingestResult = await server.handleIngestData({
         content,
         metadata: { source, format: 'text' },
       })
+      const { filePath } = JSON.parse(ingestResult.content[0].text)
+
+      // Wait for data to be in the vector DB before querying
+      await server.waitForIngestion(filePath)
 
       const queryResult = await server.handleQueryDocuments({
         query: 'SourceRestorationTestContent98765',

@@ -105,7 +105,8 @@ describe('HTML Workflow E2E', () => {
       })
 
       const ingestParsed = JSON.parse(ingestResult.content[0].text)
-      expect(ingestParsed.chunkCount).toBeGreaterThan(0)
+      expect(ingestParsed.status).toBe('started')
+      await server.waitForIngestion(ingestParsed.filePath)
 
       // Act: Search for content
       const queryResult = await server.handleQueryDocuments({
@@ -144,13 +145,14 @@ describe('HTML Workflow E2E', () => {
         </html>
       `
 
-      await server.handleIngestData({
+      const mlIngestResult = await server.handleIngestData({
         content: html,
         metadata: {
           source: 'https://example.com/ml-fundamentals',
           format: 'html',
         },
       })
+      await server.waitForIngestion(JSON.parse(mlIngestResult.content[0].text).filePath)
 
       // Search for navigation-specific terms
       const navQuery = await server.handleQueryDocuments({
@@ -212,13 +214,14 @@ describe('HTML Workflow E2E', () => {
         </html>
       `
 
-      await server.handleIngestData({
+      const tsIngestResult = await server.handleIngestData({
         content: typescriptHtml,
         metadata: {
           source: 'https://docs.example.com/typescript-best-practices',
           format: 'html',
         },
       })
+      await server.waitForIngestion(JSON.parse(tsIngestResult.content[0].text).filePath)
 
       // Ingest second page about Python
       const pythonHtml = `
@@ -234,13 +237,14 @@ describe('HTML Workflow E2E', () => {
         </html>
       `
 
-      await server.handleIngestData({
+      const pyIngestResult = await server.handleIngestData({
         content: pythonHtml,
         metadata: {
           source: 'https://docs.example.com/python-data-science',
           format: 'html',
         },
       })
+      await server.waitForIngestion(JSON.parse(pyIngestResult.content[0].text).filePath)
 
       // Search for TypeScript content
       const tsQuery = await server.handleQueryDocuments({
@@ -284,10 +288,11 @@ describe('HTML Workflow E2E', () => {
         </html>
       `
 
-      await server.handleIngestData({
+      const initialIngestResult = await server.handleIngestData({
         content: initialHtml,
         metadata: { source, format: 'html' },
       })
+      await server.waitForIngestion(JSON.parse(initialIngestResult.content[0].text).filePath)
 
       // Verify initial content is searchable
       const initialQuery = await server.handleQueryDocuments({
@@ -311,10 +316,11 @@ describe('HTML Workflow E2E', () => {
         </html>
       `
 
-      await server.handleIngestData({
+      const updatedIngestResult = await server.handleIngestData({
         content: updatedHtml,
         metadata: { source, format: 'html' },
       })
+      await server.waitForIngestion(JSON.parse(updatedIngestResult.content[0].text).filePath)
 
       // Verify updated content is searchable
       const updatedQuery = await server.handleQueryDocuments({
@@ -358,13 +364,14 @@ describe('HTML Workflow E2E', () => {
         </html>
       `
 
-      await server.handleIngestData({
+      const jaIngestResult = await server.handleIngestData({
         content: japaneseHtml,
         metadata: {
           source: 'https://example.jp/vector-db-intro',
           format: 'html',
         },
       })
+      await server.waitForIngestion(JSON.parse(jaIngestResult.content[0].text).filePath)
 
       const query = await server.handleQueryDocuments({
         query: 'ベクトルデータベース 類似度検索',

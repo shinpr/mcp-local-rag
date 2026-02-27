@@ -7,6 +7,7 @@ import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
+import { isFailedFileEntry } from '../../__tests__/helpers/type-guards.js'
 import { RAGServer } from '../index.js'
 import { generateMetaJsonPath, generateRawDataPath } from '../raw-data-utils.js'
 
@@ -253,6 +254,8 @@ describe('RAG MCP Server Integration Test - Phase 1', () => {
       )
 
       await localRagServer.handleIngestFile({ filePath: testFile })
+      // Ingestion runs in the background — wait for it to finish before tests run
+      await localRagServer.waitForIngestion(testFile)
     })
 
     afterAll(async () => {
@@ -369,21 +372,44 @@ describe('RAG MCP Server Integration Test - Phase 1', () => {
   })
 
   describe('AC-005: Error Handling (Basic)', () => {
-    // AC interpretation: [Error handling] Error message returned for non-existent file path
-    // Validation: Call ingest_file with non-existent file path, FileOperationError is returned
+    // AC interpretation: [Error handling] Error reported for non-existent file path
+    // Validation: Call ingest_file with non-existent file path, failed state reported via list_files
     it('FileOperationError returned for non-existent file path (e.g., /nonexistent/file.pdf)', async () => {
       const nonExistentFile = resolve(testDataDir, 'nonexistent-file.pdf')
-      await expect(ragServer.handleIngestFile({ filePath: nonExistentFile })).rejects.toThrow()
+      // With async ingestion, validateFilePath passes (path is inside BASE_DIR)
+      // but the actual read fails in the background job.
+      await ragServer.handleIngestFile({ filePath: nonExistentFile })
+      await ragServer.waitForIngestion(nonExistentFile)
+
+      const listResult = await ragServer.handleListFiles()
+      const { files } = JSON.parse(listResult.content[0].text)
+      const entry = files.find((f: { filePath: string }) => f.filePath === nonExistentFile)
+      expect(entry).toBeDefined()
+      expect(isFailedFileEntry(entry)).toBe(true)
+      if (isFailedFileEntry(entry)) {
+        expect(entry.error).toBeDefined()
+      }
     })
 
-    // AC interpretation: [Error handling] Error message returned for corrupted PDF file
-    // Validation: Call ingest_file with corrupted PDF file, FileOperationError is returned
+    // AC interpretation: [Error handling] Error reported for corrupted PDF file
+    // Validation: Call ingest_file with corrupted PDF file, failed state reported via list_files
     it('FileOperationError returned for corrupted PDF file (e.g., invalid header)', async () => {
       // Create corrupted PDF file
       const corruptedPdf = resolve(testDataDir, 'corrupted.pdf')
       writeFileSync(corruptedPdf, 'This is not a valid PDF file')
 
-      await expect(ragServer.handleIngestFile({ filePath: corruptedPdf })).rejects.toThrow()
+      // With async ingestion the parse error surfaces in the background job.
+      await ragServer.handleIngestFile({ filePath: corruptedPdf })
+      await ragServer.waitForIngestion(corruptedPdf)
+
+      const listResult = await ragServer.handleListFiles()
+      const { files } = JSON.parse(listResult.content[0].text)
+      const entry = files.find((f: { filePath: string }) => f.filePath === corruptedPdf)
+      expect(entry).toBeDefined()
+      expect(isFailedFileEntry(entry)).toBe(true)
+      if (isFailedFileEntry(entry)) {
+        expect(entry.error).toBeDefined()
+      }
     })
 
     // AC interpretation: [Error handling] Error message returned when LanceDB connection fails
@@ -570,18 +596,21 @@ describe('RAG MCP Server Integration Test - Phase 2', () => {
 
       await localRagServer.initialize()
 
-      // Ingest test documents (3 files)
+      // Ingest test documents (3 files) and wait for all to complete
       const testFile1 = resolve(localTestDataDir, 'test-file-1.txt')
       writeFileSync(testFile1, 'This is test file 1. '.repeat(50)) // Approx 1000 characters
       await localRagServer.handleIngestFile({ filePath: testFile1 })
+      await localRagServer.waitForIngestion(testFile1)
 
       const testFile2 = resolve(localTestDataDir, 'test-file-2.txt')
       writeFileSync(testFile2, 'This is test file 2. '.repeat(30)) // Approx 600 characters
       await localRagServer.handleIngestFile({ filePath: testFile2 })
+      await localRagServer.waitForIngestion(testFile2)
 
       const testFile3 = resolve(localTestDataDir, 'test-file-3.txt')
       writeFileSync(testFile3, 'This is test file 3. '.repeat(20)) // Approx 400 characters
       await localRagServer.handleIngestFile({ filePath: testFile3 })
+      await localRagServer.waitForIngestion(testFile3)
     })
 
     afterAll(async () => {
@@ -732,7 +761,7 @@ describe('RAG MCP Server Integration Test - Phase 2', () => {
 
       it('raw-data .md files inside dbPath excluded from files array', async () => {
         // Ingest data via handleIngestData to create raw-data .md in dbPath/raw-data/
-        await excludeServer.handleIngestData({
+        const ingestResult = await excludeServer.handleIngestData({
           content:
             'Integration test content for raw-data exclusion verification. ' +
             'This content is long enough to produce at least one chunk in the system.',
@@ -741,6 +770,8 @@ describe('RAG MCP Server Integration Test - Phase 2', () => {
             format: 'text',
           },
         })
+        const { filePath: excludeRawDataPath } = JSON.parse(ingestResult.content[0].text)
+        await excludeServer.waitForIngestion(excludeRawDataPath)
 
         const result = await excludeServer.handleListFiles()
         const parsed = JSON.parse(result.content[0].text)
@@ -828,41 +859,45 @@ describe('RAG MCP Server Integration Test - Phase 2', () => {
     // AC interpretation: [Functional requirement] When existing file is re-ingested, old data is completely deleted
     // Validation: Re-ingest with same file path, old chunks are deleted
     it('When existing file is re-ingested, old data is completely deleted', async () => {
-      // Initial ingestion
+      // Initial ingestion — must complete before re-ingesting the same path
       const testFile = resolve(localTestDataDir, 'test-reingest.txt')
       writeFileSync(testFile, 'This is the original content. '.repeat(50))
       await localRagServer.handleIngestFile({ filePath: testFile })
+      await localRagServer.waitForIngestion(testFile)
 
-      // Re-ingestion (content changed)
+      // Re-ingestion (content changed) — wait for completion then read from list_files
       writeFileSync(testFile, 'This is the updated content. '.repeat(30))
-      const result2 = await localRagServer.handleIngestFile({ filePath: testFile })
-      const ingest2 = JSON.parse(result2.content[0].text)
-      const updatedChunkCount = ingest2.chunkCount
+      await localRagServer.handleIngestFile({ filePath: testFile })
+      await localRagServer.waitForIngestion(testFile)
 
       // Validation: Only one file exists in file list
       const listResult = await localRagServer.handleListFiles()
       const files = JSON.parse(listResult.content[0].text)
       const targetFiles = files.files.filter((f: { filePath: string }) => f.filePath === testFile)
       expect(targetFiles.length).toBe(1)
-      // Validation: Chunk count matches new data (not old + new combined)
-      expect(targetFiles[0].chunkCount).toBe(updatedChunkCount)
+      // Validation: Chunk count reflects new data only (ingested: true with chunkCount)
+      expect(targetFiles[0].chunkCount).toBeGreaterThan(0)
     })
 
     // AC interpretation: [Technical requirement] After re-ingestion, only new data exists (0 duplicate data)
     // Validation: After re-ingestion, chunks with same filePath contain only new data
     it('After re-ingestion, only new data exists (0 duplicate data, R-003)', async () => {
-      // Initial ingestion
+      // Initial ingestion — wait for completion to get original chunk count
       const testFile = resolve(localTestDataDir, 'test-no-duplicate.txt')
       writeFileSync(testFile, 'Original data. '.repeat(50))
-      const result1 = await localRagServer.handleIngestFile({ filePath: testFile })
-      const ingest1 = JSON.parse(result1.content[0].text)
-      const originalChunkCount = ingest1.chunkCount
+      await localRagServer.handleIngestFile({ filePath: testFile })
+      await localRagServer.waitForIngestion(testFile)
 
-      // Re-ingestion
+      const listAfterFirst = JSON.parse((await localRagServer.handleListFiles()).content[0].text)
+      const firstEntry = listAfterFirst.files.find(
+        (f: { filePath: string }) => f.filePath === testFile
+      )
+      const originalChunkCount = firstEntry.chunkCount
+
+      // Re-ingestion — wait for completion then read updated state
       writeFileSync(testFile, 'Updated data. '.repeat(40))
-      const result2 = await localRagServer.handleIngestFile({ filePath: testFile })
-      const ingest2 = JSON.parse(result2.content[0].text)
-      const updatedChunkCount = ingest2.chunkCount
+      await localRagServer.handleIngestFile({ filePath: testFile })
+      await localRagServer.waitForIngestion(testFile)
 
       // Validation: Only one file exists in file list (no duplicates)
       const listResult = await localRagServer.handleListFiles()
@@ -870,9 +905,11 @@ describe('RAG MCP Server Integration Test - Phase 2', () => {
       const targetFiles = files.files.filter((f: { filePath: string }) => f.filePath === testFile)
       expect(targetFiles.length).toBe(1)
 
+      const updatedChunkCount = targetFiles[0].chunkCount
+
       // Validation: Chunk count matches new data only (not old + new)
-      expect(targetFiles[0].chunkCount).toBe(updatedChunkCount)
-      expect(targetFiles[0].chunkCount).not.toBe(originalChunkCount + updatedChunkCount)
+      expect(updatedChunkCount).toBeGreaterThan(0)
+      expect(updatedChunkCount).not.toBe(originalChunkCount + updatedChunkCount)
 
       // Validation: Timestamp is updated
       expect(targetFiles[0].timestamp).toBeDefined()
@@ -885,15 +922,19 @@ describe('RAG MCP Server Integration Test - Phase 2', () => {
       // Here, verify that in normal case, old data is completely deleted and only new data exists
       const testFile = resolve(localTestDataDir, 'test-atomicity.txt')
       writeFileSync(testFile, 'Atomicity test data. '.repeat(50))
-      const result1 = await localRagServer.handleIngestFile({ filePath: testFile })
-      const ingest1 = JSON.parse(result1.content[0].text)
-      const originalChunkCount = ingest1.chunkCount
+      await localRagServer.handleIngestFile({ filePath: testFile })
+      await localRagServer.waitForIngestion(testFile)
 
-      // Re-ingestion
+      const listAfterFirst = JSON.parse((await localRagServer.handleListFiles()).content[0].text)
+      const firstEntry = listAfterFirst.files.find(
+        (f: { filePath: string }) => f.filePath === testFile
+      )
+      const originalChunkCount = firstEntry.chunkCount
+
+      // Re-ingestion — wait for completion
       writeFileSync(testFile, 'Atomicity test updated. '.repeat(40))
-      const result2 = await localRagServer.handleIngestFile({ filePath: testFile })
-      const ingest2 = JSON.parse(result2.content[0].text)
-      const updatedChunkCount = ingest2.chunkCount
+      await localRagServer.handleIngestFile({ filePath: testFile })
+      await localRagServer.waitForIngestion(testFile)
 
       // Validation: Only one file exists in file list (atomicity guaranteed)
       const listResult = await localRagServer.handleListFiles()
@@ -901,9 +942,11 @@ describe('RAG MCP Server Integration Test - Phase 2', () => {
       const targetFiles = files.files.filter((f: { filePath: string }) => f.filePath === testFile)
       expect(targetFiles.length).toBe(1)
 
+      const updatedChunkCount = targetFiles[0].chunkCount
+
       // Validation: Chunk count proves atomicity - only new data exists (not old + new)
-      expect(targetFiles[0].chunkCount).toBe(updatedChunkCount)
-      expect(targetFiles[0].chunkCount).not.toBe(originalChunkCount + updatedChunkCount)
+      expect(updatedChunkCount).toBeGreaterThan(0)
+      expect(updatedChunkCount).not.toBe(originalChunkCount + updatedChunkCount)
     })
 
     // AC interpretation: [Error handling] On error, automatic rollback from backup
@@ -914,15 +957,19 @@ describe('RAG MCP Server Integration Test - Phase 2', () => {
       // Rollback on error requires implementation-level test (using mocks)
       const testFile = resolve(localTestDataDir, 'test-rollback.txt')
       writeFileSync(testFile, 'Rollback test data. '.repeat(50))
-      const result1 = await localRagServer.handleIngestFile({ filePath: testFile })
-      const ingest1 = JSON.parse(result1.content[0].text)
-      const originalChunkCount = ingest1.chunkCount
+      await localRagServer.handleIngestFile({ filePath: testFile })
+      await localRagServer.waitForIngestion(testFile)
 
-      // Re-ingest normally (no error)
+      const listAfterFirst = JSON.parse((await localRagServer.handleListFiles()).content[0].text)
+      const firstEntry = listAfterFirst.files.find(
+        (f: { filePath: string }) => f.filePath === testFile
+      )
+      const originalChunkCount = firstEntry.chunkCount
+
+      // Re-ingest normally (no error) — wait for completion
       writeFileSync(testFile, 'Rollback test updated. '.repeat(40))
-      const result2 = await localRagServer.handleIngestFile({ filePath: testFile })
-      const ingest2 = JSON.parse(result2.content[0].text)
-      const updatedChunkCount = ingest2.chunkCount
+      await localRagServer.handleIngestFile({ filePath: testFile })
+      await localRagServer.waitForIngestion(testFile)
 
       // Validation: In normal case, no rollback occurs and new data exists
       const listResult = await localRagServer.handleListFiles()
@@ -930,36 +977,44 @@ describe('RAG MCP Server Integration Test - Phase 2', () => {
       const targetFiles = files.files.filter((f: { filePath: string }) => f.filePath === testFile)
       expect(targetFiles.length).toBe(1)
 
+      const updatedChunkCount = targetFiles[0].chunkCount
+
       // Validation: Chunk count confirms successful re-ingestion (not old + new)
-      expect(targetFiles[0].chunkCount).toBe(updatedChunkCount)
-      expect(targetFiles[0].chunkCount).not.toBe(originalChunkCount + updatedChunkCount)
+      expect(updatedChunkCount).toBeGreaterThan(0)
+      expect(updatedChunkCount).not.toBe(originalChunkCount + updatedChunkCount)
 
       // Note: Rollback behavior on error needs to be verified in unit test
       // by mocking VectorStore.insertChunks to cause error
     })
 
     // AC interpretation: [Data protection] Prevent data loss when re-ingest results in 0 chunks
-    // Validation: When chunking produces 0 chunks, error is thrown before delete (preserves existing data)
-    it('Throws error when chunking produces 0 chunks (prevents data loss on re-ingest)', async () => {
-      // Initial ingestion with valid content
+    // Validation: When chunking produces 0 chunks, error is reported via list_files before delete (preserves existing data)
+    it('Reports failed status when chunking produces 0 chunks (prevents data loss on re-ingest)', async () => {
+      // Initial ingestion with valid content — wait for completion
       const testFile = resolve(localTestDataDir, 'test-empty-chunks.txt')
       writeFileSync(testFile, 'This is valid content for initial ingestion. '.repeat(50))
-      const result1 = await localRagServer.handleIngestFile({ filePath: testFile })
-      const ingest1 = JSON.parse(result1.content[0].text)
-      expect(ingest1.chunkCount).toBeGreaterThan(0)
+      await localRagServer.handleIngestFile({ filePath: testFile })
+      await localRagServer.waitForIngestion(testFile)
 
-      // Re-ingest with empty content (should fail, preserving original data)
-      writeFileSync(testFile, '')
-      await expect(localRagServer.handleIngestFile({ filePath: testFile })).rejects.toThrow(
-        /No.*chunks/i
+      const listAfterFirst = JSON.parse((await localRagServer.handleListFiles()).content[0].text)
+      const firstEntry = listAfterFirst.files.find(
+        (f: { filePath: string }) => f.filePath === testFile
       )
+      expect(firstEntry.chunkCount).toBeGreaterThan(0)
+      const originalChunkCount = firstEntry.chunkCount
 
-      // Validation: Original data is preserved (not deleted)
+      // Re-ingest with empty content — ingestion starts (background) then fails
+      writeFileSync(testFile, '')
+      await localRagServer.handleIngestFile({ filePath: testFile })
+      await localRagServer.waitForIngestion(testFile)
+
+      // Validation: Original data is preserved (zero-chunks check happens before delete)
       const listResult = await localRagServer.handleListFiles()
       const files = JSON.parse(listResult.content[0].text)
       const targetFiles = files.files.filter((f: { filePath: string }) => f.filePath === testFile)
       expect(targetFiles.length).toBe(1)
-      expect(targetFiles[0].chunkCount).toBe(ingest1.chunkCount)
+      // File still shows as ingested with original chunk count
+      expect(targetFiles[0].chunkCount).toBe(originalChunkCount)
     })
   })
 
@@ -989,13 +1044,24 @@ describe('RAG MCP Server Integration Test - Phase 2', () => {
       rmSync(localTestDataDir, { recursive: true, force: true })
     })
 
-    // AC interpretation: [Error handling] Error message returned for file without access permission
-    // Validation: Call ingest_file with file without access permission, FileOperationError is returned
+    // AC interpretation: [Error handling] Error reported for file without access permission
+    // Validation: Call ingest_file with non-existent file path, failed state reported via list_files
     it('FileOperationError returned for file without access permission (e.g., chmod 000)', async () => {
-      // Test with non-existent file since chmod 000 does not work on Windows
-      // (File read error occurs instead of access permission error)
+      // Test with non-existent file since chmod 000 does not work on Windows.
+      // With async ingestion, validateFilePath passes (path is inside BASE_DIR) but
+      // the actual read fails in the background job.
       const nonExistentFile = resolve(localTestDataDir, 'nonexistent-file.txt')
-      await expect(localRagServer.handleIngestFile({ filePath: nonExistentFile })).rejects.toThrow()
+      await localRagServer.handleIngestFile({ filePath: nonExistentFile })
+      await localRagServer.waitForIngestion(nonExistentFile)
+
+      const listResult = await localRagServer.handleListFiles()
+      const { files } = JSON.parse(listResult.content[0].text)
+      const entry = files.find((f: { filePath: string }) => f.filePath === nonExistentFile)
+      expect(entry).toBeDefined()
+      expect(isFailedFileEntry(entry)).toBe(true)
+      if (isFailedFileEntry(entry)) {
+        expect(entry.error).toBeDefined()
+      }
     })
 
     // AC interpretation: [Error handling] Size overflow error returned for files over 100MB
@@ -1117,6 +1183,8 @@ describe('RAG MCP Server Integration Test - Phase 2', () => {
       const testFile = resolve(localTestDataDir, 'test-delete.txt')
       writeFileSync(testFile, 'This file will be deleted. '.repeat(50))
       await localRagServer.handleIngestFile({ filePath: testFile })
+      // Wait for ingestion to complete so the file shows as ingested before deletion
+      await localRagServer.waitForIngestion(testFile)
 
       // Verify file exists before deletion
       const listBefore = await localRagServer.handleListFiles()
@@ -1144,6 +1212,7 @@ describe('RAG MCP Server Integration Test - Phase 2', () => {
       const testFile = resolve(localTestDataDir, 'test-search-delete.txt')
       writeFileSync(testFile, 'Unique keyword XYZABC123 for deletion test. '.repeat(30))
       await localRagServer.handleIngestFile({ filePath: testFile })
+      await localRagServer.waitForIngestion(testFile)
 
       // Search before deletion
       const searchBefore = await localRagServer.handleQueryDocuments({
@@ -1226,7 +1295,7 @@ describe('RAG MCP Server Integration Test - Phase 2', () => {
         </html>
       `
 
-      // Ingest HTML via ingest_data
+      // Ingest HTML via ingest_data — ingestion is async, wait before querying
       const ingestResult = await localRagServer.handleIngestData({
         content: html,
         metadata: {
@@ -1236,8 +1305,8 @@ describe('RAG MCP Server Integration Test - Phase 2', () => {
       })
 
       const ingestData = JSON.parse(ingestResult.content[0].text)
-      expect(ingestData.chunkCount).toBeGreaterThan(0)
-      expect(ingestData.fileTitle).toBe('RAG Architecture Guide')
+      expect(ingestData.status).toBe('started')
+      await localRagServer.waitForIngestion(ingestData.filePath)
 
       // Query and verify fileTitle appears in results
       const queryResult = await localRagServer.handleQueryDocuments({
@@ -1305,8 +1374,9 @@ describe('RAG MCP Server Integration Test - Phase 2', () => {
         },
       })
 
+      // .meta.json is written synchronously — no need to wait for full ingestion
       const ingestData = JSON.parse(ingestResult.content[0].text)
-      expect(ingestData.chunkCount).toBeGreaterThan(0)
+      expect(ingestData.status).toBe('started')
 
       // Derive the raw-data .md path and .meta.json path
       const rawDataPath = generateRawDataPath(
@@ -1400,13 +1470,15 @@ describe('RAG MCP Server Integration Test - Phase 2', () => {
         </html>
       `
 
-      await localRagServer.handleIngestData({
+      const dupIngestResult = await localRagServer.handleIngestData({
         content: html,
         metadata: {
           source: 'https://example.com/duplication-check',
           format: 'html',
         },
       })
+      const { filePath: dupFilePath } = JSON.parse(dupIngestResult.content[0].text)
+      await localRagServer.waitForIngestion(dupFilePath)
 
       // Query for the content
       const queryResult = await localRagServer.handleQueryDocuments({
@@ -1456,14 +1528,16 @@ describe('RAG MCP Server Integration Test - Phase 2', () => {
         </html>
       `
 
-      // Ingest the content
-      await localRagServer.handleIngestData({
+      // Ingest the content — .meta.json and raw-data file are written synchronously
+      const deleteMetaIngestResult = await localRagServer.handleIngestData({
         content: html,
         metadata: {
           source: 'https://example.com/delete-meta-test',
           format: 'html',
         },
       })
+      const { filePath: deleteMetaRawPath } = JSON.parse(deleteMetaIngestResult.content[0].text)
+      await localRagServer.waitForIngestion(deleteMetaRawPath)
 
       // Verify files exist before deletion
       const rawDataPath = generateRawDataPath(

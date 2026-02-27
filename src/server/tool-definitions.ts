@@ -31,7 +31,7 @@ export const toolDefinitions: Tool[] = [
   {
     name: 'ingest_file',
     description:
-      'Ingest a document file (PDF, DOCX, TXT, MD) into the vector database for semantic search. File path must be an absolute path. Supports re-ingestion to update existing documents.',
+      'Ingest a document file (PDF, DOCX, TXT, MD) into the vector database for semantic search. File path must be an absolute path. Supports re-ingestion to update existing documents. Returns immediately with a "started" status — ingestion runs in the background. Use list_files to monitor progress. Submitting the same path while ingestion is running returns an "in_progress" status instead of starting a duplicate job.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -47,7 +47,7 @@ export const toolDefinitions: Tool[] = [
   {
     name: 'ingest_data',
     description:
-      'Ingest content as a string, not from a file. Use for: fetched web pages (format: html), copied text (format: text), or markdown strings (format: markdown). The source identifier enables re-ingestion to update existing content. For files on disk, use ingest_file instead.',
+      'Ingest content as a string, not from a file. Use for: fetched web pages (format: html), copied text (format: text), or markdown strings (format: markdown). The source identifier enables re-ingestion to update existing content. For files on disk, use ingest_file instead. Returns immediately with a "started" status — ingestion runs in the background. Use list_files to monitor progress. Submitting the same source while ingestion is running returns an "in_progress" status instead of starting a duplicate job.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -98,7 +98,7 @@ export const toolDefinitions: Tool[] = [
   {
     name: 'list_files',
     description:
-      'List all files in BASE_DIR (PDF, DOCX, TXT, MD) and show which are ingested into the vector database. Also lists any other ingested items (web pages, clipboard content, etc.) that are outside BASE_DIR.',
+      'List all files in BASE_DIR (PDF, DOCX, TXT, MD) and show their ingestion status: ingested (with chunk count), currently ingesting, failed (with error), or not yet ingested. Also lists any other ingested items (web pages, clipboard content, etc.) that are outside BASE_DIR, including those whose ingestion is in progress.',
     inputSchema: { type: 'object', properties: {} },
   },
   {
