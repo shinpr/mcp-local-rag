@@ -501,7 +501,10 @@ describe('DocumentParser', () => {
       const result = await parser.parsePdf(filePath, mockEmbedder)
 
       // extractPdfTitle receives metadata title as first argument
-      expect(mockExtractPdfTitle).toHaveBeenCalledWith('My Title', expect.any(String), 'test.pdf')
+      expect(mockExtractPdfTitle).toHaveBeenCalledWith('My Title', expect.any(String), 'test.pdf', {
+        text: 'Body text',
+        fontSize: 12,
+      })
       expect(result.title).toBe('My Title')
     })
 
@@ -522,7 +525,10 @@ describe('DocumentParser', () => {
       await parser.parsePdf(filePath, mockEmbedder)
 
       // getMetaData returns '' which is falsy, so metadataTitle becomes undefined
-      expect(mockExtractPdfTitle).toHaveBeenCalledWith(undefined, expect.any(String), 'test.pdf')
+      expect(mockExtractPdfTitle).toHaveBeenCalledWith(undefined, expect.any(String), 'test.pdf', {
+        text: 'Some text',
+        fontSize: 12,
+      })
     })
 
     it('should produce empty items array for a page with no blocks', async () => {

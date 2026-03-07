@@ -298,7 +298,21 @@ export class DocumentParser {
       } catch (titleError) {
         console.error(`Title extraction failed, falling back to filename: ${titleError}`)
       }
-      const titleResult = extractPdfTitle(metadataTitle, firstPageChunkText, fileName)
+      // Extract largest-font item from page 1 for title hint
+      const page1Items = pages[0]?.items ?? []
+      const largestFontItem = page1Items.reduce<{ text: string; fontSize: number } | null>(
+        (max, item) =>
+          item.fontSize > (max?.fontSize ?? 0) ? { text: item.text, fontSize: item.fontSize } : max,
+        null
+      )
+      const firstPageFontHint = largestFontItem ?? undefined
+
+      const titleResult = extractPdfTitle(
+        metadataTitle,
+        firstPageChunkText,
+        fileName,
+        firstPageFontHint
+      )
 
       console.error(`Parsed PDF: ${filePath} (${text.length} characters, ${numPages} pages)`)
 
