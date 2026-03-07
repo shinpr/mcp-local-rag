@@ -2,8 +2,46 @@
 
 import { mkdir, rm, symlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DocumentParser, FileOperationError, ValidationError } from '../index'
+
+// ============================================
+// Mocks for parsePdf tests (vi.hoisted ensures availability in vi.mock factories)
+// ============================================
+
+const { mockOpenDocument, mockFilterPageBoundarySentences, mockExtractPdfTitle, mockChunkText } =
+  vi.hoisted(() => ({
+    mockOpenDocument: vi.fn(),
+    mockFilterPageBoundarySentences: vi.fn(),
+    mockExtractPdfTitle: vi.fn(),
+    mockChunkText: vi.fn(),
+  }))
+
+vi.mock('mupdf', () => ({
+  Document: { openDocument: mockOpenDocument },
+}))
+
+vi.mock('../pdf-filter.js', async (importOriginal) => {
+  const original = await importOriginal<typeof import('../pdf-filter.js')>()
+  return {
+    ...original,
+    filterPageBoundarySentences: (...args: unknown[]) => mockFilterPageBoundarySentences(...args),
+  }
+})
+
+vi.mock('../title-extractor.js', async (importOriginal) => {
+  const original = await importOriginal<typeof import('../title-extractor.js')>()
+  return {
+    ...original,
+    extractPdfTitle: (...args: unknown[]) => mockExtractPdfTitle(...args),
+  }
+})
+
+vi.mock('../../chunker/index.js', () => ({
+  SemanticChunker: class {
+    chunkText = mockChunkText
+  },
+}))
 
 describe('DocumentParser', () => {
   let parser: DocumentParser
@@ -271,6 +309,236 @@ describe('DocumentParser', () => {
 
       const result = await parser.parseFile(filePath)
       expect(result.title).toBe('my notes')
+    })
+  })
+
+  // --------------------------------------------
+  // parsePdf
+  // --------------------------------------------
+  describe('parsePdf', () => {
+    const mockEmbedder = { embed: vi.fn() }
+
+    /**
+     * Helper to build a mupdf mock document with configurable pages.
+     * Each page entry defines: bounds, blocks (mupdf JSON structure), and optional metadata title.
+     */
+    function setupMupdfMock(
+      pages: Array<{
+        bounds: [number, number, number, number]
+        blocks: Array<{
+          type: string
+          lines?: Array<{ text: string; x: number; y: number; font: { size: number } }>
+        }>
+      }>,
+      metadataTitle?: string
+    ) {
+      const mockPages = pages.map((pageDef) => {
+        const mockStext = {
+          asJSON: vi.fn().mockReturnValue(JSON.stringify({ blocks: pageDef.blocks })),
+        }
+        return {
+          getBounds: vi.fn().mockReturnValue(pageDef.bounds),
+          toStructuredText: vi.fn().mockReturnValue(mockStext),
+        }
+      })
+
+      const mockDoc = {
+        countPages: vi.fn().mockReturnValue(pages.length),
+        loadPage: vi.fn().mockImplementation((i: number) => mockPages[i]),
+        getMetaData: vi.fn().mockReturnValue(metadataTitle ?? ''),
+      }
+
+      mockOpenDocument.mockReturnValue(mockDoc)
+      return mockDoc
+    }
+
+    beforeEach(async () => {
+      vi.clearAllMocks()
+
+      // filterPageBoundarySentences: pass through by joining item texts per page
+      mockFilterPageBoundarySentences.mockImplementation(
+        async (pageDataArr: Array<{ items: Array<{ text: string }> }>) =>
+          pageDataArr.map((p) => p.items.map((item) => item.text).join('\n'))
+      )
+
+      // extractPdfTitle: return the title or fallback
+      mockExtractPdfTitle.mockImplementation(
+        (metadata: string | undefined, _chunk: string | undefined, fileName: string) => ({
+          title: metadata ?? fileName.replace(/\.pdf$/, ''),
+          source: metadata ? 'metadata' : 'filename',
+        })
+      )
+
+      // SemanticChunker.chunkText: return first line as chunk
+      mockChunkText.mockImplementation(async (text: string) => [{ text, index: 0 }])
+
+      // Create a dummy PDF file so validateFilePath and validateFileSize pass
+      await writeFile(join(testDir, 'test.pdf'), 'dummy-pdf-content')
+    })
+
+    it('should extract text from a single block with one line', async () => {
+      const filePath = join(testDir, 'test.pdf')
+      setupMupdfMock([
+        {
+          bounds: [0, 0, 612, 792],
+          blocks: [
+            {
+              type: 'text',
+              lines: [{ text: 'Hello World', x: 72, y: 100, font: { size: 12 } }],
+            },
+          ],
+        },
+      ])
+
+      const result = await parser.parsePdf(filePath, mockEmbedder)
+
+      expect(result.content).toBe('Hello World')
+      expect(result.title).toBeDefined()
+      // Verify filterPageBoundarySentences received correct PageData structure
+      expect(mockFilterPageBoundarySentences).toHaveBeenCalledWith(
+        [
+          {
+            pageNum: 1,
+            items: [
+              {
+                text: 'Hello World',
+                x: 72,
+                y: 692, // 792 - 100
+                fontSize: 12,
+                hasEOL: true,
+              },
+            ],
+          },
+        ],
+        mockEmbedder
+      )
+    })
+
+    it('should invert Y coordinate correctly (pageHeight - line.y)', async () => {
+      const filePath = join(testDir, 'test.pdf')
+      setupMupdfMock([
+        {
+          bounds: [0, 0, 612, 792],
+          blocks: [
+            {
+              type: 'text',
+              lines: [{ text: 'Bottom text', x: 72, y: 751, font: { size: 10 } }],
+            },
+          ],
+        },
+      ])
+
+      await parser.parsePdf(filePath, mockEmbedder)
+
+      // Y inversion: 792 - 751 = 41
+      const calledPages = mockFilterPageBoundarySentences.mock.calls[0][0]
+      expect(calledPages[0].items[0].y).toBe(41)
+    })
+
+    it('should use zero-based loadPage index and one-based pageNum in output', async () => {
+      const filePath = join(testDir, 'test.pdf')
+      const mockDoc = setupMupdfMock([
+        {
+          bounds: [0, 0, 612, 792],
+          blocks: [
+            {
+              type: 'text',
+              lines: [{ text: 'Page 1 text', x: 0, y: 0, font: { size: 12 } }],
+            },
+          ],
+        },
+      ])
+
+      await parser.parsePdf(filePath, mockEmbedder)
+
+      // loadPage called with 0 (zero-based)
+      expect(mockDoc.loadPage).toHaveBeenCalledWith(0)
+      // Output pageNum is 1 (one-based)
+      const calledPages = mockFilterPageBoundarySentences.mock.calls[0][0]
+      expect(calledPages[0].pageNum).toBe(1)
+    })
+
+    it('should skip non-text blocks (e.g., image blocks)', async () => {
+      const filePath = join(testDir, 'test.pdf')
+      setupMupdfMock([
+        {
+          bounds: [0, 0, 612, 792],
+          blocks: [
+            { type: 'image' },
+            {
+              type: 'text',
+              lines: [{ text: 'Visible text', x: 72, y: 100, font: { size: 12 } }],
+            },
+          ],
+        },
+      ])
+
+      await parser.parsePdf(filePath, mockEmbedder)
+
+      const calledPages = mockFilterPageBoundarySentences.mock.calls[0][0]
+      // Only the text block should produce items, image block is skipped
+      expect(calledPages[0].items).toHaveLength(1)
+      expect(calledPages[0].items[0].text).toBe('Visible text')
+    })
+
+    it('should use metadata title when getMetaData returns a value', async () => {
+      const filePath = join(testDir, 'test.pdf')
+      setupMupdfMock(
+        [
+          {
+            bounds: [0, 0, 612, 792],
+            blocks: [
+              {
+                type: 'text',
+                lines: [{ text: 'Body text', x: 72, y: 100, font: { size: 12 } }],
+              },
+            ],
+          },
+        ],
+        'My Title'
+      )
+
+      const result = await parser.parsePdf(filePath, mockEmbedder)
+
+      // extractPdfTitle receives metadata title as first argument
+      expect(mockExtractPdfTitle).toHaveBeenCalledWith('My Title', expect.any(String), 'test.pdf')
+      expect(result.title).toBe('My Title')
+    })
+
+    it('should pass undefined metadata when getMetaData returns empty string', async () => {
+      const filePath = join(testDir, 'test.pdf')
+      setupMupdfMock([
+        {
+          bounds: [0, 0, 612, 792],
+          blocks: [
+            {
+              type: 'text',
+              lines: [{ text: 'Some text', x: 72, y: 100, font: { size: 12 } }],
+            },
+          ],
+        },
+      ])
+
+      await parser.parsePdf(filePath, mockEmbedder)
+
+      // getMetaData returns '' which is falsy, so metadataTitle becomes undefined
+      expect(mockExtractPdfTitle).toHaveBeenCalledWith(undefined, expect.any(String), 'test.pdf')
+    })
+
+    it('should produce empty items array for a page with no blocks', async () => {
+      const filePath = join(testDir, 'test.pdf')
+      setupMupdfMock([
+        {
+          bounds: [0, 0, 612, 792],
+          blocks: [],
+        },
+      ])
+
+      await parser.parsePdf(filePath, mockEmbedder)
+
+      const calledPages = mockFilterPageBoundarySentences.mock.calls[0][0]
+      expect(calledPages[0].items).toEqual([])
+      expect(calledPages[0].pageNum).toBe(1)
     })
   })
 })
