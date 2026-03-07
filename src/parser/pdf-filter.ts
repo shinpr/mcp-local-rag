@@ -279,6 +279,106 @@ const DEFAULT_SENTENCE_PATTERN_CONFIG: SentencePatternConfig = {
   samplePages: 5,
 }
 
+// ============================================
+// Block-Attribute Pre-filter (Stage 1)
+// ============================================
+
+/**
+ * Hints for block-level header/footer detection based on font attributes
+ */
+export interface BlockAttributeHints {
+  medianFontSize: number
+  headerCandidateYs: Set<number>
+  footerCandidateYs: Set<number>
+}
+
+/**
+ * Detect candidate header/footer lines based on font size and Y position
+ *
+ * Stage 1 of the 2-stage header/footer detection:
+ * 1. Sample center pages (same logic as detectSentencePatterns)
+ * 2. Calculate median font size from all items across sampled pages
+ * 3. Identify header candidates: fontSize < medianFontSize * 0.7 AND y > pageHeight * 0.9
+ * 4. Identify footer candidates: fontSize < medianFontSize * 0.7 AND y < pageHeight * 0.1
+ *
+ * @param pages - Array of page data
+ * @param config - Configuration options (minPages, samplePages)
+ * @returns Block attribute hints with candidate Y positions
+ */
+export function detectBlockAttributeCandidates(
+  pages: PageData[],
+  config: Partial<Pick<SentencePatternConfig, 'minPages' | 'samplePages'>> = {}
+): BlockAttributeHints {
+  const cfg = { ...DEFAULT_SENTENCE_PATTERN_CONFIG, ...config }
+
+  const emptyResult: BlockAttributeHints = {
+    medianFontSize: 0,
+    headerCandidateYs: new Set(),
+    footerCandidateYs: new Set(),
+  }
+
+  if (pages.length < cfg.minPages) return emptyResult
+
+  // Sample center pages (same logic as detectSentencePatterns)
+  const centerIndex = Math.floor(pages.length / 2)
+  const halfSample = Math.floor(cfg.samplePages / 2)
+  const startIndex = Math.max(0, centerIndex - halfSample)
+  const endIndex = Math.min(pages.length, startIndex + cfg.samplePages)
+  const samplePages = pages.slice(startIndex, endIndex)
+
+  // Collect all font sizes
+  const fontSizes: number[] = []
+  for (const page of samplePages) {
+    for (const item of page.items) {
+      if (item.fontSize > 0) fontSizes.push(item.fontSize)
+    }
+  }
+
+  if (fontSizes.length === 0) return emptyResult
+
+  // Calculate median font size
+  fontSizes.sort((a, b) => a - b)
+  const mid = Math.floor(fontSizes.length / 2)
+  const medianFontSize =
+    fontSizes.length % 2 === 0 ? (fontSizes[mid - 1]! + fontSizes[mid]!) / 2 : fontSizes[mid]!
+
+  if (medianFontSize === 0) return { ...emptyResult, medianFontSize }
+
+  // Estimate page height from max Y (Y is inverted: large Y = top)
+  let maxY = 0
+  for (const page of samplePages) {
+    for (const item of page.items) {
+      if (item.y > maxY) maxY = item.y
+    }
+  }
+
+  const pageHeight = maxY // approximate
+  if (pageHeight === 0) return { ...emptyResult, medianFontSize }
+
+  const fontSizeThreshold = medianFontSize * 0.7
+  const headerCandidateYs = new Set<number>()
+  const footerCandidateYs = new Set<number>()
+
+  // Scan items: small font + extreme Y position = candidate
+  for (const page of samplePages) {
+    for (const item of page.items) {
+      if (item.fontSize >= fontSizeThreshold) continue
+
+      const roundedY = Math.round(item.y)
+      // Header: top 10% of page (large Y values, since Y is inverted)
+      if (item.y > pageHeight * 0.9) {
+        headerCandidateYs.add(roundedY)
+      }
+      // Footer: bottom 10% of page (small Y values)
+      if (item.y < pageHeight * 0.1) {
+        footerCandidateYs.add(roundedY)
+      }
+    }
+  }
+
+  return { medianFontSize, headerCandidateYs, footerCandidateYs }
+}
+
 /**
  * Result of sentence-level pattern detection
  */
