@@ -6,6 +6,7 @@ import { extname, join, resolve } from 'node:path'
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import {
+  type Annotations,
   CallToolRequestSchema,
   ErrorCode,
   ListToolsRequestSchema,
@@ -53,10 +54,13 @@ export class RAGServer {
   private readonly baseDir: string
   // Used by handleListFiles filter to exclude system-managed directories
   private readonly excludePaths: string[]
+  private readonly configWarnings: string[]
+  private queryWarningsShown = false
 
   constructor(config: RAGServerConfig) {
     this.dbPath = config.dbPath
     this.baseDir = config.baseDir
+    this.configWarnings = config.configWarnings ?? []
     this.excludePaths = [`${resolve(config.dbPath)}/`, `${resolve(config.cacheDir)}/`]
     this.server = new Server(
       { name: 'rag-mcp-server', version: '1.0.0' },
@@ -94,6 +98,28 @@ export class RAGServer {
     })
 
     this.setupHandlers()
+  }
+
+  /**
+   * Build warning content blocks with MCP annotations.
+   * Returns an empty array if no warnings exist.
+   */
+  private buildWarningContentBlocks(): Array<{
+    type: 'text'
+    text: string
+    annotations: Annotations
+  }> {
+    if (this.configWarnings.length === 0) return []
+    return [
+      {
+        type: 'text' as const,
+        text: `Warning: ${this.configWarnings.join(' | ')}`,
+        annotations: {
+          audience: ['user', 'assistant'] as const,
+          priority: 0.3,
+        },
+      },
+    ]
   }
 
   /**
@@ -150,7 +176,7 @@ export class RAGServer {
    */
   async handleQueryDocuments(
     args: QueryDocumentsInput
-  ): Promise<{ content: [{ type: 'text'; text: string }] }> {
+  ): Promise<{ content: Array<{ type: 'text'; text: string; annotations?: Annotations }> }> {
     try {
       // Generate query embedding
       const queryVector = await this.embedder.embed(args.query)
@@ -179,14 +205,20 @@ export class RAGServer {
         return queryResult
       })
 
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify(results, null, 2),
-          },
-        ],
+      const content: Array<{ type: 'text'; text: string; annotations?: Annotations }> = [
+        {
+          type: 'text',
+          text: JSON.stringify(results, null, 2),
+        },
+      ]
+
+      // Append config warnings on first query call only
+      if (!this.queryWarningsShown) {
+        content.push(...this.buildWarningContentBlocks())
+        this.queryWarningsShown = true
       }
+
+      return { content }
     } catch (error) {
       console.error('Failed to query documents:', error)
       throw error
@@ -492,17 +524,22 @@ export class RAGServer {
   /**
    * status tool handler (Phase 1: basic implementation)
    */
-  async handleStatus(): Promise<{ content: [{ type: 'text'; text: string }] }> {
+  async handleStatus(): Promise<{
+    content: Array<{ type: 'text'; text: string; annotations?: Annotations }>
+  }> {
     try {
       const status = await this.vectorStore.getStatus()
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify(status, null, 2),
-          },
-        ],
-      }
+      const content: Array<{ type: 'text'; text: string; annotations?: Annotations }> = [
+        {
+          type: 'text',
+          text: JSON.stringify(status, null, 2),
+        },
+      ]
+
+      // Always append config warnings to status responses
+      content.push(...this.buildWarningContentBlocks())
+
+      return { content }
     } catch (error) {
       console.error('Failed to get status:', error)
       throw error
