@@ -118,12 +118,14 @@ export function extractHtmlTitle(
  * @param metadataTitle - PDF metadata /Title value (may be undefined)
  * @param firstPageChunkText - Text of chunk 0 from semantic chunking of page 1 (may be undefined)
  * @param fileName - File name for fallback
+ * @param firstPageFontHint - Largest-font text item from page 1 (optional, used for title detection)
  * @returns Title extraction result
  */
 export function extractPdfTitle(
   metadataTitle: string | undefined,
   firstPageChunkText: string | undefined,
-  fileName: string
+  fileName: string,
+  firstPageFontHint?: { text: string; fontSize: number }
 ): TitleExtractionResult {
   // 1. Try PDF metadata title (reject file paths and empty values)
   if (metadataTitle && metadataTitle.trim().length > 0) {
@@ -134,12 +136,21 @@ export function extractPdfTitle(
     }
   }
 
-  // 2. Try first chunk from page 1 semantic chunking
+  // 2. Try largest-font text from page 1 (font size > 14pt indicates title)
+  if (
+    firstPageFontHint &&
+    firstPageFontHint.fontSize > 14 &&
+    firstPageFontHint.text.trim().length > 0
+  ) {
+    return { title: firstPageFontHint.text.trim(), source: 'content' }
+  }
+
+  // 3. Try first chunk from page 1 semantic chunking
   if (firstPageChunkText && firstPageChunkText.trim().length > 0) {
     return { title: firstPageChunkText.trim(), source: 'content' }
   }
 
-  // 3. Fall back to file name
+  // 4. Fall back to file name
   return { title: fileNameToTitle(fileName), source: 'filename' }
 }
 

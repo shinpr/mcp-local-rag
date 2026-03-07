@@ -2,6 +2,7 @@
   "name": "mcp-local-rag",
   "version": "0.7.0",
   "description": "Local RAG MCP Server - Easy-to-setup document search with minimal configuration",
+  "type": "module",
   "main": "dist/index.js",
   "bin": {
     "mcp-local-rag": "dist/index.js"
@@ -62,29 +63,28 @@
     "prepare": "husky"
   },
   "dependencies": {
-    "@huggingface/transformers": "^3.7.6",
-    "@lancedb/lancedb": "^0.22.2",
-    "@modelcontextprotocol/sdk": "^1.25.1",
+    "@huggingface/transformers": "^3.8.1",
+    "@lancedb/lancedb": "^0.26.2",
+    "@modelcontextprotocol/sdk": "^1.27.1",
     "@mozilla/readability": "0.6.0",
     "jsdom": "^27.4.0",
     "mammoth": "^1.11.0",
-    "pdfjs-dist": "^5.4.530",
+    "mupdf": "^1.27.0",
     "turndown": "7.2.2"
   },
   "devDependencies": {
-    "@biomejs/biome": "^1.9.4",
+    "@biomejs/biome": "^2.4.6",
     "@types/jsdom": "^27.0.0",
-    "@types/node": "^20.0.0",
+    "@types/node": "^25.3.5",
     "@types/turndown": "5.0.6",
     "husky": "^9.1.7",
-    "lint-staged": "^16.1.0",
+    "lint-staged": "^16.3.2",
     "madge": "^8.0.0",
-    "ts-node": "^10.9.1",
     "ts-prune": "^0.10.3",
-    "tsc-alias": "^1.8.7",
-    "tsx": "^4.19.4",
-    "typescript": "^5.0.0",
-    "vitest": "^3.2.4"
+    "tsc-alias": "^1.8.16",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.18"
   },
   "engines": {
     "node": ">=20"

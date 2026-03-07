@@ -14,11 +14,8 @@ export default defineConfig({
     hookTimeout: 10000,        // Hook processing timeout 10 seconds
     teardownTimeout: 5000,     // Teardown timeout 5 seconds
     pool: 'forks',             // Use forks instead of threads for onnxruntime-node compatibility
-    poolOptions: {
-      forks: {
-        singleFork: true,      // Single process execution to avoid onnxruntime-node threading issues
-      }
-    },
+    maxWorkers: 1,             // Single process execution to avoid onnxruntime-node threading issues
+    isolate: false,            // Disabled for onnxruntime-node compatibility (re-init crashes in isolated contexts)
   },
   resolve: {
     alias: {

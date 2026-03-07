@@ -2,8 +2,8 @@
 // TDD Red phase: These tests should fail initially
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { Embedder, EmbeddingError } from '../index.js'
 import type { EmbedderConfig } from '../index.js'
+import { Embedder, EmbeddingError } from '../index.js'
 
 describe('Embedder - Lazy Initialization', () => {
   let testConfig: EmbedderConfig

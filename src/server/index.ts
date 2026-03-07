@@ -1,7 +1,7 @@
 // RAGServer implementation with MCP tools
 
 import { randomUUID } from 'node:crypto'
-import { readFile, readdir, unlink } from 'node:fs/promises'
+import { readdir, readFile, unlink } from 'node:fs/promises'
 import { extname, join, resolve } from 'node:path'
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
@@ -451,9 +451,7 @@ export class RAGServer {
       const baseDirFiles = entries
         .filter((e) => e.isFile() && SUPPORTED_EXTENSIONS.has(extname(e.name).toLowerCase()))
         .map((e) => {
-          // parentPath is the Node 21+ name; path is the deprecated Node 20 alias
-          // biome-ignore lint/suspicious/noExplicitAny: parentPath not yet in @types/node@20
-          const dir = (e as any).parentPath ?? e.path
+          const dir = e.parentPath
           return join(dir, e.name)
         })
         .filter((filePath) => !this.excludePaths.some((ep) => filePath.startsWith(ep)))

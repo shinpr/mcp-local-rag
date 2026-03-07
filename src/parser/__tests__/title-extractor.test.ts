@@ -218,6 +218,43 @@ describe('Title Extractor', () => {
       expect(result.title).toBe('Real Title From Content')
       expect(result.source).toBe('content')
     })
+
+    it('should use font hint when metadata is undefined and fontSize > 14', () => {
+      const result = extractPdfTitle(undefined, 'Chunk Text', 'report.pdf', {
+        text: 'My Title',
+        fontSize: 24,
+      })
+
+      expect(result.title).toBe('My Title')
+      expect(result.source).toBe('content')
+    })
+
+    it('should ignore font hint when fontSize <= 14', () => {
+      const result = extractPdfTitle(undefined, 'Chunk Text', 'report.pdf', {
+        text: 'Small Font Text',
+        fontSize: 10,
+      })
+
+      expect(result.title).toBe('Chunk Text')
+      expect(result.source).toBe('content')
+    })
+
+    it('should prefer metadata over font hint', () => {
+      const result = extractPdfTitle('Real Title', 'Chunk Text', 'report.pdf', {
+        text: 'Font Title',
+        fontSize: 24,
+      })
+
+      expect(result.title).toBe('Real Title')
+      expect(result.source).toBe('metadata')
+    })
+
+    it('should work without font hint (backward compatibility)', () => {
+      const result = extractPdfTitle(undefined, 'Chunk Text', 'report.pdf')
+
+      expect(result.title).toBe('Chunk Text')
+      expect(result.source).toBe('content')
+    })
   })
 
   // --------------------------------------------

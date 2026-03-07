@@ -70,7 +70,7 @@ export function isGarbageChunk(text: string): boolean {
   if (/[a-zA-Z0-9]/.test(trimmed)) return false
 
   // Decoration line patterns only (----, ====, ****, etc.)
-  if (/^[\-=_.*#|~`@!%^&*()\[\]{}\\/<>:+\s]+$/.test(trimmed)) return true
+  if (/^[-=_.*#|~`@!%^&*()[\]{}\\/<>:+\s]+$/.test(trimmed)) return true
 
   // Excessive repetition of single character (>80%)
   const charCounts = new Map<string, number>()

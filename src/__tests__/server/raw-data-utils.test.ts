@@ -2,7 +2,6 @@
 // Test Type: Unit Test
 
 import { mkdir, readFile, rm } from 'node:fs/promises'
-import { resolve } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 import {

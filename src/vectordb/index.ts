@@ -1,6 +1,6 @@
 // VectorStore implementation with LanceDB integration
 
-import { type Connection, Index, type Table, connect } from '@lancedb/lancedb'
+import { type Connection, connect, Index, type Table } from '@lancedb/lancedb'
 import { applyFileFilter, applyGrouping, applyKeywordBoost } from './search-filters.js'
 import {
   DatabaseError,
@@ -8,9 +8,9 @@ import {
   FTS_INDEX_NAME,
   HYBRID_SEARCH_CANDIDATE_MULTIPLIER,
   type SearchResult,
+  toSearchResult,
   type VectorChunk,
   type VectorStoreConfig,
-  toSearchResult,
 } from './types.js'
 
 // Re-export public API

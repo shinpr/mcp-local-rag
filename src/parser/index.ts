@@ -4,10 +4,8 @@ import { statSync } from 'node:fs'
 import { lstat, readFile, realpath } from 'node:fs/promises'
 import { basename, extname, isAbsolute, resolve, sep } from 'node:path'
 import mammoth from 'mammoth'
-import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs'
-import type { TextItem } from 'pdfjs-dist/types/src/display/api'
 import { SemanticChunker } from '../chunker/index.js'
-import { type EmbedderInterface, type PageData, filterPageBoundarySentences } from './pdf-filter.js'
+import { type EmbedderInterface, filterPageBoundarySentences, type PageData } from './pdf-filter.js'
 import {
   extractDocxTitle,
   extractMarkdownTitle,
@@ -222,35 +220,58 @@ export class DocumentParser {
 
     try {
       const buffer = await readFile(filePath)
-      const pdf = await getDocument({
-        data: new Uint8Array(buffer),
-        useSystemFonts: true,
-        isEvalSupported: false,
-      }).promise
+      const mupdf = await import('mupdf')
+      const doc = mupdf.Document.openDocument(buffer, 'application/pdf')
+      const numPages = doc.countPages()
 
       // Extract metadata for title extraction
-      const metadata = await pdf.getMetadata()
-      const metadataTitle = (metadata?.info as Record<string, unknown>)?.['Title'] as
-        | string
-        | undefined
+      const metadataTitle = doc.getMetaData('info:Title') || undefined
 
       // Extract text with position information from each page
       const pages: PageData[] = []
-      for (let i = 1; i <= pdf.numPages; i++) {
-        const page = await pdf.getPage(i)
-        const textContent = await page.getTextContent()
+      for (let i = 0; i < numPages; i++) {
+        const page = doc.loadPage(i)
+        const bounds = page.getBounds() // [x0, y0, x1, y1]
+        const pageHeight = bounds[3] - bounds[1]
+        const stext = page.toStructuredText('preserve-whitespace')
+        const json = JSON.parse(stext.asJSON()) as {
+          blocks: Array<{
+            type: string
+            lines: Array<{
+              text: string
+              x: number
+              y: number
+              font: { size: number; name: string; weight: string }
+            }>
+          }>
+        }
 
-        const items = textContent.items
-          .filter((item): item is TextItem => 'str' in item)
-          .map((item) => ({
-            text: item.str,
-            x: item.transform[4],
-            y: item.transform[5],
-            fontSize: Math.abs(item.transform[0]),
-            hasEOL: item.hasEOL ?? false,
-          }))
+        const items: Array<{
+          text: string
+          x: number
+          y: number
+          fontSize: number
+          hasEOL: boolean
+          fontName?: string
+          fontWeight?: string
+        }> = []
+        for (const block of json.blocks) {
+          if (block.type !== 'text') continue
+          for (const line of block.lines) {
+            items.push({
+              text: line.text.replace(/\t/g, ' '),
+              x: line.x,
+              // Invert Y: mupdf uses top-down (0=top), downstream code expects bottom-up (large Y = top)
+              y: pageHeight - line.y,
+              fontSize: line.font.size,
+              hasEOL: true,
+              fontName: line.font.name,
+              fontWeight: line.font.weight,
+            })
+          }
+        }
 
-        pages.push({ pageNum: i, items })
+        pages.push({ pageNum: i + 1, items, pageHeight })
       }
 
       // Apply sentence-level header/footer filtering (returns per-page filtered text)
@@ -274,9 +295,31 @@ export class DocumentParser {
       } catch (titleError) {
         console.error(`Title extraction failed, falling back to filename: ${titleError}`)
       }
-      const titleResult = extractPdfTitle(metadataTitle, firstPageChunkText, fileName)
+      // Extract largest-font lines from page 1 for title hint
+      // Concatenate all consecutive lines with the largest font size (covers multi-line titles)
+      const page1Items = pages[0]?.items ?? []
+      const maxFontSize = page1Items.reduce((max, item) => Math.max(max, item.fontSize), 0)
+      const titleLines: string[] = []
+      if (maxFontSize > 0) {
+        for (const item of page1Items) {
+          if (item.fontSize === maxFontSize) {
+            titleLines.push(item.text.trim())
+          } else if (titleLines.length > 0) {
+            break
+          }
+        }
+      }
+      const firstPageFontHint =
+        titleLines.length > 0 ? { text: titleLines.join(' '), fontSize: maxFontSize } : undefined
 
-      console.error(`Parsed PDF: ${filePath} (${text.length} characters, ${pdf.numPages} pages)`)
+      const titleResult = extractPdfTitle(
+        metadataTitle,
+        firstPageChunkText,
+        fileName,
+        firstPageFontHint
+      )
+
+      console.error(`Parsed PDF: ${filePath} (${text.length} characters, ${numPages} pages)`)
 
       return { content: text, title: titleResult.title }
     } catch (error) {

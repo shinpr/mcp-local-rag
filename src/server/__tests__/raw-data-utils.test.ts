@@ -3,9 +3,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
-  type RawDataMeta,
   generateMetaJsonPath,
   loadMetaJson,
+  type RawDataMeta,
   saveMetaJson,
 } from '../raw-data-utils.js'
 
@@ -93,8 +93,6 @@ describe('meta.json utilities', () => {
       // Use a directory path as the "file" to trigger EISDIR or similar error
       const dirAsFile = join(testDir, 'adir')
       await mkdir(dirAsFile, { recursive: true })
-      const mdPath = join(dirAsFile, '') // dirAsFile itself is a directory
-
       // Reading a directory as a file should throw a non-ENOENT error
       // We need the .meta.json path to point to the directory
       // Create a scenario: mdPath -> metaJsonPath points to something that isn't a normal file

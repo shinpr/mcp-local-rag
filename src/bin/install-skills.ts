@@ -16,6 +16,7 @@
 import { cpSync, existsSync, mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 // ============================================
 // Constants
@@ -25,6 +26,7 @@ import { dirname, join, resolve } from 'node:path'
 // dist/bin/install-skills.js -> dist/skills/mcp-local-rag
 // But skills are actually in package root: skills/mcp-local-rag
 // So from dist/bin, go up twice: ../.. then skills/mcp-local-rag
+const __dirname = dirname(fileURLToPath(import.meta.url))
 const SKILLS_SOURCE = resolve(__dirname, '..', '..', 'skills', 'mcp-local-rag')
 
 // Codex home directory (supports CODEX_HOME environment variable)

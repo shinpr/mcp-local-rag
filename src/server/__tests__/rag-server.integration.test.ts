@@ -6,7 +6,7 @@
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { RAGServer } from '../index.js'
 import { generateMetaJsonPath, generateRawDataPath } from '../raw-data-utils.js'
 
@@ -469,8 +469,6 @@ describe('RAG MCP Server Integration Test - Phase 2', () => {
       // Create simple DOCX file (binary format actually required)
       // Here, instead of creating minimal DOCX that mammoth can process,
       // verify error handling with invalid file as error handling test
-      const testDocxFile = resolve(localTestDataDir, 'test-sample.docx')
-
       // Creating actual DOCX file is complex,
       // so verify parseDocx method is properly defined
       // Actual DOCX file testing done manually or in E2E tests

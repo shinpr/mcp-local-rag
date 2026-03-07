@@ -21,6 +21,8 @@ interface TextItemWithPosition {
   y: number
   fontSize: number
   hasEOL: boolean
+  fontName?: string
+  fontWeight?: string
 }
 
 /**
@@ -29,6 +31,7 @@ interface TextItemWithPosition {
 export interface PageData {
   pageNum: number
   items: TextItemWithPosition[]
+  pageHeight?: number
 }
 
 // ============================================
@@ -257,6 +260,19 @@ function medianPairwiseSimilarity(embeddings: number[][]): number {
 }
 
 /**
+ * Sample pages from the center of the document
+ *
+ * Center pages are guaranteed to be content (not cover, TOC, or index).
+ */
+function sampleCenterPages(pages: PageData[], sampleSize: number): PageData[] {
+  const centerIndex = Math.floor(pages.length / 2)
+  const halfSample = Math.floor(sampleSize / 2)
+  const startIndex = Math.max(0, centerIndex - halfSample)
+  const endIndex = Math.min(pages.length, startIndex + sampleSize)
+  return pages.slice(startIndex, endIndex)
+}
+
+/**
  * Configuration for sentence-level pattern detection
  */
 interface SentencePatternConfig {
@@ -266,6 +282,10 @@ interface SentencePatternConfig {
   minPages: number
   /** Number of pages to sample from center for pattern detection (default: 5) */
   samplePages: number
+  /** Block attribute hints for boosted threshold (from detectBlockAttributeCandidates) */
+  blockHints?: BlockAttributeHints
+  /** Boosted similarity threshold when block hints match (default: 0.75) */
+  boostedThreshold?: number
 }
 
 /** Default configuration for sentence-level pattern detection */
@@ -273,6 +293,107 @@ const DEFAULT_SENTENCE_PATTERN_CONFIG: SentencePatternConfig = {
   similarityThreshold: 0.85,
   minPages: 3,
   samplePages: 5,
+  boostedThreshold: 0.75,
+}
+
+// ============================================
+// Block-Attribute Pre-filter (Stage 1)
+// ============================================
+
+/**
+ * Hints for block-level header/footer detection based on font attributes
+ */
+export interface BlockAttributeHints {
+  medianFontSize: number
+  headerCandidateYs: Set<number>
+  footerCandidateYs: Set<number>
+}
+
+/**
+ * Detect candidate header/footer lines based on font size and Y position
+ *
+ * Stage 1 of the 2-stage header/footer detection:
+ * 1. Sample center pages (same logic as detectSentencePatterns)
+ * 2. Calculate median font size from all items across sampled pages
+ * 3. Identify header candidates: fontSize < medianFontSize * 0.7 AND y > pageHeight * 0.9
+ * 4. Identify footer candidates: fontSize < medianFontSize * 0.7 AND y < pageHeight * 0.1
+ *
+ * @param pages - Array of page data
+ * @param config - Configuration options (minPages, samplePages)
+ * @returns Block attribute hints with candidate Y positions
+ */
+export function detectBlockAttributeCandidates(
+  pages: PageData[],
+  config: Partial<Pick<SentencePatternConfig, 'minPages' | 'samplePages'>> = {}
+): BlockAttributeHints {
+  const cfg = { ...DEFAULT_SENTENCE_PATTERN_CONFIG, ...config }
+
+  const emptyResult: BlockAttributeHints = {
+    medianFontSize: 0,
+    headerCandidateYs: new Set(),
+    footerCandidateYs: new Set(),
+  }
+
+  if (pages.length < cfg.minPages) return emptyResult
+
+  const samplePages = sampleCenterPages(pages, cfg.samplePages)
+
+  // Collect all font sizes
+  const fontSizes: number[] = []
+  for (const page of samplePages) {
+    for (const item of page.items) {
+      if (item.fontSize > 0) fontSizes.push(item.fontSize)
+    }
+  }
+
+  if (fontSizes.length === 0) return emptyResult
+
+  // Calculate median font size
+  fontSizes.sort((a, b) => a - b)
+  const mid = Math.floor(fontSizes.length / 2)
+  const medianFontSize =
+    fontSizes.length % 2 === 0 ? (fontSizes[mid - 1]! + fontSizes[mid]!) / 2 : fontSizes[mid]!
+
+  if (medianFontSize === 0) return { ...emptyResult, medianFontSize }
+
+  // Use actual page height if available, otherwise estimate from max Y
+  const firstPageWithHeight = samplePages.find((p) => p.pageHeight != null)
+  let pageHeight: number
+  if (firstPageWithHeight?.pageHeight) {
+    pageHeight = firstPageWithHeight.pageHeight
+  } else {
+    let maxY = 0
+    for (const page of samplePages) {
+      for (const item of page.items) {
+        if (item.y > maxY) maxY = item.y
+      }
+    }
+    pageHeight = maxY
+  }
+  if (pageHeight === 0) return { ...emptyResult, medianFontSize }
+
+  const fontSizeThreshold = medianFontSize * 0.7
+  const headerCandidateYs = new Set<number>()
+  const footerCandidateYs = new Set<number>()
+
+  // Scan items: small font + extreme Y position = candidate
+  for (const page of samplePages) {
+    for (const item of page.items) {
+      if (item.fontSize >= fontSizeThreshold) continue
+
+      const roundedY = Math.round(item.y)
+      // Header: top 10% of page (large Y values, since Y is inverted)
+      if (item.y > pageHeight * 0.9) {
+        headerCandidateYs.add(roundedY)
+      }
+      // Footer: bottom 10% of page (small Y values)
+      if (item.y < pageHeight * 0.1) {
+        footerCandidateYs.add(roundedY)
+      }
+    }
+  }
+
+  return { medianFontSize, headerCandidateYs, footerCandidateYs }
 }
 
 /**
@@ -330,12 +451,9 @@ export async function detectSentencePatterns(
   }
 
   // 1. Sample pages from the CENTER of the document
-  // Middle pages are guaranteed to be content (not cover, TOC, or index)
-  const centerIndex = Math.floor(pages.length / 2)
-  const halfSample = Math.floor(cfg.samplePages / 2)
-  const startIndex = Math.max(0, centerIndex - halfSample)
-  const endIndex = Math.min(pages.length, startIndex + cfg.samplePages)
-  const samplePages = pages.slice(startIndex, endIndex)
+  const samplePages = sampleCenterPages(pages, cfg.samplePages)
+  const startIndex = pages.indexOf(samplePages[0]!)
+  const endIndex = startIndex + samplePages.length
 
   // 2. Split each page into sentences with Y coordinate (merged by Y)
   const pageSentences: SentenceWithY[][] = samplePages.map((page) =>
@@ -361,7 +479,21 @@ export async function detectSentencePatterns(
     const medianSim = medianPairwiseSimilarity(embeddings)
     result.headerSimilarity = medianSim
 
-    if (medianSim >= cfg.similarityThreshold) {
+    // Determine effective threshold (boosted if block hints match)
+    let headerThreshold = cfg.similarityThreshold
+    if (cfg.blockHints) {
+      const firstSentenceYs = pageSentences
+        .filter((s) => s.length > 0)
+        .map((s) => Math.round(s[0]!.y))
+      const hasBlockHintMatch = firstSentenceYs.some((y) =>
+        cfg.blockHints!.headerCandidateYs.has(y)
+      )
+      if (hasBlockHintMatch) {
+        headerThreshold = cfg.boostedThreshold ?? 0.75
+      }
+    }
+
+    if (medianSim >= headerThreshold) {
       result.removeFirstSentence = true
       console.error(
         `Sentence header detected: sampled ${firstSentences.length} center pages (${startIndex + 1}-${endIndex}), median similarity: ${medianSim.toFixed(3)}`
@@ -375,7 +507,19 @@ export async function detectSentencePatterns(
     const medianSim = medianPairwiseSimilarity(embeddings)
     result.footerSimilarity = medianSim
 
-    if (medianSim >= cfg.similarityThreshold) {
+    // Determine effective threshold (boosted if block hints match)
+    let footerThreshold = cfg.similarityThreshold
+    if (cfg.blockHints) {
+      const lastSentenceYs = pageSentences
+        .filter((s) => s.length > 1)
+        .map((s) => Math.round(s[s.length - 1]!.y))
+      const hasBlockHintMatch = lastSentenceYs.some((y) => cfg.blockHints!.footerCandidateYs.has(y))
+      if (hasBlockHintMatch) {
+        footerThreshold = cfg.boostedThreshold ?? 0.75
+      }
+    }
+
+    if (medianSim >= footerThreshold) {
       result.removeLastSentence = true
       console.error(
         `Sentence footer detected: sampled ${lastSentences.length} center pages (${startIndex + 1}-${endIndex}), median similarity: ${medianSim.toFixed(3)}`
@@ -412,8 +556,11 @@ export async function filterPageBoundarySentences(
     return pages.map((page) => joinFilteredPages([page]))
   }
 
-  // Detect patterns
-  const patterns = await detectSentencePatterns(pages, embedder, cfg)
+  // Detect block attribute candidates for boosted threshold
+  const blockHints = detectBlockAttributeCandidates(pages, cfg)
+
+  // Detect patterns (with block hints for boosted threshold)
+  const patterns = await detectSentencePatterns(pages, embedder, { ...cfg, blockHints })
 
   // If no patterns detected, return normally joined text per page
   if (!patterns.removeFirstSentence && !patterns.removeLastSentence) {

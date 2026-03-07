@@ -2,11 +2,12 @@
 
 import { describe, expect, it, vi } from 'vitest'
 import {
-  type EmbedderInterface,
-  type PageData,
+  detectBlockAttributeCandidates,
   detectSentencePatterns,
+  type EmbedderInterface,
   filterPageBoundarySentences,
   joinFilteredPages,
+  type PageData,
 } from '../pdf-filter'
 
 describe('pdf-filter', () => {
@@ -411,6 +412,178 @@ describe('pdf-filter', () => {
 
       // Different first lines should not be detected as header
       expect(result.removeFirstSentence).toBe(false)
+    })
+
+    // ============================================
+    // Boosted Threshold with Block Hints Tests
+    // ============================================
+
+    describe('boosted threshold with block hints', () => {
+      it('should use boosted threshold when block hints match', async () => {
+        // Pages where first sentence Y=800 matches headerCandidateYs
+        const pages: PageData[] = Array.from({ length: 5 }, (_, i) => ({
+          pageNum: i + 1,
+          items: [
+            { text: `Header ${i + 1}.`, x: 0, y: 800, fontSize: 12, hasEOL: true },
+            { text: `Content ${i + 1}.`, x: 0, y: 400, fontSize: 12, hasEOL: true },
+          ],
+        }))
+
+        // Embeddings with similarity ~0.78 (below 0.85 but above 0.75)
+        const embedder = createMockEmbedder([
+          [1, 0, 0],
+          [0.78, 0.63, 0],
+          [0.78, 0, 0.63],
+          [0.78, 0.44, 0.44],
+          [0.78, -0.31, 0.54],
+        ])
+
+        const blockHints = {
+          medianFontSize: 12,
+          headerCandidateYs: new Set([800]),
+          footerCandidateYs: new Set<number>(),
+        }
+
+        const result = await detectSentencePatterns(pages, embedder, {
+          minPages: 3,
+          blockHints,
+          boostedThreshold: 0.75,
+        })
+
+        // 0.78 >= 0.75 (boosted threshold) -> should detect header
+        expect(result.removeFirstSentence).toBe(true)
+      })
+
+      it('should use standard threshold when no block hints provided', async () => {
+        // Same pages as above
+        const pages: PageData[] = Array.from({ length: 5 }, (_, i) => ({
+          pageNum: i + 1,
+          items: [
+            { text: `Header ${i + 1}.`, x: 0, y: 800, fontSize: 12, hasEOL: true },
+            { text: `Content ${i + 1}.`, x: 0, y: 400, fontSize: 12, hasEOL: true },
+          ],
+        }))
+
+        // Same embeddings with similarity ~0.78
+        const embedder = createMockEmbedder([
+          [1, 0, 0],
+          [0.78, 0.63, 0],
+          [0.78, 0, 0.63],
+          [0.78, 0.44, 0.44],
+          [0.78, -0.31, 0.54],
+        ])
+
+        const result = await detectSentencePatterns(pages, embedder, {
+          minPages: 3,
+          // No blockHints
+        })
+
+        // 0.78 < 0.85 (standard threshold) -> should NOT detect header
+        expect(result.removeFirstSentence).toBe(false)
+      })
+
+      it('should work with items missing optional mupdf fields', async () => {
+        // Pages with plain items (no fontName, fontWeight)
+        const pages: PageData[] = Array.from({ length: 5 }, (_, i) => ({
+          pageNum: i + 1,
+          items: [
+            { text: `Line ${i + 1}.`, x: 0, y: 800, fontSize: 12, hasEOL: true },
+            { text: `Body ${i + 1}.`, x: 0, y: 400, fontSize: 12, hasEOL: true },
+          ],
+        }))
+
+        // detectBlockAttributeCandidates should work without errors
+        const hints = detectBlockAttributeCandidates(pages, { minPages: 3 })
+        expect(hints.medianFontSize).toBe(12)
+
+        // detectSentencePatterns without blockHints should work as before
+        const embedder: EmbedderInterface = {
+          embedBatch: vi.fn().mockResolvedValue([
+            [1, 0, 0],
+            [0, 1, 0],
+            [0, 0, 1],
+            [0.5, 0.5, 0],
+            [0.3, 0.3, 0.3],
+          ]),
+        }
+
+        const result = await detectSentencePatterns(pages, embedder, { minPages: 3 })
+        // Dissimilar embeddings -> no pattern detected
+        expect(result.removeFirstSentence).toBe(false)
+        expect(result.removeLastSentence).toBe(false)
+      })
+    })
+  })
+
+  // ============================================
+  // Block Attribute Pre-filter Tests
+  // ============================================
+
+  describe('detectBlockAttributeCandidates', () => {
+    it('should identify small font at extreme Y as header candidate', () => {
+      // 5 pages: multiple body items (fontSize=12) to ensure median=12, + header item (fontSize=6, y=750)
+      const pages: PageData[] = Array.from({ length: 5 }, (_, i) => ({
+        pageNum: i + 1,
+        items: [
+          { text: `Header ${i + 1}`, x: 0, y: 750, fontSize: 6, hasEOL: true },
+          { text: `Body A ${i + 1}.`, x: 0, y: 500, fontSize: 12, hasEOL: true },
+          { text: `Body B ${i + 1}.`, x: 0, y: 400, fontSize: 12, hasEOL: true },
+          { text: `Body C ${i + 1}.`, x: 0, y: 300, fontSize: 12, hasEOL: true },
+        ],
+      }))
+
+      const result = detectBlockAttributeCandidates(pages, { minPages: 3 })
+
+      expect(result.headerCandidateYs).toContain(750)
+      expect(result.medianFontSize).toBe(12)
+    })
+
+    it('should not identify normal font at extreme Y as candidate', () => {
+      // 5 pages: body items (fontSize=12, y=400) + items at extreme Y with normal fontSize=12
+      const pages: PageData[] = Array.from({ length: 5 }, (_, i) => ({
+        pageNum: i + 1,
+        items: [
+          { text: `Top ${i + 1}`, x: 0, y: 750, fontSize: 12, hasEOL: true },
+          { text: `Body ${i + 1}.`, x: 0, y: 400, fontSize: 12, hasEOL: true },
+        ],
+      }))
+
+      const result = detectBlockAttributeCandidates(pages, { minPages: 3 })
+
+      // Normal font size should not be identified as candidate
+      expect(result.headerCandidateYs.size).toBe(0)
+    })
+
+    it('should not identify small font at center Y as candidate', () => {
+      // 5 pages: body items at various Y positions + small font at center y=400
+      // maxY=800, so center (y=400) is neither top 10% (>720) nor bottom 10% (<80)
+      const pages: PageData[] = Array.from({ length: 5 }, (_, i) => ({
+        pageNum: i + 1,
+        items: [
+          { text: `Top ${i + 1}.`, x: 0, y: 800, fontSize: 12, hasEOL: true },
+          { text: `Small center ${i + 1}`, x: 0, y: 400, fontSize: 6, hasEOL: true },
+          { text: `Bottom ${i + 1}.`, x: 0, y: 200, fontSize: 12, hasEOL: true },
+        ],
+      }))
+
+      const result = detectBlockAttributeCandidates(pages, { minPages: 3 })
+
+      // Center Y should not be header or footer candidate
+      expect(result.headerCandidateYs.size).toBe(0)
+      expect(result.footerCandidateYs.size).toBe(0)
+    })
+
+    it('should return empty hints for pages with no items', () => {
+      const pages: PageData[] = Array.from({ length: 3 }, (_, i) => ({
+        pageNum: i + 1,
+        items: [],
+      }))
+
+      const result = detectBlockAttributeCandidates(pages, { minPages: 3 })
+
+      expect(result.medianFontSize).toBe(0)
+      expect(result.headerCandidateYs.size).toBe(0)
+      expect(result.footerCandidateYs.size).toBe(0)
     })
   })
 
