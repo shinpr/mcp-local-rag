@@ -10,10 +10,6 @@ jobs:
   ci:
     runs-on: ubuntu-latest
 
-    strategy:
-      matrix:
-        node-version: [20.x]
-
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
@@ -23,10 +19,10 @@ jobs:
         sudo timedatectl set-timezone Asia/Tokyo
         echo "TZ=Asia/Tokyo" >> $GITHUB_ENV
 
-    - name: Setup Node.js ${{ matrix.node-version }}
+    - name: Setup Node.js
       uses: actions/setup-node@v4
       with:
-        node-version: ${{ matrix.node-version }}
+        node-version-file: '.nvmrc'
 
     - name: Install pnpm
       uses: pnpm/action-setup@v4

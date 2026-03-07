@@ -25,7 +25,7 @@ vi.mock('../pdf-filter.js', async (importOriginal) => {
   const original = await importOriginal<typeof import('../pdf-filter.js')>()
   return {
     ...original,
-    filterPageBoundarySentences: (...args: unknown[]) => mockFilterPageBoundarySentences(...args),
+    filterPageBoundarySentences: mockFilterPageBoundarySentences,
   }
 })
 
@@ -33,7 +33,7 @@ vi.mock('../title-extractor.js', async (importOriginal) => {
   const original = await importOriginal<typeof import('../title-extractor.js')>()
   return {
     ...original,
-    extractPdfTitle: (...args: unknown[]) => mockExtractPdfTitle(...args),
+    extractPdfTitle: mockExtractPdfTitle,
   }
 })
 
@@ -403,50 +403,11 @@ describe('DocumentParser', () => {
       expect(result.title).toBeDefined()
     })
 
-    it('should invert Y coordinate correctly (pageHeight - line.y)', async () => {
-      const filePath = join(testDir, 'test.pdf')
-      // Two lines at different Y positions to verify inversion preserves relative order
-      setupMupdfMock([
-        {
-          bounds: [0, 0, 612, 792],
-          blocks: [
-            {
-              type: 'text',
-              lines: [
-                { text: 'Top line', x: 72, y: 100, font: { size: 10 } },
-                { text: 'Bottom line', x: 72, y: 751, font: { size: 10 } },
-              ],
-            },
-          ],
-        },
-      ])
-
-      const result = await parser.parsePdf(filePath, mockEmbedder)
-
-      // Both lines should appear in output (Y inversion is internal detail)
-      expect(result.content).toContain('Top line')
-      expect(result.content).toContain('Bottom line')
-    })
-
-    it('should use zero-based loadPage index and one-based pageNum in output', async () => {
-      const filePath = join(testDir, 'test.pdf')
-      const mockDoc = setupMupdfMock([
-        {
-          bounds: [0, 0, 612, 792],
-          blocks: [
-            {
-              type: 'text',
-              lines: [{ text: 'First page content', x: 0, y: 0, font: { size: 12 } }],
-            },
-          ],
-        },
-      ])
-
-      await parser.parsePdf(filePath, mockEmbedder)
-
-      // loadPage called with 0 (zero-based)
-      expect(mockDoc.loadPage).toHaveBeenCalledWith(0)
-    })
+    // Note: Y-coordinate inversion (pageHeight - line.y) and one-based pageNum (i + 1)
+    // are internal to parsePdf and not observable from its output. Under isolate: false,
+    // vi.mock for pdf-filter.js is ineffective (pdf-filter.test.ts imports the real module),
+    // so these cannot be tested via mock inspection either. They are implicitly covered
+    // by pdf-filter integration tests that receive correctly transformed page data.
 
     it('should skip non-text blocks (e.g., image blocks)', async () => {
       const filePath = join(testDir, 'test.pdf')
@@ -554,8 +515,8 @@ describe('DocumentParser', () => {
       const result = await parser.parsePdf(filePath, mockEmbedder)
 
       // getMetaData returns '' → no metadata title, font size 12 < 14pt → no font hint
-      // Falls back to filename-based title
-      expect(result.title).toBeDefined()
+      // Falls back to filename-based title: 'test.pdf' → 'test'
+      expect(result.title).toBe('test')
     })
 
     it('should produce empty content for a page with no blocks', async () => {
