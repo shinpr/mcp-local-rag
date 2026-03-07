@@ -6,62 +6,62 @@ import type { GroupingMode } from './vectordb/index.js'
 // Environment Variable Parsers
 // ============================================
 
+/** Result of parsing an environment variable */
+export interface ParseResult<T> {
+  value: T | undefined
+  warning?: string
+}
+
 /**
  * Parse grouping mode from environment variable
  */
-function parseGroupingMode(value: string | undefined): GroupingMode | undefined {
-  if (!value) return undefined
+export function parseGroupingMode(value: string | undefined): ParseResult<GroupingMode> {
+  if (!value) return { value: undefined }
   const normalized = value.toLowerCase().trim()
   if (normalized === 'similar' || normalized === 'related') {
-    return normalized
+    return { value: normalized }
   }
-  console.error(
-    `Invalid RAG_GROUPING value: "${value}". Expected "similar" or "related". Ignoring.`
-  )
-  return undefined
+  const warning = `Invalid RAG_GROUPING value: "${value}". Expected "similar" or "related". Ignoring.`
+  return { value: undefined, warning }
 }
 
 /**
  * Parse max distance from environment variable
  */
-function parseMaxDistance(value: string | undefined): number | undefined {
-  if (!value) return undefined
+export function parseMaxDistance(value: string | undefined): ParseResult<number> {
+  if (!value) return { value: undefined }
   const parsed = Number.parseFloat(value)
-  if (Number.isNaN(parsed) || parsed <= 0) {
-    console.error(`Invalid RAG_MAX_DISTANCE value: "${value}". Expected positive number. Ignoring.`)
-    return undefined
+  if (Number.isNaN(parsed) || parsed <= 0 || !Number.isFinite(parsed)) {
+    const warning = `Invalid RAG_MAX_DISTANCE value: "${value}". Expected positive number. Ignoring.`
+    return { value: undefined, warning }
   }
-  return parsed
+  return { value: parsed }
 }
 
 /**
  * Parse max files from environment variable
  */
-function parseMaxFiles(value: string | undefined): number | undefined {
-  if (!value) return undefined
+export function parseMaxFiles(value: string | undefined): ParseResult<number> {
+  if (!value) return { value: undefined }
   const parsed = Number.parseInt(value, 10)
   if (Number.isNaN(parsed) || parsed < 1) {
-    console.error(
-      `Invalid RAG_MAX_FILES value: "${value}". Expected positive integer (>= 1). Ignoring.`
-    )
-    return undefined
+    const warning = `Invalid RAG_MAX_FILES value: "${value}". Expected positive integer (>= 1). Ignoring.`
+    return { value: undefined, warning }
   }
-  return parsed
+  return { value: parsed }
 }
 
 /**
  * Parse hybrid weight from environment variable
  */
-function parseHybridWeight(value: string | undefined): number | undefined {
-  if (!value) return undefined
+export function parseHybridWeight(value: string | undefined): ParseResult<number> {
+  if (!value) return { value: undefined }
   const parsed = Number.parseFloat(value)
   if (Number.isNaN(parsed) || parsed < 0 || parsed > 1) {
-    console.error(
-      `Invalid RAG_HYBRID_WEIGHT value: "${value}". Expected 0.0-1.0. Using default (0.6).`
-    )
-    return undefined
+    const warning = `Invalid RAG_HYBRID_WEIGHT value: "${value}". Expected 0.0-1.0. Using default (0.6).`
+    return { value: undefined, warning }
   }
-  return parsed
+  return { value: parsed }
 }
 
 // ============================================
@@ -82,22 +82,42 @@ export async function startServer(): Promise<void> {
       maxFileSize: Number.parseInt(process.env['MAX_FILE_SIZE'] || '104857600', 10), // 100MB
     }
 
+    // Collect configuration warnings
+    const configWarnings: string[] = []
+
     // Add quality filter settings only if defined
     const maxDistance = parseMaxDistance(process.env['RAG_MAX_DISTANCE'])
     const grouping = parseGroupingMode(process.env['RAG_GROUPING'])
     const maxFiles = parseMaxFiles(process.env['RAG_MAX_FILES'])
     const hybridWeight = parseHybridWeight(process.env['RAG_HYBRID_WEIGHT'])
-    if (maxDistance !== undefined) {
-      config.maxDistance = maxDistance
+    if (maxDistance.value !== undefined) {
+      config.maxDistance = maxDistance.value
     }
-    if (grouping !== undefined) {
-      config.grouping = grouping
+    if (maxDistance.warning) {
+      configWarnings.push(maxDistance.warning)
     }
-    if (maxFiles !== undefined) {
-      config.maxFiles = maxFiles
+    if (grouping.value !== undefined) {
+      config.grouping = grouping.value
     }
-    if (hybridWeight !== undefined) {
-      config.hybridWeight = hybridWeight
+    if (grouping.warning) {
+      configWarnings.push(grouping.warning)
+    }
+    if (maxFiles.value !== undefined) {
+      config.maxFiles = maxFiles.value
+    }
+    if (maxFiles.warning) {
+      configWarnings.push(maxFiles.warning)
+    }
+    if (hybridWeight.value !== undefined) {
+      config.hybridWeight = hybridWeight.value
+    }
+    if (hybridWeight.warning) {
+      configWarnings.push(hybridWeight.warning)
+    }
+
+    if (configWarnings.length > 0) {
+      config.configWarnings = configWarnings
+      console.error('Configuration warnings:', configWarnings.join(' | '))
     }
 
     console.error('Starting RAG MCP Server...')
