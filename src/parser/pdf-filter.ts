@@ -24,7 +24,6 @@ interface TextItemWithPosition {
   // New fields from mupdf (optional for backward compatibility)
   fontName?: string
   fontWeight?: string
-  blockBbox?: { x: number; y: number; w: number; h: number }
 }
 
 /**
@@ -33,6 +32,7 @@ interface TextItemWithPosition {
 export interface PageData {
   pageNum: number
   items: TextItemWithPosition[]
+  pageHeight?: number
 }
 
 // ============================================
@@ -261,6 +261,19 @@ function medianPairwiseSimilarity(embeddings: number[][]): number {
 }
 
 /**
+ * Sample pages from the center of the document
+ *
+ * Center pages are guaranteed to be content (not cover, TOC, or index).
+ */
+function sampleCenterPages(pages: PageData[], sampleSize: number): PageData[] {
+  const centerIndex = Math.floor(pages.length / 2)
+  const halfSample = Math.floor(sampleSize / 2)
+  const startIndex = Math.max(0, centerIndex - halfSample)
+  const endIndex = Math.min(pages.length, startIndex + sampleSize)
+  return pages.slice(startIndex, endIndex)
+}
+
+/**
  * Configuration for sentence-level pattern detection
  */
 interface SentencePatternConfig {
@@ -324,12 +337,7 @@ export function detectBlockAttributeCandidates(
 
   if (pages.length < cfg.minPages) return emptyResult
 
-  // Sample center pages (same logic as detectSentencePatterns)
-  const centerIndex = Math.floor(pages.length / 2)
-  const halfSample = Math.floor(cfg.samplePages / 2)
-  const startIndex = Math.max(0, centerIndex - halfSample)
-  const endIndex = Math.min(pages.length, startIndex + cfg.samplePages)
-  const samplePages = pages.slice(startIndex, endIndex)
+  const samplePages = sampleCenterPages(pages, cfg.samplePages)
 
   // Collect all font sizes
   const fontSizes: number[] = []
@@ -349,15 +357,20 @@ export function detectBlockAttributeCandidates(
 
   if (medianFontSize === 0) return { ...emptyResult, medianFontSize }
 
-  // Estimate page height from max Y (Y is inverted: large Y = top)
-  let maxY = 0
-  for (const page of samplePages) {
-    for (const item of page.items) {
-      if (item.y > maxY) maxY = item.y
+  // Use actual page height if available, otherwise estimate from max Y
+  const firstPageWithHeight = samplePages.find((p) => p.pageHeight != null)
+  let pageHeight: number
+  if (firstPageWithHeight?.pageHeight) {
+    pageHeight = firstPageWithHeight.pageHeight
+  } else {
+    let maxY = 0
+    for (const page of samplePages) {
+      for (const item of page.items) {
+        if (item.y > maxY) maxY = item.y
+      }
     }
+    pageHeight = maxY
   }
-
-  const pageHeight = maxY // approximate
   if (pageHeight === 0) return { ...emptyResult, medianFontSize }
 
   const fontSizeThreshold = medianFontSize * 0.7
@@ -439,12 +452,9 @@ export async function detectSentencePatterns(
   }
 
   // 1. Sample pages from the CENTER of the document
-  // Middle pages are guaranteed to be content (not cover, TOC, or index)
-  const centerIndex = Math.floor(pages.length / 2)
-  const halfSample = Math.floor(cfg.samplePages / 2)
-  const startIndex = Math.max(0, centerIndex - halfSample)
-  const endIndex = Math.min(pages.length, startIndex + cfg.samplePages)
-  const samplePages = pages.slice(startIndex, endIndex)
+  const samplePages = sampleCenterPages(pages, cfg.samplePages)
+  const startIndex = pages.indexOf(samplePages[0]!)
+  const endIndex = startIndex + samplePages.length
 
   // 2. Split each page into sentences with Y coordinate (merged by Y)
   const pageSentences: SentenceWithY[][] = samplePages.map((page) =>

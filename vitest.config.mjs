@@ -15,7 +15,7 @@ export default defineConfig({
     teardownTimeout: 5000,     // Teardown timeout 5 seconds
     pool: 'forks',             // Use forks instead of threads for onnxruntime-node compatibility
     maxWorkers: 1,             // Single process execution to avoid onnxruntime-node threading issues
-    isolate: false,
+    isolate: false,            // Disabled for onnxruntime-node compatibility (re-init crashes in isolated contexts)
   },
   resolve: {
     alias: {

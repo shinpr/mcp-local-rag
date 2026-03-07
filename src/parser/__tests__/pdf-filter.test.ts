@@ -483,7 +483,7 @@ describe('pdf-filter', () => {
       })
 
       it('should work with items missing optional mupdf fields', async () => {
-        // Pages with plain items (no fontName, fontWeight, blockBbox)
+        // Pages with plain items (no fontName, fontWeight)
         const pages: PageData[] = Array.from({ length: 5 }, (_, i) => ({
           pageNum: i + 1,
           items: [

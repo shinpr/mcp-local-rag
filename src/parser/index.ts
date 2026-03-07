@@ -237,7 +237,6 @@ export class DocumentParser {
         const json = JSON.parse(stext.asJSON()) as {
           blocks: Array<{
             type: string
-            bbox?: { x: number; y: number; w: number; h: number }
             lines: Array<{
               text: string
               x: number
@@ -255,7 +254,6 @@ export class DocumentParser {
           hasEOL: boolean
           fontName?: string
           fontWeight?: string
-          blockBbox?: { x: number; y: number; w: number; h: number }
         }> = []
         for (const block of json.blocks) {
           if (block.type !== 'text') continue
@@ -269,12 +267,11 @@ export class DocumentParser {
               hasEOL: true,
               fontName: line.font.name,
               fontWeight: line.font.weight,
-              ...(block.bbox ? { blockBbox: block.bbox } : {}),
             })
           }
         }
 
-        pages.push({ pageNum: i + 1, items })
+        pages.push({ pageNum: i + 1, items, pageHeight })
       }
 
       // Apply sentence-level header/footer filtering (returns per-page filtered text)

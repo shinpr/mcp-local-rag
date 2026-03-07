@@ -399,14 +399,15 @@ describe('DocumentParser', () => {
         [
           {
             pageNum: 1,
+            pageHeight: 792,
             items: [
-              {
+              expect.objectContaining({
                 text: 'Hello World',
                 x: 72,
                 y: 692, // 792 - 100
                 fontSize: 12,
                 hasEOL: true,
-              },
+              }),
             ],
           },
         ],

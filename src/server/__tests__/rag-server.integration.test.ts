@@ -469,8 +469,6 @@ describe('RAG MCP Server Integration Test - Phase 2', () => {
       // Create simple DOCX file (binary format actually required)
       // Here, instead of creating minimal DOCX that mammoth can process,
       // verify error handling with invalid file as error handling test
-      const _testDocxFile = resolve(localTestDataDir, 'test-sample.docx')
-
       // Creating actual DOCX file is complex,
       // so verify parseDocx method is properly defined
       // Actual DOCX file testing done manually or in E2E tests
