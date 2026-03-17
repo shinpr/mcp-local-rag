@@ -44,7 +44,11 @@ export class VectorStore {
   async initialize(): Promise<void> {
     try {
       // Connect to LanceDB
-      this.db = await connect(this.config.dbPath)
+      // readConsistencyInterval: 0 ensures every read checks for external changes.
+      // Without this, a cached Table object becomes stale when another process
+      // (e.g., CLI ingestion from a different terminal) modifies the database,
+      // causing "Failed to search vectors" errors until restart.
+      this.db = await connect(this.config.dbPath, { readConsistencyInterval: 0 })
 
       // Check table existence and create if needed
       const tableNames = await this.db.tableNames()
