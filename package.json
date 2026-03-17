@@ -53,7 +53,7 @@
     "lint:fix": "biome lint --write src",
     "check": "biome check src",
     "check:fix": "biome check --write src",
-    "check:unused": "node scripts/check-unused-exports.js",
+    "check:unused": "node scripts/check-unused-exports.cjs",
     "check:unused:all": "ts-prune --project tsconfig.json --ignore 'src/index.ts|__tests__|test|vitest'",
     "check:deps": "madge --circular --extensions ts src",
     "check:deps:graph": "madge --extensions ts --image graph.svg src",
