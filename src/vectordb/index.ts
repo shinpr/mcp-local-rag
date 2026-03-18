@@ -97,9 +97,6 @@ export class VectorStore {
       // Note: Field names are case-sensitive, use backticks for camelCase fields
       await this.table.delete(`\`filePath\` = '${escapedFilePath}'`)
       console.error(`VectorStore: Deleted chunks for file "${filePath}"`)
-
-      // Rebuild FTS index after deleting data
-      await this.rebuildFtsIndex()
     } catch (error) {
       // If error occurs, output warning log
       console.warn(`VectorStore: Error occurred while deleting file "${filePath}":`, error)
@@ -153,9 +150,6 @@ export class VectorStore {
         // Add data to existing table
         const records = chunks.map((chunk) => chunk as unknown as Record<string, unknown>)
         await this.table.add(records)
-
-        // Rebuild FTS index after adding new data
-        await this.rebuildFtsIndex()
       }
 
       console.error(`VectorStore: Inserted ${chunks.length} chunks`)
@@ -230,16 +224,18 @@ export class VectorStore {
   }
 
   /**
-   * Rebuild FTS index after data changes (insert/delete)
-   * LanceDB OSS requires explicit optimize() call to update FTS index
-   * Also cleans up old index versions to prevent storage bloat
+   * Optimize table: compact fragments, update FTS index, and clean up old versions.
+   * LanceDB OSS requires explicit optimize() call to update FTS index.
+   *
+   * Callers are responsible for deciding when to invoke this (e.g., once per
+   * ingest rather than after every insert/delete) to avoid O(n²) overhead
+   * during bulk operations.
    */
-  private async rebuildFtsIndex(): Promise<void> {
+  async optimize(): Promise<void> {
     if (!this.table || !this.ftsEnabled) {
       return
     }
 
-    // Optimize table and clean up old versions
     const cleanupThreshold = new Date(Date.now() - FTS_CLEANUP_THRESHOLD_MS)
     await this.table.optimize({ cleanupOlderThan: cleanupThreshold })
   }

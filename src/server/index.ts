@@ -332,6 +332,9 @@ export class RAGServer {
         await this.vectorStore.insertChunks(vectorChunks)
         console.error(`Inserted ${vectorChunks.length} chunks for: ${args.filePath}`)
 
+        // Optimize once after both delete + insert (not per-operation)
+        await this.vectorStore.optimize()
+
         // Delete backup on success
         backup = null
       } catch (insertError) {
@@ -340,6 +343,7 @@ export class RAGServer {
           console.error('Ingestion failed, rolling back...', insertError)
           try {
             await this.vectorStore.insertChunks(backup)
+            await this.vectorStore.optimize()
             console.error(`Rollback completed: ${backup.length} chunks restored`)
           } catch (rollbackError) {
             console.error('Rollback failed:', rollbackError)
@@ -576,6 +580,7 @@ export class RAGServer {
 
       // Delete chunks from vector database
       await this.vectorStore.deleteChunks(targetPath)
+      await this.vectorStore.optimize()
 
       // Also delete physical raw-data file if applicable
       if (isRawDataPath(targetPath)) {
