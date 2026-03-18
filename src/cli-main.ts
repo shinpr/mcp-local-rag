@@ -1,11 +1,12 @@
 // CLI entry point for subcommands (skills install, etc.)
 import { run as runSkillsInstall } from './bin/install-skills.js'
+import { runIngest } from './cli/ingest.js'
 
 /**
  * Handle CLI subcommands
  * @param args - Command line arguments (after the binary name)
  */
-export function handleCli(args: string[]): void {
+export async function handleCli(args: string[]): Promise<void> {
   const subcommand = args[0]
 
   switch (subcommand) {
@@ -22,9 +23,13 @@ export function handleCli(args: string[]): void {
       }
       break
 
+    case 'ingest':
+      await runIngest(args.slice(1))
+      break
+
     default:
       console.error(`Unknown command: ${subcommand}`)
-      console.error('Available commands: skills')
+      console.error('Available commands: skills, ingest')
       process.exit(1)
   }
 }

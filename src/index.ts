@@ -9,14 +9,17 @@ import { startServer } from './server-main.js'
 // Routing
 // ============================================
 
-const SUBCOMMANDS = new Set(['skills'])
+const SUBCOMMANDS = new Set(['skills', 'ingest'])
 
 const args = process.argv.slice(2)
 const firstArg = args[0]
 
 if (firstArg && SUBCOMMANDS.has(firstArg)) {
   // CLI subcommand
-  handleCli(args)
+  handleCli(args).catch((error) => {
+    console.error(error)
+    process.exit(1)
+  })
 } else {
   // Default: start MCP server
   process.on('unhandledRejection', (reason, promise) => {
