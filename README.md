@@ -119,6 +119,22 @@ HTML is automatically cleaned—you get the article content, not the boilerplate
 
 > **Note:** The RAG server itself doesn't fetch web content—your AI assistant retrieves it and passes the HTML to `ingest_data`. This keeps the server fully local while letting you index any content your assistant can access. Please respect website terms of service and copyright when ingesting external content.
 
+### Bulk Ingestion (CLI)
+
+For ingesting multiple files or an entire directory, use the CLI command instead of calling `ingest_file` repeatedly:
+
+```bash
+npx mcp-local-rag ingest --db-path ./lancedb --base-dir ./docs ./docs/
+```
+
+This processes all supported files recursively and runs optimization once at the end — much faster than per-file ingestion for large batches. Use `--help` for all options:
+
+```bash
+npx mcp-local-rag ingest --help
+```
+
+> **Important:** CLI options (especially `--model-name`) must match your MCP server config. Using a different model silently degrades search quality.
+
 ### Searching Documents
 
 ```
@@ -407,6 +423,7 @@ pnpm run check:all     # Full quality check
 src/
   index.ts      # Entry point
   server/       # MCP tool handlers
+  cli/          # CLI subcommands (ingest)
   parser/       # PDF, DOCX, TXT, MD parsing
   chunker/      # Text splitting
   embedder/     # Transformers.js embeddings
