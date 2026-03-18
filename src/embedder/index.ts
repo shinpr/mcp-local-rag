@@ -73,7 +73,9 @@ export class Embedder {
       console.error(`Embedder: Setting cache directory to "${this.config.cacheDir}"`)
       console.error(`Embedder: Loading model "${this.config.modelPath}"...`)
       // Use type assertion to avoid TS2590 (union type too complex with @types/jsdom)
-      this.model = await pipeline('feature-extraction', this.config.modelPath)
+      this.model = await pipeline('feature-extraction', this.config.modelPath, {
+        dtype: 'fp32',
+      })
       console.error('Embedder: Model loaded successfully')
     } catch (error) {
       throw new EmbeddingError(

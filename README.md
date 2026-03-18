@@ -119,6 +119,30 @@ HTML is automatically cleaned—you get the article content, not the boilerplate
 
 > **Note:** The RAG server itself doesn't fetch web content—your AI assistant retrieves it and passes the HTML to `ingest_data`. This keeps the server fully local while letting you index any content your assistant can access. Please respect website terms of service and copyright when ingesting external content.
 
+### Bulk Ingestion (CLI)
+
+For ingesting multiple files or an entire directory, use the CLI command instead of calling `ingest_file` repeatedly:
+
+```bash
+npx mcp-local-rag ingest --db-path ./lancedb --base-dir ./docs ./docs/
+```
+
+Supports PDF, DOCX, TXT, and Markdown (same as MCP tools). HTML is only supported via `ingest_data`, not CLI.
+
+Key options:
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--db-path <path>` | `./lancedb/` | LanceDB database path |
+| `--base-dir <path>` | cwd | Base directory for documents |
+| `--model-name <name>` | `Xenova/all-MiniLM-L6-v2` | Embedding model |
+| `--cache-dir <path>` | `./models/` | Model cache directory |
+| `--max-file-size <n>` | `104857600` | Max file size in bytes |
+
+This processes all supported files recursively and runs optimization once at the end — much faster than per-file ingestion for large batches.
+
+> ⚠️ **CLI options must match your MCP server config.** Especially `--model-name` — using a different embedding model against an existing database produces incompatible vectors, silently degrading search quality.
+
 ### Searching Documents
 
 ```
@@ -407,6 +431,7 @@ pnpm run check:all     # Full quality check
 src/
   index.ts      # Entry point
   server/       # MCP tool handlers
+  cli/          # CLI subcommands (ingest)
   parser/       # PDF, DOCX, TXT, MD parsing
   chunker/      # Text splitting
   embedder/     # Transformers.js embeddings
