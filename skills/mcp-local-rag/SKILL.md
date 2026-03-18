@@ -1,6 +1,6 @@
 ---
 name: mcp-local-rag
-description: Provides score interpretation (< 0.3 good, > 0.5 skip), query optimization, and source naming for query_documents, ingest_file, ingest_data tools. Use this skill when working with RAG, searching documents, ingesting files, saving web content, or handling PDF, HTML, DOCX, TXT, Markdown.
+description: Use this skill when ingesting or querying documents with MCP local RAG, including `query_documents`, `ingest_file`, `ingest_data`, and CLI bulk ingestion. Covers query refinement, result score interpretation, and source metadata conventions for PDF, HTML, DOCX, TXT, and Markdown. Not for general file operations or SQL/database queries.
 ---
 
 # MCP Local RAG Skills
@@ -13,6 +13,7 @@ description: Provides score interpretation (< 0.3 good, > 0.5 skip), query optim
 | `ingest_data` | Raw content (HTML, text) with source URL |
 | `query_documents` | Semantic + keyword hybrid search |
 | `delete_file` / `list_files` / `status` | Management |
+| `npx mcp-local-rag ingest` | Multiple files or directory (shell) |
 
 ## Search: Core Rules
 
@@ -112,9 +113,34 @@ ingest_data({
 
 Re-ingest same source to update. Use same source in `delete_file` to remove.
 
+### CLI ingest
+
+For multiple files or directory ingestion. Prefer over repeated `ingest_file` calls.
+
+| Scenario | Use |
+|----------|-----|
+| Single file from user request | `ingest_file` |
+| Multiple files or a directory | `npx mcp-local-rag ingest <path>` |
+| Raw HTML/text content | `ingest_data` (CLI does not support stdin) |
+
+```bash
+npx mcp-local-rag ingest [options] <path>
+```
+
+- `<path>`: file or directory (recursively scans supported formats)
+- Use `--help` for all options and defaults
+- Options must match MCP server config — see [cli-ingest.md](references/cli-ingest.md)
+
+**Output interpretation:**
+
+- Exit code 0: all files succeeded
+- Exit code 1: one or more files failed — report failed files to user
+- `SKIPPED (0 chunks)`: file was empty or too short, counted as success
+
 ## References
 
 For edge cases and examples:
 - [html-ingestion.md](references/html-ingestion.md) - URL normalization, SPA handling
 - [query-optimization.md](references/query-optimization.md) - Query patterns by intent
 - [result-refinement.md](references/result-refinement.md) - Contradiction resolution, chunking
+- [cli-ingest.md](references/cli-ingest.md) - CLI options, config matching
