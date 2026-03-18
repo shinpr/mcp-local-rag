@@ -127,13 +127,21 @@ For ingesting multiple files or an entire directory, use the CLI command instead
 npx mcp-local-rag ingest --db-path ./lancedb --base-dir ./docs ./docs/
 ```
 
-This processes all supported files recursively and runs optimization once at the end — much faster than per-file ingestion for large batches. Use `--help` for all options:
+Supports PDF, DOCX, TXT, and Markdown (same as MCP tools). HTML is only supported via `ingest_data`, not CLI.
 
-```bash
-npx mcp-local-rag ingest --help
-```
+Key options:
 
-> **Important:** CLI options (especially `--model-name`) must match your MCP server config. Using a different model silently degrades search quality.
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--db-path <path>` | `./lancedb/` | LanceDB database path |
+| `--base-dir <path>` | cwd | Base directory for documents |
+| `--model-name <name>` | `Xenova/all-MiniLM-L6-v2` | Embedding model |
+| `--cache-dir <path>` | `./models/` | Model cache directory |
+| `--max-file-size <n>` | `104857600` | Max file size in bytes |
+
+This processes all supported files recursively and runs optimization once at the end — much faster than per-file ingestion for large batches.
+
+> ⚠️ **CLI options must match your MCP server config.** Especially `--model-name` — using a different embedding model against an existing database produces incompatible vectors, silently degrading search quality.
 
 ### Searching Documents
 
