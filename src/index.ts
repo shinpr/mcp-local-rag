@@ -11,7 +11,7 @@ import { startServer } from './server-main.js'
 // Routing
 // ============================================
 
-const SUBCOMMANDS = new Set(['skills', 'ingest'])
+const SUBCOMMANDS = new Set(['skills', 'ingest', 'list', 'query', 'status'])
 
 const { globalOptions, remainingArgs } = parseGlobalOptions(process.argv.slice(2))
 const firstArg = remainingArgs[0]
