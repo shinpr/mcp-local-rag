@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/banner.jpg" alt="MCP Local RAG — Search below the surface." width="600" />
+</p>
+
 # MCP Local RAG
 
 [![GitHub stars](https://img.shields.io/github/stars/shinpr/mcp-local-rag?style=social)](https://github.com/shinpr/mcp-local-rag)
@@ -6,7 +10,7 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.0-blue.svg?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![MCP Registry](https://img.shields.io/badge/MCP-Registry-green.svg)](https://registry.modelcontextprotocol.io/)
 
-Local RAG for developers using MCP.
+Local RAG for developers via MCP or CLI.
 Semantic search with keyword boost for exact technical terms — fully private, zero setup.
 
 ## Features
@@ -24,7 +28,8 @@ Semantic search with keyword boost for exact technical terms — fully private, 
   No API keys, no cloud, no data leaving your machine. Works fully offline after the first model download.
 
 - **Zero-friction setup**
-  One `npx` command. No Docker, no Python, no servers to manage. Designed for Cursor, Codex, and Claude Code via MCP.
+  One `npx` command. No Docker, no Python, no servers to manage.
+  Use via MCP, CLI, or both. Optional [Agent Skills](#agent-skills) help AI assistants form better queries and interpret results.
 
 ## Quick Start
 
@@ -73,7 +78,14 @@ Assistant: Based on the documentation, authentication uses OAuth 2.0 with JWT to
           The flow is described in section 3.2...
 ```
 
-That's it. No installation, no Docker, no complex setup.
+**Or use directly as CLI** — no MCP server needed:
+
+```bash
+npx mcp-local-rag ingest ./docs/
+npx mcp-local-rag query "authentication API"
+```
+
+That's it. No Docker, no Python, no server setup.
 
 ## Why This Exists
 
@@ -87,12 +99,17 @@ You want AI to search your documents—technical specs, research papers, interna
 
 **Code search.** Pure semantic search misses exact terms like `useEffect` or `ERR_CONNECTION_REFUSED`. Keyword boost catches both meaning and exact matches.
 
+**Agent reality.** In practice, many AI environments mainly use tool calling. CLI support and Agent Skills make the same workflows available even without full MCP integration.
+
 ## Usage
 
-The server provides 6 MCP tools: ingest file, ingest data, search, list, delete, status
-(`ingest_file`, `ingest_data`, `query_documents`, `list_files`, `delete_file`, `status`).
+mcp-local-rag provides two interfaces: an **MCP server** for AI coding tools and a **CLI** for direct use from the terminal.
 
-### Ingesting Documents
+### Using with MCP
+
+The MCP server provides 6 tools: `ingest_file`, `ingest_data`, `query_documents`, `list_files`, `delete_file`, `status`.
+
+#### Ingesting Documents
 
 ```
 "Ingest the document at /Users/me/docs/api-spec.pdf"
@@ -102,7 +119,7 @@ Supports PDF, DOCX, TXT, and Markdown. The server extracts text, splits it into 
 
 Re-ingesting the same file replaces the old version automatically.
 
-### Ingesting HTML Content
+#### Ingesting HTML Content
 
 Use `ingest_data` to ingest HTML content retrieved by your AI assistant (via web fetch, curl, browser tools, etc.):
 
@@ -119,7 +136,27 @@ HTML is automatically cleaned—you get the article content, not the boilerplate
 
 > **Note:** The RAG server itself doesn't fetch web content—your AI assistant retrieves it and passes the HTML to `ingest_data`. This keeps the server fully local while letting you index any content your assistant can access. Please respect website terms of service and copyright when ingesting external content.
 
-### CLI Commands
+#### Searching Documents
+
+```
+"What does the API documentation say about authentication?"
+"Find information about rate limiting"
+"Search for error handling best practices"
+```
+
+Search uses semantic similarity with keyword boost. This means `useEffect` finds documents containing that exact term, not just semantically similar React concepts.
+
+Results include text content, source file, document title, and relevance score. The document title provides context for each chunk, helping identify which document a result belongs to. Adjust result count with `limit` (1-20, default 10).
+
+#### Managing Files
+
+```
+"List all files in BASE_DIR and their ingested status"   # See what's indexed
+"Delete old-spec.pdf from RAG"     # Remove a file
+"Show RAG server status"           # Check system health
+```
+
+### Using as CLI
 
 All MCP tools are also available as CLI commands — no MCP server needed:
 
@@ -132,31 +169,44 @@ npx mcp-local-rag delete ./docs/old.pdf         # Remove content
 npx mcp-local-rag delete --source "https://..."  # Remove by source URL
 ```
 
-Global options (`--db-path`, `--cache-dir`, `--model-name`) go before the subcommand. Run `npx mcp-local-rag --help` for details.
+`query`, `list`, `status`, and `delete` output JSON to stdout for piping (e.g., `| jq`). `ingest` outputs progress to stderr. Global options (`--db-path`, `--cache-dir`, `--model-name`) go before the subcommand. Run `npx mcp-local-rag --help` for details.
 
-`query`, `list`, `status`, and `delete` output JSON to stdout for piping (e.g., `| jq`). `ingest` outputs progress to stderr.
+> ⚠️ The CLI does **not** read your MCP client config (`mcp.json`, `config.toml`, etc.). Configure the CLI via flags or environment variables as shown below.
 
-> ⚠️ **CLI options must match your MCP server config.** Especially `--model-name` — using a different embedding model against an existing database produces incompatible vectors, silently degrading search quality.
+#### Configuration
 
-### Searching Documents
+**CLI flags** — global options go before the subcommand, subcommand options go after:
 
-```
-"What does the API documentation say about authentication?"
-"Find information about rate limiting"
-"Search for error handling best practices"
+```bash
+npx mcp-local-rag --db-path ./my-db query "auth" --base-dir ./docs
 ```
 
-Search uses semantic similarity with keyword boost. This means `useEffect` finds documents containing that exact term, not just semantically similar React concepts.
+**Environment variables** — set in your shell:
 
-Results include text content, source file, document title, and relevance score. The document title provides context for each chunk, helping identify which document a result belongs to. Adjust result count with `limit` (1-20, default 10).
-
-### Managing Files
-
+```bash
+export DB_PATH=./my-db
+export BASE_DIR=./docs
+npx mcp-local-rag query "auth"
 ```
-"List all files in BASE_DIR and their ingested status"   # See what's indexed
-"Delete old-spec.pdf from RAG"     # Remove a file
-"Show RAG server status"           # Check system health
+
+**Sharing config between MCP and CLI** — if your MCP client inherits shell environment variables, you can set them in your shell profile (e.g., `~/.zshrc`) so both use the same values. Otherwise, set them explicitly in your MCP config as well.
+
+```bash
+export BASE_DIR=/path/to/your/documents
+export DB_PATH=/path/to/lancedb
 ```
+
+Configuration is resolved in this order:
+
+1. CLI flags (highest priority)
+2. Environment variables
+3. Defaults
+
+For the full list of CLI flags, environment variables, and defaults, see [Configuration](#configuration).
+
+For CLI-only setups (no MCP server), install [Agent Skills](#agent-skills) so your AI assistant can form better queries and interpret results consistently.
+
+> ⚠️ **`--model-name` must match your MCP server config.** Using a different embedding model against an existing database produces incompatible vectors, silently degrading search quality.
 
 ## Search Tuning
 
@@ -242,21 +292,22 @@ Before RAG operations, request in natural language:
 Add to your `AGENTS.md`, `CLAUDE.md`, or other agent instruction file:
 ```
 When using query_documents, ingest_file, or ingest_data tools,
-apply the mcp-local-rag skill for optimal query formulation and result interpretation.
+apply the mcp-local-rag skill for better query formulation and result interpretation.
 ```
 
-<details>
-<summary><strong>Configuration</strong></summary>
+## Configuration
 
-### Environment Variables
+### Environment Variables and CLI Flags
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `BASE_DIR` | Current directory | Document root directory (security boundary) |
-| `DB_PATH` | `./lancedb/` | Vector database location |
-| `CACHE_DIR` | `./models/` | Model cache directory |
-| `MODEL_NAME` | `Xenova/all-MiniLM-L6-v2` | HuggingFace model ID ([available models](https://huggingface.co/models?library=transformers.js&pipeline_tag=feature-extraction)) |
-| `MAX_FILE_SIZE` | `104857600` (100MB) | Maximum file size in bytes |
+Both MCP and CLI use the same environment variables. The CLI also accepts equivalent flags.
+
+| Environment Variable | CLI Flag | Default | Description |
+|---------------------|----------|---------|-------------|
+| `BASE_DIR` | `--base-dir` | Current directory | Document root directory (security boundary) |
+| `DB_PATH` | `--db-path` | `./lancedb/` | Vector database location |
+| `CACHE_DIR` | `--cache-dir` | `./models/` | Model cache directory |
+| `MODEL_NAME` | `--model-name` | `Xenova/all-MiniLM-L6-v2` | HuggingFace model ID ([available models](https://huggingface.co/models?library=transformers.js&pipeline_tag=feature-extraction)) |
+| `MAX_FILE_SIZE` | `--max-file-size` | `104857600` (100MB) | Maximum file size in bytes |
 
 **Model choice tips:**
 - Multilingual docs → e.g., `onnx-community/embeddinggemma-300m-ONNX` (100+ languages)
@@ -311,8 +362,6 @@ The embedding model (~90MB) downloads on first use. Takes 1-2 minutes, then work
 - **Path restriction**: Only files within `BASE_DIR` are accessible
 - **Local only**: No network requests after model download
 - **Model source**: Official HuggingFace repository ([verify here](https://huggingface.co/Xenova/all-MiniLM-L6-v2))
-
-</details>
 
 <details>
 <summary><strong>Performance</strong></summary>
