@@ -61,21 +61,17 @@ vi.mock('../../chunker/index.js', () => ({
   }),
 }))
 
-// Mock Embedder
-vi.mock('../../embedder/index.js', () => ({
-  Embedder: vi.fn().mockImplementation(function (this: Record<string, unknown>) {
-    this.embedBatch = mocks.embedBatch
-  }),
-}))
-
-// Mock VectorStore
-vi.mock('../../vectordb/index.js', () => ({
-  VectorStore: vi.fn().mockImplementation(function (this: Record<string, unknown>) {
-    this.initialize = mocks.initialize
-    this.deleteChunks = mocks.deleteChunks
-    this.insertChunks = mocks.insertChunks
-    this.optimize = mocks.optimize
-  }),
+// Mock cli/common.js (createVectorStore / createEmbedder factories)
+vi.mock('../../cli/common.js', () => ({
+  createEmbedder: vi.fn().mockImplementation(() => ({
+    embedBatch: mocks.embedBatch,
+  })),
+  createVectorStore: vi.fn().mockImplementation(() => ({
+    initialize: mocks.initialize,
+    deleteChunks: mocks.deleteChunks,
+    insertChunks: mocks.insertChunks,
+    optimize: mocks.optimize,
+  })),
 }))
 
 // Import after mocks are set up
@@ -650,15 +646,15 @@ describe('CLI ingest', () => {
     expect(error).toBeUndefined()
     expect(process.exitCode).toBeUndefined()
 
-    // Assert: VectorStore was called with global db-path
-    const { VectorStore } = await import('../../vectordb/index.js')
-    expect(VectorStore).toHaveBeenCalledWith(expect.objectContaining({ dbPath: '/cli/db' }))
+    // Assert: createVectorStore was called with global db-path
+    const { createVectorStore } = await import('../../cli/common.js')
+    expect(createVectorStore).toHaveBeenCalledWith(expect.objectContaining({ dbPath: '/cli/db' }))
 
-    // Assert: Embedder was called with global model-name and cache-dir
-    const { Embedder } = await import('../../embedder/index.js')
-    expect(Embedder).toHaveBeenCalledWith(
+    // Assert: createEmbedder was called with global model-name and cache-dir
+    const { createEmbedder } = await import('../../cli/common.js')
+    expect(createEmbedder).toHaveBeenCalledWith(
       expect.objectContaining({
-        modelPath: 'cli-model',
+        modelName: 'cli-model',
         cacheDir: '/cli/cache',
       })
     )
@@ -693,15 +689,15 @@ describe('CLI ingest', () => {
     expect(error).toBeUndefined()
     expect(process.exitCode).toBeUndefined()
 
-    // Assert: VectorStore was called with env db-path
-    const { VectorStore } = await import('../../vectordb/index.js')
-    expect(VectorStore).toHaveBeenCalledWith(expect.objectContaining({ dbPath: '/env/db' }))
+    // Assert: createVectorStore was called with env db-path
+    const { createVectorStore } = await import('../../cli/common.js')
+    expect(createVectorStore).toHaveBeenCalledWith(expect.objectContaining({ dbPath: '/env/db' }))
 
-    // Assert: Embedder was called with env model-name and cache-dir
-    const { Embedder } = await import('../../embedder/index.js')
-    expect(Embedder).toHaveBeenCalledWith(
+    // Assert: createEmbedder was called with env model-name and cache-dir
+    const { createEmbedder } = await import('../../cli/common.js')
+    expect(createEmbedder).toHaveBeenCalledWith(
       expect.objectContaining({
-        modelPath: 'env-model',
+        modelName: 'env-model',
         cacheDir: '/env/cache',
       })
     )
@@ -738,15 +734,15 @@ describe('CLI ingest', () => {
     expect(error).toBeUndefined()
     expect(process.exitCode).toBeUndefined()
 
-    // Assert: VectorStore was called with CLI db-path, not env
-    const { VectorStore } = await import('../../vectordb/index.js')
-    expect(VectorStore).toHaveBeenCalledWith(expect.objectContaining({ dbPath: '/cli/db' }))
+    // Assert: createVectorStore was called with CLI db-path, not env
+    const { createVectorStore } = await import('../../cli/common.js')
+    expect(createVectorStore).toHaveBeenCalledWith(expect.objectContaining({ dbPath: '/cli/db' }))
 
-    // Assert: Embedder was called with CLI model-name and cache-dir
-    const { Embedder } = await import('../../embedder/index.js')
-    expect(Embedder).toHaveBeenCalledWith(
+    // Assert: createEmbedder was called with CLI model-name and cache-dir
+    const { createEmbedder } = await import('../../cli/common.js')
+    expect(createEmbedder).toHaveBeenCalledWith(
       expect.objectContaining({
-        modelPath: 'cli-model',
+        modelName: 'cli-model',
         cacheDir: '/cli/cache',
       })
     )
