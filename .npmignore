@@ -17,7 +17,7 @@ output/
 # Config files
 .gitignore
 .madgerc
-.tsprunerc
+knip.json
 biome.json
 tsconfig.json
 vitest.config.ts
