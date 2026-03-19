@@ -9,6 +9,8 @@ import { Embedder } from '../embedder/index.js'
 import { DocumentParser, SUPPORTED_EXTENSIONS } from '../parser/index.js'
 import type { VectorChunk } from '../vectordb/index.js'
 import { VectorStore } from '../vectordb/index.js'
+import type { GlobalOptions, ResolvedGlobalConfig } from './options.js'
+import { resolveGlobalConfig, validateMaxFileSize, validatePath } from './options.js'
 
 // ============================================
 // Types
@@ -28,17 +30,14 @@ interface IngestSummary {
   totalChunks: number
 }
 
-interface CliOptions {
-  dbPath?: string | undefined
+interface IngestCliOptions {
   baseDir?: string | undefined
-  cacheDir?: string | undefined
-  modelName?: string | undefined
   maxFileSize?: number | undefined
 }
 
 interface ParsedArgs {
   positional: string | undefined
-  options: CliOptions
+  options: IngestCliOptions
   help: boolean
 }
 
@@ -46,10 +45,7 @@ interface ParsedArgs {
 // Defaults
 // ============================================
 
-const DEFAULTS = {
-  dbPath: './lancedb/',
-  cacheDir: './models/',
-  modelName: 'Xenova/all-MiniLM-L6-v2',
+const INGEST_DEFAULTS = {
   maxFileSize: 104857600,
 } as const
 
@@ -57,28 +53,31 @@ const DEFAULTS = {
 // Help
 // ============================================
 
-const HELP_TEXT = `Usage: mcp-local-rag ingest [options] <path>
+const HELP_TEXT = `Usage: mcp-local-rag [global-options] ingest [options] <path>
 
 Ingest a single file or all supported files under a directory.
 
 Options:
-  --db-path <path>       LanceDB database path (default: ${DEFAULTS.dbPath})
   --base-dir <path>      Base directory for documents (default: cwd)
-  --cache-dir <path>     Model cache directory (default: ${DEFAULTS.cacheDir})
-  --model-name <name>    Embedding model (default: ${DEFAULTS.modelName})
-  --max-file-size <n>    Max file size in bytes (default: ${DEFAULTS.maxFileSize})
-  -h, --help             Show this help`
+  --max-file-size <n>    Max file size in bytes (default: ${INGEST_DEFAULTS.maxFileSize})
+  -h, --help             Show this help
+
+Global options (must appear before "ingest"):
+  --db-path <path>       LanceDB database path
+  --cache-dir <path>     Model cache directory
+  --model-name <name>    Embedding model`
 
 // ============================================
 // Arg Parsing
 // ============================================
 
 /**
- * Parse CLI arguments into options and a positional path.
- * Flags: --db-path, --base-dir, --cache-dir, --model-name, --max-file-size, -h/--help
+ * Parse ingest-specific CLI arguments into options and a positional path.
+ * Flags: --base-dir, --max-file-size, -h/--help
+ * Unknown flags (including global flags passed after subcommand) cause an error.
  */
 export function parseArgs(args: string[]): ParsedArgs {
-  const options: CliOptions = {}
+  const options: IngestCliOptions = {}
   let positional: string | undefined
   let help = false
 
@@ -91,24 +90,23 @@ export function parseArgs(args: string[]): ParsedArgs {
         help = true
         i++
         break
-      case '--db-path':
-        options.dbPath = args[++i]
+      case '--base-dir': {
+        const value = args[++i]
+        if (value === undefined || value.startsWith('-')) {
+          console.error('Missing value for --base-dir')
+          process.exit(1)
+        }
+        options.baseDir = value
         i++
         break
-      case '--base-dir':
-        options.baseDir = args[++i]
-        i++
-        break
-      case '--cache-dir':
-        options.cacheDir = args[++i]
-        i++
-        break
-      case '--model-name':
-        options.modelName = args[++i]
-        i++
-        break
+      }
       case '--max-file-size': {
-        const parsed = Number.parseInt(args[++i] ?? '', 10)
+        const raw = args[++i]
+        if (raw === undefined || raw.startsWith('-')) {
+          console.error('Missing value for --max-file-size')
+          process.exit(1)
+        }
+        const parsed = Number.parseInt(raw, 10)
         options.maxFileSize = Number.isNaN(parsed) ? undefined : parsed
         i++
         break
@@ -117,6 +115,11 @@ export function parseArgs(args: string[]): ParsedArgs {
         if (arg.startsWith('-')) {
           console.error(`Unknown option: ${arg}`)
           console.error(HELP_TEXT)
+          process.exit(1)
+        }
+        if (positional !== undefined) {
+          console.error(`Unexpected argument: ${arg}`)
+          console.error('Only one path is accepted. Use a directory to ingest multiple files.')
           process.exit(1)
         }
         positional = arg
@@ -136,7 +139,7 @@ export function parseArgs(args: string[]): ParsedArgs {
  * Ensure maxFileSize is a valid number, falling back to default if NaN.
  */
 function sanitizeMaxFileSize(value: number): number {
-  return Number.isNaN(value) ? DEFAULTS.maxFileSize : value
+  return Number.isNaN(value) ? INGEST_DEFAULTS.maxFileSize : value
 }
 
 // ============================================
@@ -144,20 +147,42 @@ function sanitizeMaxFileSize(value: number): number {
 // ============================================
 
 /**
- * Resolve config with priority: CLI flags > environment variables > defaults.
+ * Resolve ingest config by merging global config with ingest-specific options.
+ * Ingest-specific: baseDir, maxFileSize (CLI flags > env vars > defaults).
+ * Validates all resolved values before returning.
  */
-function resolveConfig(cliOptions: CliOptions = {}): IngestConfig {
+export function resolveConfig(
+  globalConfig: ResolvedGlobalConfig,
+  ingestOptions: IngestCliOptions = {}
+): IngestConfig {
+  const baseDir = ingestOptions.baseDir ?? process.env['BASE_DIR'] ?? process.cwd()
+  const maxFileSize = sanitizeMaxFileSize(
+    ingestOptions.maxFileSize ??
+      (process.env['MAX_FILE_SIZE']
+        ? Number.parseInt(process.env['MAX_FILE_SIZE'], 10)
+        : INGEST_DEFAULTS.maxFileSize)
+  )
+
+  // Validate baseDir path
+  const baseDirError = validatePath(baseDir, '--base-dir')
+  if (baseDirError) {
+    console.error(baseDirError)
+    process.exit(1)
+  }
+
+  // Validate maxFileSize range
+  const maxFileSizeError = validateMaxFileSize(maxFileSize)
+  if (maxFileSizeError) {
+    console.error(maxFileSizeError)
+    process.exit(1)
+  }
+
   return {
-    baseDir: cliOptions.baseDir ?? process.env['BASE_DIR'] ?? process.cwd(),
-    dbPath: cliOptions.dbPath ?? process.env['DB_PATH'] ?? DEFAULTS.dbPath,
-    cacheDir: cliOptions.cacheDir ?? process.env['CACHE_DIR'] ?? DEFAULTS.cacheDir,
-    modelName: cliOptions.modelName ?? process.env['MODEL_NAME'] ?? DEFAULTS.modelName,
-    maxFileSize: sanitizeMaxFileSize(
-      cliOptions.maxFileSize ??
-        (process.env['MAX_FILE_SIZE']
-          ? Number.parseInt(process.env['MAX_FILE_SIZE'], 10)
-          : DEFAULTS.maxFileSize)
-    ),
+    dbPath: globalConfig.dbPath,
+    cacheDir: globalConfig.cacheDir,
+    modelName: globalConfig.modelName,
+    baseDir,
+    maxFileSize,
   }
 }
 
@@ -276,8 +301,9 @@ async function ingestSingleFile(
 /**
  * Run the ingest CLI subcommand.
  * @param args - Arguments after "ingest" (e.g., option flags and file/directory path)
+ * @param globalOptions - Global options parsed before the subcommand
  */
-export async function runIngest(args: string[]): Promise<void> {
+export async function runIngest(args: string[], globalOptions: GlobalOptions = {}): Promise<void> {
   // Parse CLI options
   const { positional, options, help } = parseArgs(args)
 
@@ -306,7 +332,8 @@ export async function runIngest(args: string[]): Promise<void> {
   }
 
   // Resolve config: CLI flags > env vars > defaults
-  const config = resolveConfig(options)
+  const globalConfig = resolveGlobalConfig(globalOptions)
+  const config = resolveConfig(globalConfig, options)
   const excludePaths = [`${resolve(config.dbPath)}/`, `${resolve(config.cacheDir)}/`]
 
   // Collect files

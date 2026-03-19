@@ -79,7 +79,8 @@ vi.mock('../../vectordb/index.js', () => ({
 }))
 
 // Import after mocks are set up
-import { parseArgs, runIngest } from '../../cli/ingest.js'
+import { parseArgs, resolveConfig, runIngest } from '../../cli/ingest.js'
+import { resolveGlobalConfig } from '../../cli/options.js'
 
 // ============================================
 // Helpers
@@ -386,18 +387,13 @@ describe('CLI ingest', () => {
     expect(error).toBeInstanceOf(Error)
     expect((error as Error).message).toBe('process.exit(0)')
 
-    // Assert: help text contains key information
+    // Assert: help text contains ingest-specific information
     const joined = output.join('\n')
-    expect(joined).toContain('Usage: mcp-local-rag ingest [options] <path>')
-    expect(joined).toContain('--db-path')
+    expect(joined).toContain('Usage: mcp-local-rag')
+    expect(joined).toContain('ingest')
     expect(joined).toContain('--base-dir')
-    expect(joined).toContain('--cache-dir')
-    expect(joined).toContain('--model-name')
     expect(joined).toContain('--max-file-size')
     expect(joined).toContain('-h, --help')
-    expect(joined).toContain('./lancedb/')
-    expect(joined).toContain('./models/')
-    expect(joined).toContain('Xenova/all-MiniLM-L6-v2')
     expect(joined).toContain('104857600')
   })
 
@@ -410,39 +406,120 @@ describe('CLI ingest', () => {
     expect((error as Error).message).toBe('process.exit(0)')
 
     const joined = output.join('\n')
-    expect(joined).toContain('Usage: mcp-local-rag ingest [options] <path>')
+    expect(joined).toContain('Usage: mcp-local-rag')
+    expect(joined).toContain('ingest')
   })
 
   // --------------------------------------------
-  // CLI flags override env vars
+  // Global options passed via globalOptions parameter
   // --------------------------------------------
-  it('should use CLI flags over environment variables', async () => {
-    // Arrange: set env vars
-    process.env['DB_PATH'] = '/env/db'
-    process.env['BASE_DIR'] = '/env/base'
-    process.env['CACHE_DIR'] = '/env/cache'
-    process.env['MODEL_NAME'] = 'env-model'
-    process.env['MAX_FILE_SIZE'] = '999'
+  it('should use global options passed as parameter', async () => {
+    // Arrange: ensure no env vars are set
+    delete process.env['DB_PATH']
+    delete process.env['BASE_DIR']
+    delete process.env['CACHE_DIR']
+    delete process.env['MODEL_NAME']
+    delete process.env['MAX_FILE_SIZE']
 
     const filePath = '/tmp/test/document.md'
     mocks.stat.mockResolvedValue(mockFileStat())
     setupSuccessfulIngestion()
 
-    // Act: pass CLI flags that should override env vars
+    // Act: pass global options via second parameter, ingest-specific via args
     const { error } = await captureStderr(() =>
-      runIngest([
-        '--db-path',
-        '/cli/db',
-        '--base-dir',
-        '/cli/base',
-        '--cache-dir',
-        '/cli/cache',
-        '--model-name',
-        'cli-model',
-        '--max-file-size',
-        '555',
-        filePath,
-      ])
+      runIngest(['--base-dir', '/cli/base', '--max-file-size', '555', filePath], {
+        dbPath: '/cli/db',
+        cacheDir: '/cli/cache',
+        modelName: 'cli-model',
+      })
+    )
+
+    // Assert: returns normally without process.exit
+    expect(error).toBeUndefined()
+    expect(process.exitCode).toBeUndefined()
+
+    // Assert: VectorStore was called with global db-path
+    const { VectorStore } = await import('../../vectordb/index.js')
+    expect(VectorStore).toHaveBeenCalledWith(expect.objectContaining({ dbPath: '/cli/db' }))
+
+    // Assert: Embedder was called with global model-name and cache-dir
+    const { Embedder } = await import('../../embedder/index.js')
+    expect(Embedder).toHaveBeenCalledWith(
+      expect.objectContaining({
+        modelPath: 'cli-model',
+        cacheDir: '/cli/cache',
+      })
+    )
+
+    // Assert: DocumentParser was called with ingest-specific base-dir and max-file-size
+    const { DocumentParser } = await import('../../parser/index.js')
+    expect(DocumentParser).toHaveBeenCalledWith(
+      expect.objectContaining({
+        baseDir: '/cli/base',
+        maxFileSize: 555,
+      })
+    )
+  })
+
+  // --------------------------------------------
+  // Global options via env vars (no CLI flags)
+  // --------------------------------------------
+  it('should use environment variables when no global options provided', async () => {
+    // Arrange: set env vars
+    process.env['DB_PATH'] = '/env/db'
+    process.env['CACHE_DIR'] = '/env/cache'
+    process.env['MODEL_NAME'] = 'env-model'
+
+    const filePath = '/tmp/test/document.md'
+    mocks.stat.mockResolvedValue(mockFileStat())
+    setupSuccessfulIngestion()
+
+    // Act: no global options
+    const { error } = await captureStderr(() => runIngest([filePath]))
+
+    // Assert: returns normally without process.exit
+    expect(error).toBeUndefined()
+    expect(process.exitCode).toBeUndefined()
+
+    // Assert: VectorStore was called with env db-path
+    const { VectorStore } = await import('../../vectordb/index.js')
+    expect(VectorStore).toHaveBeenCalledWith(expect.objectContaining({ dbPath: '/env/db' }))
+
+    // Assert: Embedder was called with env model-name and cache-dir
+    const { Embedder } = await import('../../embedder/index.js')
+    expect(Embedder).toHaveBeenCalledWith(
+      expect.objectContaining({
+        modelPath: 'env-model',
+        cacheDir: '/env/cache',
+      })
+    )
+
+    // Cleanup
+    delete process.env['DB_PATH']
+    delete process.env['CACHE_DIR']
+    delete process.env['MODEL_NAME']
+  })
+
+  // --------------------------------------------
+  // Global options override env vars
+  // --------------------------------------------
+  it('should use global CLI flags over environment variables', async () => {
+    // Arrange: set env vars
+    process.env['DB_PATH'] = '/env/db'
+    process.env['CACHE_DIR'] = '/env/cache'
+    process.env['MODEL_NAME'] = 'env-model'
+
+    const filePath = '/tmp/test/document.md'
+    mocks.stat.mockResolvedValue(mockFileStat())
+    setupSuccessfulIngestion()
+
+    // Act: pass global options that should override env vars
+    const { error } = await captureStderr(() =>
+      runIngest([filePath], {
+        dbPath: '/cli/db',
+        cacheDir: '/cli/cache',
+        modelName: 'cli-model',
+      })
     )
 
     // Assert: returns normally without process.exit
@@ -462,54 +539,27 @@ describe('CLI ingest', () => {
       })
     )
 
-    // Assert: DocumentParser was called with CLI base-dir and max-file-size
-    const { DocumentParser } = await import('../../parser/index.js')
-    expect(DocumentParser).toHaveBeenCalledWith(
-      expect.objectContaining({
-        baseDir: '/cli/base',
-        maxFileSize: 555,
-      })
-    )
-
     // Cleanup
     delete process.env['DB_PATH']
-    delete process.env['BASE_DIR']
     delete process.env['CACHE_DIR']
     delete process.env['MODEL_NAME']
-    delete process.env['MAX_FILE_SIZE']
   })
 
   // --------------------------------------------
-  // CLI flags override defaults
+  // Unknown options error (including global flags after subcommand)
   // --------------------------------------------
-  it('should use CLI flags over default values', async () => {
-    // Arrange: ensure no env vars are set
-    delete process.env['DB_PATH']
-    delete process.env['BASE_DIR']
-    delete process.env['CACHE_DIR']
-    delete process.env['MODEL_NAME']
-    delete process.env['MAX_FILE_SIZE']
-
-    const filePath = '/tmp/test/document.md'
-    mocks.stat.mockResolvedValue(mockFileStat())
-    setupSuccessfulIngestion()
-
-    // Act: pass CLI flags
-    const { error } = await captureStderr(() =>
-      runIngest(['--model-name', 'custom/model', '--db-path', '/custom/db', filePath])
+  it('should error when global flags are passed after subcommand', async () => {
+    // Act
+    const { output, error } = await captureStderr(() =>
+      runIngest(['/some/path', '--db-path', '/db'])
     )
 
-    // Assert: returns normally without process.exit
-    expect(error).toBeUndefined()
-    expect(process.exitCode).toBeUndefined()
+    // Assert: exit(1) with unknown option error
+    expect(error).toBeInstanceOf(Error)
+    expect((error as Error).message).toBe('process.exit(1)')
 
-    // Assert: VectorStore was called with CLI db-path
-    const { VectorStore } = await import('../../vectordb/index.js')
-    expect(VectorStore).toHaveBeenCalledWith(expect.objectContaining({ dbPath: '/custom/db' }))
-
-    // Assert: Embedder was called with CLI model-name
-    const { Embedder } = await import('../../embedder/index.js')
-    expect(Embedder).toHaveBeenCalledWith(expect.objectContaining({ modelPath: 'custom/model' }))
+    const joined = output.join('\n')
+    expect(joined).toContain('Unknown option: --db-path')
   })
 
   // --------------------------------------------
@@ -525,27 +575,12 @@ describe('CLI ingest', () => {
       })
     })
 
-    it('should parse all flags with positional', () => {
-      const result = parseArgs([
-        '--db-path',
-        '/db',
-        '--base-dir',
-        '/base',
-        '--cache-dir',
-        '/cache',
-        '--model-name',
-        'my-model',
-        '--max-file-size',
-        '1024',
-        '/target',
-      ])
+    it('should parse ingest-specific flags with positional', () => {
+      const result = parseArgs(['--base-dir', '/base', '--max-file-size', '1024', '/target'])
 
       expect(result.positional).toBe('/target')
       expect(result.options).toEqual({
-        dbPath: '/db',
         baseDir: '/base',
-        cacheDir: '/cache',
-        modelName: 'my-model',
         maxFileSize: 1024,
       })
       expect(result.help).toBe(false)
@@ -562,16 +597,73 @@ describe('CLI ingest', () => {
     })
 
     it('should handle flags before positional', () => {
-      const result = parseArgs(['--db-path', '/db', '/target'])
+      const result = parseArgs(['--base-dir', '/base', '/target'])
       expect(result.positional).toBe('/target')
-      expect(result.options.dbPath).toBe('/db')
+      expect(result.options.baseDir).toBe('/base')
     })
 
     it('should handle flags after positional', () => {
-      const result = parseArgs(['/target', '--db-path', '/db'])
+      const result = parseArgs(['/target', '--base-dir', '/base'])
       expect(result.positional).toBe('/target')
-      expect(result.options.dbPath).toBe('/db')
+      expect(result.options.baseDir).toBe('/base')
     })
+
+    it('should error on unknown flags', () => {
+      // --db-path is now a global option, not recognized by ingest parseArgs
+      expect(() => parseArgs(['--db-path', '/db', '/target'])).toThrow('process.exit(1)')
+    })
+
+    // Regression test for issue #79
+    it('should error when multiple positional arguments are given', () => {
+      // Act & Assert
+      expect(() => parseArgs(['/path1', '/path2'])).toThrow('process.exit(1)')
+    })
+
+    it('should error when --base-dir value is missing', () => {
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+      try {
+        expect(() => parseArgs(['--base-dir'])).toThrow('process.exit(1)')
+        expect(errorSpy).toHaveBeenCalledWith('Missing value for --base-dir')
+      } finally {
+        errorSpy.mockRestore()
+      }
+    })
+
+    it('should error when --max-file-size value is missing', () => {
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+      try {
+        expect(() => parseArgs(['--max-file-size'])).toThrow('process.exit(1)')
+        expect(errorSpy).toHaveBeenCalledWith('Missing value for --max-file-size')
+      } finally {
+        errorSpy.mockRestore()
+      }
+    })
+
+    it('should detect --base-dir value starting with dash as missing', () => {
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+      try {
+        expect(() => parseArgs(['--base-dir', '--max-file-size'])).toThrow('process.exit(1)')
+        expect(errorSpy).toHaveBeenCalledWith('Missing value for --base-dir')
+      } finally {
+        errorSpy.mockRestore()
+      }
+    })
+  })
+
+  // --------------------------------------------
+  // Issue #79 regression: multiple positional args
+  // --------------------------------------------
+  it('should error with message when extra positional arguments are given (issue #79)', async () => {
+    // Act
+    const { output, error } = await captureStderr(() => runIngest(['/path1', '/path2']))
+
+    // Assert: exit(1) with descriptive error
+    expect(error).toBeInstanceOf(Error)
+    expect((error as Error).message).toBe('process.exit(1)')
+
+    const joined = output.join('\n')
+    expect(joined).toContain('Unexpected argument: /path2')
+    expect(joined).toContain('Only one path is accepted')
   })
 
   // --------------------------------------------
@@ -587,5 +679,95 @@ describe('CLI ingest', () => {
 
     const joined = output.join('\n')
     expect(joined).toContain('Usage: mcp-local-rag ingest')
+  })
+
+  // --------------------------------------------
+  // resolveConfig validation
+  // --------------------------------------------
+  describe('resolveConfig validation', () => {
+    afterEach(() => {
+      delete process.env['BASE_DIR']
+      delete process.env['MAX_FILE_SIZE']
+    })
+
+    it('should error when BASE_DIR env var points to sensitive path', () => {
+      process.env['BASE_DIR'] = '/etc/documents'
+      const globalConfig = resolveGlobalConfig({})
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+      try {
+        expect(() => resolveConfig(globalConfig, {})).toThrow('process.exit(1)')
+        expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('sensitive system path'))
+      } finally {
+        errorSpy.mockRestore()
+      }
+    })
+
+    it('should error when MAX_FILE_SIZE env var is zero', () => {
+      process.env['MAX_FILE_SIZE'] = '0'
+      const globalConfig = resolveGlobalConfig({})
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+      try {
+        expect(() => resolveConfig(globalConfig, {})).toThrow('process.exit(1)')
+        expect(errorSpy).toHaveBeenCalledWith(
+          expect.stringContaining('must be between 1 and 524288000')
+        )
+      } finally {
+        errorSpy.mockRestore()
+      }
+    })
+
+    it('should error when MAX_FILE_SIZE env var is negative', () => {
+      process.env['MAX_FILE_SIZE'] = '-100'
+      const globalConfig = resolveGlobalConfig({})
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+      try {
+        expect(() => resolveConfig(globalConfig, {})).toThrow('process.exit(1)')
+        expect(errorSpy).toHaveBeenCalledWith(
+          expect.stringContaining('must be between 1 and 524288000')
+        )
+      } finally {
+        errorSpy.mockRestore()
+      }
+    })
+
+    it('should error when MAX_FILE_SIZE env var exceeds 500MB', () => {
+      process.env['MAX_FILE_SIZE'] = '999999999'
+      const globalConfig = resolveGlobalConfig({})
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+      try {
+        expect(() => resolveConfig(globalConfig, {})).toThrow('process.exit(1)')
+        expect(errorSpy).toHaveBeenCalledWith(
+          expect.stringContaining('must be between 1 and 524288000')
+        )
+      } finally {
+        errorSpy.mockRestore()
+      }
+    })
+
+    it('should error when --base-dir CLI option points to sensitive path', () => {
+      const globalConfig = resolveGlobalConfig({})
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+      try {
+        expect(() => resolveConfig(globalConfig, { baseDir: '/proc/self' })).toThrow(
+          'process.exit(1)'
+        )
+        expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('sensitive system path'))
+      } finally {
+        errorSpy.mockRestore()
+      }
+    })
+
+    it('should error when --max-file-size CLI option is zero', () => {
+      const globalConfig = resolveGlobalConfig({})
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+      try {
+        expect(() => resolveConfig(globalConfig, { maxFileSize: 0 })).toThrow('process.exit(1)')
+        expect(errorSpy).toHaveBeenCalledWith(
+          expect.stringContaining('must be between 1 and 524288000')
+        )
+      } finally {
+        errorSpy.mockRestore()
+      }
+    })
   })
 })
