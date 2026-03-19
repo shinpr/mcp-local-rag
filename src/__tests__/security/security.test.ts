@@ -102,6 +102,9 @@ This approach provides accurate search results for natural language queries.`
       const monitor = createNetworkMonitor()
 
       try {
+        // Snapshot before test operations (isolate: false may have concurrent fetch from other files)
+        const beforeCount = monitor.requests.length
+
         // Ingest file
         const sampleFile = resolve(fixturesDir, 'sample.txt')
         await server.handleIngestFile({ filePath: sampleFile })
@@ -109,8 +112,11 @@ This approach provides accurate search results for natural language queries.`
         // Execute search
         await server.handleQueryDocuments({ query: 'TypeScript', limit: 5 })
 
-        // Verify no external communication occurred
-        expect(monitor.requests.length).toBe(0)
+        // Verify no external communication occurred (exclude model download per AC)
+        const newRequests = monitor.requests
+          .slice(beforeCount)
+          .filter((url) => !url.includes('huggingface.co'))
+        expect(newRequests.length).toBe(0)
       } finally {
         monitor.restore()
       }
