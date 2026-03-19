@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/banner.jpg" alt="MCP Local RAG — Search below the surface." width="600" />
+</p>
+
 # MCP Local RAG
 
 [![GitHub stars](https://img.shields.io/github/stars/shinpr/mcp-local-rag?style=social)](https://github.com/shinpr/mcp-local-rag)
