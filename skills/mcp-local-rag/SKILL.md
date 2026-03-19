@@ -1,19 +1,20 @@
 ---
 name: mcp-local-rag
-description: Use this skill when ingesting or querying documents with MCP local RAG, including `query_documents`, `ingest_file`, `ingest_data`, and CLI bulk ingestion. Covers query refinement, result score interpretation, and source metadata conventions for PDF, HTML, DOCX, TXT, and Markdown. Not for general file operations or SQL/database queries.
+description: Local document search and ingestion via MCP tools or CLI commands. Handles ingesting files (PDF, DOCX, TXT, MD, HTML), semantic search with score interpretation, and content management (list, status, delete). Covers both MCP tool calls and `npx mcp-local-rag` CLI usage including bulk operations and scripting.
 ---
 
 # MCP Local RAG Skills
 
 ## Tools
 
-| Tool | Use When |
-|------|----------|
-| `ingest_file` | Local files (PDF, DOCX, TXT, MD) |
-| `ingest_data` | Raw content (HTML, text) with source URL |
-| `query_documents` | Semantic + keyword hybrid search |
-| `delete_file` / `list_files` / `status` | Management |
-| `npx mcp-local-rag [cmd]` | CLI alternative: `ingest`, `query`, `list`, `status`, `delete` |
+| MCP Tool | CLI Equivalent | Use When |
+|----------|---------------|----------|
+| `ingest_file` | `npx mcp-local-rag ingest <path>` | Local files (PDF, DOCX, TXT, MD). CLI for bulk/directory. |
+| `ingest_data` | — | Raw content (HTML, text) with source URL |
+| `query_documents` | `npx mcp-local-rag query <text>` | Semantic + keyword hybrid search |
+| `delete_file` | `npx mcp-local-rag delete <path>` | Remove ingested content |
+| `list_files` | `npx mcp-local-rag list` | File ingestion status |
+| `status` | `npx mcp-local-rag status` | Database stats |
 
 ## Search: Core Rules
 
@@ -104,7 +105,6 @@ ingest_data({
 **Source format:**
 - Web page → Use URL: `https://example.com/page`
 - Other content → Use scheme: `{type}://{date}` or `{type}://{date}/{detail}`
-  - Examples: `clipboard://2024-12-30`, `chat://2024-12-30/project-discussion`
 
 **HTML source options:**
 - Static page → LLM fetch
@@ -115,22 +115,12 @@ Re-ingest same source to update. Use same source in `delete_file` to remove.
 
 ### CLI commands
 
-All tools available as CLI subcommands. Use when MCP server is not running.
-
-| Scenario | Use |
-|----------|-----|
-| Single file from user request | `ingest_file` |
-| Multiple files or a directory | `npx mcp-local-rag ingest <path>` |
-| Raw HTML/text content | `ingest_data` (CLI does not support stdin) |
-| Search without MCP | `npx mcp-local-rag query <text>` |
-| Check ingestion status | `npx mcp-local-rag list` |
-| DB stats | `npx mcp-local-rag status` |
-| Remove content | `npx mcp-local-rag delete <path>` or `--source <url>` |
+CLI subcommands mirror MCP tools. Useful for bulk operations, scripting, and environments without MCP.
 
 - `query`, `list`, `status`, `delete` output JSON to stdout
 - `ingest` outputs progress to stderr
 - Use `--help` on any command for options
-- See [cli-reference.md](references/cli-reference.md) for full option details
+- See [cli-reference.md](references/cli-reference.md) for options and config matching
 
 ## References
 
@@ -138,4 +128,4 @@ For edge cases and examples:
 - [html-ingestion.md](references/html-ingestion.md) - URL normalization, SPA handling
 - [query-optimization.md](references/query-optimization.md) - Query patterns by intent
 - [result-refinement.md](references/result-refinement.md) - Contradiction resolution, chunking
-- [cli-reference.md](references/cli-reference.md) - CLI options, config matching
+- [cli-reference.md](references/cli-reference.md) - CLI command options, config matching, output conventions

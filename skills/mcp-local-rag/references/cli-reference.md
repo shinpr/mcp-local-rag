@@ -1,6 +1,6 @@
 # CLI Reference
 
-Basic usage is in SKILL.md. This covers options and config matching.
+Core usage is in SKILL.md. This covers command options, config matching, and output conventions.
 
 ## Global Options
 
