@@ -1,7 +1,7 @@
 // Type definitions for RAGServer
 
+import type { ContentFormat } from '../utils/raw-data-utils.js'
 import type { GroupingMode } from '../vectordb/index.js'
-import type { ContentFormat } from './raw-data-utils.js'
 
 /**
  * RAGServer configuration

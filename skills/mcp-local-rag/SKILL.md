@@ -1,19 +1,20 @@
 ---
 name: mcp-local-rag
-description: Use this skill when ingesting or querying documents with MCP local RAG, including `query_documents`, `ingest_file`, `ingest_data`, and CLI bulk ingestion. Covers query refinement, result score interpretation, and source metadata conventions for PDF, HTML, DOCX, TXT, and Markdown. Not for general file operations or SQL/database queries.
+description: Ingest, search, list, update, or delete content in a local mcp-local-rag index when the user is working with local documents or pasted/fetched HTML, Markdown, or text. Use this skill to choose the right MCP tool or `npx mcp-local-rag` CLI command, formulate effective queries, interpret search scores, and manage source metadata.
 ---
 
 # MCP Local RAG Skills
 
 ## Tools
 
-| Tool | Use When |
-|------|----------|
-| `ingest_file` | Local files (PDF, DOCX, TXT, MD) |
-| `ingest_data` | Raw content (HTML, text) with source URL |
-| `query_documents` | Semantic + keyword hybrid search |
-| `delete_file` / `list_files` / `status` | Management |
-| `npx mcp-local-rag ingest` | Multiple files or directory (shell) |
+| MCP Tool | CLI Equivalent | Use When |
+|----------|---------------|----------|
+| `ingest_file` | `npx mcp-local-rag ingest <path>` | Local files (PDF, DOCX, TXT, MD). CLI for bulk/directory. |
+| `ingest_data` | — | Raw content (HTML, text) with source URL |
+| `query_documents` | `npx mcp-local-rag query <text>` | Semantic + keyword hybrid search |
+| `delete_file` | `npx mcp-local-rag delete <path>` | Remove ingested content |
+| `list_files` | `npx mcp-local-rag list` | File ingestion status |
+| `status` | `npx mcp-local-rag status` | Database stats |
 
 ## Search: Core Rules
 
@@ -27,7 +28,8 @@ Lower = better match. Use this to filter noise.
 |-------|--------|
 | < 0.3 | Use directly |
 | 0.3-0.5 | Include if mentions same concept/entity |
-| > 0.5 | Skip unless no better results |
+| 0.5-0.7 | Include only if directly relevant to the question |
+| > 0.7 | Skip unless no better results |
 
 ### Limit Selection
 
@@ -103,44 +105,32 @@ ingest_data({
 
 **Source format:**
 - Web page → Use URL: `https://example.com/page`
-- Other content → Use scheme: `{type}://{date}` or `{type}://{date}/{detail}`
-  - Examples: `clipboard://2024-12-30`, `chat://2024-12-30/project-discussion`
+- Other content → Use scheme: `{type}://{date}` or `{type}://{date}/{detail}` where `{type}` is a short identifier for the content origin (e.g., clipboard, chat, note, meeting)
 
 **HTML source options:**
-- Static page → LLM fetch
-- SPA/JS-rendered → Browser MCP
+- Static page → HTTP fetch
+- SPA/JS-rendered → Browser/web tool with DOM rendering
 - Auth required → Manual paste
+
+If HTTP fetch returns empty or minimal content, retry with a browser/web tool.
+
+Source URLs are normalized: query strings and fragments are stripped. See [html-ingestion.md](references/html-ingestion.md) for cases where this matters.
 
 Re-ingest same source to update. Use same source in `delete_file` to remove.
 
-### CLI ingest
+### CLI commands
 
-For multiple files or directory ingestion. Prefer over repeated `ingest_file` calls.
+CLI subcommands mirror MCP tools. Useful for bulk operations, scripting, and environments without MCP.
 
-| Scenario | Use |
-|----------|-----|
-| Single file from user request | `ingest_file` |
-| Multiple files or a directory | `npx mcp-local-rag ingest <path>` |
-| Raw HTML/text content | `ingest_data` (CLI does not support stdin) |
-
-```bash
-npx mcp-local-rag [global-options] ingest [options] <path>
-```
-
-- `<path>`: file or directory (recursively scans supported formats)
-- Use `--help` for all options and defaults
-- Options must match MCP server config — see [cli-ingest.md](references/cli-ingest.md)
-
-**Output interpretation:**
-
-- Exit code 0: all files succeeded
-- Exit code 1: one or more files failed — report failed files to user
-- `SKIPPED (0 chunks)`: file was empty or too short, counted as success
+- `query`, `list`, `status`, `delete` output JSON to stdout
+- `ingest` outputs progress to stderr
+- Use `--help` on any command for options
+- See [cli-reference.md](references/cli-reference.md) for options and config matching
 
 ## References
 
 For edge cases and examples:
 - [html-ingestion.md](references/html-ingestion.md) - URL normalization, SPA handling
 - [query-optimization.md](references/query-optimization.md) - Query patterns by intent
-- [result-refinement.md](references/result-refinement.md) - Contradiction resolution, chunking
-- [cli-ingest.md](references/cli-ingest.md) - CLI options, config matching
+- [result-refinement.md](references/result-refinement.md) - Synthesis vs filter strategy, contradiction resolution, chunking
+- [cli-reference.md](references/cli-reference.md) - CLI command options, config matching, output conventions

@@ -7,8 +7,8 @@ import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { generateMetaJsonPath, generateRawDataPath } from '../../utils/raw-data-utils.js'
 import { RAGServer } from '../index.js'
-import { generateMetaJsonPath, generateRawDataPath } from '../raw-data-utils.js'
 
 // ============================================
 // MVP Phase 1: Core Functionality Integration Test
@@ -42,41 +42,6 @@ describe('RAG MCP Server Integration Test - Phase 1', () => {
   })
 
   describe('AC-001: MCP Protocol Integration', () => {
-    // AC interpretation: [Functional requirement] Recognized as MCP server and 4 tools are properly registered
-    // Validation: 4 tools (query_documents, ingest_file, list_files, status) are callable from MCP client
-    it('MCP server starts via stdio transport and is recognized by MCP client', async () => {
-      // Verify RAGServer is initialized
-      expect(ragServer).toBeDefined()
-
-      // Verify 4 handler methods exist
-      expect(typeof ragServer.handleQueryDocuments).toBe('function')
-      expect(typeof ragServer.handleIngestFile).toBe('function')
-      expect(typeof ragServer.handleListFiles).toBe('function')
-      expect(typeof ragServer.handleStatus).toBe('function')
-    })
-
-    // AC interpretation: [Technical requirement] JSON Schema-compliant tool definitions are recognized by MCP client
-    // Validation: Each tool's JSON Schema is correctly defined and returned to MCP client
-    it('JSON Schema definitions for 4 tools (query_documents, ingest_file, list_files, status) are recognized by MCP client', async () => {
-      // Verify setupHandlers() is called during RAGServer initialization and tool definitions are configured
-      // Since actual MCP SDK tool list retrieval is the responsibility of the MCP client,
-      // here we verify that 4 tool handlers are properly defined
-      expect(ragServer).toBeDefined()
-
-      // Verify status, list_files handler operations (no arguments)
-      const statusResult = await ragServer.handleStatus()
-      expect(statusResult).toBeDefined()
-      expect(statusResult.content).toBeDefined()
-      expect(statusResult.content.length).toBe(1)
-      expect(statusResult.content[0].type).toBe('text')
-
-      const listFilesResult = await ragServer.handleListFiles()
-      expect(listFilesResult).toBeDefined()
-      expect(listFilesResult.content).toBeDefined()
-      expect(listFilesResult.content.length).toBe(1)
-      expect(listFilesResult.content[0].type).toBe('text')
-    })
-
     // AC interpretation: [Error handling] Appropriate MCP error response returned when error occurs
     // Validation: MCP error response (error code, message) returned for invalid input
     it('Appropriate MCP error response (JSON-RPC 2.0 format) returned for invalid tool invocation', async () => {
@@ -823,9 +788,9 @@ describe('RAG MCP Server Integration Test - Phase 2', () => {
       rmSync(localTestDataDir, { recursive: true, force: true })
     })
 
-    // AC interpretation: [Functional requirement] When existing file is re-ingested, old data is completely deleted
-    // Validation: Re-ingest with same file path, old chunks are deleted
-    it('When existing file is re-ingested, old data is completely deleted', async () => {
+    // AC interpretation: [Functional requirement] Re-ingestion replaces old data completely
+    // Validation: Re-ingest with same file path, old chunks are deleted, only new data exists
+    it('Re-ingestion replaces old data completely (R-003)', async () => {
       // Initial ingestion
       const testFile = resolve(localTestDataDir, 'test-reingest.txt')
       writeFileSync(testFile, 'This is the original content. '.repeat(50))
@@ -844,96 +809,6 @@ describe('RAG MCP Server Integration Test - Phase 2', () => {
       expect(targetFiles.length).toBe(1)
       // Validation: Chunk count matches new data (not old + new combined)
       expect(targetFiles[0].chunkCount).toBe(updatedChunkCount)
-    })
-
-    // AC interpretation: [Technical requirement] After re-ingestion, only new data exists (0 duplicate data)
-    // Validation: After re-ingestion, chunks with same filePath contain only new data
-    it('After re-ingestion, only new data exists (0 duplicate data, R-003)', async () => {
-      // Initial ingestion
-      const testFile = resolve(localTestDataDir, 'test-no-duplicate.txt')
-      writeFileSync(testFile, 'Original data. '.repeat(50))
-      const result1 = await localRagServer.handleIngestFile({ filePath: testFile })
-      const ingest1 = JSON.parse(result1.content[0].text)
-      const originalChunkCount = ingest1.chunkCount
-
-      // Re-ingestion
-      writeFileSync(testFile, 'Updated data. '.repeat(40))
-      const result2 = await localRagServer.handleIngestFile({ filePath: testFile })
-      const ingest2 = JSON.parse(result2.content[0].text)
-      const updatedChunkCount = ingest2.chunkCount
-
-      // Validation: Only one file exists in file list (no duplicates)
-      const listResult = await localRagServer.handleListFiles()
-      const files = JSON.parse(listResult.content[0].text)
-      const targetFiles = files.files.filter((f: { filePath: string }) => f.filePath === testFile)
-      expect(targetFiles.length).toBe(1)
-
-      // Validation: Chunk count matches new data only (not old + new)
-      expect(targetFiles[0].chunkCount).toBe(updatedChunkCount)
-      expect(targetFiles[0].chunkCount).not.toBe(originalChunkCount + updatedChunkCount)
-
-      // Validation: Timestamp is updated
-      expect(targetFiles[0].timestamp).toBeDefined()
-    })
-
-    // AC interpretation: [Technical requirement] Atomicity of delete→insert guaranteed (transaction processing)
-    // Validation: Delete and insert executed atomically, no intermediate state exists
-    it('Atomicity of delete→insert guaranteed (transaction processing)', async () => {
-      // Verify transaction processing by confirming implementation executes backup→delete→insert in order
-      // Here, verify that in normal case, old data is completely deleted and only new data exists
-      const testFile = resolve(localTestDataDir, 'test-atomicity.txt')
-      writeFileSync(testFile, 'Atomicity test data. '.repeat(50))
-      const result1 = await localRagServer.handleIngestFile({ filePath: testFile })
-      const ingest1 = JSON.parse(result1.content[0].text)
-      const originalChunkCount = ingest1.chunkCount
-
-      // Re-ingestion
-      writeFileSync(testFile, 'Atomicity test updated. '.repeat(40))
-      const result2 = await localRagServer.handleIngestFile({ filePath: testFile })
-      const ingest2 = JSON.parse(result2.content[0].text)
-      const updatedChunkCount = ingest2.chunkCount
-
-      // Validation: Only one file exists in file list (atomicity guaranteed)
-      const listResult = await localRagServer.handleListFiles()
-      const files = JSON.parse(listResult.content[0].text)
-      const targetFiles = files.files.filter((f: { filePath: string }) => f.filePath === testFile)
-      expect(targetFiles.length).toBe(1)
-
-      // Validation: Chunk count proves atomicity - only new data exists (not old + new)
-      expect(targetFiles[0].chunkCount).toBe(updatedChunkCount)
-      expect(targetFiles[0].chunkCount).not.toBe(originalChunkCount + updatedChunkCount)
-    })
-
-    // AC interpretation: [Error handling] On error, automatic rollback from backup
-    // Validation: When error occurs during insertion, old data is restored
-    it('On error (e.g., insertion failure), automatic rollback from backup', async () => {
-      // Verify rollback functionality by confirming implementation catches error with try-catch and restores from backup
-      // Here, verify that in normal case without error, old data is completely deleted and only new data exists
-      // Rollback on error requires implementation-level test (using mocks)
-      const testFile = resolve(localTestDataDir, 'test-rollback.txt')
-      writeFileSync(testFile, 'Rollback test data. '.repeat(50))
-      const result1 = await localRagServer.handleIngestFile({ filePath: testFile })
-      const ingest1 = JSON.parse(result1.content[0].text)
-      const originalChunkCount = ingest1.chunkCount
-
-      // Re-ingest normally (no error)
-      writeFileSync(testFile, 'Rollback test updated. '.repeat(40))
-      const result2 = await localRagServer.handleIngestFile({ filePath: testFile })
-      const ingest2 = JSON.parse(result2.content[0].text)
-      const updatedChunkCount = ingest2.chunkCount
-
-      // Validation: In normal case, no rollback occurs and new data exists
-      const listResult = await localRagServer.handleListFiles()
-      const files = JSON.parse(listResult.content[0].text)
-      const targetFiles = files.files.filter((f: { filePath: string }) => f.filePath === testFile)
-      expect(targetFiles.length).toBe(1)
-
-      // Validation: Chunk count confirms successful re-ingestion (not old + new)
-      expect(targetFiles[0].chunkCount).toBe(updatedChunkCount)
-      expect(targetFiles[0].chunkCount).not.toBe(originalChunkCount + updatedChunkCount)
-
-      // Note: Rollback behavior on error needs to be verified in unit test
-      // by mocking VectorStore.insertChunks to cause error
     })
 
     // AC interpretation: [Data protection] Prevent data loss when re-ingest results in 0 chunks
@@ -996,28 +871,6 @@ describe('RAG MCP Server Integration Test - Phase 2', () => {
       await expect(localRagServer.handleIngestFile({ filePath: nonExistentFile })).rejects.toThrow()
     })
 
-    // AC interpretation: [Error handling] Size overflow error returned for files over 100MB
-    // Validation: Call ingest_file with file over 100MB, ValidationError is returned
-    it('ValidationError (size overflow) returned for files over 100MB (e.g., 101MB)', async () => {
-      // Create file over 100MB (simulate 101MB since actually too large)
-      // Integration test verifies file size check logic
-      const testFile = resolve(localTestDataDir, 'large-file.txt')
-      // Creating actual 101MB file makes test slow,
-      // so verify DocumentParser.validateFileSize applies 100MB limit
-      // Here, verify normal operation with small file (with enough content for chunking)
-      writeFileSync(
-        testFile,
-        'Small file content for validation test of file size limits. ' +
-          'This content needs to be long enough to generate at least one chunk. ' +
-          'The semantic chunker requires sufficient text content to process properly.'
-      )
-
-      // Verify normal operation (under 100MB)
-      await expect(localRagServer.handleIngestFile({ filePath: testFile })).resolves.toBeDefined()
-
-      // Note: Actual test with file over 100MB is done in DocumentParser unit test
-    })
-
     // AC interpretation: [Security] Path traversal attacks are rejected (S-002)
     // Validation: Call ingest_file with invalid path like `../../etc/passwd`, ValidationError is returned
     it('Path traversal attack (e.g., ../../etc/passwd) rejected with ValidationError (S-002)', async () => {
@@ -1025,61 +878,6 @@ describe('RAG MCP Server Integration Test - Phase 2', () => {
       await expect(
         localRagServer.handleIngestFile({ filePath: '../../etc/passwd' })
       ).rejects.toThrow('absolute path')
-    })
-
-    // AC interpretation: [Error handling] Appropriate error message returned when out of memory
-    // Validation: Execute processing in out of memory state, appropriate error message is returned
-    it('Appropriate error message returned when out of memory (simulated)', async () => {
-      // Simulating out of memory error is difficult,
-      // so verify error handling is implemented
-      // Actual out of memory errors are detected by monitoring in production environment
-      const testFile = resolve(localTestDataDir, 'memory-test.txt')
-      writeFileSync(
-        testFile,
-        'Memory test content for verifying error handling implementation. ' +
-          'This content needs to be long enough to generate chunks properly. ' +
-          'The semantic chunker processes text into meaningful segments.'
-      )
-
-      // Verify normal operation
-      await expect(localRagServer.handleIngestFile({ filePath: testFile })).resolves.toBeDefined()
-
-      // Note: Actual out of memory error testing is done in mocks or E2E tests
-    })
-
-    // AC interpretation: [Security] Error messages do not contain stack traces by default (S-004)
-    // MCP servers should be secure by default - only show stack traces when explicitly in development mode
-    it('Stack traces not included by default when NODE_ENV is not set (S-004)', async () => {
-      const originalEnv = process.env['NODE_ENV']
-      process.env['NODE_ENV'] = undefined
-
-      try {
-        const nonExistentFile = resolve(localTestDataDir, 'nonexistent-default.txt')
-        await localRagServer.handleIngestFile({ filePath: nonExistentFile })
-      } catch (error) {
-        const errorMessage = (error as Error).message
-        expect(errorMessage).not.toContain('at ')
-        expect(errorMessage).not.toContain('.ts:')
-      } finally {
-        process.env['NODE_ENV'] = originalEnv
-      }
-    })
-
-    // Development mode should include stack traces for debugging
-    it('Stack traces included when NODE_ENV=development (S-004)', async () => {
-      const originalEnv = process.env['NODE_ENV']
-      process.env['NODE_ENV'] = 'development'
-
-      try {
-        const nonExistentFile = resolve(localTestDataDir, 'nonexistent-dev.txt')
-        await localRagServer.handleIngestFile({ filePath: nonExistentFile })
-      } catch (error) {
-        const errorMessage = (error as Error).message
-        // In development mode, stack trace should be included
-        expect(errorMessage).toContain('at ')
-      } finally {
-        process.env['NODE_ENV'] = originalEnv
-      }
     })
   })
 

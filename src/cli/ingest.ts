@@ -5,10 +5,10 @@ import { opendir, stat } from 'node:fs/promises'
 import { extname, join, resolve } from 'node:path'
 
 import { SemanticChunker } from '../chunker/index.js'
-import { Embedder } from '../embedder/index.js'
+import type { Embedder } from '../embedder/index.js'
 import { DocumentParser, SUPPORTED_EXTENSIONS } from '../parser/index.js'
-import type { VectorChunk } from '../vectordb/index.js'
-import { VectorStore } from '../vectordb/index.js'
+import type { VectorChunk, VectorStore } from '../vectordb/index.js'
+import { createEmbedder, createVectorStore } from './common.js'
 import type { GlobalOptions, ResolvedGlobalConfig } from './options.js'
 import { resolveGlobalConfig, validateMaxFileSize, validatePath } from './options.js'
 
@@ -394,15 +394,8 @@ export async function runIngest(args: string[], globalOptions: GlobalOptions = {
     maxFileSize: config.maxFileSize,
   })
   const chunker = new SemanticChunker()
-  const embedder = new Embedder({
-    modelPath: config.modelName,
-    batchSize: 16,
-    cacheDir: config.cacheDir,
-  })
-  const vectorStore = new VectorStore({
-    dbPath: config.dbPath,
-    tableName: 'chunks',
-  })
+  const embedder = createEmbedder(globalConfig)
+  const vectorStore = createVectorStore(globalConfig)
   await vectorStore.initialize()
 
   // Process each file

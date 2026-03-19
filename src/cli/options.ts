@@ -111,6 +111,10 @@ Options:
 
 Commands:
   ingest <path>          Ingest files into the vector database
+  query <text>           Search ingested documents
+  list                   List files and ingestion status
+  status                 Show database status
+  delete <path>          Delete ingested content
   skills install         Install Claude Code / Codex skills`
 
 // ============================================

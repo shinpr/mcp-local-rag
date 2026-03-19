@@ -119,32 +119,22 @@ HTML is automatically cleaned—you get the article content, not the boilerplate
 
 > **Note:** The RAG server itself doesn't fetch web content—your AI assistant retrieves it and passes the HTML to `ingest_data`. This keeps the server fully local while letting you index any content your assistant can access. Please respect website terms of service and copyright when ingesting external content.
 
-### Bulk Ingestion (CLI)
+### CLI Commands
 
-For ingesting multiple files or an entire directory, use the CLI command instead of calling `ingest_file` repeatedly:
+All MCP tools are also available as CLI commands — no MCP server needed:
 
 ```bash
-npx mcp-local-rag --db-path ./lancedb ingest --base-dir ./docs ./docs/
+npx mcp-local-rag ingest ./docs/               # Bulk ingest files
+npx mcp-local-rag query "authentication API"    # Search documents
+npx mcp-local-rag list                          # Show ingestion status
+npx mcp-local-rag status                        # Database stats
+npx mcp-local-rag delete ./docs/old.pdf         # Remove content
+npx mcp-local-rag delete --source "https://..."  # Remove by source URL
 ```
 
-Supports PDF, DOCX, TXT, and Markdown (same as MCP tools). HTML is only supported via `ingest_data`, not CLI.
+Global options (`--db-path`, `--cache-dir`, `--model-name`) go before the subcommand. Run `npx mcp-local-rag --help` for details.
 
-Global options (must appear **before** the subcommand):
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `--db-path <path>` | `./lancedb/` | LanceDB database path |
-| `--model-name <name>` | `Xenova/all-MiniLM-L6-v2` | Embedding model |
-| `--cache-dir <path>` | `./models/` | Model cache directory |
-
-Ingest-specific options:
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `--base-dir <path>` | cwd | Base directory for documents |
-| `--max-file-size <n>` | `104857600` | Max file size in bytes (1–500MB) |
-
-This processes all supported files recursively and runs optimization once at the end — much faster than per-file ingestion for large batches.
+`query`, `list`, `status`, and `delete` output JSON to stdout for piping (e.g., `| jq`). `ingest` outputs progress to stderr.
 
 > ⚠️ **CLI options must match your MCP server config.** Especially `--model-name` — using a different embedding model against an existing database produces incompatible vectors, silently degrading search quality.
 

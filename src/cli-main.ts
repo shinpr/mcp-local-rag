@@ -1,7 +1,11 @@
 // CLI entry point for subcommands (skills install, etc.)
 import { run as runSkillsInstall } from './bin/install-skills.js'
+import { runDelete } from './cli/delete.js'
 import { runIngest } from './cli/ingest.js'
+import { runList } from './cli/list.js'
 import type { GlobalOptions } from './cli/options.js'
+import { runQuery } from './cli/query.js'
+import { runStatus } from './cli/status.js'
 
 /**
  * Handle CLI subcommands
@@ -29,9 +33,25 @@ export async function handleCli(args: string[], globalOptions: GlobalOptions = {
       await runIngest(args.slice(1), globalOptions)
       break
 
+    case 'list':
+      await runList(args.slice(1), globalOptions)
+      break
+
+    case 'query':
+      await runQuery(args.slice(1), globalOptions)
+      break
+
+    case 'status':
+      await runStatus(args.slice(1), globalOptions)
+      break
+
+    case 'delete':
+      await runDelete(args.slice(1), globalOptions)
+      break
+
     default:
       console.error(`Unknown command: ${subcommand}`)
-      console.error('Available commands: skills, ingest')
+      console.error('Available commands: skills, ingest, list, query, status, delete')
       process.exit(1)
   }
 }
