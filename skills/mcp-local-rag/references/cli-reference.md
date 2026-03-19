@@ -28,7 +28,7 @@ npx mcp-local-rag [global-options] ingest [options] <path>
 | `--base-dir <path>` | `BASE_DIR` | cwd | Base directory for documents |
 | `--max-file-size <n>` | `MAX_FILE_SIZE` | `104857600` | Max file size in bytes (1–500MB) |
 
-Output to stderr. Exit 0 = all succeeded, exit 1 = one or more failed.
+Output to stderr. Exit 0 = all succeeded, exit 1 = one or more failed. `SKIPPED (0 chunks)` = empty or too-short file, counted as success.
 
 ### query
 

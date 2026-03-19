@@ -1,6 +1,6 @@
 ---
 name: mcp-local-rag
-description: Local document search and ingestion via MCP tools or CLI commands. Handles ingesting files (PDF, DOCX, TXT, MD, HTML), semantic search with score interpretation, and content management (list, status, delete). Covers both MCP tool calls and `npx mcp-local-rag` CLI usage including bulk operations and scripting.
+description: Ingest, search, list, update, or delete content in a local mcp-local-rag index when the user is working with local documents or pasted/fetched HTML, Markdown, or text. Use this skill to choose the right MCP tool or `npx mcp-local-rag` CLI command, formulate effective queries, interpret search scores, and manage source metadata.
 ---
 
 # MCP Local RAG Skills
@@ -28,7 +28,8 @@ Lower = better match. Use this to filter noise.
 |-------|--------|
 | < 0.3 | Use directly |
 | 0.3-0.5 | Include if mentions same concept/entity |
-| > 0.5 | Skip unless no better results |
+| 0.5-0.7 | Include only if directly relevant to the question |
+| > 0.7 | Skip unless no better results |
 
 ### Limit Selection
 
@@ -104,12 +105,16 @@ ingest_data({
 
 **Source format:**
 - Web page → Use URL: `https://example.com/page`
-- Other content → Use scheme: `{type}://{date}` or `{type}://{date}/{detail}`
+- Other content → Use scheme: `{type}://{date}` or `{type}://{date}/{detail}` where `{type}` is a short identifier for the content origin (e.g., clipboard, chat, note, meeting)
 
 **HTML source options:**
-- Static page → LLM fetch
-- SPA/JS-rendered → Browser MCP
+- Static page → HTTP fetch
+- SPA/JS-rendered → Browser/web tool with DOM rendering
 - Auth required → Manual paste
+
+If HTTP fetch returns empty or minimal content, retry with a browser/web tool.
+
+Source URLs are normalized: query strings and fragments are stripped. See [html-ingestion.md](references/html-ingestion.md) for cases where this matters.
 
 Re-ingest same source to update. Use same source in `delete_file` to remove.
 
@@ -127,5 +132,5 @@ CLI subcommands mirror MCP tools. Useful for bulk operations, scripting, and env
 For edge cases and examples:
 - [html-ingestion.md](references/html-ingestion.md) - URL normalization, SPA handling
 - [query-optimization.md](references/query-optimization.md) - Query patterns by intent
-- [result-refinement.md](references/result-refinement.md) - Contradiction resolution, chunking
+- [result-refinement.md](references/result-refinement.md) - Synthesis vs filter strategy, contradiction resolution, chunking
 - [cli-reference.md](references/cli-reference.md) - CLI command options, config matching, output conventions

@@ -1,6 +1,6 @@
 # HTML Ingestion Reference
 
-Basic usage is in SKILL.md. This covers URL handling and edge cases.
+Core usage is in SKILL.md. This covers URL handling and edge cases.
 
 ## System Behavior
 
@@ -10,9 +10,11 @@ The parser extracts main content only—navigation, ads, and boilerplate are str
 
 | Source Type | Method | Why |
 |-------------|--------|-----|
-| Static page, public | LLM fetch | Simplest, no extra tools |
-| SPA / JS-rendered | Browser MCP | Need rendered DOM |
-| Auth required | Manual paste | Can't fetch programmatically |
+| Static page, public | HTTP fetch | Simplest, no extra tools |
+| SPA / JS-rendered | Browser/web tool with DOM rendering | Need rendered DOM |
+| Auth required | Manual paste | Cannot fetch programmatically |
+
+**Fallback:** If HTTP fetch returns empty or minimal content, treat as SPA and retry with a browser/web tool.
 
 ## URL Normalization
 
@@ -35,13 +37,13 @@ Explicitly include full URL as source.
 ### Empty/Minimal Extraction
 
 Why it happens:
-- JS-rendered content (use browser MCP)
+- JS-rendered content (use browser/web tool with DOM rendering)
 - Non-standard HTML structure
 - Login required
 
 ### SPA/Dynamic Content
 
-1. Use browser MCP to render
+1. Use browser/web tool to render
 2. Wait for content load
 3. Extract rendered HTML
 4. Ingest via `ingest_data`
@@ -65,10 +67,12 @@ ingest_data({
 Results from HTML include `source` and `fileTitle` fields:
 ```json
 {
-  "filePath": "raw-data/abc123.html",
+  "filePath": "/absolute/path/to/db/raw-data/<base64url-encoded-source>.md",
   "source": "https://example.com/page",
   "fileTitle": "Getting Started Guide",
   "text": "...",
   "score": 0.25
 }
 ```
+
+`filePath` is an internal path (base64url-encoded source, always `.md` extension). Use `source` to identify the content origin.

@@ -53,5 +53,5 @@ When initial results are unsatisfactory:
 
 Ngram tokenization supports cross-language queries:
 ```
-"API error handling" → matches both English and Japanese content
+"API error handling" → matches content regardless of language
 ```
