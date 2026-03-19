@@ -7,7 +7,7 @@ import {
   loadMetaJson,
   type RawDataMeta,
   saveMetaJson,
-} from '../raw-data-utils.js'
+} from '../../utils/raw-data-utils.js'
 
 describe('meta.json utilities', () => {
   describe('generateMetaJsonPath', () => {

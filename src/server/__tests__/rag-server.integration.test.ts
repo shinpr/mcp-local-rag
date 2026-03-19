@@ -7,8 +7,8 @@ import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { generateMetaJsonPath, generateRawDataPath } from '../../utils/raw-data-utils.js'
 import { RAGServer } from '../index.js'
-import { generateMetaJsonPath, generateRawDataPath } from '../raw-data-utils.js'
 
 // ============================================
 // MVP Phase 1: Core Functionality Integration Test

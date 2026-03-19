@@ -17,8 +17,6 @@ import { Embedder } from '../embedder/index.js'
 import { parseHtml } from '../parser/html-parser.js'
 import { DocumentParser, SUPPORTED_EXTENSIONS } from '../parser/index.js'
 import { extractMarkdownTitle, extractTxtTitle } from '../parser/title-extractor.js'
-import { type VectorChunk, VectorStore } from '../vectordb/index.js'
-import { formatErrorMessage } from './error-utils.js'
 import {
   type ContentFormat,
   extractSourceFromPath,
@@ -28,7 +26,9 @@ import {
   loadMetaJson,
   saveMetaJson,
   saveRawData,
-} from './raw-data-utils.js'
+} from '../utils/raw-data-utils.js'
+import { type VectorChunk, VectorStore } from '../vectordb/index.js'
+import { formatErrorMessage } from './error-utils.js'
 import { toolDefinitions } from './tool-definitions.js'
 import type {
   DeleteFileInput,
