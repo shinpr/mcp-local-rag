@@ -1,7 +1,7 @@
 // CLI ingest subcommand — bulk file ingestion with single optimize() at end
 
 import { randomUUID } from 'node:crypto'
-import { readdir, stat } from 'node:fs/promises'
+import { opendir, stat } from 'node:fs/promises'
 import { extname, join, resolve } from 'node:path'
 
 import { SemanticChunker } from '../chunker/index.js'
@@ -9,6 +9,12 @@ import { Embedder } from '../embedder/index.js'
 import { DocumentParser, SUPPORTED_EXTENSIONS } from '../parser/index.js'
 import type { VectorChunk } from '../vectordb/index.js'
 import { VectorStore } from '../vectordb/index.js'
+
+// ============================================
+// Constants
+// ============================================
+
+const MAX_DEPTH = 10
 
 // ============================================
 // Types
@@ -168,8 +174,8 @@ function resolveConfig(cliOptions: CliOptions = {}): IngestConfig {
 /**
  * Collect files to ingest from a path.
  * - If path is a file with supported extension, return [path].
- * - If path is a directory, recursively scan for supported files.
- * - Exclude dbPath and cacheDir directories.
+ * - If path is a directory, walk with BFS up to MAX_DEPTH levels.
+ * - Skip symlinks, permission errors, and excluded directories.
  */
 async function collectFiles(targetPath: string, excludePaths: string[]): Promise<string[]> {
   const resolved = resolve(targetPath)
@@ -187,12 +193,49 @@ async function collectFiles(targetPath: string, excludePaths: string[]): Promise
   }
 
   if (info.isDirectory()) {
-    const entries = await readdir(resolved, { recursive: true, withFileTypes: true })
-    return entries
-      .filter((e) => e.isFile() && SUPPORTED_EXTENSIONS.has(extname(e.name).toLowerCase()))
-      .map((e) => join(e.parentPath, e.name))
-      .filter((filePath) => !excludePaths.some((ep) => filePath.startsWith(ep)))
-      .sort()
+    const files: string[] = []
+    let depthLimited = false
+
+    const queue: { dirPath: string; depth: number }[] = [{ dirPath: resolved, depth: 0 }]
+
+    while (queue.length > 0) {
+      const { dirPath, depth } = queue.shift()!
+
+      if (depth >= MAX_DEPTH) {
+        depthLimited = true
+        continue
+      }
+
+      let dir: Awaited<ReturnType<typeof opendir>>
+      try {
+        dir = await opendir(dirPath)
+      } catch {
+        console.error(`Warning: cannot read directory: ${dirPath}`)
+        continue
+      }
+
+      for await (const entry of dir) {
+        const fullPath = join(dirPath, entry.name)
+
+        if (!fullPath.startsWith(resolved)) continue
+        if (entry.isSymbolicLink()) continue
+        if (excludePaths.some((ep) => fullPath.startsWith(ep))) continue
+
+        if (entry.isDirectory()) {
+          queue.push({ dirPath: fullPath, depth: depth + 1 })
+        } else if (entry.isFile() && SUPPORTED_EXTENSIONS.has(extname(entry.name).toLowerCase())) {
+          files.push(fullPath)
+        }
+      }
+    }
+
+    if (depthLimited) {
+      console.error(
+        `Warning: some directories were skipped because they exceed the maximum depth (${MAX_DEPTH})`
+      )
+    }
+
+    return files.sort()
   }
 
   return []
