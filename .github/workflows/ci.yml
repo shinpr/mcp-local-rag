@@ -44,5 +44,8 @@ jobs:
     - name: Run tests
       run: pnpm test
 
+    - name: Security audit
+      run: pnpm audit --prod
+
     - name: Check production dependencies
       run: npx report-missing-dependencies
