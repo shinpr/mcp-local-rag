@@ -52,6 +52,7 @@ export class RAGServer {
   private readonly parser: DocumentParser
   private readonly dbPath: string
   private readonly baseDir: string
+  private readonly chunkMinLength: number
   // Used by handleListFiles filter to exclude system-managed directories
   private readonly excludePaths: string[]
   private readonly configWarnings: string[]
@@ -91,7 +92,10 @@ export class RAGServer {
       batchSize: 16,
       cacheDir: config.cacheDir,
     })
-    this.chunker = new SemanticChunker()
+    this.chunkMinLength = config.chunkMinLength ?? 200
+    this.chunker = new SemanticChunker(
+      config.chunkMinLength !== undefined ? { minChunkLength: config.chunkMinLength } : {}
+    )
     this.parser = new DocumentParser({
       baseDir: config.baseDir,
       maxFileSize: config.maxFileSize,
@@ -264,7 +268,7 @@ export class RAGServer {
       if (chunks.length === 0) {
         throw new McpError(
           ErrorCode.InvalidParams,
-          `No chunks generated from file: ${args.filePath}. The file may be empty or all content was filtered (minimum 50 characters required). Existing data has been preserved.`
+          `No chunks generated from file: ${args.filePath}. The file may be empty or all content was filtered (minimum ${this.chunkMinLength} characters required). Existing data has been preserved.`
         )
       }
 

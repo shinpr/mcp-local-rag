@@ -33,6 +33,7 @@ describe('RAG MCP Server E2E Test', () => {
         cacheDir: './tmp/models',
         baseDir: testDataDir,
         maxFileSize: 100 * 1024 * 1024,
+        chunkMinLength: 50,
       })
       await ragServer.initialize()
 
@@ -99,6 +100,7 @@ describe('RAG MCP Server E2E Test', () => {
         cacheDir: './tmp/models',
         baseDir: testDataDir,
         maxFileSize: 100 * 1024 * 1024,
+        chunkMinLength: 50,
       })
       await ragServer.initialize()
 
@@ -148,6 +150,7 @@ describe('RAG MCP Server E2E Test', () => {
         cacheDir: './tmp/models',
         baseDir: testDataDir,
         maxFileSize: 100 * 1024 * 1024,
+        chunkMinLength: 50,
       })
       await ragServer.initialize()
 

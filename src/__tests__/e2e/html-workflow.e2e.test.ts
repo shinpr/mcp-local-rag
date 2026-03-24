@@ -17,6 +17,7 @@ const testConfig = {
   cacheDir: './tmp/test-model-cache',
   baseDir: '.',
   maxFileSize: 10 * 1024 * 1024,
+  chunkMinLength: 50,
 }
 
 // ============================================

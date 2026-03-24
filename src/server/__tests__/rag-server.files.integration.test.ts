@@ -21,6 +21,7 @@ describe('AC-006: Additional Format Support (Phase 2)', () => {
       cacheDir: './tmp/models',
       baseDir: localTestDataDir,
       maxFileSize: 100 * 1024 * 1024,
+      chunkMinLength: 50,
     })
 
     await localRagServer.initialize()
@@ -38,6 +39,7 @@ describe('AC-006: Additional Format Support (Phase 2)', () => {
     const parser = new DocumentParser({
       baseDir: localTestDataDir,
       maxFileSize: 100 * 1024 * 1024,
+      chunkMinLength: 50,
     })
 
     // Verify parseFile method recognizes .docx extension
@@ -65,6 +67,7 @@ describe('AC-006: Additional Format Support (Phase 2)', () => {
     const parser = new DocumentParser({
       baseDir: localTestDataDir,
       maxFileSize: 100 * 1024 * 1024,
+      chunkMinLength: 50,
     })
 
     // Test TXT file parsing
@@ -118,6 +121,7 @@ describe('AC-007: File Management', () => {
       cacheDir: './tmp/models',
       baseDir: localTestDataDir,
       maxFileSize: 100 * 1024 * 1024,
+      chunkMinLength: 50,
     })
 
     await localRagServer.initialize()
@@ -253,6 +257,7 @@ describe('AC-007: File Management', () => {
         cacheDir: excludeTestCache,
         baseDir: excludeTestBase,
         maxFileSize: 100 * 1024 * 1024,
+        chunkMinLength: 50,
       })
 
       await excludeServer.initialize()
@@ -320,6 +325,7 @@ describe('AC-007: File Management', () => {
           cacheDir: siblingCache,
           baseDir: siblingData,
           maxFileSize: 100 * 1024 * 1024,
+          chunkMinLength: 50,
         })
 
         await siblingServer.initialize()

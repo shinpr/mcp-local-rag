@@ -247,7 +247,7 @@ Keyword boost is applied *after* semantic filtering, so it improves precision wi
 
 When you ingest a document, the parser extracts text based on file type (PDF via `mupdf`, DOCX via `mammoth`, text files directly).
 
-The semantic chunker splits text into sentences, then groups them using embedding similarity. It finds natural topic boundaries where the meaning shifts—keeping related content together instead of cutting at arbitrary character limits. This produces chunks that are coherent units of meaning, typically 500-1000 characters. Markdown code blocks are kept intact—never split mid-block—preserving copy-pastable code in search results.
+The semantic chunker splits text into sentences, then groups them using embedding similarity. It finds natural topic boundaries where the meaning shifts—keeping related content together instead of cutting at arbitrary character limits. This produces chunks that are coherent units of meaning, typically 500-1000 characters. Markdown code blocks are kept intact—never split mid-block—preserving copy-pastable code in search results. Chunks shorter than `CHUNK_MIN_LENGTH` (default: 50 characters) are filtered out to avoid noise from headers, footers, or other short fragments.
 
 Each chunk goes through a Transformers.js embedding model (default: `all-MiniLM-L6-v2`, configurable via `MODEL_NAME`), converting text into vectors. Vectors are stored in LanceDB, a file-based vector database requiring no server process.
 
@@ -308,6 +308,7 @@ Both MCP and CLI use the same environment variables. The CLI also accepts equiva
 | `CACHE_DIR` | `--cache-dir` | `./models/` | Model cache directory |
 | `MODEL_NAME` | `--model-name` | `Xenova/all-MiniLM-L6-v2` | HuggingFace model ID ([available models](https://huggingface.co/models?library=transformers.js&pipeline_tag=feature-extraction)) |
 | `MAX_FILE_SIZE` | `--max-file-size` | `104857600` (100MB) | Maximum file size in bytes |
+| `CHUNK_MIN_LENGTH` | `--chunk-min-length` | `50` | Minimum chunk length in characters (1-10000) |
 
 **Model choice tips:**
 - Multilingual docs → e.g., `onnx-community/embeddinggemma-300m-ONNX` (100+ languages)

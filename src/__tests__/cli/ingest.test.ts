@@ -856,6 +856,32 @@ describe('CLI ingest', () => {
         errorSpy.mockRestore()
       }
     })
+
+    it('should parse --chunk-min-length flag', () => {
+      const result = parseArgs(['--chunk-min-length', '500', '/target'])
+      expect(result.positional).toBe('/target')
+      expect(result.options.chunkMinLength).toBe(500)
+    })
+
+    it('should error when --chunk-min-length value is missing', () => {
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+      try {
+        expect(() => parseArgs(['--chunk-min-length'])).toThrow('process.exit(1)')
+        expect(errorSpy).toHaveBeenCalledWith('Missing value for --chunk-min-length')
+      } finally {
+        errorSpy.mockRestore()
+      }
+    })
+
+    it('should detect --chunk-min-length value starting with dash as missing', () => {
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+      try {
+        expect(() => parseArgs(['--chunk-min-length', '--base-dir'])).toThrow('process.exit(1)')
+        expect(errorSpy).toHaveBeenCalledWith('Missing value for --chunk-min-length')
+      } finally {
+        errorSpy.mockRestore()
+      }
+    })
   })
 
   // --------------------------------------------
@@ -896,6 +922,7 @@ describe('CLI ingest', () => {
     afterEach(() => {
       delete process.env['BASE_DIR']
       delete process.env['MAX_FILE_SIZE']
+      delete process.env['CHUNK_MIN_LENGTH']
     })
 
     it('should error when BASE_DIR env var points to sensitive path', () => {
@@ -972,6 +999,53 @@ describe('CLI ingest', () => {
         expect(() => resolveConfig(globalConfig, { maxFileSize: 0 })).toThrow('process.exit(1)')
         expect(errorSpy).toHaveBeenCalledWith(
           expect.stringContaining('must be between 1 and 524288000')
+        )
+      } finally {
+        errorSpy.mockRestore()
+      }
+    })
+
+    it('should use default chunkMinLength when not specified', () => {
+      const globalConfig = resolveGlobalConfig({})
+      const config = resolveConfig(globalConfig, {})
+      expect(config.chunkMinLength).toBe(50)
+    })
+
+    it('should use CHUNK_MIN_LENGTH env var', () => {
+      process.env['CHUNK_MIN_LENGTH'] = '500'
+      const globalConfig = resolveGlobalConfig({})
+      const config = resolveConfig(globalConfig, {})
+      expect(config.chunkMinLength).toBe(500)
+    })
+
+    it('should use CLI chunkMinLength over env var', () => {
+      process.env['CHUNK_MIN_LENGTH'] = '500'
+      const globalConfig = resolveGlobalConfig({})
+      const config = resolveConfig(globalConfig, { chunkMinLength: 300 })
+      expect(config.chunkMinLength).toBe(300)
+    })
+
+    it('should error when --chunk-min-length CLI option is zero', () => {
+      const globalConfig = resolveGlobalConfig({})
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+      try {
+        expect(() => resolveConfig(globalConfig, { chunkMinLength: 0 })).toThrow('process.exit(1)')
+        expect(errorSpy).toHaveBeenCalledWith(
+          expect.stringContaining('must be between 1 and 10000')
+        )
+      } finally {
+        errorSpy.mockRestore()
+      }
+    })
+
+    it('should error when CHUNK_MIN_LENGTH env var exceeds 10000', () => {
+      process.env['CHUNK_MIN_LENGTH'] = '99999'
+      const globalConfig = resolveGlobalConfig({})
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+      try {
+        expect(() => resolveConfig(globalConfig, {})).toThrow('process.exit(1)')
+        expect(errorSpy).toHaveBeenCalledWith(
+          expect.stringContaining('must be between 1 and 10000')
         )
       } finally {
         errorSpy.mockRestore()

@@ -5,6 +5,7 @@ import { mkdir, rm } from 'node:fs/promises'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { RAGServer } from '../../server/index.js'
 import {
+  parseChunkMinLength,
   parseGroupingMode,
   parseHybridWeight,
   parseMaxDistance,
@@ -133,6 +134,48 @@ describe('parseHybridWeight', () => {
     const result = parseHybridWeight('abc')
     expect(result.value).toBeUndefined()
     expect(result.warning).toContain('Invalid RAG_HYBRID_WEIGHT')
+  })
+})
+
+describe('parseChunkMinLength', () => {
+  it('returns undefined with no warning for empty input', () => {
+    expect(parseChunkMinLength(undefined)).toEqual({ value: undefined })
+    expect(parseChunkMinLength('')).toEqual({ value: undefined })
+  })
+
+  it('returns valid integers within range', () => {
+    expect(parseChunkMinLength('1')).toEqual({ value: 1 })
+    expect(parseChunkMinLength('200')).toEqual({ value: 200 })
+    expect(parseChunkMinLength('10000')).toEqual({ value: 10000 })
+  })
+
+  it('returns warning for zero', () => {
+    const result = parseChunkMinLength('0')
+    expect(result.value).toBeUndefined()
+    expect(result.warning).toContain('Invalid CHUNK_MIN_LENGTH')
+  })
+
+  it('returns warning for negative values', () => {
+    const result = parseChunkMinLength('-1')
+    expect(result.value).toBeUndefined()
+    expect(result.warning).toContain('Invalid CHUNK_MIN_LENGTH')
+  })
+
+  it('returns warning for values above 10000', () => {
+    const result = parseChunkMinLength('10001')
+    expect(result.value).toBeUndefined()
+    expect(result.warning).toContain('Invalid CHUNK_MIN_LENGTH')
+  })
+
+  it('returns warning for non-numeric input', () => {
+    const result = parseChunkMinLength('abc')
+    expect(result.value).toBeUndefined()
+    expect(result.warning).toContain('Invalid CHUNK_MIN_LENGTH')
+  })
+
+  it('returns warning for float values', () => {
+    // parseInt('3.5') returns 3, which is valid
+    expect(parseChunkMinLength('3.5')).toEqual({ value: 3 })
   })
 })
 

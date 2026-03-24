@@ -52,6 +52,19 @@ export function parseMaxFiles(value: string | undefined): ParseResult<number> {
 }
 
 /**
+ * Parse chunk minimum length from environment variable
+ */
+export function parseChunkMinLength(value: string | undefined): ParseResult<number> {
+  if (!value) return { value: undefined }
+  const parsed = Number.parseInt(value, 10)
+  if (Number.isNaN(parsed) || parsed < 1 || parsed > 10000) {
+    const warning = `Invalid CHUNK_MIN_LENGTH value: "${value}". Expected integer 1-10000. Ignoring.`
+    return { value: undefined, warning }
+  }
+  return { value: parsed }
+}
+
+/**
  * Parse hybrid weight from environment variable
  */
 export function parseHybridWeight(value: string | undefined): ParseResult<number> {
@@ -113,6 +126,13 @@ export async function startServer(): Promise<void> {
     }
     if (hybridWeight.warning) {
       configWarnings.push(hybridWeight.warning)
+    }
+    const chunkMinLength = parseChunkMinLength(process.env['CHUNK_MIN_LENGTH'])
+    if (chunkMinLength.value !== undefined) {
+      config.chunkMinLength = chunkMinLength.value
+    }
+    if (chunkMinLength.warning) {
+      configWarnings.push(chunkMinLength.warning)
     }
 
     if (configWarnings.length > 0) {

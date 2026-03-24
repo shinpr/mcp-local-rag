@@ -23,6 +23,7 @@ describe('File Title Extraction Pipeline', () => {
       cacheDir: './tmp/models',
       baseDir: localTestDataDir,
       maxFileSize: 100 * 1024 * 1024,
+      chunkMinLength: 50,
     })
 
     await localRagServer.initialize()
@@ -94,6 +95,7 @@ describe('Meta JSON Sidecar Pipeline', () => {
       cacheDir: './tmp/models',
       baseDir: localTestDataDir,
       maxFileSize: 100 * 1024 * 1024,
+      chunkMinLength: 50,
     })
 
     await localRagServer.initialize()

@@ -8,6 +8,7 @@ import {
   parseGlobalOptions,
   ROOT_HELP_TEXT,
   resolveGlobalConfig,
+  validateChunkMinLength,
   validateMaxFileSize,
   validateModelName,
   validatePath,
@@ -382,6 +383,33 @@ describe('CLI global options', () => {
 
     it('should reject NaN', () => {
       expect(validateMaxFileSize(NaN)).toContain('must be between 1 and 524288000')
+    })
+  })
+
+  // ============================================
+  // validateChunkMinLength
+  // ============================================
+  describe('validateChunkMinLength', () => {
+    it('should accept valid values', () => {
+      expect(validateChunkMinLength(1)).toBeUndefined()
+      expect(validateChunkMinLength(200)).toBeUndefined()
+      expect(validateChunkMinLength(10000)).toBeUndefined()
+    })
+
+    it('should reject zero', () => {
+      expect(validateChunkMinLength(0)).toContain('must be between 1 and 10000')
+    })
+
+    it('should reject negative values', () => {
+      expect(validateChunkMinLength(-1)).toContain('must be between 1 and 10000')
+    })
+
+    it('should reject values exceeding 10000', () => {
+      expect(validateChunkMinLength(10001)).toContain('must be between 1 and 10000')
+    })
+
+    it('should reject NaN', () => {
+      expect(validateChunkMinLength(NaN)).toContain('must be between 1 and 10000')
     })
   })
 
