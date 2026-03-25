@@ -82,12 +82,11 @@ export function parseArgs(args: string[]): ParsedArgs {
           console.error('Missing value for --limit')
           process.exit(1)
         }
-        const parsed = Number.parseInt(value, 10)
-        if (Number.isNaN(parsed)) {
+        if (!/^\d+$/.test(value)) {
           console.error('--limit must be between 1 and 20')
           process.exit(1)
         }
-        options.limit = parsed
+        options.limit = Number.parseInt(value, 10)
         i++
         break
       }
