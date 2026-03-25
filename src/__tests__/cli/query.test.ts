@@ -423,6 +423,26 @@ describe('CLI query', () => {
       }
     })
 
+    it('should error when --limit value is non-numeric', () => {
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+      try {
+        expect(() => parseArgs(['--limit', 'abc', 'query text'])).toThrow('process.exit(1)')
+        expect(errorSpy).toHaveBeenCalledWith('--limit must be between 1 and 20')
+      } finally {
+        errorSpy.mockRestore()
+      }
+    })
+
+    it('should error when --limit value contains trailing non-digits', () => {
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+      try {
+        expect(() => parseArgs(['--limit', '5abc', 'query text'])).toThrow('process.exit(1)')
+        expect(errorSpy).toHaveBeenCalledWith('--limit must be between 1 and 20')
+      } finally {
+        errorSpy.mockRestore()
+      }
+    })
+
     it('should detect --limit value starting with dash as missing', () => {
       const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
       try {

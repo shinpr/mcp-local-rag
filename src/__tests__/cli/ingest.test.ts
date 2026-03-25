@@ -851,6 +851,26 @@ describe('CLI ingest', () => {
       }
     })
 
+    it('should error when --max-file-size value is non-numeric', () => {
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+      try {
+        expect(() => parseArgs(['--max-file-size', 'abc', '/target'])).toThrow('process.exit(1)')
+        expect(errorSpy).toHaveBeenCalledWith('Invalid value for --max-file-size: "abc"')
+      } finally {
+        errorSpy.mockRestore()
+      }
+    })
+
+    it('should error when --max-file-size value contains trailing non-digits', () => {
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+      try {
+        expect(() => parseArgs(['--max-file-size', '100abc', '/target'])).toThrow('process.exit(1)')
+        expect(errorSpy).toHaveBeenCalledWith('Invalid value for --max-file-size: "100abc"')
+      } finally {
+        errorSpy.mockRestore()
+      }
+    })
+
     it('should detect --base-dir value starting with dash as missing', () => {
       const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
       try {
