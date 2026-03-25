@@ -112,8 +112,11 @@ export function parseArgs(args: string[]): ParsedArgs {
           console.error('Missing value for --max-file-size')
           process.exit(1)
         }
-        const parsed = Number.parseInt(raw, 10)
-        options.maxFileSize = Number.isNaN(parsed) ? undefined : parsed
+        if (!/^\d+$/.test(raw)) {
+          console.error(`Invalid value for --max-file-size: "${raw}"`)
+          process.exit(1)
+        }
+        options.maxFileSize = Number.parseInt(raw, 10)
         i++
         break
       }
@@ -138,17 +141,6 @@ export function parseArgs(args: string[]): ParsedArgs {
 }
 
 // ============================================
-// NaN Defense
-// ============================================
-
-/**
- * Ensure maxFileSize is a valid number, falling back to default if NaN.
- */
-function sanitizeMaxFileSize(value: number): number {
-  return Number.isNaN(value) ? INGEST_DEFAULTS.maxFileSize : value
-}
-
-// ============================================
 // Config Resolution
 // ============================================
 
@@ -162,12 +154,11 @@ export function resolveConfig(
   ingestOptions: IngestCliOptions = {}
 ): IngestConfig {
   const baseDir = ingestOptions.baseDir ?? process.env['BASE_DIR'] ?? process.cwd()
-  const maxFileSize = sanitizeMaxFileSize(
+  const maxFileSize =
     ingestOptions.maxFileSize ??
-      (process.env['MAX_FILE_SIZE']
-        ? Number.parseInt(process.env['MAX_FILE_SIZE'], 10)
-        : INGEST_DEFAULTS.maxFileSize)
-  )
+    (process.env['MAX_FILE_SIZE']
+      ? Number.parseInt(process.env['MAX_FILE_SIZE'], 10)
+      : INGEST_DEFAULTS.maxFileSize)
 
   // Validate baseDir path
   const baseDirError = validatePath(baseDir, '--base-dir')
