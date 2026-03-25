@@ -12,7 +12,7 @@ import {
   ListToolsRequestSchema,
   McpError,
 } from '@modelcontextprotocol/sdk/types.js'
-import { SemanticChunker } from '../chunker/index.js'
+import { DEFAULT_MIN_CHUNK_LENGTH, SemanticChunker } from '../chunker/index.js'
 import { Embedder } from '../embedder/index.js'
 import { parseHtml } from '../parser/html-parser.js'
 import { DocumentParser, SUPPORTED_EXTENSIONS } from '../parser/index.js'
@@ -52,7 +52,6 @@ export class RAGServer {
   private readonly parser: DocumentParser
   private readonly dbPath: string
   private readonly baseDir: string
-  private readonly chunkMinLength: number
   // Used by handleListFiles filter to exclude system-managed directories
   private readonly excludePaths: string[]
   private readonly configWarnings: string[]
@@ -92,10 +91,8 @@ export class RAGServer {
       batchSize: 16,
       cacheDir: config.cacheDir,
     })
-    this.chunkMinLength = config.chunkMinLength ?? 200
-    this.chunker = new SemanticChunker(
-      config.chunkMinLength !== undefined ? { minChunkLength: config.chunkMinLength } : {}
-    )
+    const chunkMinLength = config.chunkMinLength ?? DEFAULT_MIN_CHUNK_LENGTH
+    this.chunker = new SemanticChunker({ minChunkLength: chunkMinLength })
     this.parser = new DocumentParser({
       baseDir: config.baseDir,
       maxFileSize: config.maxFileSize,
@@ -268,7 +265,7 @@ export class RAGServer {
       if (chunks.length === 0) {
         throw new McpError(
           ErrorCode.InvalidParams,
-          `No chunks generated from file: ${args.filePath}. The file may be empty or all content was filtered (minimum ${this.chunkMinLength} characters required). Existing data has been preserved.`
+          `No chunks generated from file: ${args.filePath}. The file may be empty or contain only non-text content. Existing data has been preserved.`
         )
       }
 

@@ -1,6 +1,6 @@
 // MinChunkLength Tests
 // Test Type: Unit Test
-// Tests that SemanticChunker correctly filters chunks by minChunkLength
+// Tests that SemanticChunker respects minChunkLength during grouping (not post-filtering)
 
 import { describe, expect, it } from 'vitest'
 import type { EmbedderInterface } from '../../chunker/semantic-chunker.js'
@@ -52,26 +52,30 @@ function createDissimilarEmbedder(): EmbedderInterface {
 // ============================================
 
 describe('SemanticChunker minChunkLength', () => {
-  it('should use default minChunkLength of 50 when not specified', async () => {
+  it('should group short sentences together to meet default minChunkLength of 50', async () => {
     const chunker = new SemanticChunker()
     const embedder = createDissimilarEmbedder()
 
-    // Create text with sentences that produce chunks shorter than 50 chars
+    // Each sentence is ~20 chars, well under 50, but grouping prevents splitting
     const shortSentence = 'Short sentence here.'
-    // Each sentence is ~20 chars, well under 50
     const text = Array(5).fill(shortSentence).join(' ')
 
     const chunks = await chunker.chunkText(text, embedder)
 
-    // All individual chunks are under 50 chars, so they should be filtered out
-    expect(chunks).toHaveLength(0)
+    // Sentences are grouped together (not split) because individual groups would be too short
+    expect(chunks.length).toBeGreaterThan(0)
+    // All original text should be present
+    const allText = chunks.map((c) => c.text).join(' ')
+    for (let i = 0; i < 5; i++) {
+      expect(allText).toContain('Short sentence here')
+    }
   })
 
-  it('should filter out chunks shorter than custom minChunkLength', async () => {
+  it('should absorb short sentences into neighboring groups to meet custom minChunkLength', async () => {
     const chunker = new SemanticChunker({ minChunkLength: 100 })
     const embedder = createDissimilarEmbedder()
 
-    // Create text with one long sentence (>100 chars) and several short ones
+    // One long sentence and several short ones — all should appear in output
     const longSentence =
       'This is a very long sentence that contains enough characters to exceed the minimum chunk length threshold of one hundred characters easily.'
     const shortSentence = 'Tiny.'
@@ -79,10 +83,10 @@ describe('SemanticChunker minChunkLength', () => {
 
     const chunks = await chunker.chunkText(text, embedder)
 
-    // Only the long sentence chunk should survive the filter
-    for (const chunk of chunks) {
-      expect(chunk.text.length).toBeGreaterThanOrEqual(100)
-    }
+    // All text must be preserved — short sentences absorbed into groups
+    const allText = chunks.map((c) => c.text).join(' ')
+    expect(allText).toContain(longSentence)
+    expect(allText).toContain('Tiny')
   })
 
   it('should keep all chunks when minChunkLength is set to 1', async () => {
@@ -117,11 +121,11 @@ describe('SemanticChunker minChunkLength', () => {
     const chunksStrict = await chunkerStrict.chunkText(text, embedder)
     const chunksRelaxed = await chunkerRelaxed.chunkText(text, embedder)
 
-    // Relaxed filter should keep at least as many chunks as strict
+    // Relaxed should allow more splits (more chunks)
     expect(chunksRelaxed.length).toBeGreaterThanOrEqual(chunksStrict.length)
   })
 
-  it('should return empty array when all chunks are below minChunkLength', async () => {
+  it('should group all sentences into one chunk when minChunkLength exceeds total text', async () => {
     const chunker = new SemanticChunker({ minChunkLength: 5000 })
     const embedder = createMockEmbedder()
 
@@ -130,28 +134,38 @@ describe('SemanticChunker minChunkLength', () => {
 
     const chunks = await chunker.chunkText(text, embedder)
 
-    // All chunks are well under 5000 chars, so everything is filtered
-    expect(chunks).toHaveLength(0)
+    // All sentences forced into one group since no group can meet 5000 chars
+    expect(chunks).toHaveLength(1)
+    expect(chunks[0]!.text).toContain('authentication')
+    expect(chunks[0]!.text).toContain('rate limiting')
+    expect(chunks[0]!.text).toContain('error handling')
   })
 
-  it('should re-index chunks sequentially after filtering', async () => {
+  it('should re-index chunks sequentially', async () => {
     const chunker = new SemanticChunker({ minChunkLength: 50 })
     const embedder = createDissimilarEmbedder()
 
-    // Mix of short (<50) and long (>50) sentences to create gaps after filtering
+    // Mix of short and long sentences — all preserved via grouping
     const text = [
-      'Hi.', // too short
+      'Hi.',
       'This is a medium-length sentence that should definitely pass the fifty character minimum chunk length filter.',
-      'Ok.', // too short
+      'Ok.',
       'Another sentence that is long enough to meet the minimum character threshold for chunk inclusion in results.',
     ].join(' ')
 
     const chunks = await chunker.chunkText(text, embedder)
 
-    // Chunks that survive should have sequential indices starting from 0
+    // Chunks should have sequential indices starting from 0
     for (let i = 0; i < chunks.length; i++) {
       expect(chunks[i]!.index).toBe(i)
     }
+
+    // All original text should be present
+    const allText = chunks.map((c) => c.text).join(' ')
+    expect(allText).toContain('Hi')
+    expect(allText).toContain('medium-length')
+    expect(allText).toContain('Ok')
+    expect(allText).toContain('Another sentence')
   })
 
   it('should not filter chunks when text is long enough', async () => {
@@ -170,20 +184,22 @@ describe('SemanticChunker minChunkLength', () => {
     }
   })
 
-  it('should handle minChunkLength at upper boundary (10000)', async () => {
+  it('should group all sentences into one chunk at upper boundary (10000)', async () => {
     const chunker = new SemanticChunker({ minChunkLength: 10000 })
     const embedder = createMockEmbedder()
 
-    // Normal-length text will all be filtered
     const text =
       'Short document with a few sentences. Not enough to reach ten thousand characters. Even with multiple sentences added together.'
 
     const chunks = await chunker.chunkText(text, embedder)
 
-    expect(chunks).toHaveLength(0)
+    // All sentences forced into one group
+    expect(chunks).toHaveLength(1)
+    expect(chunks[0]!.text).toContain('Short document')
+    expect(chunks[0]!.text).toContain('ten thousand')
   })
 
-  it('should pass minChunkLength to chunk filtering, not sentence splitting', async () => {
+  it('should apply minChunkLength during grouping, not post-filtering', async () => {
     const chunker = new SemanticChunker({ minChunkLength: 100 })
     const embedder = createMockEmbedder()
 
@@ -204,18 +220,65 @@ describe('SemanticChunker minChunkLength', () => {
     }
   })
 
-  it('should include minChunkLength value in RAGServer error message when 0 chunks generated', async () => {
-    // This tests the error message integration between chunker and server.
-    // When all chunks are filtered out, the server error should mention the minimum length.
-    const chunker = new SemanticChunker({ minChunkLength: 500 })
-    const embedder = createMockEmbedder()
+  it('should prevent splitting when group is below minChunkLength even with low similarity', async () => {
+    const chunker = new SemanticChunker({ minChunkLength: 200 })
+    const embedder = createDissimilarEmbedder()
 
-    const text = 'Very short text that will not meet the minimum.'
+    // All sentences are dissimilar, but minChunkLength prevents splitting until 200 chars
+    const text = [
+      'First topic about authentication.',
+      'Second topic about databases.',
+      'Third topic about networking.',
+      'Fourth topic about caching systems.',
+      'Fifth topic about load balancing.',
+    ].join(' ')
 
     const chunks = await chunker.chunkText(text, embedder)
 
-    // Verify that chunks array is empty — this is the condition that triggers
-    // the RAGServer error message containing the chunkMinLength value
-    expect(chunks).toHaveLength(0)
+    // No text should be lost — all sentences present
+    const allText = chunks.map((c) => c.text).join(' ')
+    expect(allText).toContain('authentication')
+    expect(allText).toContain('databases')
+    expect(allText).toContain('networking')
+    expect(allText).toContain('caching')
+    expect(allText).toContain('load balancing')
+  })
+
+  it('should fold short trailing group into previous group', async () => {
+    const chunker = new SemanticChunker({ minChunkLength: 100 })
+    const embedder = createDissimilarEmbedder()
+
+    // Long sentence followed by a very short one — the short trailing sentence
+    // should be folded into the previous group
+    const text =
+      'This is a long enough sentence that exceeds the one hundred character minimum chunk length threshold easily and comfortably. End.'
+
+    const chunks = await chunker.chunkText(text, embedder)
+
+    // "End." should be folded into the previous group, not lost
+    const allText = chunks.map((c) => c.text).join(' ')
+    expect(allText).toContain('End')
+  })
+
+  it('should preserve all original sentences across output chunks', async () => {
+    const chunker = new SemanticChunker({ minChunkLength: 80 })
+    const embedder = createDissimilarEmbedder()
+
+    const sentences = [
+      'The quick brown fox jumps over the lazy dog.',
+      'Pack my box with five dozen liquor jugs.',
+      'How valiantly the Sphinx of black quartz judges my vow.',
+      'The five boxing wizards jump quickly at dawn.',
+      'Crazy Frederick bought many very exquisite opal jewels.',
+    ]
+    const text = sentences.join(' ')
+
+    const chunks = await chunker.chunkText(text, embedder)
+
+    // Every sentence must appear in some chunk
+    const allText = chunks.map((c) => c.text).join(' ')
+    for (const sentence of sentences) {
+      expect(allText).toContain(sentence)
+    }
   })
 })

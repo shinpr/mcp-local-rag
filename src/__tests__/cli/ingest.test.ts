@@ -55,11 +55,15 @@ vi.mock('../../parser/index.js', () => ({
 }))
 
 // Mock SemanticChunker
-vi.mock('../../chunker/index.js', () => ({
-  SemanticChunker: vi.fn().mockImplementation(function (this: Record<string, unknown>) {
-    this.chunkText = mocks.chunkText
-  }),
-}))
+vi.mock('../../chunker/index.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../chunker/index.js')>()
+  return {
+    ...actual,
+    SemanticChunker: vi.fn().mockImplementation(function (this: Record<string, unknown>) {
+      this.chunkText = mocks.chunkText
+    }),
+  }
+})
 
 // Mock cli/common.js (createVectorStore / createEmbedder factories)
 vi.mock('../../cli/common.js', () => ({

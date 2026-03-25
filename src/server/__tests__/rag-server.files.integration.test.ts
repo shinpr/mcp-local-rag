@@ -39,7 +39,6 @@ describe('AC-006: Additional Format Support (Phase 2)', () => {
     const parser = new DocumentParser({
       baseDir: localTestDataDir,
       maxFileSize: 100 * 1024 * 1024,
-      chunkMinLength: 50,
     })
 
     // Verify parseFile method recognizes .docx extension
@@ -67,7 +66,6 @@ describe('AC-006: Additional Format Support (Phase 2)', () => {
     const parser = new DocumentParser({
       baseDir: localTestDataDir,
       maxFileSize: 100 * 1024 * 1024,
-      chunkMinLength: 50,
     })
 
     // Test TXT file parsing

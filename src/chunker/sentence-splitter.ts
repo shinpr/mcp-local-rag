@@ -91,7 +91,7 @@ const segmenter = new Intl.Segmenter('und', { granularity: 'sentence' })
  * Note: Intl.Segmenter may split on abbreviations like "Mr." or "e.g."
  * These edge cases are acceptable for semantic chunking as:
  * 1. Short fragments will be grouped with adjacent sentences by similarity
- * 2. Fragments below minChunkLength are filtered out
+ * 2. Groups below minChunkLength are prevented from splitting (kept together)
  *
  * @param text - The text to split into sentences
  * @returns Array of sentences

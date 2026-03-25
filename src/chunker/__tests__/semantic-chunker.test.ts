@@ -162,7 +162,7 @@ Topic B is completely different. Topic B continues here.`
       expect(result[0]?.text).toContain('First sentence')
     })
 
-    it('should filter chunks shorter than minChunkLength', async () => {
+    it('should keep short text in a single group when below minChunkLength', async () => {
       const chunkerWithHighMin = new SemanticChunker({
         hardThreshold: 0.6,
         initConst: 1.5,
@@ -179,9 +179,10 @@ Topic B is completely different. Topic B continues here.`
 
       const result = await chunkerWithHighMin.chunkText(text, mockEmbedder)
 
-      // Both sentences are too short, but might be combined
-      // If combined and still too short, should be filtered
-      expect(result.every((chunk) => chunk.text.length >= 100 || result.length === 0)).toBe(true)
+      // Both sentences grouped together (not dropped) — no text loss
+      expect(result).toHaveLength(1)
+      expect(result[0]?.text).toContain('Short')
+      expect(result[0]?.text).toContain('Also short')
     })
   })
 
@@ -237,8 +238,9 @@ Second topic is different. Second topic continues.`
 
       const result = await chunker.chunkText(text, mockEmbedder)
 
-      // Code block (31 chars) is below minChunkLength (50), so should be filtered out
-      expect(result).toHaveLength(0)
+      // Code block is a single group — kept regardless of length (no text loss)
+      expect(result).toHaveLength(1)
+      expect(result[0]?.text).toContain('const x = 1')
     })
 
     it('should handle embedder errors gracefully', async () => {
@@ -319,8 +321,9 @@ Second topic is different. Second topic continues.`
 
     it('should handle WINDOW_SIZE (5) sentences for min similarity calculation', async () => {
       // Create 6 sentences where the 6th has low similarity to recent sentences
+      // The 6th sentence must be long enough to stand alone (>= minChunkLength 50 chars)
       const text =
-        'First related sentence. Second related sentence. Third related sentence. Fourth related sentence. Fifth related sentence. Completely unrelated topic here.'
+        'First related sentence. Second related sentence. Third related sentence. Fourth related sentence. Fifth related sentence. A completely unrelated topic that discusses something entirely different from the rest.'
 
       // First 5 sentences similar, 6th is different
       vi.mocked(mockEmbedder.embedBatch).mockResolvedValue([
@@ -335,7 +338,7 @@ Second topic is different. Second topic continues.`
       const result = await chunker.chunkText(text, mockEmbedder)
 
       // Should detect boundary at sentence 6 (WINDOW_SIZE comparison works)
-      expect(result.length).toBeGreaterThanOrEqual(1)
+      expect(result.length).toBeGreaterThanOrEqual(2)
       expect(result[0]?.text).toContain('First related')
       expect(result[0]?.text).not.toContain('unrelated topic')
     })
