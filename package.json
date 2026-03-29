@@ -64,10 +64,10 @@
   "dependencies": {
     "@huggingface/transformers": "^3.8.1",
     "@lancedb/lancedb": "^0.26.2",
-    "@modelcontextprotocol/sdk": "^1.27.1",
+    "@modelcontextprotocol/sdk": "^1.28.0",
     "@mozilla/readability": "0.6.0",
     "jsdom": "^27.4.0",
-    "mammoth": "^1.11.0",
+    "mammoth": "^1.12.0",
     "mupdf": "^1.27.0",
     "turndown": "7.2.2"
   },
@@ -77,13 +77,13 @@
     "@types/node": "^25.3.5",
     "@types/turndown": "5.0.6",
     "husky": "^9.1.7",
+    "knip": "^6.1.0",
     "lint-staged": "^16.3.2",
     "madge": "^8.0.0",
-    "knip": "^5.61.2",
     "tsc-alias": "^1.8.16",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3",
-    "vitest": "^4.0.18"
+    "vitest": "^4.1.2"
   },
   "engines": {
     "node": ">=20"
