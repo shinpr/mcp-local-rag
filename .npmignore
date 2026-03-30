@@ -16,7 +16,7 @@ output/
 
 # Config files
 .gitignore
-.madgerc
+pnpm-workspace.yaml
 knip.json
 biome.json
 tsconfig.json
