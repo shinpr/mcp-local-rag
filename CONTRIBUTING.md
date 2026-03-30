@@ -4,7 +4,7 @@ Contributions welcome! This guide covers what you need to get started.
 
 ## Prerequisites
 
-- Node.js >= 20
+- Node.js >= 22
 - [pnpm](https://pnpm.io/)
 
 ## Setup
