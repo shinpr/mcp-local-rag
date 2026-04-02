@@ -66,6 +66,17 @@ export function validateMaxFileSize(value: number): string | undefined {
   return undefined
 }
 
+/**
+ * Validate chunk minimum length is within acceptable range.
+ * Returns an error message if invalid, or undefined if valid.
+ */
+export function validateChunkMinLength(value: number): string | undefined {
+  if (!Number.isFinite(value) || value < 1 || value > 10000) {
+    return '--chunk-min-length must be between 1 and 10000'
+  }
+  return undefined
+}
+
 // ============================================
 // Types
 // ============================================

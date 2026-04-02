@@ -25,6 +25,8 @@ export interface RAGServerConfig {
   hybridWeight?: number
   /** Maximum number of files to keep in search results (optional) */
   maxFiles?: number
+  /** Minimum chunk length in characters (optional, default: 50) */
+  chunkMinLength?: number
   /** Configuration validation warnings to surface to users via MCP annotations */
   configWarnings?: string[]
 }

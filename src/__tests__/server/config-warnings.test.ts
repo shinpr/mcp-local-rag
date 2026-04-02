@@ -5,6 +5,7 @@ import { mkdir, rm } from 'node:fs/promises'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { RAGServer } from '../../server/index.js'
 import {
+  parseChunkMinLength,
   parseGroupingMode,
   parseHybridWeight,
   parseMaxDistance,
@@ -133,6 +134,52 @@ describe('parseHybridWeight', () => {
     const result = parseHybridWeight('abc')
     expect(result.value).toBeUndefined()
     expect(result.warning).toContain('Invalid RAG_HYBRID_WEIGHT')
+  })
+})
+
+describe('parseChunkMinLength', () => {
+  it('returns undefined with no warning for empty input', () => {
+    expect(parseChunkMinLength(undefined)).toEqual({ value: undefined })
+    expect(parseChunkMinLength('')).toEqual({ value: undefined })
+  })
+
+  it('returns valid integer values', () => {
+    expect(parseChunkMinLength('100')).toEqual({ value: 100 })
+    expect(parseChunkMinLength('50')).toEqual({ value: 50 })
+  })
+
+  it('returns valid boundary values', () => {
+    expect(parseChunkMinLength('1')).toEqual({ value: 1 })
+    expect(parseChunkMinLength('10000')).toEqual({ value: 10000 })
+  })
+
+  it('returns warning for value below minimum', () => {
+    const result = parseChunkMinLength('0')
+    expect(result.value).toBeUndefined()
+    expect(result.warning).toContain('Invalid CHUNK_MIN_LENGTH')
+  })
+
+  it('returns warning for negative value', () => {
+    const result = parseChunkMinLength('-1')
+    expect(result.value).toBeUndefined()
+    expect(result.warning).toContain('Invalid CHUNK_MIN_LENGTH')
+  })
+
+  it('returns warning for value above maximum', () => {
+    const result = parseChunkMinLength('10001')
+    expect(result.value).toBeUndefined()
+    expect(result.warning).toContain('Invalid CHUNK_MIN_LENGTH')
+  })
+
+  it('returns warning for non-numeric input', () => {
+    const result = parseChunkMinLength('abc')
+    expect(result.value).toBeUndefined()
+    expect(result.warning).toContain('Invalid CHUNK_MIN_LENGTH')
+  })
+
+  it('truncates float input to integer via parseInt', () => {
+    // parseInt('50.5') returns 50, which is valid — consistent with parseMaxFiles behavior
+    expect(parseChunkMinLength('50.5')).toEqual({ value: 50 })
   })
 })
 

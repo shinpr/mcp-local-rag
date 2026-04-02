@@ -12,7 +12,7 @@ import {
   ListToolsRequestSchema,
   McpError,
 } from '@modelcontextprotocol/sdk/types.js'
-import { SemanticChunker } from '../chunker/index.js'
+import { DEFAULT_MIN_CHUNK_LENGTH, SemanticChunker } from '../chunker/index.js'
 import { Embedder } from '../embedder/index.js'
 import { parseHtml } from '../parser/html-parser.js'
 import { DocumentParser, SUPPORTED_EXTENSIONS } from '../parser/index.js'
@@ -55,12 +55,14 @@ export class RAGServer {
   // Used by handleListFiles filter to exclude system-managed directories
   private readonly excludePaths: string[]
   private readonly configWarnings: string[]
+  private readonly minChunkLength: number
   private queryWarningsShown = false
 
   constructor(config: RAGServerConfig) {
     this.dbPath = config.dbPath
     this.baseDir = config.baseDir
     this.configWarnings = config.configWarnings ?? []
+    this.minChunkLength = config.chunkMinLength ?? DEFAULT_MIN_CHUNK_LENGTH
     this.excludePaths = [`${resolve(config.dbPath)}/`, `${resolve(config.cacheDir)}/`]
     this.server = new Server(
       { name: 'rag-mcp-server', version: '1.0.0' },
@@ -91,7 +93,9 @@ export class RAGServer {
       batchSize: 16,
       cacheDir: config.cacheDir,
     })
-    this.chunker = new SemanticChunker()
+    this.chunker = new SemanticChunker(
+      config.chunkMinLength !== undefined ? { minChunkLength: config.chunkMinLength } : {}
+    )
     this.parser = new DocumentParser({
       baseDir: config.baseDir,
       maxFileSize: config.maxFileSize,
@@ -264,7 +268,7 @@ export class RAGServer {
       if (chunks.length === 0) {
         throw new McpError(
           ErrorCode.InvalidParams,
-          `No chunks generated from file: ${args.filePath}. The file may be empty or all content was filtered (minimum 50 characters required). Existing data has been preserved.`
+          `No chunks generated from file: ${args.filePath}. The file may be empty or all content was filtered (minimum ${this.minChunkLength} characters required). Existing data has been preserved.`
         )
       }
 
