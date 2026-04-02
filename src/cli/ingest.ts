@@ -10,7 +10,12 @@ import { DocumentParser, SUPPORTED_EXTENSIONS } from '../parser/index.js'
 import type { VectorChunk, VectorStore } from '../vectordb/index.js'
 import { createEmbedder, createVectorStore } from './common.js'
 import type { GlobalOptions, ResolvedGlobalConfig } from './options.js'
-import { resolveGlobalConfig, validateMaxFileSize, validatePath } from './options.js'
+import {
+  resolveGlobalConfig,
+  validateChunkMinLength,
+  validateMaxFileSize,
+  validatePath,
+} from './options.js'
 
 // ============================================
 // Constants
@@ -28,6 +33,7 @@ interface IngestConfig {
   cacheDir: string
   modelName: string
   maxFileSize: number
+  chunkMinLength?: number
 }
 
 interface IngestSummary {
@@ -39,6 +45,7 @@ interface IngestSummary {
 interface IngestCliOptions {
   baseDir?: string | undefined
   maxFileSize?: number | undefined
+  chunkMinLength?: number | undefined
 }
 
 interface ParsedArgs {
@@ -64,14 +71,15 @@ const HELP_TEXT = `Usage: mcp-local-rag [global-options] ingest [options] <path>
 Ingest a single file or all supported files under a directory.
 
 Options:
-  --base-dir <path>      Base directory for documents (default: cwd)
-  --max-file-size <n>    Max file size in bytes (default: ${INGEST_DEFAULTS.maxFileSize})
-  -h, --help             Show this help
+  --base-dir <path>        Base directory for documents (default: cwd)
+  --max-file-size <n>      Max file size in bytes (default: ${INGEST_DEFAULTS.maxFileSize})
+  --chunk-min-length <n>   Minimum chunk length in characters (default: 50, range: 1-10000)
+  -h, --help               Show this help
 
 Global options (must appear before "ingest"):
-  --db-path <path>       LanceDB database path
-  --cache-dir <path>     Model cache directory
-  --model-name <name>    Embedding model`
+  --db-path <path>         LanceDB database path
+  --cache-dir <path>       Model cache directory
+  --model-name <name>      Embedding model`
 
 // ============================================
 // Arg Parsing
@@ -113,10 +121,26 @@ export function parseArgs(args: string[]): ParsedArgs {
           process.exit(1)
         }
         if (!/^\d+$/.test(raw)) {
-          console.error(`Invalid value for --max-file-size: "${raw}"`)
+          console.error(`Invalid value for --max-file-size: "${raw.slice(0, 100)}"`)
+
           process.exit(1)
         }
         options.maxFileSize = Number.parseInt(raw, 10)
+        i++
+        break
+      }
+      case '--chunk-min-length': {
+        const raw = args[++i]
+        if (raw === undefined || raw.startsWith('-')) {
+          console.error('Missing value for --chunk-min-length')
+          process.exit(1)
+        }
+        if (!/^\d+$/.test(raw)) {
+          console.error(`Invalid value for --chunk-min-length: "${raw.slice(0, 100)}"`)
+
+          process.exit(1)
+        }
+        options.chunkMinLength = Number.parseInt(raw, 10)
         i++
         break
       }
@@ -159,6 +183,11 @@ export function resolveConfig(
     (process.env['MAX_FILE_SIZE']
       ? Number.parseInt(process.env['MAX_FILE_SIZE'], 10)
       : INGEST_DEFAULTS.maxFileSize)
+  const chunkMinLength =
+    ingestOptions.chunkMinLength ??
+    (process.env['CHUNK_MIN_LENGTH']
+      ? Number.parseInt(process.env['CHUNK_MIN_LENGTH'], 10)
+      : undefined)
 
   // Validate baseDir path
   const baseDirError = validatePath(baseDir, '--base-dir')
@@ -174,13 +203,26 @@ export function resolveConfig(
     process.exit(1)
   }
 
-  return {
+  // Validate chunkMinLength range (if provided)
+  if (chunkMinLength !== undefined) {
+    const chunkMinLengthError = validateChunkMinLength(chunkMinLength)
+    if (chunkMinLengthError) {
+      console.error(chunkMinLengthError)
+      process.exit(1)
+    }
+  }
+
+  const resolved: IngestConfig = {
     dbPath: globalConfig.dbPath,
     cacheDir: globalConfig.cacheDir,
     modelName: globalConfig.modelName,
     baseDir,
     maxFileSize,
   }
+  if (chunkMinLength !== undefined) {
+    resolved.chunkMinLength = chunkMinLength
+  }
+  return resolved
 }
 
 // ============================================
@@ -384,7 +426,9 @@ export async function runIngest(args: string[], globalOptions: GlobalOptions = {
     baseDir: config.baseDir,
     maxFileSize: config.maxFileSize,
   })
-  const chunker = new SemanticChunker()
+  const chunker = new SemanticChunker(
+    config.chunkMinLength !== undefined ? { minChunkLength: config.chunkMinLength } : {}
+  )
   const embedder = createEmbedder(globalConfig)
   const vectorStore = createVectorStore(globalConfig)
   await vectorStore.initialize()

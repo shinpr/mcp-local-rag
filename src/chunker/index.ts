@@ -8,4 +8,4 @@ export interface TextChunk {
   index: number
 }
 
-export { SemanticChunker } from './semantic-chunker.js'
+export { DEFAULT_MIN_CHUNK_LENGTH, SemanticChunker } from './semantic-chunker.js'

@@ -87,11 +87,14 @@ export function isGarbageChunk(text: string): boolean {
 // Default Configuration
 // ============================================
 
+/** Default minimum chunk length in characters */
+export const DEFAULT_MIN_CHUNK_LENGTH = 50
+
 const DEFAULT_SEMANTIC_CHUNKER_CONFIG: SemanticChunkerConfig = {
   hardThreshold: 0.6,
   initConst: 1.5,
   c: 0.9,
-  minChunkLength: 50,
+  minChunkLength: DEFAULT_MIN_CHUNK_LENGTH,
 }
 
 // ============================================

@@ -21,7 +21,7 @@ export function parseGroupingMode(value: string | undefined): ParseResult<Groupi
   if (normalized === 'similar' || normalized === 'related') {
     return { value: normalized }
   }
-  const warning = `Invalid RAG_GROUPING value: "${value}". Expected "similar" or "related". Ignoring.`
+  const warning = `Invalid RAG_GROUPING value: "${value.slice(0, 100)}". Expected "similar" or "related". Ignoring.`
   return { value: undefined, warning }
 }
 
@@ -32,7 +32,7 @@ export function parseMaxDistance(value: string | undefined): ParseResult<number>
   if (!value) return { value: undefined }
   const parsed = Number.parseFloat(value)
   if (Number.isNaN(parsed) || parsed <= 0 || !Number.isFinite(parsed)) {
-    const warning = `Invalid RAG_MAX_DISTANCE value: "${value}". Expected positive number. Ignoring.`
+    const warning = `Invalid RAG_MAX_DISTANCE value: "${value.slice(0, 100)}". Expected positive number. Ignoring.`
     return { value: undefined, warning }
   }
   return { value: parsed }
@@ -45,7 +45,7 @@ export function parseMaxFiles(value: string | undefined): ParseResult<number> {
   if (!value) return { value: undefined }
   const parsed = Number.parseInt(value, 10)
   if (Number.isNaN(parsed) || parsed < 1) {
-    const warning = `Invalid RAG_MAX_FILES value: "${value}". Expected positive integer (>= 1). Ignoring.`
+    const warning = `Invalid RAG_MAX_FILES value: "${value.slice(0, 100)}". Expected positive integer (>= 1). Ignoring.`
     return { value: undefined, warning }
   }
   return { value: parsed }
@@ -58,7 +58,20 @@ export function parseHybridWeight(value: string | undefined): ParseResult<number
   if (!value) return { value: undefined }
   const parsed = Number.parseFloat(value)
   if (Number.isNaN(parsed) || parsed < 0 || parsed > 1) {
-    const warning = `Invalid RAG_HYBRID_WEIGHT value: "${value}". Expected 0.0-1.0. Using default (0.6).`
+    const warning = `Invalid RAG_HYBRID_WEIGHT value: "${value.slice(0, 100)}". Expected 0.0-1.0. Using default (0.6).`
+    return { value: undefined, warning }
+  }
+  return { value: parsed }
+}
+
+/**
+ * Parse chunk minimum length from environment variable
+ */
+export function parseChunkMinLength(value: string | undefined): ParseResult<number> {
+  if (!value) return { value: undefined }
+  const parsed = Number.parseInt(value, 10)
+  if (Number.isNaN(parsed) || parsed < 1 || parsed > 10000) {
+    const warning = `Invalid CHUNK_MIN_LENGTH value: "${value.slice(0, 100)}". Expected integer between 1 and 10000. Ignoring.`
     return { value: undefined, warning }
   }
   return { value: parsed }
@@ -90,6 +103,7 @@ export async function startServer(): Promise<void> {
     const grouping = parseGroupingMode(process.env['RAG_GROUPING'])
     const maxFiles = parseMaxFiles(process.env['RAG_MAX_FILES'])
     const hybridWeight = parseHybridWeight(process.env['RAG_HYBRID_WEIGHT'])
+    const chunkMinLength = parseChunkMinLength(process.env['CHUNK_MIN_LENGTH'])
     if (maxDistance.value !== undefined) {
       config.maxDistance = maxDistance.value
     }
@@ -113,6 +127,12 @@ export async function startServer(): Promise<void> {
     }
     if (hybridWeight.warning) {
       configWarnings.push(hybridWeight.warning)
+    }
+    if (chunkMinLength.value !== undefined) {
+      config.chunkMinLength = chunkMinLength.value
+    }
+    if (chunkMinLength.warning) {
+      configWarnings.push(chunkMinLength.warning)
     }
 
     if (configWarnings.length > 0) {
