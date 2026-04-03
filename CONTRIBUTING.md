@@ -51,6 +51,7 @@ Before submitting a pull request:
 2. **Run `pnpm run check:all`** and ensure everything passes
 3. **Update documentation** if behavior changes
 4. **Keep commits focused** — one logical change per PR
+5. **Enable "Allow edits from maintainers"** when opening your PR — this lets us push small fixes directly and speeds up the review cycle
 
 ## What We Look For
 
