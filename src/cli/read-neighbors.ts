@@ -152,16 +152,24 @@ export async function runReadNeighbors(
   args: string[],
   globalOptions: GlobalOptions = {}
 ): Promise<void> {
+  // Parse CLI options (parse errors are caught and converted to exit(1) below).
+  let parsed: ReadNeighborsArgs
   try {
-    // Parse CLI options
-    const parsed = parseArgs(args)
+    parsed = parseArgs(args)
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error)
+    console.error(`Error: ${reason}`)
+    process.exit(1)
+  }
 
-    // Handle --help
-    if (parsed.help) {
-      console.error(HELP_TEXT)
-      process.exit(0)
-    }
+  // Handle --help OUTSIDE the main try/catch so exit(0) is not converted to exit(1).
+  // Mirrors src/cli/delete.ts and src/cli/query.ts.
+  if (parsed.help) {
+    console.error(HELP_TEXT)
+    process.exit(0)
+  }
 
+  try {
     // Validation order: chunkIndex → before → after → XOR (matches handler per Design Doc).
     if (parsed.chunkIndex === undefined) {
       throw new Error('--chunk-index is required and must be a non-negative integer')
