@@ -95,6 +95,24 @@ export interface SearchResult {
 }
 
 /**
+ * Row returned by VectorStore.getChunksByRange.
+ * Distinct from SearchResult (see Design Doc §Contract Definitions):
+ * no score (not a ranked result) and no metadata (not needed for
+ * index-adjacent retrieval). Consumed by handleReadChunkNeighbors
+ * and runReadNeighbors (Task 1.2).
+ */
+export interface ChunkRow {
+  /** File path (absolute) */
+  filePath: string
+  /** Chunk index (zero-based) */
+  chunkIndex: number
+  /** Chunk text */
+  text: string
+  /** Document title extracted from file content (display-only, not used for scoring) */
+  fileTitle: string | null
+}
+
+/**
  * Raw result from LanceDB query (internal type)
  */
 export interface LanceDBRawResult {
@@ -154,6 +172,42 @@ export function toSearchResult(raw: unknown): SearchResult {
     score: raw._distance ?? raw._score ?? 0,
     metadata: raw.metadata,
     fileTitle: raw.fileTitle || null,
+  }
+}
+
+/**
+ * Convert LanceDB raw row to ChunkRow with type validation.
+ * Mirrors toSearchResult but returns the minimal shape defined in
+ * Design Doc §Contract Definitions: no score (not ranked) and no
+ * metadata (not needed for index-adjacent retrieval).
+ *
+ * Uses a narrower shape check than isLanceDBRawResult: only
+ * filePath/chunkIndex/text are required because getChunksByRange
+ * does not project metadata. The empty-string-or-missing fileTitle
+ * is normalized to null per §Field Propagation Map.
+ *
+ * @throws DatabaseError if the raw row is missing required fields
+ */
+export function toChunkRow(raw: unknown): ChunkRow {
+  if (typeof raw !== 'object' || raw === null) {
+    throw new DatabaseError('Invalid chunk row shape from LanceDB')
+  }
+  const obj = raw as Record<string, unknown>
+  if (
+    typeof obj['filePath'] !== 'string' ||
+    typeof obj['chunkIndex'] !== 'number' ||
+    typeof obj['text'] !== 'string'
+  ) {
+    throw new DatabaseError('Invalid chunk row shape from LanceDB')
+  }
+  const rawFileTitle = obj['fileTitle']
+  const fileTitle =
+    typeof rawFileTitle === 'string' && rawFileTitle.length > 0 ? rawFileTitle : null
+  return {
+    filePath: obj['filePath'],
+    chunkIndex: obj['chunkIndex'],
+    text: obj['text'],
+    fileTitle,
   }
 }
 
