@@ -15,6 +15,7 @@ description: Ingest, search, list, update, or delete content in a local mcp-loca
 | `delete_file` | `npx mcp-local-rag delete <path>` | Remove ingested content |
 | `list_files` | `npx mcp-local-rag list` | File ingestion status |
 | `status` | `npx mcp-local-rag status` | Database stats |
+| `read_chunk_neighbors` | `npx mcp-local-rag read-neighbors` | After locating a chunk via query_documents or grep, read surrounding context (not a search tool) |
 
 ## Search: Core Rules
 
@@ -82,6 +83,16 @@ Each result includes `fileTitle` (document title extracted from content). Null w
 | Disambiguate chunks | Use fileTitle to identify which document the chunk belongs to |
 | Group related chunks | Same fileTitle = same document context |
 | Deprioritize mismatches | fileTitle unrelated to query AND score > 0.5 → rank lower |
+
+## Context Expansion (read_chunk_neighbors)
+
+`read_chunk_neighbors` (CLI: `read-neighbors`) reads chunks adjacent to a known `chunkIndex` within the same document. It is **not a search tool** and is **not a replacement for `query_documents`**.
+
+Typical workflow:
+
+1. Use `query_documents` (or external `grep`) to find a chunk of interest.
+2. Take that chunk's `filePath` and `chunkIndex`.
+3. Call `read_chunk_neighbors` with those values to read the surrounding chunks.
 
 ## Ingestion
 
