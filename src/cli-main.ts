@@ -5,6 +5,7 @@ import { runIngest } from './cli/ingest.js'
 import { runList } from './cli/list.js'
 import type { GlobalOptions } from './cli/options.js'
 import { runQuery } from './cli/query.js'
+import { runReadNeighbors } from './cli/read-neighbors.js'
 import { runStatus } from './cli/status.js'
 
 /**
@@ -49,9 +50,15 @@ export async function handleCli(args: string[], globalOptions: GlobalOptions = {
       await runDelete(args.slice(1), globalOptions)
       break
 
+    case 'read-neighbors':
+      await runReadNeighbors(args.slice(1), globalOptions)
+      break
+
     default:
       console.error(`Unknown command: ${subcommand}`)
-      console.error('Available commands: skills, ingest, list, query, status, delete')
+      console.error(
+        'Available commands: skills, ingest, list, query, status, delete, read-neighbors'
+      )
       process.exit(1)
   }
 }
