@@ -3,7 +3,7 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { type VectorChunk, VectorStore } from '../index.js'
-import { isLanceDBRawResult, toSearchResult } from '../types.js'
+import { type ChunkRow, DatabaseError, isLanceDBRawResult, toSearchResult } from '../types.js'
 
 describe('VectorStore', () => {
   const testDbPath = './tmp/test-vectordb'
@@ -1238,6 +1238,204 @@ describe('VectorStore', () => {
           }
         }
       })
+    })
+  })
+
+  /**
+   * VectorStore.getChunksByRange — range-read primitive for read_chunk_neighbors.
+   *
+   * This describe block is the PROBE GATE for LanceDB numeric-predicate
+   * viability (chunkIndex >= N AND chunkIndex <= M). The first test is
+   * the Design Doc Early Verification Point. If it fails with a LanceDB
+   * SQL error, switch the primitive in src/vectordb/index.ts to the
+   * documented fallback (fetch-all + in-memory filter) and update the
+   * Design Doc Limitation note with the observed error text.
+   */
+  describe('getChunksByRange', () => {
+    it('should return chunks in range [2, 5] in order when seeding 10 contiguous chunks (Early Verification Point)', async () => {
+      const dbPath = './tmp/test-vectordb-range-probe'
+      if (fs.existsSync(dbPath)) {
+        fs.rmSync(dbPath, { recursive: true })
+      }
+
+      try {
+        const store = new VectorStore({
+          dbPath,
+          tableName: 'chunks',
+        })
+        await store.initialize()
+
+        const filePath = '/test/contiguous.md'
+
+        // Seed 10 contiguous chunks with chunkIndex 0..9 in ascending insertion order
+        const chunks: VectorChunk[] = []
+        for (let i = 0; i < 10; i++) {
+          chunks.push(
+            createTestChunk(`Chunk ${i} body`, filePath, i, createNormalizedVector(i + 1))
+          )
+        }
+        await store.insertChunks(chunks)
+
+        const result = await store.getChunksByRange(filePath, 2, 5)
+
+        // Success criteria (Design Doc §Early Verification Point):
+        expect(result).toHaveLength(4)
+        expect(result.map((row) => row.chunkIndex)).toEqual([2, 3, 4, 5])
+        expect(result.every((row) => row.filePath === filePath)).toBe(true)
+
+        // ChunkRow shape: no score, no metadata keys present on any row
+        for (const row of result) {
+          expect(row).not.toHaveProperty('score')
+          expect(row).not.toHaveProperty('metadata')
+          expect(Object.keys(row).sort()).toEqual(['chunkIndex', 'filePath', 'fileTitle', 'text'])
+        }
+      } finally {
+        if (fs.existsSync(dbPath)) {
+          fs.rmSync(dbPath, { recursive: true })
+        }
+      }
+    })
+
+    it('should sort ascending even when chunks are inserted in descending order (AC-018 contract)', async () => {
+      const dbPath = './tmp/test-vectordb-range-sort'
+      if (fs.existsSync(dbPath)) {
+        fs.rmSync(dbPath, { recursive: true })
+      }
+
+      try {
+        const store = new VectorStore({
+          dbPath,
+          tableName: 'chunks',
+        })
+        await store.initialize()
+
+        const filePath = '/test/descending.md'
+
+        // Insert chunks with chunkIndex 9,8,7,6,5,4,3,2,1,0 in that order
+        // (not ascending) so that ascending sort is a contract, not coincidence.
+        const insertionOrder = [9, 8, 7, 6, 5, 4, 3, 2, 1, 0]
+        for (const idx of insertionOrder) {
+          await store.insertChunks([
+            createTestChunk(`Chunk ${idx}`, filePath, idx, createNormalizedVector(idx + 1)),
+          ])
+        }
+
+        const result = await store.getChunksByRange(filePath, 0, 9)
+
+        expect(result).toHaveLength(10)
+        expect(result.map((row) => row.chunkIndex)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9])
+      } finally {
+        if (fs.existsSync(dbPath)) {
+          fs.rmSync(dbPath, { recursive: true })
+        }
+      }
+    })
+
+    it('should return empty array when backing table has not been initialized (lazy-table)', async () => {
+      const dbPath = './tmp/test-vectordb-range-lazy-table'
+      if (fs.existsSync(dbPath)) {
+        fs.rmSync(dbPath, { recursive: true })
+      }
+
+      try {
+        // Initialize but do not insert anything; this leaves the table null
+        // (createTable is deferred to first insertChunks call, per index.ts).
+        const store = new VectorStore({
+          dbPath,
+          tableName: 'chunks',
+        })
+        await store.initialize()
+
+        const result = await store.getChunksByRange('/any/path.md', 0, 10)
+
+        expect(result).toEqual([])
+      } finally {
+        if (fs.existsSync(dbPath)) {
+          fs.rmSync(dbPath, { recursive: true })
+        }
+      }
+    })
+
+    it('should throw DatabaseError with "Failed to read chunks by range" on simulated LanceDB failure', async () => {
+      const dbPath = './tmp/test-vectordb-range-db-error'
+      if (fs.existsSync(dbPath)) {
+        fs.rmSync(dbPath, { recursive: true })
+      }
+
+      try {
+        const store = new VectorStore({
+          dbPath,
+          tableName: 'chunks',
+        })
+        await store.initialize()
+
+        // Seed a single chunk so the table is created
+        await store.insertChunks([
+          createTestChunk('seed', '/test/error-probe.md', 0, createNormalizedVector(1)),
+        ])
+
+        // Replace the internal table handle with a stub whose query() throws.
+        // Matches the "inject a temporarily corrupted table handle" pattern
+        // referenced in Task 1.3 step 3, consistent with no mocking library
+        // being used elsewhere in this test file.
+        const brokenTable = {
+          query: () => {
+            throw new Error('simulated LanceDB failure')
+          },
+        }
+        ;(store as unknown as { table: typeof brokenTable }).table = brokenTable
+
+        await expect(store.getChunksByRange('/test/error-probe.md', 0, 5)).rejects.toThrow(
+          DatabaseError
+        )
+        await expect(store.getChunksByRange('/test/error-probe.md', 0, 5)).rejects.toThrow(
+          /Failed to read chunks by range/
+        )
+      } finally {
+        if (fs.existsSync(dbPath)) {
+          fs.rmSync(dbPath, { recursive: true })
+        }
+      }
+    })
+
+    it('should normalize empty-string fileTitle to null and omit score/metadata keys (ChunkRow shape)', async () => {
+      const dbPath = './tmp/test-vectordb-range-chunkrow-shape'
+      if (fs.existsSync(dbPath)) {
+        fs.rmSync(dbPath, { recursive: true })
+      }
+
+      try {
+        const store = new VectorStore({
+          dbPath,
+          tableName: 'chunks',
+        })
+        await store.initialize()
+
+        const filePath = '/test/shape.md'
+
+        // Seed a chunk where fileTitle is empty string (insertChunks stores ''
+        // verbatim when provided; toChunkRow normalizes '' → null on read).
+        const chunk: VectorChunk = {
+          ...createTestChunk('Body text', filePath, 0, createNormalizedVector(1)),
+          fileTitle: '',
+        }
+        await store.insertChunks([chunk])
+
+        const result: ChunkRow[] = await store.getChunksByRange(filePath, 0, 0)
+
+        expect(result).toHaveLength(1)
+        const row = result[0]
+        expect(row).toBeDefined()
+        expect(row!.fileTitle).toBeNull()
+        expect(row).not.toHaveProperty('score')
+        expect(row).not.toHaveProperty('metadata')
+        // The only keys on a ChunkRow are the four Design Doc fields
+        expect(Object.keys(row!).sort()).toEqual(['chunkIndex', 'filePath', 'fileTitle', 'text'])
+      } finally {
+        if (fs.existsSync(dbPath)) {
+          fs.rmSync(dbPath, { recursive: true })
+        }
+      }
     })
   })
 })
