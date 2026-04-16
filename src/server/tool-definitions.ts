@@ -107,4 +107,37 @@ export const toolDefinitions: Tool[] = [
       'Get system status including total documents, total chunks, database size, and configuration information.',
     inputSchema: { type: 'object', properties: {} },
   },
+  {
+    name: 'read_chunk_neighbors',
+    description:
+      'Read chunks surrounding a known chunk index within a single ingested document. This is a context-expansion utility, not a search tool: use it after you have already located a target chunk via query_documents or grep, to read the chunks immediately before and after it. It is not a replacement for query_documents and does not improve search accuracy. Provide either filePath (for files ingested via ingest_file) or source (for data ingested via ingest_data), not both. Out-of-range requests are handled leniently: only existing chunks in the requested range are returned, with no error.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        filePath: {
+          type: 'string',
+          description:
+            'Absolute path to the file (for documents ingested via ingest_file). Example: "/Users/user/documents/manual.pdf". Provide either filePath or source, not both.',
+        },
+        source: {
+          type: 'string',
+          description:
+            'Source identifier used in ingest_data (for data ingested via ingest_data). Examples: "https://example.com/page", "clipboard://2024-12-30". Provide either filePath or source, not both.',
+        },
+        chunkIndex: {
+          type: 'number',
+          description: 'Zero-based target chunk index (non-negative integer).',
+        },
+        before: {
+          type: 'number',
+          description: 'Number of chunks before the target to include. Default: 2.',
+        },
+        after: {
+          type: 'number',
+          description: 'Number of chunks after the target to include. Default: 2.',
+        },
+      },
+      required: ['chunkIndex'],
+    },
+  },
 ]
