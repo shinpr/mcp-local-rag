@@ -1398,6 +1398,48 @@ describe('VectorStore', () => {
       }
     })
 
+    it('should throw DatabaseError when minIdx is NaN or a float (precondition guard)', async () => {
+      const dbPath = './tmp/test-vectordb-range-precondition'
+      if (fs.existsSync(dbPath)) {
+        fs.rmSync(dbPath, { recursive: true })
+      }
+
+      try {
+        const store = new VectorStore({
+          dbPath,
+          tableName: 'chunks',
+        })
+        await store.initialize()
+
+        // Seed a single chunk so the table is created
+        await store.insertChunks([
+          createTestChunk('seed', '/test/precondition.md', 0, createNormalizedVector(1)),
+        ])
+
+        // NaN minIdx
+        await expect(
+          store.getChunksByRange('/test/precondition.md', Number.NaN, 5)
+        ).rejects.toThrow(DatabaseError)
+        await expect(
+          store.getChunksByRange('/test/precondition.md', Number.NaN, 5)
+        ).rejects.toThrow(/non-negative integer range bounds/)
+
+        // Float minIdx
+        await expect(store.getChunksByRange('/test/precondition.md', 1.5, 5)).rejects.toThrow(
+          DatabaseError
+        )
+
+        // maxIdx < minIdx
+        await expect(store.getChunksByRange('/test/precondition.md', 5, 2)).rejects.toThrow(
+          DatabaseError
+        )
+      } finally {
+        if (fs.existsSync(dbPath)) {
+          fs.rmSync(dbPath, { recursive: true })
+        }
+      }
+    })
+
     it('should normalize empty-string fileTitle to null and omit score/metadata keys (ChunkRow shape)', async () => {
       const dbPath = './tmp/test-vectordb-range-chunkrow-shape'
       if (fs.existsSync(dbPath)) {

@@ -130,11 +130,11 @@ export const toolDefinitions: Tool[] = [
         },
         before: {
           type: 'number',
-          description: 'Number of chunks before the target to include. Default: 2.',
+          description: 'Number of chunks to retrieve before the target (0–50, default 2).',
         },
         after: {
           type: 'number',
-          description: 'Number of chunks after the target to include. Default: 2.',
+          description: 'Number of chunks to retrieve after the target (0–50, default 2).',
         },
       },
       required: ['chunkIndex'],

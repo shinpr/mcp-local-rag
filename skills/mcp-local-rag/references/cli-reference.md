@@ -132,7 +132,7 @@ Example output (truncated):
 ]
 ```
 
-Out-of-range indices are silently omitted (no error). If no chunks in `[chunkIndex - before, chunkIndex + after]` exist, the response is an empty array.
+Out-of-range indices are filtered; only existing chunks within the document are returned. The response can be an empty array.
 
 ## Config Matching
 

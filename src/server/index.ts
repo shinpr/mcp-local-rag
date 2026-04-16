@@ -654,9 +654,18 @@ export class RAGServer {
       if (!Number.isInteger(before) || before < 0) {
         throw new McpError(ErrorCode.InvalidParams, 'before must be a non-negative integer')
       }
+      if (before > 50) {
+        throw new McpError(
+          ErrorCode.InvalidParams,
+          `before must be between 0 and 50 (got ${before})`
+        )
+      }
       const after = args.after ?? 2
       if (!Number.isInteger(after) || after < 0) {
         throw new McpError(ErrorCode.InvalidParams, 'after must be a non-negative integer')
+      }
+      if (after > 50) {
+        throw new McpError(ErrorCode.InvalidParams, `after must be between 0 and 50 (got ${after})`)
       }
       const hasFilePath = args.filePath !== undefined
       const hasSource = args.source !== undefined

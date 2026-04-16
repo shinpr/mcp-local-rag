@@ -17,7 +17,7 @@
 import { randomUUID } from 'node:crypto'
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js'
+import { ErrorCode } from '@modelcontextprotocol/sdk/types.js'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { isRawDataPath } from '../../utils/raw-data-utils.js'
 import type { VectorChunk, VectorStore } from '../../vectordb/index.js'
@@ -777,13 +777,10 @@ describe('read_chunk_neighbors integration', () => {
       expect(Number.isFinite(p95)).toBe(true)
       expect(p95).toBeGreaterThan(0)
 
-      if (!(p95 < 100)) {
-        // Attach timings to the assertion failure message for diagnostics
-        throw new Error(
-          `P95 ${p95.toFixed(2)} ms exceeded 100 ms. Full timings (ms): ${JSON.stringify(timings)}`
-        )
-      }
-      expect(p95).toBeLessThan(100)
+      expect(
+        p95,
+        `P95 latency ${p95.toFixed(2)} ms exceeds 100 ms threshold. Timings: ${JSON.stringify(timings)}`
+      ).toBeLessThan(100)
     }, 60000)
   })
 
@@ -837,8 +834,8 @@ describe('read_chunk_neighbors integration', () => {
       const response = await ragServer.handleReadChunkNeighbors({
         filePath: ingestedFilePath,
         chunkIndex: targetIndex,
-        before: 100,
-        after: 100,
+        before: 50,
+        after: 50,
       })
       const items = parseItems(response)
 
@@ -903,14 +900,6 @@ describe('read_chunk_neighbors integration', () => {
           chunkIndex: 5,
           before: -1,
         })
-      ).rejects.toThrow(McpError)
-
-      await expect(
-        ragServer.handleReadChunkNeighbors({
-          filePath: ingestedFilePath,
-          chunkIndex: 5,
-          before: -1,
-        })
       ).rejects.toMatchObject({ code: ErrorCode.InvalidParams })
     })
 
@@ -921,13 +910,15 @@ describe('read_chunk_neighbors integration', () => {
           chunkIndex: 5,
           after: 2.5,
         })
-      ).rejects.toThrow(McpError)
+      ).rejects.toMatchObject({ code: ErrorCode.InvalidParams })
+    })
 
+    it('rejects before > 50 with McpError InvalidParams', async () => {
       await expect(
         ragServer.handleReadChunkNeighbors({
           filePath: ingestedFilePath,
           chunkIndex: 5,
-          after: 2.5,
+          before: 51,
         })
       ).rejects.toMatchObject({ code: ErrorCode.InvalidParams })
     })
@@ -975,23 +966,10 @@ describe('read_chunk_neighbors integration', () => {
         ragServer.handleReadChunkNeighbors({
           filePath: ingestedFilePath,
         } as unknown as ReadChunkNeighborsInput)
-      ).rejects.toThrow(McpError)
-
-      await expect(
-        ragServer.handleReadChunkNeighbors({
-          filePath: ingestedFilePath,
-        } as unknown as ReadChunkNeighborsInput)
       ).rejects.toMatchObject({ code: ErrorCode.InvalidParams })
     })
 
     it('rejects negative chunkIndex with McpError InvalidParams', async () => {
-      await expect(
-        ragServer.handleReadChunkNeighbors({
-          filePath: ingestedFilePath,
-          chunkIndex: -1,
-        })
-      ).rejects.toThrow(McpError)
-
       await expect(
         ragServer.handleReadChunkNeighbors({
           filePath: ingestedFilePath,

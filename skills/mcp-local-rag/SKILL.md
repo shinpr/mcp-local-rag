@@ -1,6 +1,6 @@
 ---
 name: mcp-local-rag
-description: Ingest, search, list, update, or delete content in a local mcp-local-rag index when the user is working with local documents or pasted/fetched HTML, Markdown, or text. Use this skill to choose the right MCP tool or `npx mcp-local-rag` CLI command, formulate effective queries, interpret search scores, and manage source metadata.
+description: Search, ingest, expand chunk context, or manage local documents via a local RAG MCP server (tools: query_documents, read_chunk_neighbors, ingest_file, ingest_data, delete_file, list_files). Use when user says "search my docs", "save this page", "read around that chunk", "what did I save about X", or invokes `npx mcp-local-rag`.
 ---
 
 # MCP Local RAG Skills
@@ -15,7 +15,7 @@ description: Ingest, search, list, update, or delete content in a local mcp-loca
 | `delete_file` | `npx mcp-local-rag delete <path>` | Remove ingested content |
 | `list_files` | `npx mcp-local-rag list` | File ingestion status |
 | `status` | `npx mcp-local-rag status` | Database stats |
-| `read_chunk_neighbors` | `npx mcp-local-rag read-neighbors` | After locating a chunk via query_documents or grep, read surrounding context (not a search tool) |
+| `read_chunk_neighbors` | `npx mcp-local-rag read-neighbors` | Read N chunks adjacent to a known chunkIndex (context expansion; call after `query_documents` or grep) |
 
 ## Search: Core Rules
 
@@ -86,13 +86,22 @@ Each result includes `fileTitle` (document title extracted from content). Null w
 
 ## Context Expansion (read_chunk_neighbors)
 
-`read_chunk_neighbors` (CLI: `read-neighbors`) reads chunks adjacent to a known `chunkIndex` within the same document. It is **not a search tool** and is **not a replacement for `query_documents`**.
+`read_chunk_neighbors` (CLI: `read-neighbors`) is an **on-demand context expansion utility**, not a routine follow-up to every `query_documents` call. Chunks in this index are **semantic units** — sentences or paragraphs grouped by topic via Max-Min semantic chunking, not fixed-size text slices. Reading the chunks immediately before and after a target chunk yields coherent surrounding context, not arbitrary fragments.
 
-Typical workflow:
+Each `query_documents` result item already includes `filePath` and `chunkIndex`. Pass those to `read_chunk_neighbors` to expand a specific hit in place.
 
-1. Use `query_documents` (or external `grep`) to find a chunk of interest.
+Trigger this tool only when one of these signals is present:
+- **Insufficient context for your answer**: during response generation, the target chunk alone is not enough to reach a grounded conclusion (e.g., it references "this approach" or "as shown above" without the referent).
+- **Explicit user request for more context**: the user asks for surrounding detail ("what comes before that?", "read more around that section", "show me the full explanation").
+
+If neither signal is present, stop at the `query_documents` results.
+
+Typical workflow when triggered:
+1. Identify the specific chunk to expand (from a prior `query_documents` hit or `grep`).
 2. Take that chunk's `filePath` and `chunkIndex`.
-3. Call `read_chunk_neighbors` with those values to read the surrounding chunks.
+3. Call `read_chunk_neighbors` with those values; the response contains the target chunk plus its semantic neighbors, sorted by `chunkIndex`.
+
+See [cli-reference.md](references/cli-reference.md#read-neighbors) for output fields and an example.
 
 ## Ingestion
 

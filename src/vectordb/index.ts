@@ -145,6 +145,12 @@ export class VectorStore {
       return []
     }
 
+    if (!Number.isInteger(minIdx) || !Number.isInteger(maxIdx) || minIdx < 0 || maxIdx < minIdx) {
+      throw new DatabaseError(
+        'getChunksByRange requires non-negative integer range bounds with minIdx <= maxIdx'
+      )
+    }
+
     try {
       // Escape single quotes to prevent SQL injection (mirrors deleteChunks)
       const escapedFilePath = filePath.replace(/'/g, "''")
@@ -157,7 +163,6 @@ export class VectorStore {
       rows.sort((a, b) => a.chunkIndex - b.chunkIndex)
       return rows
     } catch (error) {
-      console.warn('VectorStore: Error reading chunks by range:', error)
       throw new DatabaseError('Failed to read chunks by range', error as Error)
     }
   }

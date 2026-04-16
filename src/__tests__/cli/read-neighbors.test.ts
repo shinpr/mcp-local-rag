@@ -194,6 +194,20 @@ describe('CLI read-neighbors', () => {
   })
 
   // --------------------------------------------
+  // Test 7b — --before exceeds max (51)
+  // --------------------------------------------
+  it('should exit 1 when --before exceeds max (51)', async () => {
+    const { output, error } = await captureStderr(() =>
+      runReadNeighbors(['--file-path', '/abs/path.md', '--chunk-index', '5', '--before', '51'])
+    )
+
+    expect(error).toBeInstanceOf(Error)
+    expect((error as Error).message).toBe('process.exit(1)')
+    expect(output.join('\n')).toContain('before must be between 0 and 50')
+    expect(mocks.getChunksByRange).not.toHaveBeenCalled()
+  })
+
+  // --------------------------------------------
   // Test 8 — Defaults applied (AC-008, AC-012)
   // --------------------------------------------
   it('should use default before=2/after=2 window when neither flag is provided', async () => {

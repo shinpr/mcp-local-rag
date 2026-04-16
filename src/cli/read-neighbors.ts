@@ -177,7 +177,13 @@ export async function runReadNeighbors(
     const chunkIndex = parsed.chunkIndex
 
     const before = parsed.before ?? READ_NEIGHBORS_DEFAULTS.before
+    if (before > 50) {
+      throw new Error(`before must be between 0 and 50 (got ${before})`)
+    }
     const after = parsed.after ?? READ_NEIGHBORS_DEFAULTS.after
+    if (after > 50) {
+      throw new Error(`after must be between 0 and 50 (got ${after})`)
+    }
 
     // XOR: exactly one of --file-path / --source
     const hasFilePath = parsed.filePath !== undefined
