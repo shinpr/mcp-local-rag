@@ -110,7 +110,7 @@ export const toolDefinitions: Tool[] = [
   {
     name: 'read_chunk_neighbors',
     description:
-      'Read chunks surrounding a known chunk index within a single ingested document. This is a context-expansion utility, not a search tool: use it after you have already located a target chunk via query_documents or grep, to read the chunks immediately before and after it. It is not a replacement for query_documents and does not improve search accuracy. Provide either filePath (for files ingested via ingest_file) or source (for data ingested via ingest_data), not both. Out-of-range requests are handled leniently: only existing chunks in the requested range are returned, with no error.',
+      "Expand a query_documents result by reading the chunks immediately before and after it in the same document. Use when the hit needs more surrounding context — for example, a definition without its example, or a conclusion without its reasoning. Pass chunkIndex from the query_documents result, along with the document's filePath (from ingest_file) or source (from ingest_data). Returns the target chunk (isTarget: true) plus neighbors, sorted ascending by chunkIndex. Out-of-range indices are silently clamped to existing chunks. Defaults: before=2, after=2 (max 50 each). Provide exactly one of filePath or source.",
     inputSchema: {
       type: 'object',
       properties: {
