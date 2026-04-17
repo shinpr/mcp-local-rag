@@ -94,7 +94,7 @@ export async function parseHtml(
     const article = reader.parse() as ReadabilityResult | null
 
     // If Readability couldn't extract content, fall back to body text
-    if (!article || !article.content) {
+    if (!article?.content) {
       // Try to get body content directly
       const bodyContent = document.body?.innerHTML || ''
       if (!bodyContent.trim()) {
