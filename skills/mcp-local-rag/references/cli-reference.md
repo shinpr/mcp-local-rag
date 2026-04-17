@@ -72,6 +72,68 @@ Either `--source` or `<file-path>`, not both. Idempotent (non-existent target ex
 
 Output: JSON to stdout.
 
+### read-neighbors
+
+```bash
+npx mcp-local-rag [global-options] read-neighbors [options]
+```
+
+Read N chunks before and after a target chunk within the same document.
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--file-path <abs-path>` | — | File path of ingested content (absolute path) |
+| `--source <id>` | — | Source identifier (for content ingested via `ingest_data`) |
+| `--chunk-index <n>` | — | Target chunk index (zero-based, required, non-negative integer) |
+| `--before <n>` | `2` | Number of chunks before the target (non-negative integer) |
+| `--after <n>` | `2` | Number of chunks after the target (non-negative integer) |
+| `-h, --help` | — | Show usage |
+
+Defaults: `before=2, after=2` (`grep -C 2` convention).
+
+Either `--source` or `--file-path` is required, not both.
+
+Example:
+
+```bash
+npx mcp-local-rag read-neighbors --file-path /abs/path/file.md --chunk-index 12 --before 3 --after 3
+```
+
+Output: JSON array to stdout, sorted ascending by `chunkIndex`. Each item includes `filePath`, `chunkIndex`, `text`, `isTarget`, and `fileTitle`. The item whose `chunkIndex` matches the requested value has `isTarget: true`; all other items (and every item when the target chunk does not exist) have `isTarget: false`. Items from documents ingested via `ingest_data` also include a `source` field.
+
+Example output (truncated):
+
+```json
+[
+  {
+    "filePath": "/abs/path/raw-data/example.com/page.md",
+    "chunkIndex": 10,
+    "text": "Earlier context paragraph...",
+    "isTarget": false,
+    "fileTitle": "Page Title",
+    "source": "https://example.com/page"
+  },
+  {
+    "filePath": "/abs/path/raw-data/example.com/page.md",
+    "chunkIndex": 12,
+    "text": "Target chunk content...",
+    "isTarget": true,
+    "fileTitle": "Page Title",
+    "source": "https://example.com/page"
+  },
+  {
+    "filePath": "/abs/path/raw-data/example.com/page.md",
+    "chunkIndex": 14,
+    "text": "Later context paragraph...",
+    "isTarget": false,
+    "fileTitle": "Page Title",
+    "source": "https://example.com/page"
+  }
+]
+```
+
+Out-of-range indices are filtered; only existing chunks within the document are returned. The response can be an empty array.
+
 ## Config Matching
 
 When operating against an existing database, options must match the MCP server config — especially `--model-name`. Using a different embedding model produces vectors in a different space, silently degrading search quality.

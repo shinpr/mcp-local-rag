@@ -28,6 +28,7 @@ import {
   saveRawData,
 } from '../utils/raw-data-utils.js'
 import { type VectorChunk, VectorStore } from '../vectordb/index.js'
+import { DatabaseError } from '../vectordb/types.js'
 import { formatErrorMessage } from './error-utils.js'
 import { toolDefinitions } from './tool-definitions.js'
 import type {
@@ -40,6 +41,8 @@ import type {
   QueryDocumentsInput,
   QueryResult,
   RAGServerConfig,
+  ReadChunkNeighborsInput,
+  ReadChunkNeighborsResultItem,
   SourceEntry,
 } from './types.js'
 
@@ -155,6 +158,10 @@ export class RAGServer {
           case 'delete_file':
             return await this.handleDeleteFile(
               request.params.arguments as unknown as DeleteFileInput
+            )
+          case 'read_chunk_neighbors':
+            return await this.handleReadChunkNeighbors(
+              request.params.arguments as unknown as ReadChunkNeighborsInput
             )
           case 'list_files':
             return await this.handleListFiles()
@@ -623,6 +630,104 @@ export class RAGServer {
       console.error('Failed to delete file:', errorMessage)
 
       throw new Error(`Failed to delete file: ${errorMessage}`)
+    }
+  }
+
+  /**
+   * read_chunk_neighbors tool handler
+   * Returns chunks around a target chunkIndex within a single ingested document.
+   * Context-expansion utility — not a search tool. Mirrors handleDeleteFile's
+   * dual-input (filePath XOR source) resolution pattern.
+   */
+  async handleReadChunkNeighbors(
+    args: ReadChunkNeighborsInput
+  ): Promise<{ content: [{ type: 'text'; text: string }] }> {
+    try {
+      // Validation (all before DB access, per Design Doc §Main Components → Handler).
+      // Intentional: use McpError(InvalidParams) (upgrade from handleDeleteFile's plain Error).
+      // See Design Doc §Main Components → Handler and §Risks — this asymmetry is documented;
+      // do not "fix" it.
+      if (!Number.isInteger(args.chunkIndex) || args.chunkIndex < 0) {
+        throw new McpError(ErrorCode.InvalidParams, 'chunkIndex must be a non-negative integer')
+      }
+      const before = args.before ?? 2
+      if (!Number.isInteger(before) || before < 0) {
+        throw new McpError(ErrorCode.InvalidParams, 'before must be a non-negative integer')
+      }
+      if (before > 50) {
+        throw new McpError(
+          ErrorCode.InvalidParams,
+          `before must be between 0 and 50 (got ${before})`
+        )
+      }
+      const after = args.after ?? 2
+      if (!Number.isInteger(after) || after < 0) {
+        throw new McpError(ErrorCode.InvalidParams, 'after must be a non-negative integer')
+      }
+      if (after > 50) {
+        throw new McpError(ErrorCode.InvalidParams, `after must be between 0 and 50 (got ${after})`)
+      }
+      const hasFilePath = args.filePath !== undefined
+      const hasSource = args.source !== undefined
+      if (hasFilePath === hasSource) {
+        throw new McpError(
+          ErrorCode.InvalidParams,
+          'Either filePath or source must be provided, not both'
+        )
+      }
+
+      // Dual-input resolution (mirrors handleDeleteFile).
+      let targetPath: string
+      let skipValidation = false
+      if (args.source !== undefined) {
+        targetPath = generateRawDataPath(this.dbPath, args.source, 'markdown')
+        skipValidation = true
+      } else {
+        // XOR above guarantees filePath is defined here.
+        targetPath = args.filePath as string
+      }
+      if (!skipValidation) {
+        await this.parser.validateFilePath(targetPath)
+      }
+
+      // Range composition (handler-side clamp; primitive stays feature-agnostic).
+      const minIdx = Math.max(0, args.chunkIndex - before)
+      const maxIdx = args.chunkIndex + after
+
+      // Primitive call.
+      const rows = await this.vectorStore.getChunksByRange(targetPath, minIdx, maxIdx)
+
+      // Post-fetch marking: isTarget per item; source attached for raw-data rows.
+      const isRaw = isRawDataPath(targetPath)
+      const sourceForAll = isRaw ? extractSourceFromPath(targetPath) : null
+      const items: ReadChunkNeighborsResultItem[] = rows.map((row) => {
+        const item: ReadChunkNeighborsResultItem = {
+          filePath: row.filePath,
+          chunkIndex: row.chunkIndex,
+          text: row.text,
+          isTarget: row.chunkIndex === args.chunkIndex,
+          fileTitle: row.fileTitle ?? null,
+        }
+        if (sourceForAll) item.source = sourceForAll
+        return item
+      })
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify(items, null, 2),
+          },
+        ],
+      }
+    } catch (error) {
+      // Re-throw McpError / DatabaseError as-is to preserve semantics.
+      if (error instanceof McpError || error instanceof DatabaseError) {
+        throw error
+      }
+      const errorMessage = formatErrorMessage(error)
+      console.error('Failed to read chunk neighbors:', errorMessage)
+      throw new Error(`Failed to read chunk neighbors: ${errorMessage}`)
     }
   }
 

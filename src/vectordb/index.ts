@@ -3,11 +3,13 @@
 import { type Connection, connect, Index, type Table } from '@lancedb/lancedb'
 import { applyFileFilter, applyGrouping, applyKeywordBoost } from './search-filters.js'
 import {
+  type ChunkRow,
   DatabaseError,
   FTS_CLEANUP_THRESHOLD_MS,
   FTS_INDEX_NAME,
   HYBRID_SEARCH_CANDIDATE_MULTIPLIER,
   type SearchResult,
+  toChunkRow,
   toSearchResult,
   type VectorChunk,
   type VectorStoreConfig,
@@ -110,6 +112,58 @@ export class VectorStore {
       ) {
         throw new DatabaseError(`Failed to delete chunks for file: ${filePath}`, error as Error)
       }
+    }
+  }
+
+  /**
+   * Return chunk rows for a single file whose chunkIndex is within the
+   * inclusive [minIdx, maxIdx] range, sorted ascending by chunkIndex.
+   *
+   * This is a feature-agnostic primitive (ADR-0001 D5): it knows nothing
+   * about before/after/isTarget semantics — those live in the handler.
+   * Ascending sort by chunkIndex is a contract, not incidental storage
+   * order (AC-018).
+   *
+   * Lazy-table null returns [] (mirrors search, listFiles, deleteChunks).
+   * LanceDB errors are wrapped as DatabaseError with the original error
+   * preserved as cause.
+   *
+   * Note: LanceDB numeric predicates (>=, <=) on chunkIndex are not
+   * exercised elsewhere in the repo today. Task 1.3 unit tests act as
+   * the probe for this SQL shape; see Design Doc §Main Components →
+   * VectorStore Limitation note for the fetch-all + in-memory-filter
+   * fallback plan if the probe fails.
+   *
+   * @param filePath - File path (absolute)
+   * @param minIdx - Minimum chunk index (inclusive)
+   * @param maxIdx - Maximum chunk index (inclusive)
+   * @returns Array of chunk rows sorted ascending by chunkIndex
+   */
+  async getChunksByRange(filePath: string, minIdx: number, maxIdx: number): Promise<ChunkRow[]> {
+    if (!this.table) {
+      console.error('VectorStore: Skipping range read as table does not exist')
+      return []
+    }
+
+    if (!Number.isInteger(minIdx) || !Number.isInteger(maxIdx) || minIdx < 0 || maxIdx < minIdx) {
+      throw new DatabaseError(
+        'getChunksByRange requires non-negative integer range bounds with minIdx <= maxIdx'
+      )
+    }
+
+    try {
+      // Escape single quotes to prevent SQL injection (mirrors deleteChunks)
+      const escapedFilePath = filePath.replace(/'/g, "''")
+      // Backtick-quoted camelCase columns; numeric literals unquoted
+      const predicate = `\`filePath\` = '${escapedFilePath}' AND \`chunkIndex\` >= ${minIdx} AND \`chunkIndex\` <= ${maxIdx}`
+
+      const raw = await this.table.query().where(predicate).toArray()
+      const rows = raw.map((row) => toChunkRow(row))
+      // Contractual ascending sort (AC-018); do not rely on storage order
+      rows.sort((a, b) => a.chunkIndex - b.chunkIndex)
+      return rows
+    } catch (error) {
+      throw new DatabaseError('Failed to read chunks by range', error as Error)
     }
   }
 

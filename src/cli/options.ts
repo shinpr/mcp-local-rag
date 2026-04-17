@@ -123,6 +123,7 @@ Options:
 Commands:
   ingest <path>          Ingest files into the vector database
   query <text>           Search ingested documents
+  read-neighbors         Read N chunks before and after a target chunk within the same document
   list                   List files and ingestion status
   status                 Show database status
   delete <path>          Delete ingested content

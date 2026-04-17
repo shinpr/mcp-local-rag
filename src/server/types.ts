@@ -135,3 +135,42 @@ export interface QueryResult {
   /** Document title extracted from file content (display-only, not used for scoring) */
   fileTitle: string | null
 }
+
+/**
+ * read_chunk_neighbors tool input.
+ * Exactly one of filePath / source must be provided (XOR).
+ */
+export interface ReadChunkNeighborsInput {
+  /** File path (for files ingested via ingest_file). Absolute path required. */
+  filePath?: string
+  /** Source identifier (for data ingested via ingest_data). */
+  source?: string
+  /** Target chunk index (zero-based, required, non-negative integer) (AC-010). */
+  chunkIndex: number
+  /** Number of chunks before the target to include (default 2, non-negative integer) (AC-009). */
+  before?: number
+  /** Number of chunks after the target to include (default 2, non-negative integer) (AC-009). */
+  after?: number
+}
+
+/**
+ * read_chunk_neighbors tool output item.
+ * Core fields {filePath, chunkIndex, text} per AC-002.
+ * isTarget per AC-019 (exactly one true when target exists; else all false).
+ * source per AC-020 (present on raw-data rows only).
+ * fileTitle mirrors QueryResult for drop-in consistency with query_documents results.
+ */
+export interface ReadChunkNeighborsResultItem {
+  /** File path */
+  filePath: string
+  /** Chunk index */
+  chunkIndex: number
+  /** Text */
+  text: string
+  /** True iff this chunk's chunkIndex matches the requested target (AC-019) */
+  isTarget: boolean
+  /** Original source (only for raw-data files, e.g., URLs ingested via ingest_data) (AC-020) */
+  source?: string
+  /** Document title extracted from file content (display-only, not used for scoring) */
+  fileTitle: string | null
+}

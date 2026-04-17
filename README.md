@@ -107,7 +107,7 @@ mcp-local-rag provides two interfaces: an **MCP server** for AI coding tools and
 
 ### Using with MCP
 
-The MCP server provides 6 tools: `ingest_file`, `ingest_data`, `query_documents`, `list_files`, `delete_file`, `status`.
+The MCP server provides 7 tools: `ingest_file`, `ingest_data`, `query_documents`, `read_chunk_neighbors`, `list_files`, `delete_file`, `status`.
 
 #### Ingesting Documents
 
@@ -148,6 +148,16 @@ Search uses semantic similarity with keyword boost. This means `useEffect` finds
 
 Results include text content, source file, document title, and relevance score. The document title provides context for each chunk, helping identify which document a result belongs to. Adjust result count with `limit` (1-20, default 10).
 
+#### Expanding Context Around a Result
+
+When a search result needs more surrounding context, use `read_chunk_neighbors` to read the chunks before and after it:
+
+```
+"That result about authentication looks relevant — read the surrounding chunks for the full explanation"
+```
+
+Pass the `filePath` and `chunkIndex` from the search result. The response includes the target chunk (marked `isTarget: true`) plus its neighbors, sorted by chunk index. Defaults to 2 chunks before and 2 after (adjustable up to 50 each).
+
 #### Managing Files
 
 ```
@@ -163,13 +173,14 @@ All MCP tools are also available as CLI commands — no MCP server needed:
 ```bash
 npx mcp-local-rag ingest ./docs/               # Bulk ingest files
 npx mcp-local-rag query "authentication API"    # Search documents
+npx mcp-local-rag read-neighbors --file-path /abs/path.md --chunk-index 5  # Expand context
 npx mcp-local-rag list                          # Show ingestion status
 npx mcp-local-rag status                        # Database stats
 npx mcp-local-rag delete ./docs/old.pdf         # Remove content
 npx mcp-local-rag delete --source "https://..."  # Remove by source URL
 ```
 
-`query`, `list`, `status`, and `delete` output JSON to stdout for piping (e.g., `| jq`). `ingest` outputs progress to stderr. Global options (`--db-path`, `--cache-dir`, `--model-name`) go before the subcommand. Run `npx mcp-local-rag --help` for details.
+`query`, `read-neighbors`, `list`, `status`, and `delete` output JSON to stdout for piping (e.g., `| jq`). `ingest` outputs progress to stderr. Global options (`--db-path`, `--cache-dir`, `--model-name`) go before the subcommand. Run `npx mcp-local-rag --help` for details.
 
 > ⚠️ The CLI does **not** read your MCP client config (`mcp.json`, `config.toml`, etc.). Configure the CLI via flags or environment variables as shown below.
 
@@ -476,7 +487,7 @@ pnpm run check:all     # Full quality check
 src/
   index.ts      # Entry point
   server/       # MCP tool handlers
-  cli/          # CLI subcommands (ingest)
+  cli/          # CLI subcommands (ingest, query, list, delete, read-neighbors, etc.)
   parser/       # PDF, DOCX, TXT, MD parsing
   chunker/      # Text splitting
   embedder/     # Transformers.js embeddings

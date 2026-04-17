@@ -8,13 +8,13 @@
     "url": "https://github.com/shinpr/mcp-local-rag",
     "source": "github"
   },
-  "version": "0.12.0",
+  "version": "0.13.0",
   "packages": [
     {
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "mcp-local-rag",
-      "version": "0.12.0",
+      "version": "0.13.0",
       "transport": {
         "type": "stdio"
       },
@@ -90,6 +90,7 @@
             "query_documents",
             "ingest_file",
             "ingest_data",
+            "read_chunk_neighbors",
             "list_files",
             "delete_file",
             "status"
