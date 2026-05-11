@@ -978,4 +978,136 @@ describe('read_chunk_neighbors integration', () => {
       ).rejects.toMatchObject({ code: ErrorCode.InvalidParams })
     })
   })
+
+  // =============================================================================
+  // Test 11: Empty-string filePath/source resolution (regression)
+  // =============================================================================
+  // Context: An empty string ('' or whitespace-only) for filePath/source must be
+  //   treated as "not provided" both by the XOR validation and by the subsequent
+  //   targetPath resolution. Otherwise `source: ''` together with a valid
+  //   filePath passes validation but resolves against an empty-source raw-data
+  //   path and returns no chunks. This test pins the consistent behavior:
+  //   provided-ness is decided the same way everywhere (non-empty string), and
+  //   the empty value is ignored for resolution too.
+  // Behavior:
+  //   (a) source: '' + valid filePath + valid chunkIndex -> resolves via
+  //       filePath, returns the document's window (non-empty, one isTarget).
+  //   (b) filePath: '' + valid source -> resolves via source (raw-data doc).
+  //   (c) both filePath and source non-empty -> McpError InvalidParams.
+  //   (d) both filePath: '' and source: '' -> McpError InvalidParams.
+  // @category: input-validation
+  // @dependency: RAGServer, VectorStore, LanceDB, DocumentParser, raw-data-utils
+  // @complexity: low
+  //
+  // Pass criteria:
+  //   - (a) returns a non-empty array; exactly one item has isTarget === true at
+  //     the requested chunkIndex; every item's filePath equals the ingested
+  //     filePath (i.e. resolution did NOT take the empty-source branch).
+  //   - (b) returns a non-empty array under the raw-data storage path.
+  //   - (c) and (d) reject with McpError whose code is ErrorCode.InvalidParams,
+  //     without touching storage.
+  describe('Test 11: Empty-string filePath/source resolution (regression)', () => {
+    let ragServer: RAGServer
+    const testDbPath = resolve('./tmp/test-lancedb-read-neighbors-t11')
+    const testDataDir = resolve('./tmp/test-data-read-neighbors-t11')
+    const SOURCE = 'https://example.com/read-neighbors-empty-input'
+    let ingestedFilePath: string
+
+    beforeAll(async () => {
+      mkdirSync(testDbPath, { recursive: true })
+      mkdirSync(testDataDir, { recursive: true })
+      ragServer = new RAGServer({
+        dbPath: testDbPath,
+        modelName: 'Xenova/all-MiniLM-L6-v2',
+        cacheDir: './tmp/models',
+        baseDir: testDataDir,
+        maxFileSize: 100 * 1024 * 1024,
+      })
+      await ragServer.initialize()
+
+      ingestedFilePath = resolve(testDataDir, 'empty-input-doc.txt')
+      writeFileSync(ingestedFilePath, 'Empty input resolution test content. '.repeat(120))
+      const fileIngest = JSON.parse(
+        (await ragServer.handleIngestFile({ filePath: ingestedFilePath })).content[0].text
+      )
+      expect(fileIngest.chunkCount).toBeGreaterThanOrEqual(5)
+
+      const content = `# Empty input source test\n\n${'Markdown paragraph content with stable wording. '.repeat(200)}`
+      const dataIngest = JSON.parse(
+        (
+          await ragServer.handleIngestData({
+            content,
+            metadata: { source: SOURCE, format: 'markdown' },
+          })
+        ).content[0].text
+      )
+      expect(dataIngest.chunkCount).toBeGreaterThanOrEqual(3)
+    }, 30000)
+
+    afterAll(() => {
+      rmSync(testDbPath, { recursive: true, force: true })
+      rmSync(testDataDir, { recursive: true, force: true })
+    })
+
+    it('(a) empty source alongside a valid filePath resolves via filePath', async () => {
+      const response = await ragServer.handleReadChunkNeighbors({
+        filePath: ingestedFilePath,
+        source: '',
+        chunkIndex: 2,
+      })
+      const items = parseItems(response)
+
+      expect(items.length).toBeGreaterThan(0)
+      for (const item of items) {
+        expect(item.filePath).toBe(ingestedFilePath)
+        expect(item.source).toBeUndefined()
+      }
+      const targets = items.filter((i) => i.isTarget)
+      expect(targets).toHaveLength(1)
+      expect(targets[0]?.chunkIndex).toBe(2)
+    })
+
+    it('(b) empty filePath alongside a valid source resolves via source', async () => {
+      const response = await ragServer.handleReadChunkNeighbors({
+        filePath: '',
+        source: SOURCE,
+        chunkIndex: 1,
+      })
+      const items = parseItems(response)
+
+      expect(items.length).toBeGreaterThan(0)
+      const filePaths = new Set(items.map((i) => i.filePath))
+      expect(filePaths.size).toBe(1)
+      expect(isRawDataPath(items[0]?.filePath ?? '')).toBe(true)
+      for (const item of items) {
+        expect(item.source).toBe(SOURCE)
+      }
+    })
+
+    it('(c) rejects when both filePath and source are non-empty', async () => {
+      await expect(
+        ragServer.handleReadChunkNeighbors({
+          filePath: ingestedFilePath,
+          source: SOURCE,
+          chunkIndex: 2,
+        })
+      ).rejects.toMatchObject({
+        code: ErrorCode.InvalidParams,
+        message: expect.stringContaining('not both'),
+      })
+    })
+
+    it('(d) rejects when both filePath and source are empty strings', async () => {
+      await expect(
+        ragServer.handleReadChunkNeighbors({
+          filePath: '',
+          source: '',
+          chunkIndex: 2,
+        })
+      ).rejects.toMatchObject({
+        code: ErrorCode.InvalidParams,
+        message: expect.stringContaining('must be provided'),
+      })
+    })
+  })
 })
