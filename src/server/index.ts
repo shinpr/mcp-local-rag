@@ -667,8 +667,8 @@ export class RAGServer {
       if (after > 50) {
         throw new McpError(ErrorCode.InvalidParams, `after must be between 0 and 50 (got ${after})`)
       }
-      const hasFilePath = args.filePath !== undefined
-      const hasSource = args.source !== undefined
+      const hasFilePath = typeof args.filePath === 'string' && args.filePath.trim().length > 0
+      const hasSource = typeof args.source === 'string' && args.source.trim().length > 0
       if (hasFilePath === hasSource) {
         throw new McpError(
           ErrorCode.InvalidParams,
