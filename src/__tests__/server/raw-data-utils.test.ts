@@ -2,6 +2,7 @@
 // Test Type: Unit Test
 
 import { mkdir, readFile, rm } from 'node:fs/promises'
+import { join, sep } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 import {
@@ -136,7 +137,7 @@ describe('Raw Data Utilities', () => {
       const dbPath = '/path/to/lancedb'
       const rawDataDir = getRawDataDir(dbPath)
 
-      expect(rawDataDir).toBe('/path/to/lancedb/raw-data')
+      expect(rawDataDir).toBe(join('/path/to/lancedb', 'raw-data'))
     })
   })
 
@@ -151,7 +152,7 @@ describe('Raw Data Utilities', () => {
 
       const path = generateRawDataPath(dbPath, source, format)
 
-      expect(path).toContain('/path/to/lancedb/raw-data/')
+      expect(path).toContain(`raw-data${sep}`)
       expect(path).toMatch(/\.md$/) // All formats use .md extension
       // Should not contain original URL characters
       expect(path).not.toContain('https:')

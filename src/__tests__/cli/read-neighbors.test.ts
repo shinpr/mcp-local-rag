@@ -30,6 +30,7 @@ vi.mock('../../cli/common.js', () => ({
 }))
 
 // Import after mocks are set up
+import { resolve, sep } from 'node:path'
 import { runReadNeighbors } from '../../cli/read-neighbors.js'
 
 // ============================================
@@ -223,7 +224,7 @@ describe('CLI read-neighbors', () => {
     expect(mocks.initialize).toHaveBeenCalledTimes(1)
     expect(mocks.getChunksByRange).toHaveBeenCalledTimes(1)
     // handler-side clamp: minIdx = max(0, 5 - 2) = 3; maxIdx = 5 + 2 = 7
-    expect(mocks.getChunksByRange).toHaveBeenCalledWith('/abs/path.md', 3, 7)
+    expect(mocks.getChunksByRange).toHaveBeenCalledWith(resolve('/abs/path.md'), 3, 7)
   })
 
   // --------------------------------------------
@@ -283,7 +284,7 @@ describe('CLI read-neighbors', () => {
 
     // The first argument is the generated raw-data path.
     const [calledPath] = mocks.getChunksByRange.mock.calls[0] as [string, number, number]
-    expect(calledPath).toContain('/raw-data/')
+    expect(calledPath).toContain(`raw-data${sep}`)
     expect(calledPath).toMatch(/\.md$/)
     // Not the raw source string itself.
     expect(calledPath).not.toBe(SOURCE)

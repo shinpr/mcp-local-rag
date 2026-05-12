@@ -54,7 +54,7 @@
     "check": "biome check src",
     "check:fix": "biome check --write src",
     "check:unused": "knip --include exports",
-    "check:deps": "dpdm --no-tree --no-warning --exit-code circular:1 -T --tsconfig ./tsconfig.json --exclude '(node_modules|__tests__|\\.test\\.ts$|\\.spec\\.ts$)' 'src/**/*.ts'",
+    "check:deps": "dpdm --no-tree --no-warning --exit-code circular:1 -T --tsconfig ./tsconfig.json --exclude \"(node_modules|__tests__|\\.test\\.ts$|\\.spec\\.ts$)\" \"src/**/*.ts\"",
     "check:all": "pnpm run check && pnpm run lint && pnpm run format:check && pnpm run check:unused && pnpm run check:deps && pnpm run build && pnpm run test",
     "cleanup:processes": "bash ./scripts/cleanup-test-processes.sh",
     "test:safe": "pnpm test && pnpm run cleanup:processes",

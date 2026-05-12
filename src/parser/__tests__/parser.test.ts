@@ -108,6 +108,8 @@ describe('DocumentParser', () => {
     })
 
     it('should reject symlink pointing outside baseDir', async () => {
+      // Symlinks require Developer Mode on Windows; skip if unavailable
+      if (process.platform === 'win32') return
       // Create outside directory and target file
       await mkdir(outsideDir, { recursive: true })
       const outsideFile = join(outsideDir, 'secret.txt')
@@ -127,6 +129,8 @@ describe('DocumentParser', () => {
     })
 
     it('should reject broken symlink', async () => {
+      // Symlinks require Developer Mode on Windows; skip if unavailable
+      if (process.platform === 'win32') return
       // Create symlink pointing to non-existent file
       const linkPath = join(testDir, 'broken-link.txt')
       await symlink('/nonexistent/path/to/file.txt', linkPath)

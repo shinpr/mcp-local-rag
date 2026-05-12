@@ -1,7 +1,7 @@
 // CLI list subcommand — list files and ingestion status
 
 import { readdir } from 'node:fs/promises'
-import { extname, join, resolve } from 'node:path'
+import { extname, join, resolve, sep } from 'node:path'
 
 import { SUPPORTED_EXTENSIONS } from '../parser/index.js'
 import { extractSourceFromPath, isRawDataPath } from '../utils/raw-data-utils.js'
@@ -144,8 +144,11 @@ export async function runList(args: string[], globalOptions: GlobalOptions = {})
     const vectorStore = createVectorStore(globalConfig)
     await vectorStore.initialize()
 
-    // Build exclude paths (resolved to absolute)
-    const excludePaths = [`${resolve(globalConfig.dbPath)}/`, `${resolve(globalConfig.cacheDir)}/`]
+    // Build exclude paths (resolved to absolute, platform-aware trailing separator)
+    const excludePaths = [
+      `${resolve(globalConfig.dbPath)}${sep}`,
+      `${resolve(globalConfig.cacheDir)}${sep}`,
+    ]
 
     // Get all ingested entries from the vector store
     const ingested = await vectorStore.listFiles()

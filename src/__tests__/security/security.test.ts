@@ -190,6 +190,8 @@ This approach provides accurate search results for natural language queries.`
     // Uses .txt extension to ensure the test validates symlink defense (BASE_DIR check),
     // not file extension filtering.
     it('Symbolic link pointing outside baseDir rejected with ValidationError about BASE_DIR', async () => {
+      // Symlinks require Developer Mode on Windows; skip if unavailable
+      if (process.platform === 'win32') return
       const parser = new DocumentParser({
         baseDir: fixturesDir,
         maxFileSize: 100 * 1024 * 1024,

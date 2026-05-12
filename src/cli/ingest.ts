@@ -2,7 +2,7 @@
 
 import { randomUUID } from 'node:crypto'
 import { opendir, stat } from 'node:fs/promises'
-import { extname, join, resolve } from 'node:path'
+import { extname, join, resolve, sep } from 'node:path'
 
 import { SemanticChunker } from '../chunker/index.js'
 import type { Embedder } from '../embedder/index.js'
@@ -410,7 +410,7 @@ export async function runIngest(args: string[], globalOptions: GlobalOptions = {
   // Resolve config: CLI flags > env vars > defaults
   const globalConfig = resolveGlobalConfig(globalOptions)
   const config = resolveConfig(globalConfig, options)
-  const excludePaths = [`${resolve(config.dbPath)}/`, `${resolve(config.cacheDir)}/`]
+  const excludePaths = [`${resolve(config.dbPath)}${sep}`, `${resolve(config.cacheDir)}${sep}`]
 
   // Collect files
   const files = await collectFiles(targetPath, excludePaths)

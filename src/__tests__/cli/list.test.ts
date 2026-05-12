@@ -20,9 +20,13 @@ const mocks = vi.hoisted(() => {
 })
 
 // Mock fs/promises
-vi.mock('node:fs/promises', () => ({
-  readdir: mocks.readdir,
-}))
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>()
+  return {
+    ...actual,
+    readdir: mocks.readdir,
+  }
+})
 
 // Mock cli/common.js (only createVectorStore needed — list does not use Embedder)
 vi.mock('../../cli/common.js', () => ({
@@ -33,6 +37,7 @@ vi.mock('../../cli/common.js', () => ({
 }))
 
 // Import after mocks are set up
+import { resolve } from 'node:path'
 import { parseArgs, runList } from '../../cli/list.js'
 
 // ============================================
@@ -147,7 +152,7 @@ describe('CLI list', () => {
       mockDirent('image.jpg', baseDir),
     ])
     mocks.listFiles.mockResolvedValue([
-      { filePath: `${baseDir}/doc.md`, chunkCount: 3, timestamp: '2025-01-01T00:00:00Z' },
+      { filePath: resolve(baseDir, 'doc.md'), chunkCount: 3, timestamp: '2025-01-01T00:00:00Z' },
     ])
 
     // Act
@@ -287,11 +292,11 @@ describe('CLI list', () => {
   it('should exclude dbPath and cacheDir paths from file scan', async () => {
     // Arrange
     const baseDir = process.cwd()
-    const resolvedDbPath = `${process.cwd()}/lancedb`
+    const resolvedDbPath = resolve(baseDir, 'lancedb')
 
     mocks.readdir.mockResolvedValue([
       mockDirent('doc.md', baseDir),
-      mockDirent('chunks.md', `${resolvedDbPath}`),
+      mockDirent('chunks.md', resolvedDbPath),
     ])
     mocks.listFiles.mockResolvedValue([])
 

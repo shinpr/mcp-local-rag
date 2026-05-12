@@ -40,10 +40,14 @@ const mocks = vi.hoisted(() => {
 })
 
 // Mock fs/promises
-vi.mock('node:fs/promises', () => ({
-  stat: mocks.stat,
-  opendir: mocks.opendir,
-}))
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>()
+  return {
+    ...actual,
+    stat: mocks.stat,
+    opendir: mocks.opendir,
+  }
+})
 
 // Mock DocumentParser
 vi.mock('../../parser/index.js', () => ({
@@ -75,6 +79,7 @@ vi.mock('../../cli/common.js', () => ({
 }))
 
 // Import after mocks are set up
+import { resolve } from 'node:path'
 import { parseArgs, resolveConfig, runIngest } from '../../cli/ingest.js'
 import { resolveGlobalConfig } from '../../cli/options.js'
 
@@ -197,7 +202,7 @@ describe('CLI ingest', () => {
   // --------------------------------------------
   it('should parse, chunk, embed, delete, insert, and optimize once for a single file', async () => {
     // Arrange
-    const filePath = '/tmp/test/document.md'
+    const filePath = resolve('/tmp/test/document.md')
     mocks.stat.mockResolvedValue(mockFileStat())
     setupSuccessfulIngestion()
 
@@ -239,14 +244,14 @@ describe('CLI ingest', () => {
   // --------------------------------------------
   it('should recursively find supported files and ingest all when given a directory', async () => {
     // Arrange: first stat call for path validation, second for collectFiles
-    const dirPath = '/tmp/test/docs'
+    const dirPath = resolve('/tmp/test/docs')
     mocks.stat
       .mockResolvedValueOnce(mockDirStat()) // path validation in runIngest
       .mockResolvedValueOnce(mockDirStat()) // stat in collectFiles
 
     setupMockOpendir({
-      '/tmp/test/docs': [mockDirent('file1.md'), mockDirent('sub', 'directory')],
-      '/tmp/test/docs/sub': [mockDirent('file2.txt')],
+      [dirPath]: [mockDirent('file1.md'), mockDirent('sub', 'directory')],
+      [resolve('/tmp/test/docs/sub')]: [mockDirent('file2.txt')],
     })
 
     setupSuccessfulIngestion()
@@ -275,7 +280,7 @@ describe('CLI ingest', () => {
   // --------------------------------------------
   it('should include files within max depth and skip directories beyond it', async () => {
     // Arrange: nested directories, depth 10 directory is not entered
-    const dirPath = '/tmp/test/docs'
+    const dirPath = resolve('/tmp/test/docs')
     mocks.stat.mockResolvedValueOnce(mockDirStat()).mockResolvedValueOnce(mockDirStat())
 
     // Build a chain of 10 nested directories (depth 0..9), plus one at depth 10
@@ -284,7 +289,7 @@ describe('CLI ingest', () => {
     }
     let current = dirPath
     for (let i = 1; i <= 10; i++) {
-      const next = `${current}/d${i}`
+      const next = resolve(`${current}/d${i}`)
       if (i < 10) {
         // Depths 1-9: directory with a subdirectory
         dirMap[next] = [mockDirent(`d${i + 1}`, 'directory')]
@@ -318,7 +323,7 @@ describe('CLI ingest', () => {
 
   it('should include files at exactly depth 9 boundary', async () => {
     // Arrange: single file at depth 9 (deepest allowed)
-    const dirPath = '/tmp/test/docs'
+    const dirPath = resolve('/tmp/test/docs')
     mocks.stat.mockResolvedValueOnce(mockDirStat()).mockResolvedValueOnce(mockDirStat())
 
     const dirMap: Record<string, ReturnType<typeof mockDirent>[]> = {
@@ -326,7 +331,7 @@ describe('CLI ingest', () => {
     }
     let current = dirPath
     for (let i = 1; i <= 9; i++) {
-      const next = `${current}/d${i}`
+      const next = resolve(`${current}/d${i}`)
       dirMap[next] = i < 9 ? [mockDirent(`d${i + 1}`, 'directory')] : [mockDirent('boundary.md')]
       current = next
     }
@@ -347,7 +352,7 @@ describe('CLI ingest', () => {
 
   it('should skip directories at exactly depth 10 and show warning', async () => {
     // Arrange: all files are beyond depth 10
-    const dirPath = '/tmp/test/docs'
+    const dirPath = resolve('/tmp/test/docs')
     mocks.stat.mockResolvedValueOnce(mockDirStat()).mockResolvedValueOnce(mockDirStat())
 
     // Build 10 levels of directories so depth 10 is skipped
@@ -356,7 +361,7 @@ describe('CLI ingest', () => {
     }
     let current = dirPath
     for (let i = 1; i <= 10; i++) {
-      const next = `${current}/d${i}`
+      const next = resolve(`${current}/d${i}`)
       dirMap[next] = i < 10 ? [mockDirent(`d${i + 1}`, 'directory')] : [mockDirent('beyond.md')]
       current = next
     }
@@ -382,7 +387,7 @@ describe('CLI ingest', () => {
   // --------------------------------------------
   it('should skip symbolic links and not include them in file list', async () => {
     // Arrange
-    const dirPath = '/tmp/test/docs'
+    const dirPath = resolve('/tmp/test/docs')
     mocks.stat.mockResolvedValueOnce(mockDirStat()).mockResolvedValueOnce(mockDirStat())
 
     setupMockOpendir({
@@ -410,11 +415,13 @@ describe('CLI ingest', () => {
   // --------------------------------------------
   it('should skip inaccessible directories and continue processing others', async () => {
     // Arrange
-    const dirPath = '/tmp/test/docs'
+    const dirPath = resolve('/tmp/test/docs')
+    const restrictedPath = resolve('/tmp/test/docs/restricted')
+    const subPath = resolve('/tmp/test/docs/sub')
     mocks.stat.mockResolvedValueOnce(mockDirStat()).mockResolvedValueOnce(mockDirStat())
 
     mocks.opendir.mockImplementation(async (path: string) => {
-      if (path === '/tmp/test/docs/restricted') {
+      if (path === restrictedPath) {
         throw new Error('EACCES: permission denied')
       }
       const dirMap: Record<string, ReturnType<typeof mockDirent>[]> = {
@@ -423,7 +430,7 @@ describe('CLI ingest', () => {
           mockDirent('restricted', 'directory'),
           mockDirent('sub', 'directory'),
         ],
-        '/tmp/test/docs/sub': [mockDirent('also-ok.md')],
+        [subPath]: [mockDirent('also-ok.md')],
       }
       const entries = dirMap[path] ?? []
       return {
@@ -446,7 +453,7 @@ describe('CLI ingest', () => {
     expect(joined).toContain('[1/2]')
     expect(joined).toContain('[2/2]')
     expect(joined).toContain('Succeeded: 2')
-    expect(joined).toContain('Warning: cannot read directory: /tmp/test/docs/restricted')
+    expect(joined).toContain(`Warning: cannot read directory: ${restrictedPath}`)
   })
 
   // --------------------------------------------
@@ -454,7 +461,7 @@ describe('CLI ingest', () => {
   // --------------------------------------------
   it('should skip unsupported file extensions like .jpg', async () => {
     // Arrange
-    const filePath = '/tmp/test/image.jpg'
+    const filePath = resolve('/tmp/test/image.jpg')
     mocks.stat.mockResolvedValue(mockFileStat())
 
     // Act
@@ -473,11 +480,11 @@ describe('CLI ingest', () => {
   // --------------------------------------------
   it('should skip failed files and continue processing remaining files', async () => {
     // Arrange
-    const dirPath = '/tmp/test/docs'
+    const dirPath = resolve('/tmp/test/docs')
     mocks.stat.mockResolvedValueOnce(mockDirStat()).mockResolvedValueOnce(mockDirStat())
 
     setupMockOpendir({
-      '/tmp/test/docs': [mockDirent('bad.md'), mockDirent('good.md'), mockDirent('good2.txt')],
+      [dirPath]: [mockDirent('bad.md'), mockDirent('good.md'), mockDirent('good2.txt')],
     })
 
     mocks.initialize.mockResolvedValue(undefined)
@@ -560,12 +567,12 @@ describe('CLI ingest', () => {
   // --------------------------------------------
   it('should output progress in [N/Total] format to stderr', async () => {
     // Arrange
-    const dirPath = '/tmp/test/docs'
+    const dirPath = resolve('/tmp/test/docs')
     mocks.stat.mockResolvedValueOnce(mockDirStat()).mockResolvedValueOnce(mockDirStat())
 
     setupMockOpendir({
-      '/tmp/test/docs': [mockDirent('a.md'), mockDirent('b.txt'), mockDirent('sub', 'directory')],
-      '/tmp/test/docs/sub': [mockDirent('c.md')],
+      [dirPath]: [mockDirent('a.md'), mockDirent('b.txt'), mockDirent('sub', 'directory')],
+      [resolve('/tmp/test/docs/sub')]: [mockDirent('c.md')],
     })
 
     setupSuccessfulIngestion()
@@ -629,7 +636,7 @@ describe('CLI ingest', () => {
     delete process.env['MODEL_NAME']
     delete process.env['MAX_FILE_SIZE']
 
-    const filePath = '/tmp/test/document.md'
+    const filePath = resolve('/tmp/test/document.md')
     mocks.stat.mockResolvedValue(mockFileStat())
     setupSuccessfulIngestion()
 

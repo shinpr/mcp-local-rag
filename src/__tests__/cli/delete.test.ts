@@ -29,11 +29,16 @@ vi.mock('../../cli/common.js', () => ({
 }))
 
 // Mock node:fs/promises (unlink for raw-data cleanup)
-vi.mock('node:fs/promises', () => ({
-  unlink: mocks.unlink,
-}))
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>()
+  return {
+    ...actual,
+    unlink: mocks.unlink,
+  }
+})
 
 // Import after mocks are set up
+import { resolve } from 'node:path'
 import { runDelete } from '../../cli/delete.js'
 
 // ============================================
@@ -154,14 +159,14 @@ describe('CLI delete', () => {
 
     // Verify VectorStore interactions
     expect(mocks.initialize).toHaveBeenCalledTimes(1)
-    expect(mocks.deleteChunks).toHaveBeenCalledWith('/path/to/file.md')
+    expect(mocks.deleteChunks).toHaveBeenCalledWith(resolve('/path/to/file.md'))
     expect(mocks.optimize).toHaveBeenCalledTimes(1)
 
     // Verify JSON output to stdout
     expect(stdoutSpy).toHaveBeenCalledTimes(1)
     const writtenData = stdoutSpy.mock.calls[0]![0] as string
     const parsed = JSON.parse(writtenData)
-    expect(parsed.filePath).toBe('/path/to/file.md')
+    expect(parsed.filePath).toBe(resolve('/path/to/file.md'))
     expect(parsed.deleted).toBe(true)
     expect(parsed.timestamp).toBeDefined()
   })
@@ -243,6 +248,12 @@ describe('CLI delete', () => {
   // Path validation for file path argument
   // --------------------------------------------
   it('should reject sensitive system paths for file-path argument', async () => {
+    // Sensitive path prefixes (/etc, /usr, etc.) are Unix-specific.
+    // On Windows, resolve('/etc/passwd') produces a drive-letter path
+    // (e.g. D:\etc\passwd) which doesn't match the Unix prefix check.
+    if (process.platform === 'win32') {
+      return
+    }
     const { output, error } = await captureStderr(() => runDelete(['/etc/passwd']))
 
     expect(error).toBeUndefined()

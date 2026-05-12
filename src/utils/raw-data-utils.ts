@@ -165,7 +165,9 @@ export async function saveRawData(
  * @returns True if path is in raw-data directory
  */
 export function isRawDataPath(filePath: string): boolean {
-  return filePath.includes('/raw-data/')
+  // Normalize Windows backslashes for cross-platform path detection
+  const normalized = filePath.replace(/\\/g, '/')
+  return normalized.includes('/raw-data/')
 }
 
 /**
@@ -176,8 +178,9 @@ export function isRawDataPath(filePath: string): boolean {
  * @returns Original source or null
  */
 export function extractSourceFromPath(filePath: string): string | null {
+  const normalized = filePath.replace(/\\/g, '/')
   const rawDataMarker = '/raw-data/'
-  const rawDataIndex = filePath.indexOf(rawDataMarker)
+  const rawDataIndex = normalized.indexOf(rawDataMarker)
 
   if (rawDataIndex === -1) {
     return null

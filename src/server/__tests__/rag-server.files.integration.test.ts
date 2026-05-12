@@ -10,21 +10,23 @@ describe('AC-006: Additional Format Support (Phase 2)', () => {
   let localRagServer: RAGServer
   const localTestDbPath = resolve('./tmp/test-lancedb-ac006')
   const localTestDataDir = resolve('./tmp/test-data-ac006')
+  const localCacheDir = resolve('./tmp/test-cache-ac006')
 
   beforeAll(async () => {
     mkdirSync(localTestDbPath, { recursive: true })
     mkdirSync(localTestDataDir, { recursive: true })
+    mkdirSync(localCacheDir, { recursive: true })
 
     localRagServer = new RAGServer({
       dbPath: localTestDbPath,
       modelName: 'Xenova/all-MiniLM-L6-v2',
-      cacheDir: './tmp/models',
+      cacheDir: localCacheDir,
       baseDir: localTestDataDir,
       maxFileSize: 100 * 1024 * 1024,
     })
 
     await localRagServer.initialize()
-  })
+  }, 60000)
 
   afterAll(async () => {
     rmSync(localTestDbPath, { recursive: true, force: true })
@@ -107,15 +109,17 @@ describe('AC-007: File Management', () => {
   let localRagServer: RAGServer
   const localTestDbPath = resolve('./tmp/test-lancedb-ac007')
   const localTestDataDir = resolve('./tmp/test-data-ac007')
+  const localCacheDir = resolve('./tmp/test-cache-ac007')
 
   beforeAll(async () => {
     mkdirSync(localTestDbPath, { recursive: true })
     mkdirSync(localTestDataDir, { recursive: true })
+    mkdirSync(localCacheDir, { recursive: true })
 
     localRagServer = new RAGServer({
       dbPath: localTestDbPath,
       modelName: 'Xenova/all-MiniLM-L6-v2',
-      cacheDir: './tmp/models',
+      cacheDir: localCacheDir,
       baseDir: localTestDataDir,
       maxFileSize: 100 * 1024 * 1024,
     })
@@ -134,7 +138,7 @@ describe('AC-007: File Management', () => {
     const testFile3 = resolve(localTestDataDir, 'test-file-3.txt')
     writeFileSync(testFile3, 'This is test file 3. '.repeat(20))
     await localRagServer.handleIngestFile({ filePath: testFile3 })
-  })
+  }, 120000)
 
   afterAll(async () => {
     rmSync(localTestDbPath, { recursive: true, force: true })
@@ -256,7 +260,7 @@ describe('AC-007: File Management', () => {
       })
 
       await excludeServer.initialize()
-    })
+    }, 120000)
 
     afterAll(async () => {
       rmSync(excludeTestBase, { recursive: true, force: true })
@@ -299,13 +303,13 @@ describe('AC-007: File Management', () => {
         (s: { source?: string }) => s.source === 'https://example.com/exclude-test'
       )
       expect(sourceEntry).toBeDefined()
-    })
+    }, 30000)
 
     it('dbPath/cacheDir outside baseDir causes no errors', async () => {
       const siblingBase = resolve('./tmp/test-exclude-sibling')
       const siblingData = resolve(siblingBase, 'data')
       const siblingDb = resolve(siblingBase, 'db')
-      const siblingCache = resolve(siblingBase, 'cache')
+      const siblingCache = resolve(siblingBase, 'cache-models')
 
       mkdirSync(siblingData, { recursive: true })
       mkdirSync(siblingDb, { recursive: true })
