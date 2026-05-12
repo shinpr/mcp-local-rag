@@ -174,3 +174,21 @@ export interface ReadChunkNeighborsResultItem {
   /** Document title extracted from file content (display-only, not used for scoring) */
   fileTitle: string | null
 }
+
+/**
+ * sync_data tool input
+ */
+export interface SyncDataInput {
+  /** Absolute path to the directory or file to synchronize */
+  path: string
+}
+
+/**
+ * sync_data tool output
+ */
+export interface SyncResult {
+  upsertCount: number
+  pruneCount: number
+  skipCount: number
+  totalChunks: number
+}

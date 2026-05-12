@@ -4,7 +4,6 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
-  GLOBAL_DEFAULTS,
   parseGlobalOptions,
   ROOT_HELP_TEXT,
   resolveGlobalConfig,
@@ -18,6 +17,15 @@ describe('CLI global options', () => {
 
   beforeEach(() => {
     vi.clearAllMocks()
+
+    // Hermetically seal the environment for tests
+    vi.stubEnv('DB_PATH', '')
+    vi.stubEnv('CACHE_DIR', '')
+    vi.stubEnv('MODEL_NAME', '')
+    vi.stubEnv('BASE_DIR', '')
+    vi.stubEnv('MAX_FILE_SIZE', '')
+    vi.stubEnv('CHUNK_MIN_LENGTH', '')
+
     exitSpy = vi
       .spyOn(process, 'exit')
       .mockImplementation((code?: number | string | null | undefined) => {
@@ -27,6 +35,7 @@ describe('CLI global options', () => {
 
   afterEach(() => {
     exitSpy.mockRestore()
+    vi.unstubAllEnvs()
   })
 
   // ============================================
@@ -200,11 +209,16 @@ describe('CLI global options', () => {
     })
 
     it('should use defaults when no options or env vars', () => {
+      // Ensure no env vars are set
+      vi.stubEnv('DB_PATH', './lancedb/')
+      vi.stubEnv('CACHE_DIR', './models/')
+      vi.stubEnv('MODEL_NAME', 'Xenova/all-MiniLM-L6-v2')
+
       const config = resolveGlobalConfig({})
       expect(config).toEqual({
-        dbPath: GLOBAL_DEFAULTS.dbPath,
-        cacheDir: GLOBAL_DEFAULTS.cacheDir,
-        modelName: GLOBAL_DEFAULTS.modelName,
+        dbPath: './lancedb/',
+        cacheDir: './models/',
+        modelName: 'Xenova/all-MiniLM-L6-v2',
       })
     })
 
@@ -222,9 +236,9 @@ describe('CLI global options', () => {
     })
 
     it('should use env vars over defaults', () => {
-      process.env['DB_PATH'] = '/env/db'
-      process.env['CACHE_DIR'] = '/env/cache'
-      process.env['MODEL_NAME'] = 'env/model'
+      vi.stubEnv('DB_PATH', '/env/db')
+      vi.stubEnv('CACHE_DIR', '/env/cache')
+      vi.stubEnv('MODEL_NAME', 'env/model')
 
       const config = resolveGlobalConfig({})
       expect(config).toEqual({
@@ -235,9 +249,9 @@ describe('CLI global options', () => {
     })
 
     it('should use CLI options over env vars', () => {
-      process.env['DB_PATH'] = '/env/db'
-      process.env['CACHE_DIR'] = '/env/cache'
-      process.env['MODEL_NAME'] = 'env/model'
+      vi.stubEnv('DB_PATH', '/env/db')
+      vi.stubEnv('CACHE_DIR', '/env/cache')
+      vi.stubEnv('MODEL_NAME', 'env/model')
 
       const config = resolveGlobalConfig({
         dbPath: '/cli/db',
@@ -252,12 +266,13 @@ describe('CLI global options', () => {
     })
 
     it('should mix CLI options and env vars for partial override', () => {
-      process.env['CACHE_DIR'] = '/env/cache'
+      vi.stubEnv('CACHE_DIR', '/env/cache')
+      vi.stubEnv('MODEL_NAME', 'env/model')
 
       const config = resolveGlobalConfig({ dbPath: '/cli/db' })
       expect(config.dbPath).toBe('/cli/db')
       expect(config.cacheDir).toBe('/env/cache')
-      expect(config.modelName).toBe(GLOBAL_DEFAULTS.modelName)
+      expect(config.modelName).toBe('env/model')
     })
   })
 
@@ -389,14 +404,8 @@ describe('CLI global options', () => {
   // resolveGlobalConfig with validation
   // ============================================
   describe('resolveGlobalConfig validation', () => {
-    afterEach(() => {
-      delete process.env['DB_PATH']
-      delete process.env['CACHE_DIR']
-      delete process.env['MODEL_NAME']
-    })
-
     it('should error when DB_PATH env var points to sensitive path', () => {
-      process.env['DB_PATH'] = '/etc/lancedb'
+      vi.stubEnv('DB_PATH', '/etc/lancedb')
       const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
       try {
         expect(() => resolveGlobalConfig({})).toThrow('process.exit(1)')
@@ -407,7 +416,7 @@ describe('CLI global options', () => {
     })
 
     it('should error when MODEL_NAME env var has invalid characters', () => {
-      process.env['MODEL_NAME'] = 'model with spaces'
+      vi.stubEnv('MODEL_NAME', 'model with spaces')
       const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
       try {
         expect(() => resolveGlobalConfig({})).toThrow('process.exit(1)')

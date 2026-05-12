@@ -13,6 +13,7 @@ import {
   McpError,
 } from '@modelcontextprotocol/sdk/types.js'
 import { DEFAULT_MIN_CHUNK_LENGTH, SemanticChunker } from '../chunker/index.js'
+import { collectFiles, ingestSingleFile } from '../cli/ingest.js'
 import { Embedder } from '../embedder/index.js'
 import { parseHtml } from '../parser/html-parser.js'
 import { DocumentParser, SUPPORTED_EXTENSIONS } from '../parser/index.js'
@@ -27,6 +28,7 @@ import {
   saveMetaJson,
   saveRawData,
 } from '../utils/raw-data-utils.js'
+import { createSyncPlan, type SyncFileMetadata } from '../utils/sync-utils.js'
 import { type VectorChunk, VectorStore } from '../vectordb/index.js'
 import { DatabaseError } from '../vectordb/types.js'
 import { formatErrorMessage } from './error-utils.js'
@@ -44,6 +46,8 @@ import type {
   ReadChunkNeighborsInput,
   ReadChunkNeighborsResultItem,
   SourceEntry,
+  SyncDataInput,
+  SyncResult,
 } from './types.js'
 
 /** RAG server compliant with MCP Protocol */
@@ -159,14 +163,16 @@ export class RAGServer {
             return await this.handleDeleteFile(
               request.params.arguments as unknown as DeleteFileInput
             )
-          case 'read_chunk_neighbors':
-            return await this.handleReadChunkNeighbors(
-              request.params.arguments as unknown as ReadChunkNeighborsInput
-            )
           case 'list_files':
             return await this.handleListFiles()
           case 'status':
             return await this.handleStatus()
+          case 'read_chunk_neighbors':
+            return await this.handleReadChunkNeighbors(
+              request.params.arguments as unknown as ReadChunkNeighborsInput
+            )
+          case 'sync_data':
+            return await this.handleSyncData(request.params.arguments as unknown as SyncDataInput)
           default:
             throw new Error(`Unknown tool: ${request.params.name}`)
         }
@@ -181,9 +187,91 @@ export class RAGServer {
     await this.vectorStore.initialize()
     console.error('RAGServer initialized')
   }
+  /**
+   * handle sync_data tool
+   */
+  private async handleSyncData(args: SyncDataInput): Promise<{
+    content: Array<{ type: 'text'; text: string }>
+  }> {
+    try {
+      if (typeof args.path !== 'string' || args.path.trim().length === 0) {
+        throw new McpError(ErrorCode.InvalidParams, 'path must be a non-empty string')
+      }
+
+      const targetPath = resolve(args.path)
+
+      // 1. Get Disk State
+      const fileInfos = await collectFiles(targetPath, this.excludePaths)
+      const diskFiles = new Map<string, SyncFileMetadata>(
+        fileInfos.map((f) => [f.filePath, { fileModifiedAt: f.mtime, fileSize: f.size }])
+      )
+
+      // 2. Get DB State
+      const dbFiles = await this.vectorStore.getFileManifest()
+
+      // 3. Create Sync Plan
+      const plan = createSyncPlan(diskFiles, dbFiles)
+
+      // 4. Execute Pruning
+      if (plan.pruneList.length > 0) {
+        await this.vectorStore.deleteFiles(plan.pruneList)
+      }
+
+      // 5. Execute Upsert
+      let totalChunks = 0
+      let upsertCount = 0
+      if (plan.upsertList.length > 0) {
+        for (const filePath of plan.upsertList) {
+          try {
+            const mtime = diskFiles.get(filePath)?.fileModifiedAt
+            const chunkCount = await ingestSingleFile(
+              filePath,
+              this.parser,
+              this.chunker,
+              this.embedder,
+              this.vectorStore,
+              mtime
+            )
+            totalChunks += chunkCount
+            upsertCount++
+          } catch (error) {
+            console.error(`Sync: Failed to ingest ${filePath}:`, error)
+          }
+        }
+      }
+
+      // Optimize
+      if (plan.upsertList.length > 0 || plan.pruneList.length > 0) {
+        await this.vectorStore.optimize()
+      }
+
+      const result: SyncResult = {
+        upsertCount,
+        pruneCount: plan.pruneList.length,
+        skipCount: plan.skipList.length,
+        totalChunks,
+      }
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify(result, null, 2),
+          },
+        ],
+      }
+    } catch (error) {
+      if (error instanceof McpError || error instanceof DatabaseError) {
+        throw error
+      }
+      const errorMessage = formatErrorMessage(error)
+      throw new Error(`Failed to sync data: ${errorMessage}`)
+    }
+  }
 
   /**
-   * query_documents tool handler
+ * query_documents tool handler
+...
    */
   async handleQueryDocuments(
     args: QueryDocumentsInput

@@ -109,14 +109,24 @@ function captureStderr(fn: () => Promise<void>): Promise<{ output: string[]; err
  * Create a mock stat result for a file.
  */
 function mockFileStat() {
-  return { isFile: () => true, isDirectory: () => false }
+  return {
+    isFile: () => true,
+    isDirectory: () => false,
+    mtime: new Date('2024-01-01T00:00:00Z'),
+    size: 100,
+  }
 }
 
 /**
  * Create a mock stat result for a directory.
  */
 function mockDirStat() {
-  return { isFile: () => false, isDirectory: () => true }
+  return {
+    isFile: () => false,
+    isDirectory: () => true,
+    mtime: new Date('2024-01-01T00:00:00Z'),
+    size: 4096,
+  }
 }
 
 /**
@@ -568,7 +578,11 @@ describe('CLI ingest', () => {
   it('should output progress in [N/Total] format to stderr', async () => {
     // Arrange
     const dirPath = resolve('/tmp/test/docs')
-    mocks.stat.mockResolvedValueOnce(mockDirStat()).mockResolvedValueOnce(mockDirStat())
+    // Provide enough mock stats for BFS walk AND collection phase
+    mocks.stat
+      .mockResolvedValueOnce(mockDirStat()) // initial target stat
+      .mockResolvedValueOnce(mockDirStat()) // queue.shift() sub
+      .mockResolvedValue(mockFileStat()) // remaining individual files (a.md, b.txt, sub, c.md)
 
     setupMockOpendir({
       [dirPath]: [mockDirent('a.md'), mockDirent('b.txt'), mockDirent('sub', 'directory')],

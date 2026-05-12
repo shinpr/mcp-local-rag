@@ -140,4 +140,20 @@ export const toolDefinitions: Tool[] = [
       required: ['chunkIndex'],
     },
   },
+  {
+    name: 'sync_data',
+    description:
+      'Incrementally synchronize a directory or file with the database. Only new or modified files will be re-embedded. Files missing from disk will be pruned from the database. This is much faster than full re-ingestion for large collections.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: {
+          type: 'string',
+          description:
+            'Absolute path to the directory or file to synchronize. Example: "/Users/user/documents/"',
+        },
+      },
+      required: ['path'],
+    },
+  },
 ]

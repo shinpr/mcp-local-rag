@@ -230,12 +230,24 @@ export function resolveConfig(
 // ============================================
 
 /**
+ * File info for ingestion
+ */
+export interface FileInfo {
+  filePath: string
+  mtime: string
+  size: number
+}
+
+/**
  * Collect files to ingest from a path.
  * - If path is a file with supported extension, return [path].
  * - If path is a directory, walk with BFS up to MAX_DEPTH levels.
  * - Skip symlinks, permission errors, and excluded directories.
  */
-async function collectFiles(targetPath: string, excludePaths: string[]): Promise<string[]> {
+export async function collectFiles(
+  targetPath: string,
+  excludePaths: string[]
+): Promise<FileInfo[]> {
   const resolved = resolve(targetPath)
   const info = await stat(resolved)
 
@@ -247,11 +259,17 @@ async function collectFiles(targetPath: string, excludePaths: string[]): Promise
       )
       return []
     }
-    return [resolved]
+    return [
+      {
+        filePath: resolved,
+        mtime: info.mtime.toISOString(),
+        size: info.size,
+      },
+    ]
   }
 
   if (info.isDirectory()) {
-    const files: string[] = []
+    const files: FileInfo[] = []
     let depthLimited = false
 
     const queue: { dirPath: string; depth: number }[] = [{ dirPath: resolved, depth: 0 }]
@@ -282,7 +300,16 @@ async function collectFiles(targetPath: string, excludePaths: string[]): Promise
         if (entry.isDirectory()) {
           queue.push({ dirPath: fullPath, depth: depth + 1 })
         } else if (entry.isFile() && SUPPORTED_EXTENSIONS.has(extname(entry.name).toLowerCase())) {
-          files.push(fullPath)
+          try {
+            const fileStat = await stat(fullPath)
+            files.push({
+              filePath: fullPath,
+              mtime: fileStat.mtime.toISOString(),
+              size: fileStat.size,
+            })
+          } catch {
+            console.error(`Warning: cannot stat file: ${fullPath}`)
+          }
         }
       }
     }
@@ -293,7 +320,7 @@ async function collectFiles(targetPath: string, excludePaths: string[]): Promise
       )
     }
 
-    return files.sort()
+    return files.sort((a, b) => a.filePath.localeCompare(b.filePath))
   }
 
   return []
@@ -307,12 +334,13 @@ async function collectFiles(targetPath: string, excludePaths: string[]): Promise
  * Ingest a single file: parse, chunk, embed, delete old chunks, insert new chunks.
  * Returns the number of chunks inserted.
  */
-async function ingestSingleFile(
+export async function ingestSingleFile(
   filePath: string,
   parser: DocumentParser,
   chunker: SemanticChunker,
   embedder: Embedder,
-  vectorStore: VectorStore
+  vectorStore: VectorStore,
+  fileModifiedAt?: string
 ): Promise<number> {
   // Parse file
   const isPdf = filePath.toLowerCase().endsWith('.pdf')
@@ -355,9 +383,10 @@ async function ingestSingleFile(
       text: chunk.text,
       vector: embedding,
       metadata: {
-        fileName: filePath.split('/').pop() || filePath,
+        fileName: filePath.split(sep).pop() || filePath,
         fileSize: text.length,
         fileType: filePath.split('.').pop() || '',
+        fileModifiedAt: fileModifiedAt || timestamp,
       },
       fileTitle: title,
       timestamp,
@@ -413,13 +442,13 @@ export async function runIngest(args: string[], globalOptions: GlobalOptions = {
   const excludePaths = [`${resolve(config.dbPath)}${sep}`, `${resolve(config.cacheDir)}${sep}`]
 
   // Collect files
-  const files = await collectFiles(targetPath, excludePaths)
-  if (files.length === 0) {
+  const fileInfos = await collectFiles(targetPath, excludePaths)
+  if (fileInfos.length === 0) {
     console.error('No supported files found.')
     process.exit(1)
   }
 
-  console.error(`Found ${files.length} file(s) to ingest.`)
+  console.error(`Found ${fileInfos.length} file(s) to ingest.`)
 
   // Initialize components (single instances reused across all files)
   const parser = new DocumentParser({
@@ -436,12 +465,19 @@ export async function runIngest(args: string[], globalOptions: GlobalOptions = {
   // Process each file
   const summary: IngestSummary = { succeeded: 0, failed: 0, totalChunks: 0 }
 
-  for (let i = 0; i < files.length; i++) {
-    const filePath = files[i]!
-    const label = `[${i + 1}/${files.length}]`
+  for (let i = 0; i < fileInfos.length; i++) {
+    const { filePath, mtime } = fileInfos[i]!
+    const label = `[${i + 1}/${fileInfos.length}]`
 
     try {
-      const chunkCount = await ingestSingleFile(filePath, parser, chunker, embedder, vectorStore)
+      const chunkCount = await ingestSingleFile(
+        filePath,
+        parser,
+        chunker,
+        embedder,
+        vectorStore,
+        mtime
+      )
       if (chunkCount === 0) {
         // 0 chunks is a skip/warning, not a failure
         console.error(`${label} ${filePath} ... SKIPPED (0 chunks)`)

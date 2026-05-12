@@ -9,13 +9,14 @@ description: Search, ingest, expand chunk context, or manage local documents via
 
 | MCP Tool | CLI Equivalent | Use When |
 |----------|---------------|----------|
+| `sync_data` | `npx mcp-local-rag sync <path>` | Incrementally sync directory: skip unchanged, upsert modified, prune deleted |
 | `ingest_file` | `npx mcp-local-rag ingest <path>` | Local files (PDF, DOCX, TXT, MD). CLI for bulk/directory. |
 | `ingest_data` | — | Raw content (HTML, text) with source URL |
 | `query_documents` | `npx mcp-local-rag query <text>` | Semantic + keyword hybrid search |
 | `delete_file` | `npx mcp-local-rag delete <path>` | Remove ingested content |
 | `list_files` | `npx mcp-local-rag list` | File ingestion status |
 | `status` | `npx mcp-local-rag status` | Database stats |
-| `read_chunk_neighbors` | `npx mcp-local-rag read-neighbors` | Read N chunks adjacent to a known chunkIndex (context expansion; call after `query_documents` or grep) |
+| `read_chunk_neighbors` | `npx mcp-local-rag read-neighbors` | Read N chunks adjacent to a known chunkIndex |
 
 ## Search: Core Rules
 
@@ -103,7 +104,13 @@ Typical workflow when triggered:
 
 See [cli-reference.md](references/cli-reference.md#read-neighbors) for output fields and an example.
 
-## Ingestion
+## Ingestion & Sync
+
+### sync_data / `sync` CLI
+Use `sync_data` (or `npx mcp-local-rag sync`) to incrementally synchronize a directory with the database. This is **recommended over `ingest_file` for bulk updates** as it:
+- **Skips** files that have not changed (based on last modified time).
+- **Updates** files that have changed.
+- **Prunes** files that no longer exist on disk.
 
 ### ingest_file
 ```
@@ -143,7 +150,7 @@ Re-ingest same source to update. Use same source in `delete_file` to remove.
 CLI subcommands mirror MCP tools. Useful for bulk operations, scripting, and environments without MCP.
 
 - `query`, `list`, `status`, `delete` output JSON to stdout
-- `ingest` outputs progress to stderr
+- `ingest` and `sync` output progress to stderr
 - Use `--help` on any command for options
 - See [cli-reference.md](references/cli-reference.md) for options and config matching
 

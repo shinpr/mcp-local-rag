@@ -7,11 +7,10 @@ import type { GlobalOptions } from './cli/options.js'
 import { runQuery } from './cli/query.js'
 import { runReadNeighbors } from './cli/read-neighbors.js'
 import { runStatus } from './cli/status.js'
+import { runSync } from './cli/sync.js'
 
 /**
  * Handle CLI subcommands
- * @param args - Command line arguments starting with the subcommand name
- * @param globalOptions - Global options parsed before the subcommand
  */
 export async function handleCli(args: string[], globalOptions: GlobalOptions = {}): Promise<void> {
   const subcommand = args[0]
@@ -54,10 +53,14 @@ export async function handleCli(args: string[], globalOptions: GlobalOptions = {
       await runReadNeighbors(args.slice(1), globalOptions)
       break
 
+    case 'sync':
+      await runSync(args.slice(1), globalOptions)
+      break
+
     default:
       console.error(`Unknown command: ${subcommand}`)
       console.error(
-        'Available commands: skills, ingest, list, query, status, delete, read-neighbors'
+        'Available commands: skills, ingest, sync, list, query, status, delete, read-neighbors'
       )
       process.exit(1)
   }
