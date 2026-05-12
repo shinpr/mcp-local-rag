@@ -14,6 +14,7 @@ import { startServer } from './server-main.js'
 const SUBCOMMANDS = new Set([
   'skills',
   'ingest',
+  'sync',
   'list',
   'query',
   'status',
