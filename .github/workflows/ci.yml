@@ -7,17 +7,21 @@ on:
     branches: [ main, develop ]
 
 jobs:
-  ci:
-    runs-on: ubuntu-latest
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+
+    env:
+      # Node honours TZ on every platform, so this replaces the Linux-only
+      # `timedatectl` step and keeps test behaviour consistent across runners.
+      TZ: Asia/Tokyo
 
     steps:
     - name: Checkout code
       uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-
-    - name: Set timezone
-      run: |
-        sudo timedatectl set-timezone Asia/Tokyo
-        echo "TZ=Asia/Tokyo" >> $GITHUB_ENV
 
     - name: Setup Node.js
       uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -46,3 +50,14 @@ jobs:
 
     - name: Check production dependencies
       run: npx report-missing-dependencies
+
+  # Stable aggregate check. The `main` ruleset requires a status named `ci`,
+  # so this job keeps that name regardless of the test matrix dimensions.
+  ci:
+    needs: test
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+    - name: Verify the test matrix succeeded
+      if: needs.test.result != 'success'
+      run: exit 1

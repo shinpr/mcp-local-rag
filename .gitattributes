@@ -1,0 +1,4 @@
+# Normalise line endings to LF in the working tree on every platform.
+# Without this, Windows checkouts (core.autocrlf=true) produce CRLF files
+# that Biome's `format:check` rejects.
+* text=auto eol=lf
