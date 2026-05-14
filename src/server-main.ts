@@ -1,4 +1,5 @@
 // MCP Server entry point
+import { resolve } from 'node:path'
 import type { GlobalOptions } from './cli/options.js'
 import { RAGServer } from './server/index.js'
 import type { GroupingMode } from './vectordb/index.js'
@@ -83,10 +84,24 @@ export function parseChunkMinLength(value: string | undefined): ParseResult<numb
 // ============================================
 
 /**
+ * npx/npm sets INIT_CWD to the original directory; under npx --yes github:...
+ * process.cwd() can be the npx cache. Prefer INIT_CWD, fall back to process.cwd().
+ */
+function resolveCwd(): string {
+  return process.env['INIT_CWD'] || process.cwd()
+}
+
+function resolvePath(value: string, cwd: string): string {
+  return resolve(cwd, value)
+}
+
+/**
  * Start the RAG MCP Server
  */
 export async function startServer(cliOptions: GlobalOptions = {}): Promise<void> {
   try {
+    const cwd = resolveCwd()
+
     // Priority: CLI flag > env var > default
     const dbPath = cliOptions.dbPath ?? process.env['DB_PATH'] ?? './lancedb/'
     const modelName = cliOptions.modelName ?? process.env['MODEL_NAME'] ?? 'Xenova/all-MiniLM-L6-v2'
@@ -94,10 +109,10 @@ export async function startServer(cliOptions: GlobalOptions = {}): Promise<void>
 
     // RAGServer configuration
     const config: ConstructorParameters<typeof RAGServer>[0] = {
-      dbPath,
+      dbPath: resolvePath(dbPath, cwd),
       modelName,
-      cacheDir,
-      baseDir: process.env['BASE_DIR'] || process.cwd(),
+      cacheDir: resolvePath(cacheDir, cwd),
+      baseDir: process.env['BASE_DIR'] || cwd,
       maxFileSize: Number.parseInt(process.env['MAX_FILE_SIZE'] || '104857600', 10), // 100MB
     }
 
