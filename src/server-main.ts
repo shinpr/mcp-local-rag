@@ -1,5 +1,4 @@
 // MCP Server entry point
-import type { GlobalOptions } from './cli/options.js'
 import { RAGServer } from './server/index.js'
 import type { GroupingMode } from './vectordb/index.js'
 
@@ -84,13 +83,15 @@ export function parseChunkMinLength(value: string | undefined): ParseResult<numb
 
 /**
  * Start the RAG MCP Server
+ * Configuration is read from environment variables only (no CLI flags).
+ * This ensures the bare `mcp-local-rag` launch is suitable for MCP clients.
  */
-export async function startServer(cliOptions: GlobalOptions = {}): Promise<void> {
+export async function startServer(): Promise<void> {
   try {
-    // Priority: CLI flag > env var > default
-    const dbPath = cliOptions.dbPath ?? process.env['DB_PATH'] ?? './lancedb/'
-    const modelName = cliOptions.modelName ?? process.env['MODEL_NAME'] ?? 'Xenova/all-MiniLM-L6-v2'
-    const cacheDir = cliOptions.cacheDir ?? process.env['CACHE_DIR'] ?? './models/'
+    // Read config from environment variables only (for MCP client compatibility)
+    const dbPath = process.env['DB_PATH'] ?? './lancedb/'
+    const modelName = process.env['MODEL_NAME'] ?? 'Xenova/all-MiniLM-L6-v2'
+    const cacheDir = process.env['CACHE_DIR'] ?? './models/'
 
     // RAGServer configuration
     const config: ConstructorParameters<typeof RAGServer>[0] = {

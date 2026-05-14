@@ -31,7 +31,7 @@ if (firstArg && SUBCOMMANDS.has(firstArg)) {
     process.exit(1)
   })
 } else {
-  // Default: start MCP server
+  // Default: start MCP server (env-only, no CLI flags)
   process.on('unhandledRejection', (reason, promise) => {
     console.error('Unhandled Rejection at:', promise, 'reason:', reason)
     process.exit(1)
@@ -42,5 +42,5 @@ if (firstArg && SUBCOMMANDS.has(firstArg)) {
     process.exit(1)
   })
 
-  startServer(globalOptions)
+  startServer()
 }
