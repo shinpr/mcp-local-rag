@@ -108,7 +108,7 @@ See [cli-reference.md](references/cli-reference.md#read-neighbors) for output fi
 
 ### sync_data / `sync` CLI
 Use `sync_data` (or `npx mcp-local-rag sync`) to incrementally synchronize a directory with the database. This is **recommended over `ingest_file` for bulk updates** as it:
-- **Skips** files that have not changed (based on last modified time).
+- **Skips** files that have not changed (based on content hash).
 - **Updates** files that have changed.
 - **Prunes** files that no longer exist on disk.
 

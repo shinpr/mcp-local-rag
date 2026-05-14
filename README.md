@@ -107,7 +107,7 @@ mcp-local-rag provides two interfaces: an **MCP server** for AI coding tools and
 
 ### Using with MCP
 
-The MCP server provides 7 tools: `ingest_file`, `ingest_data`, `query_documents`, `read_chunk_neighbors`, `list_files`, `delete_file`, `status`.
+The MCP server provides 8 tools: `ingest_file`, `ingest_data`, `query_documents`, `read_chunk_neighbors`, `list_files`, `delete_file`, `status`, `sync_data`.
 
 #### Ingesting Documents
 
