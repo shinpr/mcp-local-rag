@@ -288,6 +288,12 @@ export class VectorStore {
   /**
    * Get a manifest of all files currently in the database.
    * Returns a Map of filePath to its content hash.
+   *
+   * TODO: This is application-layer plumbing for a concern that ideally belongs in the
+   * database layer. LanceDB's own answer to incremental file sync is CocoIndex
+   * (https://github.com/lancedb/cocoindex-lancedb-demo), but CocoIndex is Python-only —
+   * there is no Node.js equivalent. Until LanceDB exposes native file-registry / change-
+   * detection primitives for Node.js, this scan-all-chunks approach is the workaround.
    */
   async getFileManifest(): Promise<Map<string, { contentHash: string }>> {
     if (!this.table) {
