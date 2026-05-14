@@ -5,6 +5,7 @@ import { applyFileFilter, applyGrouping, applyKeywordBoost } from './search-filt
 import {
   type ChunkRow,
   DatabaseError,
+  type DocumentMetadata,
   FTS_CLEANUP_THRESHOLD_MS,
   FTS_INDEX_NAME,
   HYBRID_SEARCH_CANDIDATE_MULTIPLIER,
@@ -274,6 +275,71 @@ export class VectorStore {
     if (!hasFileTitle) {
       await this.table.addColumns([{ name: 'fileTitle', valueSql: 'cast(NULL as string)' }])
       console.error('VectorStore: Migrated schema - added fileTitle column')
+    }
+
+    // Note: fileModifiedAt is part of DocumentMetadata nested object in some contexts,
+    // but LanceDB flat-maps metadata fields on write in some cases depending on the API.
+    // However, to make manifest queries efficient, we ensure it exists.
+    // We check for it at the top level or within the metadata struct if needed.
+    // Since we primarily use dot notation for queries, adding it to the metadata struct
+    // or as a top-level column is handled by LanceDB's schema evolution.
+  }
+
+  /**
+   * Get a manifest of all files currently in the database.
+   * Returns a Map of filePath to its content hash.
+   */
+  async getFileManifest(): Promise<Map<string, { contentHash: string }>> {
+    if (!this.table) {
+      return new Map()
+    }
+
+    try {
+      // Query unique file paths and their metadata.
+      // We use a query to get all records and group them in memory
+      // because LanceDB OSS doesn't support "DISTINCT" or "GROUP BY" yet.
+      // Known limitation: fetches ALL rows into memory — for databases
+      // with millions of chunks this will be slow and memory-intensive.
+      const allRecords = await this.table.query().select(['filePath', 'metadata']).toArray()
+
+      const manifest = new Map<string, { contentHash: string }>()
+
+      for (const record of allRecords) {
+        const filePath = record.filePath as string
+        const metadata = record.metadata as DocumentMetadata
+
+        if (!manifest.has(filePath)) {
+          manifest.set(filePath, {
+            contentHash: metadata.contentHash || '',
+          })
+        }
+      }
+
+      return manifest
+    } catch (error) {
+      throw new DatabaseError('Failed to get file manifest', error as Error)
+    }
+  }
+
+  /**
+   * Bulk delete chunks for multiple file paths
+   *
+   * @param filePaths - Array of file paths (absolute)
+   */
+  async deleteFiles(filePaths: string[]): Promise<void> {
+    if (!this.table || filePaths.length === 0) {
+      return
+    }
+
+    try {
+      // Build WHERE clause with IN
+      const escapedPaths = filePaths.map((p) => `'${p.replace(/'/g, "''")}'`)
+      const whereClause = `\`filePath\` IN (${escapedPaths.join(', ')})`
+
+      await this.table.delete(whereClause)
+      console.error(`VectorStore: Deleted chunks for ${filePaths.length} files`)
+    } catch (error) {
+      throw new DatabaseError('Failed to bulk delete files', error as Error)
     }
   }
 

@@ -172,6 +172,7 @@ All MCP tools are also available as CLI commands — no MCP server needed:
 
 ```bash
 npx mcp-local-rag ingest ./docs/               # Bulk ingest files
+npx mcp-local-rag sync ./docs/                 # Incrementally sync files
 npx mcp-local-rag query "authentication API"    # Search documents
 npx mcp-local-rag read-neighbors --file-path /abs/path.md --chunk-index 5  # Expand context
 npx mcp-local-rag list                          # Show ingestion status
@@ -180,7 +181,9 @@ npx mcp-local-rag delete ./docs/old.pdf         # Remove content
 npx mcp-local-rag delete --source "https://..."  # Remove by source URL
 ```
 
-`query`, `read-neighbors`, `list`, `status`, and `delete` output JSON to stdout for piping (e.g., `| jq`). `ingest` outputs progress to stderr. Global options (`--db-path`, `--cache-dir`, `--model-name`) go before the subcommand. Run `npx mcp-local-rag --help` for details.
+`sync` command incrementally synchronizes a directory or file with the database — only new or modified files will be re-embedded, and files missing from disk will be pruned automatically. This is much faster than full re-ingestion for large collections.
+
+`query`, `read-neighbors`, `list`, `status`, and `delete` output JSON to stdout for piping (e.g., `| jq`). `ingest` and `sync` output progress to stderr. Global options (`--db-path`, `--cache-dir`, `--model-name`) go before the subcommand. Run `npx mcp-local-rag --help` for details.
 
 > ⚠️ The CLI does **not** read your MCP client config (`mcp.json`, `config.toml`, etc.). Configure the CLI via flags or environment variables as shown below.
 

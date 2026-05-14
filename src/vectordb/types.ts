@@ -52,6 +52,8 @@ export interface DocumentMetadata {
   fileSize: number
   /** File type (extension) */
   fileType: string
+  /** SHA-256 hex digest of file content (for change detection) */
+  contentHash?: string
 }
 
 /**
@@ -140,6 +142,7 @@ export function isDocumentMetadata(value: unknown): value is DocumentMetadata {
     typeof obj['fileName'] === 'string' &&
     typeof obj['fileSize'] === 'number' &&
     typeof obj['fileType'] === 'string'
+    // fileModifiedAt is optional for backward compatibility
   )
 }
 

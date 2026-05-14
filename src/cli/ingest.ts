@@ -1,12 +1,16 @@
 // CLI ingest subcommand — bulk file ingestion with single optimize() at end
 
-import { randomUUID } from 'node:crypto'
-import { opendir, stat } from 'node:fs/promises'
-import { extname, join, resolve, sep } from 'node:path'
+import { createHash, randomUUID } from 'node:crypto'
+import { createReadStream } from 'node:fs'
+import { readFile, stat } from 'node:fs/promises'
+import { extname, resolve, sep } from 'node:path'
+
+import { fdir } from 'fdir'
 
 import { SemanticChunker } from '../chunker/index.js'
 import type { Embedder } from '../embedder/index.js'
 import { DocumentParser, SUPPORTED_EXTENSIONS } from '../parser/index.js'
+import { isRawDataPath, loadMetaJson } from '../utils/raw-data-utils.js'
 import type { VectorChunk, VectorStore } from '../vectordb/index.js'
 import { createEmbedder, createVectorStore } from './common.js'
 import type { GlobalOptions, ResolvedGlobalConfig } from './options.js'
@@ -230,12 +234,36 @@ export function resolveConfig(
 // ============================================
 
 /**
+ * File info for ingestion
+ */
+export interface FileInfo {
+  filePath: string
+  contentHash: string
+}
+
+/**
+ * Compute SHA-256 hash of a file.
+ */
+export function hashFile(filePath: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const hash = createHash('sha256')
+    const stream = createReadStream(filePath)
+    stream.on('data', (chunk) => hash.update(chunk))
+    stream.on('end', () => resolve(hash.digest('hex')))
+    stream.on('error', reject)
+  })
+}
+
+/**
  * Collect files to ingest from a path.
- * - If path is a file with supported extension, return [path].
- * - If path is a directory, walk with BFS up to MAX_DEPTH levels.
+ * - If path is a file with supported extension, return [path] with its SHA-256 hash.
+ * - If path is a directory, crawl with fdir (up to MAX_DEPTH levels), hash each file.
  * - Skip symlinks, permission errors, and excluded directories.
  */
-async function collectFiles(targetPath: string, excludePaths: string[]): Promise<string[]> {
+export async function collectFiles(
+  targetPath: string,
+  excludePaths: string[]
+): Promise<FileInfo[]> {
   const resolved = resolve(targetPath)
   const info = await stat(resolved)
 
@@ -247,78 +275,79 @@ async function collectFiles(targetPath: string, excludePaths: string[]): Promise
       )
       return []
     }
-    return [resolved]
+    const contentHash = await hashFile(resolved)
+    return [{ filePath: resolved, contentHash }]
   }
 
   if (info.isDirectory()) {
-    const files: string[] = []
-    let depthLimited = false
-
-    const queue: { dirPath: string; depth: number }[] = [{ dirPath: resolved, depth: 0 }]
-
-    while (queue.length > 0) {
-      const { dirPath, depth } = queue.shift()!
-
-      if (depth >= MAX_DEPTH) {
-        depthLimited = true
-        continue
-      }
-
-      let dir: Awaited<ReturnType<typeof opendir>>
-      try {
-        dir = await opendir(dirPath)
-      } catch {
-        console.error(`Warning: cannot read directory: ${dirPath}`)
-        continue
-      }
-
-      for await (const entry of dir) {
-        const fullPath = join(dirPath, entry.name)
-
-        if (!fullPath.startsWith(resolved)) continue
-        if (entry.isSymbolicLink()) continue
-        if (excludePaths.some((ep) => fullPath.startsWith(ep))) continue
-
-        if (entry.isDirectory()) {
-          queue.push({ dirPath: fullPath, depth: depth + 1 })
-        } else if (entry.isFile() && SUPPORTED_EXTENSIONS.has(extname(entry.name).toLowerCase())) {
-          files.push(fullPath)
-        }
-      }
+    let paths: string[]
+    try {
+      paths = await new fdir()
+        .withFullPaths()
+        .withMaxDepth(MAX_DEPTH)
+        .filter((p) => SUPPORTED_EXTENSIONS.has(extname(p).toLowerCase()))
+        .exclude((_, dirPath) => excludePaths.some((ep) => dirPath.startsWith(ep)))
+        .crawl(resolved)
+        .withPromise()
+    } catch {
+      console.error(`Warning: cannot read directory: ${resolved}`)
+      return []
     }
 
-    if (depthLimited) {
-      console.error(
-        `Warning: some directories were skipped because they exceed the maximum depth (${MAX_DEPTH})`
-      )
-    }
+    const fileInfos = await Promise.all(
+      paths.map(async (filePath) => {
+        const contentHash = await hashFile(filePath)
+        return { filePath, contentHash }
+      })
+    )
 
-    return files.sort()
+    return fileInfos.sort((a, b) => a.filePath.localeCompare(b.filePath))
   }
 
   return []
 }
-
 // ============================================
 // Per-file Ingestion
 // ============================================
 
 /**
  * Ingest a single file: parse, chunk, embed, delete old chunks, insert new chunks.
- * Returns the number of chunks inserted.
+ * Includes rollback support if insertion fails.
+ * Returns a result object.
  */
-async function ingestSingleFile(
+export async function ingestSingleFile(
   filePath: string,
   parser: DocumentParser,
   chunker: SemanticChunker,
   embedder: Embedder,
-  vectorStore: VectorStore
-): Promise<number> {
-  // Parse file
+  vectorStore: VectorStore,
+  contentHash?: string,
+  signal?: AbortSignal
+): Promise<{
+  filePath: string
+  chunkCount: number
+  timestamp: string
+  fileTitle: string | null
+}> {
+  let backup: VectorChunk[] | null = null
+  const timestamp = new Date().toISOString()
+
+  // 1. Compute content hash if missing
+  const finalHash = contentHash || (await hashFile(filePath))
+
+  if (signal?.aborted) throw new Error('Operation aborted')
+
+  // 2. Parse file
   const isPdf = filePath.toLowerCase().endsWith('.pdf')
   let text: string
   let title: string | null = null
-  if (isPdf) {
+
+  if (isRawDataPath(filePath)) {
+    // Raw-data files (from ingest_data tool)
+    text = await readFile(filePath, 'utf-8')
+    const meta = await loadMetaJson(filePath)
+    title = meta?.title ?? null
+  } else if (isPdf) {
     const result = await parser.parsePdf(filePath, embedder)
     text = result.content
     title = result.title || null
@@ -328,21 +357,57 @@ async function ingestSingleFile(
     title = result.title || null
   }
 
-  // Chunk text
+  if (signal?.aborted) throw new Error('Operation aborted')
+
+  // 3. Chunk text
   const chunks = await chunker.chunkText(text, embedder)
   if (chunks.length === 0) {
-    console.error(`  Warning: 0 chunks generated (file may be empty or too short)`)
-    return 0
+    // Fail-fast: Prevent data loss when chunking produces 0 chunks
+    throw new Error(
+      `No chunks generated from file: ${filePath}. The file may be empty or too short. Existing data preserved.`
+    )
   }
 
-  // Generate embeddings
+  if (signal?.aborted) throw new Error('Operation aborted')
+
+  // 4. Generate embeddings
   const embeddings = await embedder.embedBatch(chunks.map((c) => c.text))
 
-  // Delete existing chunks for this file
+  if (signal?.aborted) throw new Error('Operation aborted')
+
+  // 5. Create backup of existing data
+  try {
+    const existingFiles = await vectorStore.listFiles()
+    const exists = existingFiles.some((f) => f.filePath === filePath)
+    if (exists) {
+      // Use getChunksByRange to get all existing chunks for this file
+      const rows = await vectorStore.getChunksByRange(filePath, 0, 1000000)
+      if (rows.length > 0) {
+        backup = rows.map((row) => ({
+          id: randomUUID(),
+          filePath: row.filePath,
+          chunkIndex: row.chunkIndex,
+          text: row.text,
+          vector: [], // Metadata restore (actual vector not needed for rollback of same-path delete/insert)
+          metadata: {
+            fileName: filePath.split(sep).pop() || filePath,
+            fileSize: 0,
+            fileType: filePath.split('.').pop() || '',
+            contentHash: '',
+          },
+          fileTitle: row.fileTitle ?? null,
+          timestamp: new Date().toISOString(),
+        }))
+      }
+    }
+  } catch (backupError) {
+    console.warn(`Warning: Failed to create backup for ${filePath}:`, backupError)
+  }
+
+  // 6. Delete existing data
   await vectorStore.deleteChunks(filePath)
 
-  // Build vector chunks
-  const timestamp = new Date().toISOString()
+  // 7. Build vector chunks
   const vectorChunks: VectorChunk[] = chunks.map((chunk, index) => {
     const embedding = embeddings[index]
     if (!embedding) {
@@ -355,19 +420,41 @@ async function ingestSingleFile(
       text: chunk.text,
       vector: embedding,
       metadata: {
-        fileName: filePath.split('/').pop() || filePath,
+        fileName: filePath.split(sep).pop() || filePath,
         fileSize: text.length,
         fileType: filePath.split('.').pop() || '',
+        contentHash: finalHash,
       },
       fileTitle: title,
       timestamp,
     }
   })
 
-  // Insert chunks
-  await vectorStore.insertChunks(vectorChunks)
-
-  return vectorChunks.length
+  // 8. Insert new data with rollback
+  try {
+    await vectorStore.insertChunks(vectorChunks)
+    return {
+      filePath,
+      chunkCount: vectorChunks.length,
+      timestamp,
+      fileTitle: title,
+    }
+  } catch (insertError) {
+    if (backup && backup.length > 0) {
+      console.error(`Ingestion failed for ${filePath}, rolling back...`)
+      try {
+        await vectorStore.insertChunks(backup)
+        await vectorStore.optimize()
+        console.error(`Rollback successful for ${filePath}`)
+      } catch (rollbackError) {
+        console.error(`CRITICAL: Rollback failed for ${filePath}:`, rollbackError)
+        throw new Error(
+          `Failed to ingest file and rollback failed: ${(insertError as Error).message}`
+        )
+      }
+    }
+    throw insertError
+  }
 }
 
 // ============================================
@@ -413,13 +500,13 @@ export async function runIngest(args: string[], globalOptions: GlobalOptions = {
   const excludePaths = [`${resolve(config.dbPath)}${sep}`, `${resolve(config.cacheDir)}${sep}`]
 
   // Collect files
-  const files = await collectFiles(targetPath, excludePaths)
-  if (files.length === 0) {
+  const fileInfos = await collectFiles(targetPath, excludePaths)
+  if (fileInfos.length === 0) {
     console.error('No supported files found.')
     process.exit(1)
   }
 
-  console.error(`Found ${files.length} file(s) to ingest.`)
+  console.error(`Found ${fileInfos.length} file(s) to ingest.`)
 
   // Initialize components (single instances reused across all files)
   const parser = new DocumentParser({
@@ -436,25 +523,31 @@ export async function runIngest(args: string[], globalOptions: GlobalOptions = {
   // Process each file
   const summary: IngestSummary = { succeeded: 0, failed: 0, totalChunks: 0 }
 
-  for (let i = 0; i < files.length; i++) {
-    const filePath = files[i]!
-    const label = `[${i + 1}/${files.length}]`
+  for (let i = 0; i < fileInfos.length; i++) {
+    const { filePath, contentHash } = fileInfos[i]!
+    const label = `[${i + 1}/${fileInfos.length}]`
 
     try {
-      const chunkCount = await ingestSingleFile(filePath, parser, chunker, embedder, vectorStore)
-      if (chunkCount === 0) {
-        // 0 chunks is a skip/warning, not a failure
+      const result = await ingestSingleFile(
+        filePath,
+        parser,
+        chunker,
+        embedder,
+        vectorStore,
+        contentHash
+      )
+      console.error(`${label} ${filePath} ... OK (${result.chunkCount} chunks)`)
+      summary.succeeded++
+      summary.totalChunks += result.chunkCount
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error)
+      if (reason.includes('No chunks generated')) {
         console.error(`${label} ${filePath} ... SKIPPED (0 chunks)`)
         summary.succeeded++
       } else {
-        console.error(`${label} ${filePath} ... OK (${chunkCount} chunks)`)
-        summary.succeeded++
-        summary.totalChunks += chunkCount
+        console.error(`${label} ${filePath} ... FAILED: ${reason}`)
+        summary.failed++
       }
-    } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error)
-      console.error(`${label} ${filePath} ... FAILED: ${reason}`)
-      summary.failed++
     }
   }
 

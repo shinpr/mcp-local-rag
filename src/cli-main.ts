@@ -7,10 +7,12 @@ import type { GlobalOptions } from './cli/options.js'
 import { runQuery } from './cli/query.js'
 import { runReadNeighbors } from './cli/read-neighbors.js'
 import { runStatus } from './cli/status.js'
+import { runSync } from './cli/sync.js'
 
 export const SUBCOMMANDS = [
   'skills',
   'ingest',
+  'sync',
   'list',
   'query',
   'status',
@@ -48,6 +50,10 @@ export async function handleCli(
 
     case 'ingest':
       await runIngest(args, globalOptions)
+      break
+
+    case 'sync':
+      await runSync(args, globalOptions)
       break
 
     case 'list':

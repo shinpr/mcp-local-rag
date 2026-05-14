@@ -1,7 +1,6 @@
 // RAGServer implementation with MCP tools
 
-import { randomUUID } from 'node:crypto'
-import { readdir, readFile, unlink } from 'node:fs/promises'
+import { readdir, unlink } from 'node:fs/promises'
 import { extname, join, resolve, sep } from 'node:path'
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
@@ -12,7 +11,8 @@ import {
   ListToolsRequestSchema,
   McpError,
 } from '@modelcontextprotocol/sdk/types.js'
-import { DEFAULT_MIN_CHUNK_LENGTH, SemanticChunker } from '../chunker/index.js'
+import { SemanticChunker } from '../chunker/index.js'
+import { collectFiles, ingestSingleFile } from '../cli/ingest.js'
 import { Embedder } from '../embedder/index.js'
 import { parseHtml } from '../parser/html-parser.js'
 import { DocumentParser, SUPPORTED_EXTENSIONS } from '../parser/index.js'
@@ -23,11 +23,11 @@ import {
   generateMetaJsonPath,
   generateRawDataPath,
   isRawDataPath,
-  loadMetaJson,
   saveMetaJson,
   saveRawData,
 } from '../utils/raw-data-utils.js'
-import { type VectorChunk, VectorStore } from '../vectordb/index.js'
+import { createSyncPlan, type SyncFileMetadata, type SyncPlan } from '../utils/sync-utils.js'
+import { VectorStore } from '../vectordb/index.js'
 import { DatabaseError } from '../vectordb/types.js'
 import { formatErrorMessage } from './error-utils.js'
 import { toolDefinitions } from './tool-definitions.js'
@@ -36,7 +36,6 @@ import type {
   FileEntry,
   IngestDataInput,
   IngestFileInput,
-  IngestResult,
   ListFilesResult,
   QueryDocumentsInput,
   QueryResult,
@@ -44,6 +43,7 @@ import type {
   ReadChunkNeighborsInput,
   ReadChunkNeighborsResultItem,
   SourceEntry,
+  SyncDataInput,
 } from './types.js'
 
 /** RAG server compliant with MCP Protocol */
@@ -58,18 +58,34 @@ export class RAGServer {
   // Used by handleListFiles filter to exclude system-managed directories
   private readonly excludePaths: string[]
   private readonly configWarnings: string[]
-  private readonly minChunkLength: number
   private queryWarningsShown = false
+
+  private sendChannel(content: string, meta: Record<string, string>): void {
+    void (this.server.notification as (n: { method: string; params: unknown }) => Promise<void>)({
+      method: 'notifications/claude/channel',
+      params: { content, meta },
+    }).catch((err) => {
+      console.warn(`Channel notification failed: ${err}`)
+    })
+  }
 
   constructor(config: RAGServerConfig) {
     this.dbPath = config.dbPath
     this.baseDir = config.baseDir
     this.configWarnings = config.configWarnings ?? []
-    this.minChunkLength = config.chunkMinLength ?? DEFAULT_MIN_CHUNK_LENGTH
     this.excludePaths = [`${resolve(config.dbPath)}${sep}`, `${resolve(config.cacheDir)}${sep}`]
     this.server = new Server(
       { name: 'rag-mcp-server', version: '1.0.0' },
-      { capabilities: { tools: {} } }
+      {
+        capabilities: {
+          tools: {},
+          experimental: { 'claude/channel': {} },
+        },
+        instructions:
+          'RAG server for local document ingestion and semantic search. ' +
+          'sync_data returns immediately with a plan summary, then fires channel ' +
+          'events per file. Watch for event=complete or event=error to know when done.',
+      }
     )
 
     // Component initialization
@@ -139,39 +155,31 @@ export class RAGServer {
     }))
 
     // Tool invocation
-    this.server.setRequestHandler(
-      CallToolRequestSchema,
-      async (request: { params: { name: string; arguments?: unknown } }) => {
-        switch (request.params.name) {
-          case 'query_documents':
-            return await this.handleQueryDocuments(
-              request.params.arguments as unknown as QueryDocumentsInput
-            )
-          case 'ingest_file':
-            return await this.handleIngestFile(
-              request.params.arguments as unknown as IngestFileInput
-            )
-          case 'ingest_data':
-            return await this.handleIngestData(
-              request.params.arguments as unknown as IngestDataInput
-            )
-          case 'delete_file':
-            return await this.handleDeleteFile(
-              request.params.arguments as unknown as DeleteFileInput
-            )
-          case 'read_chunk_neighbors':
-            return await this.handleReadChunkNeighbors(
-              request.params.arguments as unknown as ReadChunkNeighborsInput
-            )
-          case 'list_files':
-            return await this.handleListFiles()
-          case 'status':
-            return await this.handleStatus()
-          default:
-            throw new Error(`Unknown tool: ${request.params.name}`)
-        }
+    this.server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
+      const { name, arguments: args } = request.params
+      const { signal } = extra
+
+      switch (name) {
+        case 'query_documents':
+          return await this.handleQueryDocuments(args as unknown as QueryDocumentsInput)
+        case 'ingest_file':
+          return await this.handleIngestFile(args as unknown as IngestFileInput, signal)
+        case 'ingest_data':
+          return await this.handleIngestData(args as unknown as IngestDataInput, signal)
+        case 'delete_file':
+          return await this.handleDeleteFile(args as unknown as DeleteFileInput)
+        case 'list_files':
+          return await this.handleListFiles()
+        case 'status':
+          return await this.handleStatus()
+        case 'read_chunk_neighbors':
+          return await this.handleReadChunkNeighbors(args as unknown as ReadChunkNeighborsInput)
+        case 'sync_data':
+          return await this.handleSyncData(args as unknown as SyncDataInput, signal)
+        default:
+          throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${name}`)
       }
-    )
+    })
   }
 
   /**
@@ -181,9 +189,142 @@ export class RAGServer {
     await this.vectorStore.initialize()
     console.error('RAGServer initialized')
   }
+  /**
+   * handle sync_data tool — returns immediately with plan summary, runs ingestion in background
+   */
+  private async handleSyncData(
+    args: SyncDataInput,
+    signal?: AbortSignal
+  ): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
+    try {
+      const targetPath = resolve(args.path?.trim() || this.baseDir)
+
+      // 1. Get Disk State
+      const fileInfos = await collectFiles(targetPath, this.excludePaths)
+      const diskFiles = new Map<string, SyncFileMetadata>(
+        fileInfos.map((f) => [f.filePath, { contentHash: f.contentHash }])
+      )
+
+      // 2. Get DB State
+      const dbFiles = await this.vectorStore.getFileManifest()
+
+      // 3. Create Sync Plan
+      const plan = createSyncPlan(diskFiles, dbFiles)
+
+      // 4. Return immediately — background task fires channel events per file
+      void this.runSyncBackground(plan, diskFiles, signal)
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              status: 'started',
+              toUpsert: plan.upsertList.length,
+              toPrune: plan.pruneList.length,
+              toSkip: plan.skipList.length,
+            }),
+          },
+        ],
+      }
+    } catch (error) {
+      if (error instanceof McpError || error instanceof DatabaseError) throw error
+      throw new Error(`Failed to sync data: ${formatErrorMessage(error)}`)
+    }
+  }
 
   /**
-   * query_documents tool handler
+   * Background sync worker — fires channel notifications per file
+   */
+  private async runSyncBackground(
+    plan: SyncPlan,
+    diskFiles: Map<string, SyncFileMetadata>,
+    signal?: AbortSignal
+  ): Promise<void> {
+    try {
+      if (plan.pruneList.length > 0) {
+        if (signal?.aborted) return
+        await this.vectorStore.deleteFiles(plan.pruneList)
+      }
+
+      let totalChunks = 0
+      let upsertCount = 0
+      let skippedEmpty = 0
+
+      for (let i = 0; i < plan.upsertList.length; i++) {
+        if (signal?.aborted) {
+          this.sendChannel(
+            `sync_data: aborted after ${upsertCount}/${plan.upsertList.length} files`,
+            { tool: 'sync_data', event: 'aborted', upsert_count: String(upsertCount) }
+          )
+          return
+        }
+
+        const filePath = plan.upsertList[i]!
+        this.sendChannel(`sync_data: [${i + 1}/${plan.upsertList.length}] ${filePath}`, {
+          tool: 'sync_data',
+          event: 'file_start',
+          file_index: String(i + 1),
+          file_total: String(plan.upsertList.length),
+        })
+
+        try {
+          const contentHash = diskFiles.get(filePath)?.contentHash || ''
+          const result = await ingestSingleFile(
+            filePath,
+            this.parser,
+            this.chunker,
+            this.embedder,
+            this.vectorStore,
+            contentHash,
+            signal
+          )
+          totalChunks += result.chunkCount
+          upsertCount++
+        } catch (error) {
+          const message = formatErrorMessage(error)
+          if (message.includes('No chunks generated')) {
+            skippedEmpty++
+            console.warn(`Sync: Skipping empty/short file ${filePath}`)
+          } else {
+            console.error(`Sync: Failed to ingest ${filePath}:`, message)
+            this.sendChannel(`sync_data: error on ${filePath} — ${message}`, {
+              tool: 'sync_data',
+              event: 'error',
+              file_path: filePath,
+            })
+            return
+          }
+        }
+      }
+
+      if (plan.upsertList.length > 0 || plan.pruneList.length > 0) {
+        await this.vectorStore.optimize()
+      }
+
+      this.sendChannel(
+        `sync_data: complete — ${upsertCount} upserted, ${plan.pruneList.length} pruned, ${plan.skipList.length} unchanged, ${skippedEmpty} skipped (empty), ${totalChunks} total chunks`,
+        {
+          tool: 'sync_data',
+          event: 'complete',
+          upsert_count: String(upsertCount),
+          prune_count: String(plan.pruneList.length),
+          skip_count: String(plan.skipList.length),
+          skipped_empty: String(skippedEmpty),
+          total_chunks: String(totalChunks),
+        }
+      )
+    } catch (error) {
+      this.sendChannel(`sync_data: fatal error — ${formatErrorMessage(error)}`, {
+        tool: 'sync_data',
+        event: 'error',
+      })
+    }
+  }
+
+  /**
+ * query_documents tool handler
+...
    */
   async handleQueryDocuments(
     args: QueryDocumentsInput
@@ -240,139 +381,38 @@ export class RAGServer {
    * ingest_file tool handler (re-ingestion support, transaction processing, rollback capability)
    */
   async handleIngestFile(
-    args: IngestFileInput
+    args: IngestFileInput,
+    signal?: AbortSignal
   ): Promise<{ content: [{ type: 'text'; text: string }] }> {
-    let backup: VectorChunk[] | null = null
-
     try {
-      // Parse file (with header/footer filtering for PDFs)
-      // For raw-data files (from ingest_data), read directly without validation
-      // since the path is internally generated and content is already processed
-      const isPdf = args.filePath.toLowerCase().endsWith('.pdf')
-      let text: string
-      let title: string | null = null
-      if (isRawDataPath(args.filePath)) {
-        // Raw-data files: skip validation, read directly
-        text = await readFile(args.filePath, 'utf-8')
-        const meta = await loadMetaJson(args.filePath)
-        title = meta?.title ?? null
-        console.error(`Read raw-data file: ${args.filePath} (${text.length} characters)`)
-      } else if (isPdf) {
-        const result = await this.parser.parsePdf(args.filePath, this.embedder)
-        text = result.content
-        title = result.title || null
-      } else {
-        const result = await this.parser.parseFile(args.filePath)
-        text = result.content
-        title = result.title || null
+      // Validate file path (S-002) - bypass for internally managed raw-data files
+      if (!isRawDataPath(args.filePath)) {
+        await this.parser.validateFilePath(args.filePath)
       }
 
-      // Split text into semantic chunks
-      const chunks = await this.chunker.chunkText(text, this.embedder)
-
-      // Fail-fast: Prevent data loss when chunking produces 0 chunks
-      // This check must happen BEFORE delete to preserve existing data on re-ingest
-      if (chunks.length === 0) {
-        throw new McpError(
-          ErrorCode.InvalidParams,
-          `No chunks generated from file: ${args.filePath}. The file may be empty or all content was filtered (minimum ${this.minChunkLength} characters required). Existing data has been preserved.`
-        )
-      }
-
-      // Generate embeddings for final chunks
-      const embeddings = await this.embedder.embedBatch(chunks.map((chunk) => chunk.text))
-
-      // Create backup (if existing data exists)
-      try {
-        const existingFiles = await this.vectorStore.listFiles()
-        const existingFile = existingFiles.find((file) => file.filePath === args.filePath)
-        if (existingFile && existingFile.chunkCount > 0) {
-          // Backup existing data (retrieve via search)
-          const queryVector = embeddings[0] || []
-          if (queryVector.length > 0) {
-            const allChunks = await this.vectorStore.search(queryVector, undefined, 20) // Retrieve max 20 items
-            backup = allChunks
-              .filter((chunk) => chunk.filePath === args.filePath)
-              .map((chunk) => ({
-                id: randomUUID(),
-                filePath: chunk.filePath,
-                chunkIndex: chunk.chunkIndex,
-                text: chunk.text,
-                vector: queryVector, // Use dummy vector since actual vector cannot be retrieved
-                metadata: chunk.metadata,
-                fileTitle: chunk.fileTitle ?? null,
-                timestamp: new Date().toISOString(),
-              }))
-          }
-          console.error(`Backup created: ${backup?.length || 0} chunks for ${args.filePath}`)
-        }
-      } catch (error) {
-        // Backup creation failure is warning only (for new files)
-        console.warn('Failed to create backup (new file?):', error)
-      }
-
-      // Delete existing data
-      await this.vectorStore.deleteChunks(args.filePath)
-      console.error(`Deleted existing chunks for: ${args.filePath}`)
-
-      // Create vector chunks
-      const timestamp = new Date().toISOString()
-      const vectorChunks: VectorChunk[] = chunks.map((chunk, index) => {
-        const embedding = embeddings[index]
-        if (!embedding) {
-          throw new Error(`Missing embedding for chunk ${index}`)
-        }
-        return {
-          id: randomUUID(),
-          filePath: args.filePath,
-          chunkIndex: chunk.index,
-          text: chunk.text,
-          vector: embedding,
-          metadata: {
-            fileName: args.filePath.split('/').pop() || args.filePath,
-            fileSize: text.length,
-            fileType: args.filePath.split('.').pop() || '',
-          },
-          fileTitle: title || null,
-          timestamp,
-        }
+      this.sendChannel(`ingest_file: starting — ${args.filePath}`, {
+        tool: 'ingest_file',
+        event: 'start',
       })
 
-      // Insert vectors (transaction processing)
-      try {
-        await this.vectorStore.insertChunks(vectorChunks)
-        console.error(`Inserted ${vectorChunks.length} chunks for: ${args.filePath}`)
+      const result = await ingestSingleFile(
+        args.filePath,
+        this.parser,
+        this.chunker,
+        this.embedder,
+        this.vectorStore,
+        undefined,
+        signal
+      )
 
-        // Optimize once after both delete + insert (not per-operation)
-        await this.vectorStore.optimize()
+      // Optimize after successful ingestion
+      await this.vectorStore.optimize()
 
-        // Delete backup on success
-        backup = null
-      } catch (insertError) {
-        // Rollback on error
-        if (backup && backup.length > 0) {
-          console.error('Ingestion failed, rolling back...', insertError)
-          try {
-            await this.vectorStore.insertChunks(backup)
-            await this.vectorStore.optimize()
-            console.error(`Rollback completed: ${backup.length} chunks restored`)
-          } catch (rollbackError) {
-            console.error('Rollback failed:', rollbackError)
-            throw new Error(
-              `Failed to ingest file and rollback failed: ${(insertError as Error).message}`
-            )
-          }
-        }
-        throw insertError
-      }
-
-      // Result
-      const result: IngestResult = {
-        filePath: args.filePath,
-        chunkCount: chunks.length,
-        timestamp,
-        fileTitle: title || null,
-      }
+      this.sendChannel(`ingest_file: done — ${result.chunkCount} chunks from ${args.filePath}`, {
+        tool: 'ingest_file',
+        event: 'complete',
+        chunk_count: String(result.chunkCount),
+      })
 
       return {
         content: [
@@ -383,17 +423,8 @@ export class RAGServer {
         ],
       }
     } catch (error) {
-      // Re-throw McpError as-is to preserve error code
-      if (error instanceof McpError) {
-        console.error('Failed to ingest file:', error.message)
-        throw error
-      }
-
-      const errorMessage = formatErrorMessage(error)
-
-      console.error('Failed to ingest file:', errorMessage)
-
-      throw new Error(`Failed to ingest file: ${errorMessage}`)
+      if (error instanceof McpError || error instanceof DatabaseError) throw error
+      throw new Error(`Failed to ingest file: ${formatErrorMessage(error)}`)
     }
   }
 
@@ -407,9 +438,11 @@ export class RAGServer {
    * - Saves as .md file
    */
   async handleIngestData(
-    args: IngestDataInput
+    args: IngestDataInput,
+    signal?: AbortSignal
   ): Promise<{ content: [{ type: 'text'; text: string }] }> {
     try {
+      if (signal?.aborted) throw new Error('Operation aborted')
       let contentToSave = args.content
       let formatToSave: ContentFormat = args.metadata.format
       let title: string | null = null
@@ -441,6 +474,8 @@ export class RAGServer {
         title = result.source !== 'filename' ? result.title : null
       }
 
+      if (signal?.aborted) throw new Error('Operation aborted')
+
       // Save content to raw-data directory
       const rawDataPath = await saveRawData(
         this.dbPath,
@@ -460,7 +495,14 @@ export class RAGServer {
 
       // Call existing ingest_file internally with rollback on failure
       try {
-        return await this.handleIngestFile({ filePath: rawDataPath })
+        const ingestResult = await this.handleIngestFile({ filePath: rawDataPath }, signal)
+        this.sendChannel(`ingest_data: done — "${args.metadata.source}"`, {
+          tool: 'ingest_data',
+          event: 'complete',
+          source: args.metadata.source,
+          format: args.metadata.format,
+        })
+        return ingestResult
       } catch (ingestError) {
         // Rollback: delete the raw-data file and .meta.json if ingest fails
         try {

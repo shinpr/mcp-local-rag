@@ -352,7 +352,7 @@ The chunker requires sufficient text length to generate meaningful chunks.`
       const originalEnv = process.env['NODE_ENV']
       process.env['NODE_ENV'] = undefined
 
-      const nonExistentFile = resolve('./tmp/nonexistent.txt')
+      const nonExistentFile = resolve('/tmp/nonexistent.txt')
 
       try {
         await server.handleIngestFile({ filePath: nonExistentFile })
@@ -375,7 +375,7 @@ The chunker requires sufficient text length to generate meaningful chunks.`
       const originalEnv = process.env['NODE_ENV']
       process.env['NODE_ENV'] = 'development'
 
-      const nonExistentFile = resolve('./tmp/nonexistent.txt')
+      const nonExistentFile = resolve('/tmp/nonexistent.txt')
 
       try {
         await server.handleIngestFile({ filePath: nonExistentFile })
