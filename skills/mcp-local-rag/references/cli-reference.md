@@ -30,6 +30,22 @@ npx mcp-local-rag [global-options] ingest [options] <path>
 
 Output to stderr. Exit 0 = all succeeded, exit 1 = one or more failed. `SKIPPED (0 chunks)` = empty or too-short file, counted as success.
 
+### sync
+
+```bash
+npx mcp-local-rag [global-options] sync [options] <path>
+```
+
+Incrementally synchronize a single file or directory with the database. Only changed files are re-embedded; files deleted from disk are pruned.
+
+| Option | Env Var | Default | Description |
+|--------|---------|---------|-------------|
+| `--base-dir <path>` | `BASE_DIR` | cwd | Base directory for documents |
+| `--max-file-size <n>` | `MAX_FILE_SIZE` | `104857600` | Max file size in bytes (1–500MB) |
+| `--chunk-min-length <n>` | `CHUNK_MIN_LENGTH` | `50` | Minimum chunk length in characters |
+
+Output to stderr. Change detection is based on content hash (SHA-256), not last-modified time. Exit 0 = complete (including no-op). Exit 1 = invalid arguments.
+
 ### query
 
 ```bash
