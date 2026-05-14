@@ -143,7 +143,7 @@ export const toolDefinitions: Tool[] = [
   {
     name: 'sync_data',
     description:
-      'Incrementally synchronize a directory or file with the database. Only new or modified files will be re-embedded. Files missing from disk will be pruned from the database. This is much faster than full re-ingestion for large collections.\n\nIMPORTANT: This tool returns immediately with a plan summary (toUpsert/toPrune/toSkip counts). Ingestion runs in the background — do NOT call status immediately, as the embedding model takes ~30s to load on first use. After that delay, poll status every 30–60s and watch chunkCount increase until it stabilises, indicating completion. Clients that support MCP channel notifications receive per-file progress events and a final complete/error event instead.',
+      'Incrementally synchronize a directory or file with the database. Only new or modified files will be re-embedded; files missing from disk are pruned. Much faster than full re-ingestion for large collections.\n\nThis tool returns immediately with a plan summary (toUpsert/toPrune/toSkip counts). Ingestion runs in the background. If your client supports MCP channel notifications, wait for event=complete or event=error. Otherwise poll status every 30–60s until chunkCount stabilises.',
     inputSchema: {
       type: 'object',
       properties: {

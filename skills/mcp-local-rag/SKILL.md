@@ -1,6 +1,6 @@
 ---
 name: mcp-local-rag
-description: Search, ingest, expand chunk context, or manage local documents via a local RAG MCP server (tools: query_documents, read_chunk_neighbors, ingest_file, ingest_data, delete_file, list_files). Use when user says "search my docs", "save this page", "read around that chunk", "what did I save about X", or invokes `npx mcp-local-rag`.
+description: Search, ingest, sync, expand chunk context, or manage local documents via a local RAG MCP server (tools: query_documents, read_chunk_neighbors, ingest_file, ingest_data, sync_data, delete_file, list_files, status). Use when user says "search my docs", "save this page", "sync my docs", "update the index", "keep the database up to date", "read around that chunk", "what did I save about X", or invokes `npx mcp-local-rag`.
 ---
 
 # MCP Local RAG Skills
@@ -9,7 +9,7 @@ description: Search, ingest, expand chunk context, or manage local documents via
 
 | MCP Tool | CLI Equivalent | Use When |
 |----------|---------------|----------|
-| `sync_data` | `npx mcp-local-rag sync <path>` | Incrementally sync directory: skip unchanged, upsert modified, prune deleted |
+| `sync_data` | `npx mcp-local-rag sync <path>` | Incrementally sync a file or directory: skip unchanged, upsert modified, prune deleted. MCP: `path` is optional (defaults to server's base dir) |
 | `ingest_file` | `npx mcp-local-rag ingest <path>` | Local files (PDF, DOCX, TXT, MD). CLI for bulk/directory. |
 | `ingest_data` | — | Raw content (HTML, text) with source URL |
 | `query_documents` | `npx mcp-local-rag query <text>` | Semantic + keyword hybrid search |
@@ -107,10 +107,12 @@ See [cli-reference.md](references/cli-reference.md#read-neighbors) for output fi
 ## Ingestion & Sync
 
 ### sync_data / `sync` CLI
-Use `sync_data` (or `npx mcp-local-rag sync`) to incrementally synchronize a directory with the database. This is **recommended over `ingest_file` for bulk updates** as it:
+Use `sync_data` (or `npx mcp-local-rag sync <path>`) to incrementally synchronize a file or directory with the database. This is **recommended over `ingest_file` for bulk updates** as it:
 - **Skips** files that have not changed (based on content hash).
 - **Updates** files that have changed.
 - **Prunes** files that no longer exist on disk.
+
+**MCP behaviour:** `sync_data` returns immediately with a plan summary (`toUpsert`/`toPrune`/`toSkip` counts). Ingestion runs in the background. If your client supports MCP channel notifications, wait for `event=complete` or `event=error`. Otherwise poll `status` every 30–60 s and wait for `chunkCount` to stabilise.
 
 ### ingest_file
 ```

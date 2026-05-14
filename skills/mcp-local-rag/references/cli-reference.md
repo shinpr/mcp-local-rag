@@ -27,6 +27,7 @@ npx mcp-local-rag [global-options] ingest [options] <path>
 |--------|---------|---------|-------------|
 | `--base-dir <path>` | `BASE_DIR` | cwd | Base directory for documents |
 | `--max-file-size <n>` | `MAX_FILE_SIZE` | `104857600` | Max file size in bytes (1–500MB) |
+| `--chunk-min-length <n>` | `CHUNK_MIN_LENGTH` | `50` | Minimum chunk length in characters (1–10000) |
 
 Output to stderr. Exit 0 = all succeeded, exit 1 = one or more failed. `SKIPPED (0 chunks)` = empty or too-short file, counted as success.
 
@@ -42,9 +43,9 @@ Incrementally synchronize a single file or directory with the database. Only cha
 |--------|---------|---------|-------------|
 | `--base-dir <path>` | `BASE_DIR` | cwd | Base directory for documents |
 | `--max-file-size <n>` | `MAX_FILE_SIZE` | `104857600` | Max file size in bytes (1–500MB) |
-| `--chunk-min-length <n>` | `CHUNK_MIN_LENGTH` | `50` | Minimum chunk length in characters |
+| `--chunk-min-length <n>` | `CHUNK_MIN_LENGTH` | `50` | Minimum chunk length in characters (1–10000) |
 
-Output to stderr. Change detection is based on content hash (SHA-256), not last-modified time. Exit 0 = complete (including no-op). Exit 1 = invalid arguments.
+Output to stderr. Change detection is based on content hash (SHA-256), not last-modified time. Exit 0 = complete (including no-op). Exit 1 = invalid arguments. Per-file ingestion failures are logged but do not set exit 1 — unlike `ingest`, which exits 1 if any file fails.
 
 ### query
 
