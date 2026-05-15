@@ -445,7 +445,7 @@ PDF, DOCX, TXT, Markdown, and HTML (via `ingest_data`). Not yet: Excel, PowerPoi
 Yes, but you must delete your database and re-ingest all documents. Different models produce incompatible vector dimensions.
 
 **GPU acceleration?**
-Opt-in via `RAG_DEVICE`. `webgpu` works on Windows, macOS, and Linux and offloads compute to the GPU. For maximum throughput pick the platform-native EP: `dml` (Windows), `cuda` (Linux x64 with NVIDIA), `coreml` (macOS). Default is `cpu`. The server throws if the requested device fails — set `RAG_DEVICE=cpu` to revert.
+Opt-in via `RAG_DEVICE`. Verified: `webgpu` offloads compute to the GPU on Windows with a real D3D12-capable adapter (`nvidia-smi` confirms the Node process on the GPU). Linux and macOS WebGPU paths exist but are not verified in this repo. For maximum throughput pick the platform-native EP: `dml` (Windows), `cuda` (Linux x64 NVIDIA), `coreml` (macOS). Default is `cpu`. The server throws if the requested device fails — set `RAG_DEVICE=cpu` to revert.
 
 **Multi-user support?**
 No. Designed for single-user, local access. Multi-user would require authentication/access control.

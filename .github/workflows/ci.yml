@@ -46,12 +46,14 @@ jobs:
     - name: Install dependencies
       run: pnpm install
 
-    - name: Install Vulkan SDK with SwiftShader (Windows, webgpu only)
-      if: matrix.device == 'webgpu' && runner.os == 'Windows'
+    - name: Install Vulkan SDK and Software Rasterizer (webgpu only)
+      if: matrix.device == 'webgpu'
       uses: jakoch/install-vulkan-sdk-action@3c53c378c9bfbb2ea122a1cc164a837d4004c871 # v1.5.2
       with:
         install_runtime: true
-        install_swiftshader: true
+        # install_swiftshader is used on Windows, install_lavapipe on Linux
+        install_swiftshader: ${{ runner.os == 'Windows' }}
+        install_lavapipe: ${{ runner.os == 'Linux' }}
 
     - name: Install Vulkan and Mesa (Ubuntu, webgpu only)
       if: matrix.device == 'webgpu' && runner.os == 'Linux'
@@ -81,9 +83,9 @@ jobs:
       env:
         RAG_DEVICE: ${{ matrix.device }}
         # Direct Dawn to use Vulkan (rather than D3D12) on Windows when running webgpu
-        # mode in CI, so SwiftShader can serve as the adapter.
+        # mode in CI, so SwiftShader/Lavapipe can serve as the adapter.
         WGPU_BACKEND: ${{ matrix.device == 'webgpu' && 'vulkan' || '' }}
-        VK_ICD_FILENAMES: ${{ matrix.device == 'webgpu' && runner.os == 'Windows' && 'C:\SwiftShader\vk_swiftshader_icd.json' || '' }}
+        VK_ICD_FILENAMES: ${{ matrix.device == 'webgpu' && (runner.os == 'Windows' && 'C:\SwiftShader\vk_swiftshader_icd.json' || '/usr/share/vulkan/icd.d/lvp_icd.x86_64.json') || '' }}
       run: pnpm test
 
     - name: Check production dependencies
