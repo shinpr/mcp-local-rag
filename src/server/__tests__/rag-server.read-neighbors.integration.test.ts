@@ -115,8 +115,6 @@ describe('read_chunk_neighbors integration', () => {
       const ingestRes = await ragServer.handleIngestFile({ filePath: ingestedFilePath })
       const ingest = JSON.parse(ingestRes.content[0].text)
       expect(ingest.chunkCount).toBeGreaterThanOrEqual(7)
-      // 60s, not 30s: this is the first beforeAll in the file and may pay the
-      // cold-cache ~90MB model download on Windows CI (~30s by itself).
     }, 60000)
 
     afterAll(() => {
@@ -211,8 +209,6 @@ describe('read_chunk_neighbors integration', () => {
         'Distinctive marker ZZQWERTY12345 appears in this document. '.repeat(60)
       )
       await ragServer.handleIngestFile({ filePath: ingestedFilePath })
-      // 60s for the same reason as Test 1: this hook can be the first to load
-      // the embedder model from a cold disk cache on slower Windows CI.
     }, 60000)
 
     afterAll(() => {
@@ -310,7 +306,7 @@ describe('read_chunk_neighbors integration', () => {
       const ingestRes = await ragServer.handleIngestFile({ filePath: ingestedFilePath })
       const ingest = JSON.parse(ingestRes.content[0].text)
       expect(ingest.chunkCount).toBeGreaterThanOrEqual(4)
-    }, 30000)
+    }, 60000)
 
     afterAll(() => {
       rmSync(testDbPath, { recursive: true, force: true })
@@ -404,7 +400,7 @@ describe('read_chunk_neighbors integration', () => {
       const ingest = JSON.parse(ingestRes.content[0].text)
       chunkCount = ingest.chunkCount
       expect(chunkCount).toBeGreaterThanOrEqual(3)
-    }, 30000)
+    }, 60000)
 
     afterAll(() => {
       rmSync(testDbPath, { recursive: true, force: true })
@@ -501,7 +497,7 @@ describe('read_chunk_neighbors integration', () => {
       })
       const ingest = JSON.parse(ingestRes.content[0].text)
       expect(ingest.chunkCount).toBeGreaterThanOrEqual(3)
-    }, 30000)
+    }, 60000)
 
     afterAll(() => {
       rmSync(testDbPath, { recursive: true, force: true })
@@ -592,7 +588,7 @@ describe('read_chunk_neighbors integration', () => {
       fileBackedPath = resolve(testDataDir, 'file-backed.txt')
       writeFileSync(fileBackedPath, 'File backed document content. '.repeat(100))
       await ragServer.handleIngestFile({ filePath: fileBackedPath })
-    }, 30000)
+    }, 60000)
 
     afterAll(() => {
       rmSync(testDbPath, { recursive: true, force: true })
@@ -826,7 +822,7 @@ describe('read_chunk_neighbors integration', () => {
       const ingest = JSON.parse(ingestRes.content[0].text)
       chunkCount = ingest.chunkCount
       expect(chunkCount).toBeGreaterThan(0)
-    }, 30000)
+    }, 60000)
 
     afterAll(() => {
       rmSync(testDbPath, { recursive: true, force: true })
@@ -890,7 +886,7 @@ describe('read_chunk_neighbors integration', () => {
       ingestedFilePath = resolve(testDataDir, 'validation-doc.txt')
       writeFileSync(ingestedFilePath, 'Validation boundary test content. '.repeat(60))
       await ragServer.handleIngestFile({ filePath: ingestedFilePath })
-    }, 30000)
+    }, 60000)
 
     afterAll(() => {
       rmSync(testDbPath, { recursive: true, force: true })
@@ -958,7 +954,7 @@ describe('read_chunk_neighbors integration', () => {
       ingestedFilePath = resolve(testDataDir, 'validation-chunk-index.txt')
       writeFileSync(ingestedFilePath, 'chunkIndex validation test content. '.repeat(60))
       await ragServer.handleIngestFile({ filePath: ingestedFilePath })
-    }, 30000)
+    }, 60000)
 
     afterAll(() => {
       rmSync(testDbPath, { recursive: true, force: true })
@@ -1046,7 +1042,7 @@ describe('read_chunk_neighbors integration', () => {
         ).content[0].text
       )
       expect(dataIngest.chunkCount).toBeGreaterThanOrEqual(3)
-    }, 30000)
+    }, 60000)
 
     afterAll(() => {
       rmSync(testDbPath, { recursive: true, force: true })
