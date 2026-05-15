@@ -36,6 +36,16 @@ jobs:
     - name: Install dependencies
       run: pnpm install
 
+    # The integration tests use Xenova/all-MiniLM-L6-v2 via @huggingface/transformers,
+    # which is downloaded on first use (~90MB). Caching it across runs avoids a
+    # network round-trip on every CI build and prevents the first-touched beforeAll
+    # from blowing its 30s hook timeout on slower Windows runners.
+    - name: Cache HuggingFace model
+      uses: actions/cache@v4
+      with:
+        path: tmp/models
+        key: hf-model-${{ runner.os }}-Xenova-all-MiniLM-L6-v2
+
     - name: Lint check
       run: pnpm run lint
 

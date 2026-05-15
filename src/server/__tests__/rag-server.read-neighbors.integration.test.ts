@@ -115,7 +115,9 @@ describe('read_chunk_neighbors integration', () => {
       const ingestRes = await ragServer.handleIngestFile({ filePath: ingestedFilePath })
       const ingest = JSON.parse(ingestRes.content[0].text)
       expect(ingest.chunkCount).toBeGreaterThanOrEqual(7)
-    }, 30000)
+      // 60s, not 30s: this is the first beforeAll in the file and may pay the
+      // cold-cache ~90MB model download on Windows CI (~30s by itself).
+    }, 60000)
 
     afterAll(() => {
       rmSync(testDbPath, { recursive: true, force: true })
@@ -209,7 +211,9 @@ describe('read_chunk_neighbors integration', () => {
         'Distinctive marker ZZQWERTY12345 appears in this document. '.repeat(60)
       )
       await ragServer.handleIngestFile({ filePath: ingestedFilePath })
-    }, 30000)
+      // 60s for the same reason as Test 1: this hook can be the first to load
+      // the embedder model from a cold disk cache on slower Windows CI.
+    }, 60000)
 
     afterAll(() => {
       vi.restoreAllMocks()
