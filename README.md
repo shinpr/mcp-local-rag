@@ -217,7 +217,7 @@ For the full list of CLI flags, environment variables, and defaults, see [Config
 
 For CLI-only setups (no MCP server), install [Agent Skills](#agent-skills) so your AI assistant can form better queries and interpret results consistently.
 
-> ⚠️ **`--model-name` must match your MCP server config.** Using a different embedding model against an existing database produces incompatible vectors, silently degrading search quality.
+> ⚠️ **CLI `--model-name` must match the MCP server's `MODEL_NAME` env var.** Using a different embedding model against an existing database produces incompatible vectors, silently degrading search quality.
 
 ## Search Tuning
 
@@ -310,7 +310,7 @@ apply the mcp-local-rag skill for better query formulation and result interpreta
 
 ### Environment Variables and CLI Flags
 
-Both MCP and CLI use the same environment variables. The CLI also accepts equivalent flags.
+The MCP server is configured by environment variables only — pass them through your MCP client's `env` block. The CLI accepts the same env vars plus equivalent flags (priority: CLI flag > env > default). CLI flags are not accepted on the bare `mcp-local-rag` (MCP server) launch.
 
 | Environment Variable | CLI Flag | Default | Description |
 |---------------------|----------|---------|-------------|
