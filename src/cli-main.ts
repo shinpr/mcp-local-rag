@@ -8,18 +8,34 @@ import { runQuery } from './cli/query.js'
 import { runReadNeighbors } from './cli/read-neighbors.js'
 import { runStatus } from './cli/status.js'
 
+export const SUBCOMMANDS = [
+  'skills',
+  'ingest',
+  'list',
+  'query',
+  'status',
+  'delete',
+  'read-neighbors',
+] as const
+
+export type Subcommand = (typeof SUBCOMMANDS)[number]
+
 /**
- * Handle CLI subcommands
- * @param args - Command line arguments starting with the subcommand name
+ * Handle CLI subcommands. The caller is expected to have already validated
+ * `subcommand` against `SUBCOMMANDS`; the union type makes the switch exhaustive.
+ * @param subcommand - The validated subcommand name
+ * @param args - Arguments following the subcommand (subcommand itself excluded)
  * @param globalOptions - Global options parsed before the subcommand
  */
-export async function handleCli(args: string[], globalOptions: GlobalOptions = {}): Promise<void> {
-  const subcommand = args[0]
-
+export async function handleCli(
+  subcommand: Subcommand,
+  args: string[],
+  globalOptions: GlobalOptions = {}
+): Promise<void> {
   switch (subcommand) {
     case 'skills':
-      if (args[1] === 'install') {
-        runSkillsInstall(args.slice(2))
+      if (args[0] === 'install') {
+        runSkillsInstall(args.slice(1))
         process.exit(0)
       } else {
         console.error(
@@ -31,34 +47,27 @@ export async function handleCli(args: string[], globalOptions: GlobalOptions = {
       break
 
     case 'ingest':
-      await runIngest(args.slice(1), globalOptions)
+      await runIngest(args, globalOptions)
       break
 
     case 'list':
-      await runList(args.slice(1), globalOptions)
+      await runList(args, globalOptions)
       break
 
     case 'query':
-      await runQuery(args.slice(1), globalOptions)
+      await runQuery(args, globalOptions)
       break
 
     case 'status':
-      await runStatus(args.slice(1), globalOptions)
+      await runStatus(args, globalOptions)
       break
 
     case 'delete':
-      await runDelete(args.slice(1), globalOptions)
+      await runDelete(args, globalOptions)
       break
 
     case 'read-neighbors':
-      await runReadNeighbors(args.slice(1), globalOptions)
+      await runReadNeighbors(args, globalOptions)
       break
-
-    default:
-      console.error(`Unknown command: ${subcommand}`)
-      console.error(
-        'Available commands: skills, ingest, list, query, status, delete, read-neighbors'
-      )
-      process.exit(1)
   }
 }
