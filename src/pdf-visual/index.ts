@@ -37,6 +37,18 @@ import type { Document as MupdfDocument } from 'mupdf'
 import { renderPdfPage } from './renderer.js'
 import type { Captioner } from './types.js'
 
+// Public surface re-exports (T3.5). The Phase 4 dispatch sites in
+// `src/cli/ingest.ts` and `src/server/index.ts` reach the visual-mode
+// implementation exclusively through `await import('../pdf-visual/index.js')`
+// (NFR-1 dynamic-import discipline). Keeping every public symbol re-exported
+// here means those sites never need to know the internal module layout.
+// Re-export ordering below is alphabetical by source module to match Biome's
+// `organizeImports` rule (`./captioner` → `./detector` → `./renderer` → `./types`).
+export { createCaptioner } from './captioner.js'
+export { detectVisualCandidates } from './detector.js'
+export { renderPdfPage } from './renderer.js'
+export { VlmError } from './types.js'
+
 /**
  * Per-page record consumed and (selectively) mutated by the orchestrator.
  * `stextJson` is passed through verbatim — the orchestrator does not inspect
