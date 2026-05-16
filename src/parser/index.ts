@@ -219,10 +219,15 @@ export class DocumentParser {
     await this.validateFilePath(filePath)
     this.validateFileSize(filePath)
 
+    // Hold `doc` outside the try so the `finally` block can dispose it after
+    // either a successful return or an error from `extractPdfPages` / the
+    // post-processing steps. `doc` stays `undefined` if `openDocument` itself
+    // throws — in that case there is no handle to destroy.
+    let doc: MupdfDocument | undefined
     try {
       const buffer = await readFile(filePath)
       const mupdf = await import('mupdf')
-      const doc = mupdf.Document.openDocument(buffer, 'application/pdf')
+      doc = mupdf.Document.openDocument(buffer, 'application/pdf') as MupdfDocument
 
       const { pages, metadataTitle, page1FontHint } = await extractPdfPages(
         doc,
@@ -263,6 +268,11 @@ export class DocumentParser {
       return { content: text, title: titleResult.title }
     } catch (error) {
       throw new FileOperationError(`Failed to parse PDF: ${filePath}`, error as Error)
+    } finally {
+      // Release the native WASM handle exactly once per invocation, on both
+      // success and error paths (AC-013). Pre-existing leak fix bundled into
+      // Phase 2 per DD § Adopted Trade-offs.
+      doc?.destroy()
     }
   }
 

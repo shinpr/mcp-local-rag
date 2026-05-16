@@ -350,6 +350,7 @@ describe('DocumentParser', () => {
         countPages: vi.fn().mockReturnValue(pages.length),
         loadPage: vi.fn().mockImplementation((i: number) => mockPages[i]),
         getMetaData: vi.fn().mockReturnValue(metadataTitle ?? ''),
+        destroy: vi.fn(),
       }
 
       mockOpenDocument.mockReturnValue(mockDoc)
