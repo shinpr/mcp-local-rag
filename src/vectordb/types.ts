@@ -142,7 +142,6 @@ export function isDocumentMetadata(value: unknown): value is DocumentMetadata {
     typeof obj['fileName'] === 'string' &&
     typeof obj['fileSize'] === 'number' &&
     typeof obj['fileType'] === 'string'
-    // fileModifiedAt is optional for backward compatibility
   )
 }
 

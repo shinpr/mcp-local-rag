@@ -3,7 +3,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { createReadStream } from 'node:fs'
 import { readFile, stat } from 'node:fs/promises'
-import { extname, resolve, sep } from 'node:path'
+import { basename, extname, resolve, sep } from 'node:path'
 
 import { fdir } from 'fdir'
 
@@ -310,10 +310,28 @@ export async function collectFiles(
 // Per-file Ingestion
 // ============================================
 
+export type IngestResult =
+  | {
+      status: 'ok'
+      filePath: string
+      chunkCount: number
+      timestamp: string
+      fileTitle: string | null
+    }
+  | {
+      status: 'empty'
+      filePath: string
+      chunkCount: 0
+      timestamp: string
+      fileTitle: string | null
+    }
+
 /**
- * Ingest a single file: parse, chunk, embed, delete old chunks, insert new chunks.
- * Includes rollback support if insertion fails.
- * Returns a result object.
+ * Ingest a single file: parse, chunk, embed, replace existing chunks.
+ *
+ * Returns status='empty' (without touching the DB) when chunking yields no
+ * chunks, so existing data is preserved. On insertChunks failure, the file's
+ * chunks may be left deleted — recovery is to re-run sync/ingest (idempotent).
  */
 export async function ingestSingleFile(
   filePath: string,
@@ -323,31 +341,19 @@ export async function ingestSingleFile(
   vectorStore: VectorStore,
   contentHash?: string,
   signal?: AbortSignal
-): Promise<{
-  filePath: string
-  chunkCount: number
-  timestamp: string
-  fileTitle: string | null
-}> {
-  let backup: VectorChunk[] | null = null
+): Promise<IngestResult> {
   const timestamp = new Date().toISOString()
-
-  // 1. Compute content hash if missing
   const finalHash = contentHash || (await hashFile(filePath))
 
-  if (signal?.aborted) throw new Error('Operation aborted')
+  signal?.throwIfAborted()
 
-  // 2. Parse file
-  const isPdf = filePath.toLowerCase().endsWith('.pdf')
   let text: string
   let title: string | null = null
-
   if (isRawDataPath(filePath)) {
-    // Raw-data files (from ingest_data tool)
     text = await readFile(filePath, 'utf-8')
     const meta = await loadMetaJson(filePath)
     title = meta?.title ?? null
-  } else if (isPdf) {
+  } else if (filePath.toLowerCase().endsWith('.pdf')) {
     const result = await parser.parsePdf(filePath, embedder)
     text = result.content
     title = result.title || null
@@ -357,57 +363,21 @@ export async function ingestSingleFile(
     title = result.title || null
   }
 
-  if (signal?.aborted) throw new Error('Operation aborted')
+  signal?.throwIfAborted()
 
-  // 3. Chunk text
   const chunks = await chunker.chunkText(text, embedder)
   if (chunks.length === 0) {
-    // Fail-fast: Prevent data loss when chunking produces 0 chunks
-    throw new Error(
-      `No chunks generated from file: ${filePath}. The file may be empty or too short. Existing data preserved.`
-    )
+    return { status: 'empty', filePath, chunkCount: 0, timestamp, fileTitle: title }
   }
 
-  if (signal?.aborted) throw new Error('Operation aborted')
-
-  // 4. Generate embeddings
+  signal?.throwIfAborted()
   const embeddings = await embedder.embedBatch(chunks.map((c) => c.text))
+  signal?.throwIfAborted()
 
-  if (signal?.aborted) throw new Error('Operation aborted')
-
-  // 5. Create backup of existing data
-  try {
-    const existingFiles = await vectorStore.listFiles()
-    const exists = existingFiles.some((f) => f.filePath === filePath)
-    if (exists) {
-      // Use getChunksByRange to get all existing chunks for this file
-      const rows = await vectorStore.getChunksByRange(filePath, 0, 1000000)
-      if (rows.length > 0) {
-        backup = rows.map((row) => ({
-          id: randomUUID(),
-          filePath: row.filePath,
-          chunkIndex: row.chunkIndex,
-          text: row.text,
-          vector: [], // Metadata restore (actual vector not needed for rollback of same-path delete/insert)
-          metadata: {
-            fileName: filePath.split(sep).pop() || filePath,
-            fileSize: 0,
-            fileType: filePath.split('.').pop() || '',
-            contentHash: '',
-          },
-          fileTitle: row.fileTitle ?? null,
-          timestamp: new Date().toISOString(),
-        }))
-      }
-    }
-  } catch (backupError) {
-    console.warn(`Warning: Failed to create backup for ${filePath}:`, backupError)
-  }
-
-  // 6. Delete existing data
   await vectorStore.deleteChunks(filePath)
 
-  // 7. Build vector chunks
+  const fileName = basename(filePath)
+  const fileType = extname(filePath).slice(1)
   const vectorChunks: VectorChunk[] = chunks.map((chunk, index) => {
     const embedding = embeddings[index]
     if (!embedding) {
@@ -420,9 +390,9 @@ export async function ingestSingleFile(
       text: chunk.text,
       vector: embedding,
       metadata: {
-        fileName: filePath.split(sep).pop() || filePath,
+        fileName,
         fileSize: text.length,
-        fileType: filePath.split('.').pop() || '',
+        fileType,
         contentHash: finalHash,
       },
       fileTitle: title,
@@ -430,30 +400,14 @@ export async function ingestSingleFile(
     }
   })
 
-  // 8. Insert new data with rollback
-  try {
-    await vectorStore.insertChunks(vectorChunks)
-    return {
-      filePath,
-      chunkCount: vectorChunks.length,
-      timestamp,
-      fileTitle: title,
-    }
-  } catch (insertError) {
-    if (backup && backup.length > 0) {
-      console.error(`Ingestion failed for ${filePath}, rolling back...`)
-      try {
-        await vectorStore.insertChunks(backup)
-        await vectorStore.optimize()
-        console.error(`Rollback successful for ${filePath}`)
-      } catch (rollbackError) {
-        console.error(`CRITICAL: Rollback failed for ${filePath}:`, rollbackError)
-        throw new Error(
-          `Failed to ingest file and rollback failed: ${(insertError as Error).message}`
-        )
-      }
-    }
-    throw insertError
+  await vectorStore.insertChunks(vectorChunks)
+
+  return {
+    status: 'ok',
+    filePath,
+    chunkCount: vectorChunks.length,
+    timestamp,
+    fileTitle: title,
   }
 }
 
@@ -536,18 +490,18 @@ export async function runIngest(args: string[], globalOptions: GlobalOptions = {
         vectorStore,
         contentHash
       )
-      console.error(`${label} ${filePath} ... OK (${result.chunkCount} chunks)`)
-      summary.succeeded++
-      summary.totalChunks += result.chunkCount
-    } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error)
-      if (reason.includes('No chunks generated')) {
+      if (result.status === 'empty') {
         console.error(`${label} ${filePath} ... SKIPPED (0 chunks)`)
         summary.succeeded++
       } else {
-        console.error(`${label} ${filePath} ... FAILED: ${reason}`)
-        summary.failed++
+        console.error(`${label} ${filePath} ... OK (${result.chunkCount} chunks)`)
+        summary.succeeded++
+        summary.totalChunks += result.chunkCount
       }
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error)
+      console.error(`${label} ${filePath} ... FAILED: ${reason}`)
+      summary.failed++
     }
   }
 

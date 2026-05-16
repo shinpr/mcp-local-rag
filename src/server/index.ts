@@ -12,7 +12,7 @@ import {
   McpError,
 } from '@modelcontextprotocol/sdk/types.js'
 import { SemanticChunker } from '../chunker/index.js'
-import { collectFiles, ingestSingleFile } from '../cli/ingest.js'
+import { ingestSingleFile } from '../cli/ingest.js'
 import { Embedder } from '../embedder/index.js'
 import { parseHtml } from '../parser/html-parser.js'
 import { DocumentParser, SUPPORTED_EXTENSIONS } from '../parser/index.js'
@@ -26,7 +26,7 @@ import {
   saveMetaJson,
   saveRawData,
 } from '../utils/raw-data-utils.js'
-import { createSyncPlan, type SyncFileMetadata, type SyncPlan } from '../utils/sync-utils.js'
+import { executeSyncPlan, planSync, type SyncEvent } from '../utils/sync-runner.js'
 import { VectorStore } from '../vectordb/index.js'
 import { DatabaseError } from '../vectordb/types.js'
 import { formatErrorMessage } from './error-utils.js'
@@ -189,8 +189,9 @@ export class RAGServer {
     await this.vectorStore.initialize()
     console.error('RAGServer initialized')
   }
+
   /**
-   * handle sync_data tool — returns immediately with plan summary, runs ingestion in background
+   * handle sync_data tool — returns immediately with plan summary, runs ingestion in background.
    */
   private async handleSyncData(
     args: SyncDataInput,
@@ -198,21 +199,24 @@ export class RAGServer {
   ): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
     try {
       const targetPath = resolve(args.path?.trim() || this.baseDir)
+      const { plan, diskFiles } = await planSync(targetPath, this.excludePaths, this.vectorStore)
 
-      // 1. Get Disk State
-      const fileInfos = await collectFiles(targetPath, this.excludePaths)
-      const diskFiles = new Map<string, SyncFileMetadata>(
-        fileInfos.map((f) => [f.filePath, { contentHash: f.contentHash }])
-      )
-
-      // 2. Get DB State
-      const dbFiles = await this.vectorStore.getFileManifest()
-
-      // 3. Create Sync Plan
-      const plan = createSyncPlan(diskFiles, dbFiles)
-
-      // 4. Return immediately — background task fires channel events per file
-      void this.runSyncBackground(plan, diskFiles, signal)
+      void executeSyncPlan(
+        plan,
+        diskFiles,
+        {
+          vectorStore: this.vectorStore,
+          parser: this.parser,
+          chunker: this.chunker,
+          embedder: this.embedder,
+        },
+        { signal, onEvent: (event) => this.emitSyncChannelEvent(event) }
+      ).catch((error) => {
+        this.sendChannel(`sync_data: fatal error — ${formatErrorMessage(error)}`, {
+          tool: 'sync_data',
+          event: 'error',
+        })
+      })
 
       return {
         content: [
@@ -233,92 +237,46 @@ export class RAGServer {
     }
   }
 
-  /**
-   * Background sync worker — fires channel notifications per file
-   */
-  private async runSyncBackground(
-    plan: SyncPlan,
-    diskFiles: Map<string, SyncFileMetadata>,
-    signal?: AbortSignal
-  ): Promise<void> {
-    try {
-      if (plan.pruneList.length > 0) {
-        if (signal?.aborted) return
-        await this.vectorStore.deleteFiles(plan.pruneList)
-      }
-
-      let totalChunks = 0
-      let upsertCount = 0
-      let skippedEmpty = 0
-
-      for (let i = 0; i < plan.upsertList.length; i++) {
-        if (signal?.aborted) {
-          this.sendChannel(
-            `sync_data: aborted after ${upsertCount}/${plan.upsertList.length} files`,
-            { tool: 'sync_data', event: 'aborted', upsert_count: String(upsertCount) }
-          )
-          return
-        }
-
-        const filePath = plan.upsertList[i]!
-        this.sendChannel(`sync_data: [${i + 1}/${plan.upsertList.length}] ${filePath}`, {
+  private emitSyncChannelEvent(event: SyncEvent): void {
+    switch (event.type) {
+      case 'file_start':
+        this.sendChannel(`sync_data: [${event.index}/${event.total}] ${event.filePath}`, {
           tool: 'sync_data',
           event: 'file_start',
-          file_index: String(i + 1),
-          file_total: String(plan.upsertList.length),
+          file_index: String(event.index),
+          file_total: String(event.total),
         })
-
-        try {
-          const contentHash = diskFiles.get(filePath)?.contentHash || ''
-          const result = await ingestSingleFile(
-            filePath,
-            this.parser,
-            this.chunker,
-            this.embedder,
-            this.vectorStore,
-            contentHash,
-            signal
-          )
-          totalChunks += result.chunkCount
-          upsertCount++
-        } catch (error) {
-          const message = formatErrorMessage(error)
-          if (message.includes('No chunks generated')) {
-            skippedEmpty++
-            console.warn(`Sync: Skipping empty/short file ${filePath}`)
-          } else {
-            console.error(`Sync: Failed to ingest ${filePath}:`, message)
-            this.sendChannel(`sync_data: error on ${filePath} — ${message}`, {
-              tool: 'sync_data',
-              event: 'error',
-              file_path: filePath,
-            })
-            return
-          }
-        }
-      }
-
-      if (plan.upsertList.length > 0 || plan.pruneList.length > 0) {
-        await this.vectorStore.optimize()
-      }
-
-      this.sendChannel(
-        `sync_data: complete — ${upsertCount} upserted, ${plan.pruneList.length} pruned, ${plan.skipList.length} unchanged, ${skippedEmpty} skipped (empty), ${totalChunks} total chunks`,
-        {
+        return
+      case 'file_failed':
+        this.sendChannel(`sync_data: error on ${event.filePath} — ${event.error}`, {
           tool: 'sync_data',
-          event: 'complete',
-          upsert_count: String(upsertCount),
-          prune_count: String(plan.pruneList.length),
-          skip_count: String(plan.skipList.length),
-          skipped_empty: String(skippedEmpty),
-          total_chunks: String(totalChunks),
-        }
-      )
-    } catch (error) {
-      this.sendChannel(`sync_data: fatal error — ${formatErrorMessage(error)}`, {
-        tool: 'sync_data',
-        event: 'error',
-      })
+          event: 'error',
+          file_path: event.filePath,
+        })
+        return
+      case 'aborted':
+        this.sendChannel(`sync_data: aborted after ${event.completed}/${event.total} files`, {
+          tool: 'sync_data',
+          event: 'aborted',
+          upsert_count: String(event.completed),
+        })
+        return
+      case 'complete': {
+        const s = event.stats
+        this.sendChannel(
+          `sync_data: complete — ${s.upsertCount} upserted, ${s.pruneCount} pruned, ${s.skipCount} unchanged, ${s.skippedEmpty} skipped (empty), ${s.totalChunks} total chunks`,
+          {
+            tool: 'sync_data',
+            event: 'complete',
+            upsert_count: String(s.upsertCount),
+            prune_count: String(s.pruneCount),
+            skip_count: String(s.skipCount),
+            skipped_empty: String(s.skippedEmpty),
+            total_chunks: String(s.totalChunks),
+          }
+        )
+        return
+      }
     }
   }
 
@@ -442,7 +400,7 @@ export class RAGServer {
     signal?: AbortSignal
   ): Promise<{ content: [{ type: 'text'; text: string }] }> {
     try {
-      if (signal?.aborted) throw new Error('Operation aborted')
+      signal?.throwIfAborted()
       let contentToSave = args.content
       let formatToSave: ContentFormat = args.metadata.format
       let title: string | null = null
@@ -474,7 +432,7 @@ export class RAGServer {
         title = result.source !== 'filename' ? result.title : null
       }
 
-      if (signal?.aborted) throw new Error('Operation aborted')
+      signal?.throwIfAborted()
 
       // Save content to raw-data directory
       const rawDataPath = await saveRawData(

@@ -1,19 +1,14 @@
 // CLI sync subcommand — incremental bulk file synchronization
 
-import { stat } from 'node:fs/promises'
 import { resolve, sep } from 'node:path'
 
 import { SemanticChunker } from '../chunker/index.js'
 import { DocumentParser } from '../parser/index.js'
-import { createSyncPlan, type SyncFileMetadata } from '../utils/sync-utils.js'
+import { executeSyncPlan, planSync } from '../utils/sync-runner.js'
 import { createEmbedder, createVectorStore } from './common.js'
-import { collectFiles, ingestSingleFile, parseArgs, resolveConfig } from './ingest.js'
+import { parseArgs, resolveConfig } from './ingest.js'
 import type { GlobalOptions } from './options.js'
 import { resolveGlobalConfig } from './options.js'
-
-// ============================================
-// Help
-// ============================================
 
 const HELP_TEXT = `Usage: mcp-local-rag [global-options] sync [options] <path>
 
@@ -31,24 +26,14 @@ Global options (must appear before "sync"):
   --cache-dir <path>       Model cache directory
   --model-name <name>      Embedding model`
 
-// ============================================
-// Main Entry Point
-// ============================================
-
-/**
- * Run the sync CLI subcommand.
- */
 export async function runSync(args: string[], globalOptions: GlobalOptions = {}): Promise<void> {
-  // Reuse ingest argument parsing
   const { positional, options, help } = parseArgs(args)
 
-  // Handle --help
   if (help) {
     console.error(HELP_TEXT)
     process.exit(0)
   }
 
-  // Validate positional argument
   if (!positional) {
     console.error('Usage: mcp-local-rag sync [options] <path>')
     console.error('  Incrementally synchronize a directory with the database.')
@@ -56,36 +41,15 @@ export async function runSync(args: string[], globalOptions: GlobalOptions = {})
   }
 
   const targetPath = positional
-
-  // Validate path exists
-  try {
-    await stat(targetPath)
-  } catch {
-    console.error(`Error: path does not exist: ${targetPath}`)
-    process.exit(1)
-  }
-
-  // Resolve config
   const globalConfig = resolveGlobalConfig(globalOptions)
   const config = resolveConfig(globalConfig, options)
   const excludePaths = [`${resolve(config.dbPath)}${sep}`, `${resolve(config.cacheDir)}${sep}`]
 
-  // Initialize components
   const embedder = createEmbedder(globalConfig)
   const vectorStore = createVectorStore(globalConfig)
   await vectorStore.initialize()
 
-  // 1. Get Disk State
-  const diskFileInfos = await collectFiles(targetPath, excludePaths)
-  const diskFiles = new Map<string, SyncFileMetadata>(
-    diskFileInfos.map((f) => [f.filePath, { contentHash: f.contentHash }])
-  )
-
-  // 2. Get DB State
-  const dbFiles = await vectorStore.getFileManifest()
-
-  // 3. Create Sync Plan
-  const plan = createSyncPlan(diskFiles, dbFiles)
+  const { plan, diskFiles } = await planSync(targetPath, excludePaths, vectorStore)
 
   console.error(`Sync Plan:`)
   console.error(`  - Upsert: ${plan.upsertList.length} file(s) (new or modified)`)
@@ -97,59 +61,50 @@ export async function runSync(args: string[], globalOptions: GlobalOptions = {})
     return
   }
 
-  // 4. Execute Pruning
-  if (plan.pruneList.length > 0) {
-    console.error(`\nPruning ${plan.pruneList.length} file(s)...`)
-    await vectorStore.deleteFiles(plan.pruneList)
-  }
+  const parser = new DocumentParser({ baseDir: config.baseDir, maxFileSize: config.maxFileSize })
+  const chunker = new SemanticChunker(
+    config.chunkMinLength !== undefined ? { minChunkLength: config.chunkMinLength } : {}
+  )
 
-  // 5. Execute Upsert (Ingestion)
-  if (plan.upsertList.length > 0) {
-    console.error(`\nIngesting ${plan.upsertList.length} file(s)...`)
-
-    const parser = new DocumentParser({
-      baseDir: config.baseDir,
-      maxFileSize: config.maxFileSize,
-    })
-    const chunker = new SemanticChunker(
-      config.chunkMinLength !== undefined ? { minChunkLength: config.chunkMinLength } : {}
-    )
-
-    let succeeded = 0
-    let totalChunks = 0
-
-    for (let i = 0; i < plan.upsertList.length; i++) {
-      const filePath = plan.upsertList[i]!
-      const label = `[${i + 1}/${plan.upsertList.length}]`
-      const contentHash = diskFiles.get(filePath)?.contentHash || ''
-
-      try {
-        const result = await ingestSingleFile(
-          filePath,
-          parser,
-          chunker,
-          embedder,
-          vectorStore,
-          contentHash
-        )
-        console.error(`${label} ${filePath} ... OK (${result.chunkCount} chunks)`)
-        succeeded++
-        totalChunks += result.chunkCount
-      } catch (error) {
-        const reason = error instanceof Error ? error.message : String(error)
-        if (reason.includes('No chunks generated')) {
-          console.error(`${label} ${filePath} ... SKIPPED (0 chunks)`)
-          succeeded++
-        } else {
-          console.error(`${label} ${filePath} ... FAILED: ${reason}`)
+  const stats = await executeSyncPlan(
+    plan,
+    diskFiles,
+    { vectorStore, parser, chunker, embedder },
+    {
+      onEvent: (event) => {
+        switch (event.type) {
+          case 'prune_start':
+            console.error(`\nPruning ${event.count} file(s)...`)
+            break
+          case 'file_start':
+            if (event.index === 1) console.error(`\nIngesting ${event.total} file(s)...`)
+            break
+          case 'file_ok':
+            console.error(
+              `[${event.index}/${event.total}] ${event.filePath} ... OK (${event.chunkCount} chunks)`
+            )
+            break
+          case 'file_empty':
+            console.error(
+              `[${event.index}/${event.total}] ${event.filePath} ... SKIPPED (0 chunks)`
+            )
+            break
+          case 'file_failed':
+            console.error(
+              `[${event.index}/${event.total}] ${event.filePath} ... FAILED: ${event.error}`
+            )
+            break
         }
-      }
+      },
     }
+  )
 
-    console.error(`\nUpsert complete: ${succeeded} succeeded, ${totalChunks} total chunks.`)
-  }
-
-  // Optimize once at end
-  await vectorStore.optimize()
+  console.error(
+    `\nUpsert complete: ${stats.upsertCount} succeeded, ${stats.skippedEmpty} skipped (empty), ${stats.failedCount} failed, ${stats.totalChunks} total chunks.`
+  )
   console.error('\nSync complete.')
+
+  if (stats.failedCount > 0) {
+    process.exitCode = 1
+  }
 }

@@ -56,8 +56,8 @@ describe('AC-008: File Re-ingestion', () => {
   })
 
   // AC interpretation: [Data protection] Prevent data loss when re-ingest results in 0 chunks
-  // Validation: When chunking produces 0 chunks, error is thrown before delete (preserves existing data)
-  it('Throws error when chunking produces 0 chunks (prevents data loss on re-ingest)', async () => {
+  // Validation: When chunking produces 0 chunks, return status='empty' before delete (preserves existing data)
+  it('Returns empty status when chunking produces 0 chunks (prevents data loss on re-ingest)', async () => {
     // Initial ingestion with valid content
     const testFile = resolve(localTestDataDir, 'test-empty-chunks.txt')
     writeFileSync(testFile, 'This is valid content for initial ingestion. '.repeat(50))
@@ -65,11 +65,12 @@ describe('AC-008: File Re-ingestion', () => {
     const ingest1 = JSON.parse(result1.content[0].text)
     expect(ingest1.chunkCount).toBeGreaterThan(0)
 
-    // Re-ingest with empty content (should fail, preserving original data)
+    // Re-ingest with empty content (should return empty, preserving original data)
     writeFileSync(testFile, '')
-    await expect(localRagServer.handleIngestFile({ filePath: testFile })).rejects.toThrow(
-      /No.*chunks/i
-    )
+    const result2 = await localRagServer.handleIngestFile({ filePath: testFile })
+    const ingest2 = JSON.parse(result2.content[0].text)
+    expect(ingest2.status).toBe('empty')
+    expect(ingest2.chunkCount).toBe(0)
 
     // Validation: Original data is preserved (not deleted)
     const listResult = await localRagServer.handleListFiles()

@@ -182,17 +182,3 @@ export interface SyncDataInput {
   /** Absolute path to the directory or file to synchronize */
   path: string
 }
-
-/**
- * sync_data tool output
- */
-export interface SyncResult {
-  upsertCount: number
-  pruneCount: number
-  skipCount: number
-  totalChunks: number
-  /** List of files that failed to ingest */
-  failedFiles?: string[]
-  /** Map of filePath to error message for failures */
-  errors?: Record<string, string>
-}

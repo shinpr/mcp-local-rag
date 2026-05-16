@@ -276,24 +276,12 @@ export class VectorStore {
       await this.table.addColumns([{ name: 'fileTitle', valueSql: 'cast(NULL as string)' }])
       console.error('VectorStore: Migrated schema - added fileTitle column')
     }
-
-    // Note: fileModifiedAt is part of DocumentMetadata nested object in some contexts,
-    // but LanceDB flat-maps metadata fields on write in some cases depending on the API.
-    // However, to make manifest queries efficient, we ensure it exists.
-    // We check for it at the top level or within the metadata struct if needed.
-    // Since we primarily use dot notation for queries, adding it to the metadata struct
-    // or as a top-level column is handled by LanceDB's schema evolution.
   }
 
   /**
-   * Get a manifest of all files currently in the database.
-   * Returns a Map of filePath to its content hash.
-   *
-   * TODO: This is application-layer plumbing for a concern that ideally belongs in the
-   * database layer. LanceDB's own answer to incremental file sync is CocoIndex
-   * (https://github.com/lancedb/cocoindex-lancedb-demo), but CocoIndex is Python-only —
-   * there is no Node.js equivalent. Until LanceDB exposes native file-registry / change-
-   * detection primitives for Node.js, this scan-all-chunks approach is the workaround.
+   * Return filePath → contentHash for every file currently in the DB.
+   * Scans all chunk rows and dedupes by filePath because LanceDB OSS has no
+   * DISTINCT/GROUP BY and no native file-identity layer.
    */
   async getFileManifest(): Promise<Map<string, { contentHash: string }>> {
     if (!this.table) {
@@ -301,11 +289,6 @@ export class VectorStore {
     }
 
     try {
-      // Query unique file paths and their metadata.
-      // We use a query to get all records and group them in memory
-      // because LanceDB OSS doesn't support "DISTINCT" or "GROUP BY" yet.
-      // Known limitation: fetches ALL rows into memory — for databases
-      // with millions of chunks this will be slow and memory-intensive.
       const allRecords = await this.table.query().select(['filePath', 'metadata']).toArray()
 
       const manifest = new Map<string, { contentHash: string }>()
