@@ -56,18 +56,25 @@ export class RAGServer {
   private readonly parser: DocumentParser
   private readonly dbPath: string
   private readonly baseDir: string
+  private readonly cacheDir: string
   // Used by handleListFiles filter to exclude system-managed directories
   private readonly excludePaths: string[]
   private readonly configWarnings: string[]
   private readonly minChunkLength: number
+  // Read by the visual dispatch branch (added in T4.4) to construct the captioner
+  private readonly vlmModelName: string
+  private readonly vlmDtype: string
   private queryWarningsShown = false
 
   constructor(config: RAGServerConfig) {
     this.dbPath = config.dbPath
     this.baseDir = config.baseDir
+    this.cacheDir = config.cacheDir
     this.configWarnings = config.configWarnings ?? []
     this.minChunkLength = config.chunkMinLength ?? DEFAULT_MIN_CHUNK_LENGTH
-    this.excludePaths = [`${resolve(config.dbPath)}${sep}`, `${resolve(config.cacheDir)}${sep}`]
+    this.vlmModelName = config.vlmModelName
+    this.vlmDtype = config.vlmDtype
+    this.excludePaths = [`${resolve(this.dbPath)}${sep}`, `${resolve(this.cacheDir)}${sep}`]
     this.server = new Server(
       { name: 'rag-mcp-server', version: '1.0.0' },
       { capabilities: { tools: {} } }
@@ -184,7 +191,13 @@ export class RAGServer {
    */
   async initialize(): Promise<void> {
     await this.vectorStore.initialize()
-    console.error('RAGServer initialized')
+    // VLM config snapshot logged once at startup so the configured values are
+    // visible in server logs even when the visual dispatch branch (added in
+    // T4.4) has not been exercised yet. `vlmDtype === ''` means the captioner
+    // will normalize to `DEFAULT_VLM_DTYPE` at the from_pretrained boundary.
+    console.error(
+      `RAGServer initialized (vlmModelName=${this.vlmModelName}, vlmDtype=${this.vlmDtype || '(default)'})`
+    )
   }
 
   /**

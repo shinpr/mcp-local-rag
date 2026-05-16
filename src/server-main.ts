@@ -1,6 +1,10 @@
 // MCP Server entry point
+import { validateModelName } from './cli/options.js'
 import { RAGServer } from './server/index.js'
 import type { GroupingMode } from './vectordb/index.js'
+
+/** Regex for `VLM_DTYPE` env-resolution validation (alphanumeric + underscore; empty allowed) */
+const VLM_DTYPE_PATTERN = /^[a-zA-Z0-9_]*$/
 
 // ============================================
 // Environment Variable Parsers
@@ -97,6 +101,23 @@ export function parseDevice(value: string | undefined): ParseResult<string> {
  */
 export async function startServer(): Promise<void> {
   try {
+    // VLM env reads (validated; fail-fast with process.exit(1) on invalid).
+    // No empty→default normalization at this layer — the captioner is the single
+    // normalization site for VLM_DTYPE (DD §Captioner contract step 2).
+    const vlmModelName = process.env['VLM_MODEL_NAME'] || 'onnx-community/granite-docling-258M-ONNX'
+    const vlmModelNameError = validateModelName(vlmModelName)
+    if (vlmModelNameError) {
+      console.error(`Invalid VLM_MODEL_NAME: ${vlmModelNameError}`)
+      process.exit(1)
+    }
+    const vlmDtype = process.env['VLM_DTYPE'] ?? ''
+    if (!VLM_DTYPE_PATTERN.test(vlmDtype)) {
+      console.error(
+        `Invalid VLM_DTYPE: ${vlmDtype}. Only alphanumeric and '_' allowed (empty allowed).`
+      )
+      process.exit(1)
+    }
+
     // RAGServer configuration (env-only for MCP client compatibility)
     const device = parseDevice(process.env['RAG_DEVICE']).value as string
     const config: ConstructorParameters<typeof RAGServer>[0] = {
@@ -106,6 +127,8 @@ export async function startServer(): Promise<void> {
       baseDir: process.env['BASE_DIR'] || process.cwd(),
       maxFileSize: Number.parseInt(process.env['MAX_FILE_SIZE'] || '104857600', 10), // 100MB
       device,
+      vlmModelName,
+      vlmDtype,
     }
 
     // Collect configuration warnings

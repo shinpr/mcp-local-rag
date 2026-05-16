@@ -13,6 +13,10 @@ export interface RAGServerConfig {
   modelName: string
   /** Model cache directory */
   cacheDir: string
+  /** VLM model identifier (defaults supplied by server-main / CLI resolver) */
+  vlmModelName: string
+  /** VLM ONNX quantization variant; empty string means "use captioner default" — captioner is the single normalization site */
+  vlmDtype: string
   /** Document base directory */
   baseDir: string
   /** Maximum file size (100MB) */
