@@ -14,6 +14,7 @@ import {
 } from '@modelcontextprotocol/sdk/types.js'
 import { DEFAULT_MIN_CHUNK_LENGTH, SemanticChunker } from '../chunker/index.js'
 import { Embedder } from '../embedder/index.js'
+import { buildChunksAndEmbeddings } from '../ingest/compute.js'
 import { parseHtml } from '../parser/html-parser.js'
 import { DocumentParser, SUPPORTED_EXTENSIONS } from '../parser/index.js'
 import { extractMarkdownTitle, extractTxtTitle } from '../parser/title-extractor.js'
@@ -271,8 +272,14 @@ export class RAGServer {
         title = result.title || null
       }
 
-      // Split text into semantic chunks
-      const chunks = await this.chunker.chunkText(text, this.embedder)
+      // Split text into semantic chunks and compute embeddings (shared computation).
+      // Persistence (backup/delete/insert/rollback/optimize) below stays in this handler.
+      const { chunks, embeddings } = await buildChunksAndEmbeddings(
+        text,
+        title,
+        this.chunker,
+        this.embedder
+      )
 
       // Fail-fast: Prevent data loss when chunking produces 0 chunks
       // This check must happen BEFORE delete to preserve existing data on re-ingest
@@ -282,9 +289,6 @@ export class RAGServer {
           `No chunks generated from file: ${args.filePath}. The file may be empty or all content was filtered (minimum ${this.minChunkLength} characters required). Existing data has been preserved.`
         )
       }
-
-      // Generate embeddings for final chunks
-      const embeddings = await this.embedder.embedBatch(chunks.map((chunk) => chunk.text))
 
       // Create backup (if existing data exists)
       try {
