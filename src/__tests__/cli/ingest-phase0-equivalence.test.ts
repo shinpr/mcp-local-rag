@@ -46,7 +46,7 @@
 
 import { randomUUID } from 'node:crypto'
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { basename, extname, resolve } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { SemanticChunker } from '../../chunker/index.js'
 import { Embedder } from '../../embedder/index.js'
@@ -145,9 +145,9 @@ async function cliInlineIngest(
       text: chunk.text,
       vector: embedding,
       metadata: {
-        fileName: filePath.split('/').pop() || filePath,
+        fileName: basename(filePath),
         fileSize: text.length,
-        fileType: filePath.split('.').pop() || '',
+        fileType: extname(filePath).slice(1),
       },
       fileTitle: title,
       timestamp,

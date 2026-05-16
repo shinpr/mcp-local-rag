@@ -1,3 +1,4 @@
+import { basename } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { applyFileFilter, applyGrouping, applyKeywordBoost } from '../search-filters.js'
 import type { SearchResult } from '../types.js'
@@ -16,7 +17,7 @@ function mockResult(
     chunkIndex,
     text,
     score,
-    metadata: { fileName: filePath.split('/').pop()!, fileSize: 100, fileType: '.txt' },
+    metadata: { fileName: basename(filePath), fileSize: 100, fileType: '.txt' },
   }
 }
 
