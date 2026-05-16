@@ -55,9 +55,12 @@ Before submitting a pull request:
 
 ## What We Look For
 
-This project's development standards — testing strategy, error handling, code organization, etc. — are documented in [claude-code-workflows/skills](https://github.com/shinpr/claude-code-workflows/tree/main/skills).
+This project's development standards — testing strategy, error handling, code organization, etc. — are published as agent skills:
 
-We share this upfront so you know what to expect in review, not after. You don't need to memorize it, but if review feedback feels unexpected, that's where it comes from.
+- Claude Code: [claude-code-workflows/skills](https://github.com/shinpr/claude-code-workflows/tree/main/skills)
+- Codex CLI / other Agent Skills–compatible agents: [codex-workflows/.agents/skills](https://github.com/shinpr/codex-workflows/tree/main/.agents/skills)
+
+We share this upfront so you know what to expect in review, not after. You don't need to memorize these — but referencing them (or developing with them loaded into your agent) makes implementation smoother, since review follows the same standards. If feedback feels unexpected, that's where it comes from.
 
 ## Project Structure
 
