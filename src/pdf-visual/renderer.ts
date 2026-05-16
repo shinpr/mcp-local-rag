@@ -13,34 +13,19 @@
 //   5. on mupdf error → throw `VlmError('Failed to render PDF page',
 //                                       { cause: err, pageNum })`
 //
-// `VlmError` is staged here for T3.1; T3.3 promotes it into
-// `src/pdf-visual/types.ts`. Until then, downstream code that needs the type
-// imports it from this module.
+// `VlmError` was staged here at T3.1 and promoted to `./types.ts` at T3.3 —
+// renderer re-exports it from the canonical location so existing importers
+// keep working.
 
 import type { Document as MupdfDocument } from 'mupdf'
 import * as mupdf from 'mupdf'
 
+import { VlmError } from './types.js'
+
+export { VlmError }
+
 // Module-private. Single consumer (this file). Not exported, not surfaced.
 const RENDER_DPI = 150
-
-/**
- * Error raised by the pdf-visual path. Carries the offending 1-based page
- * number so callers can correlate it with the page list. Promoted to
- * `src/pdf-visual/types.ts` by T3.3.
- */
-export class VlmError extends Error {
-  public override readonly cause?: Error
-  public readonly pageNum: number
-
-  constructor(message: string, options: { cause?: Error; pageNum: number }) {
-    super(message)
-    this.name = 'VlmError'
-    if (options.cause !== undefined) {
-      this.cause = options.cause
-    }
-    this.pageNum = options.pageNum
-  }
-}
 
 /**
  * Render a single PDF page to a PNG byte array.
