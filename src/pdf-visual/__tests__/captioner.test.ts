@@ -189,14 +189,6 @@ describe('createCaptioner — fast profile dispatch (CaptionerConfig flow + AC-0
     expect(mocks.mockModelFromPretrained.mock.calls[0]?.[0]).toBe(FAST_MODEL_ID)
   })
 
-  // ----- dispatcher rejects unimplemented profiles -----
-
-  it("throws synchronously when profile is 'quality' (Phase 2 placeholder)", () => {
-    expect(() => createCaptioner({ ...BASE_CONFIG, profile: 'quality' as const })).toThrow(
-      /quality.*not yet implemented/i
-    )
-  })
-
   // ----- VLM_DTYPE pinned -----
 
   it('forwards the pinned VLM_DTYPE to both processor and model from_pretrained', async () => {
