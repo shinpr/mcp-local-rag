@@ -121,7 +121,7 @@ Re-ingesting the same file replaces the old version automatically.
 
 ##### Ingesting PDFs with figures (visual mode)
 
-PDFs with charts, tables, or diagrams can optionally add local VLM-generated captions to the related text chunks, giving visual content some searchable representation in the same vector + FTS pipeline.
+PDFs with charts, tables, or diagrams can optionally add local VLM-generated captions to the document index, giving visual content some searchable representation in the same vector + FTS pipeline.
 
 **Via MCP**:
 ```
@@ -133,9 +133,34 @@ PDFs with charts, tables, or diagrams can optionally add local VLM-generated cap
 npx mcp-local-rag ingest ./docs/spec.pdf --visual
 ```
 
-Captions are inlined into the corresponding page's chunks as `[Visual content on page N: …]`. They flow through the existing chunker and embedder unchanged — no schema differences, no separate index.
+Each caption is emitted as its own chunk with the envelope `[Visual content on page N: …]`, alongside the page-body chunks. It flows through the existing embedder and FTS index — no schema differences, no separate index.
 
-Visual mode is opt-in; normal ingest does not load the VLM. When visual mode is enabled, the VLM (`HuggingFaceTB/SmolVLM-256M-Instruct`) is cached under `CACHE_DIR` (default: `./models/`). The first download is hundreds of MB. The model identifier and quantization variant are fixed in this release; per-page VLM failures are tolerated — that page proceeds with text only.
+Visual mode is opt-in; normal ingest does not load the VLM. Per-page VLM failures are tolerated — that page proceeds with text only.
+
+###### Choosing a visual-quality profile
+
+Visual mode offers two profiles, selected per ingest call:
+
+| Profile | Model | Disk (cache) | Per-page inference | Suited for |
+|---|---|---|---|---|
+| `fast` (default) | `HuggingFaceTB/SmolVLM-256M-Instruct` | ~250 MB | baseline | Light visual indexing, quick first-run UX. |
+| `quality` | `onnx-community/Qwen2.5-VL-3B-Instruct-ONNX` | ~2.9 GB | ~2× `fast` | Figures with in-image text (axis labels, panel sub-labels, annotations) where caption fidelity matters more than throughput. |
+
+The numbers above are measured on CPU during development on the project's probe PDFs; they may shift with model updates or differ on your hardware.
+
+**Via MCP** — `ingest_file` accepts an optional `visualQuality` parameter (enum: `'fast' | 'quality'`, default `'fast'`; ignored when `visual` is false):
+```
+"Ingest /Users/me/docs/research-paper.pdf with visual: true and visualQuality: 'quality'"
+```
+
+**Via CLI** — `--visual-quality fast|quality` (default `fast`; silently ignored when `--visual` is absent):
+```bash
+npx mcp-local-rag ingest ./docs/research-paper.pdf --visual --visual-quality quality
+```
+
+Profile model identifiers and quantization variants are fixed per release. Both profiles share the same `CACHE_DIR` (default: `./models/`); the first run on each profile downloads its model.
+
+> **Behavior change from v0.14.0**: Captions are now emitted as dedicated chunks rather than appended to the page text before chunking. As a side effect, `metadata.fileSize` for visual ingests no longer includes the caption character count — it measures the post-extraction body length only. The underlying PDF is unchanged; only the reported `fileSize` for visual-ingested PDFs may shrink across the release boundary.
 
 > **Security note**: Visual captions are derived from PDF contents and may inherit attacker-controlled text. Downstream LLM consumers should treat retrieved chunks as untrusted data, not as instructions. The `[Visual content on page N: …]` envelope helps consumers distinguish caption text from prose.
 
@@ -453,7 +478,7 @@ Ensure file paths are within `BASE_DIR`. Use absolute paths.
 Yes. After model download, nothing leaves your machine. Verify with network monitoring.
 
 **Can I use this offline?**
-Yes, after the required models are cached locally. Text ingest/search needs the embedding model. PDF visual mode is opt-in and also needs the VLM model on first use; the download is hundreds of MB for the default `q4` variant and is cached under `CACHE_DIR` (default: `./models/`).
+Yes, after the required models are cached locally. Text ingest/search needs the embedding model. PDF visual mode is opt-in and also needs the VLM model on first use; the download is ~250 MB for the default `fast` profile (SmolVLM-256M) or ~2.9 GB for the `quality` profile (Qwen2.5-VL-3B), cached under `CACHE_DIR` (default: `./models/`).
 
 **How does this compare to cloud RAG?**
 Cloud services offer better accuracy at scale but require sending data externally. This trades some accuracy for complete privacy and zero runtime cost.
