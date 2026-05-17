@@ -81,6 +81,20 @@
           "isRequired": false,
           "format": "string",
           "isSecret": false
+        },
+        {
+          "name": "RAG_DEVICE",
+          "description": "Execution device for the embedder (defaults to cpu). Passed straight to ONNX Runtime; see the Transformers.js device source for the supported backend names. If the requested device fails to initialize, the server throws an error.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        },
+        {
+          "name": "RAG_HYBRID_WEIGHT",
+          "description": "Keyword boost factor for hybrid search (0.0-1.0, defaults to 0.6). 0 means semantic similarity only; higher values increase the keyword-match contribution to the final score.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
         }
       ],
       "features": {
