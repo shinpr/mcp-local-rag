@@ -23,6 +23,7 @@
 import { env } from '@huggingface/transformers'
 
 import { createFastCaptioner } from './captioners/fast.js'
+import { createQualityCaptioner } from './captioners/quality.js'
 import type { Captioner, CaptionerConfig } from './types.js'
 
 /**
@@ -57,9 +58,10 @@ export function createCaptioner(config: CaptionerConfig): Captioner {
     case 'fast':
       return createFastCaptioner(resolvedDevice)
     case 'quality':
-      // Phase 2 wires up `captioners/quality.ts`. Until then the dispatcher
-      // refuses the profile so callers fail fast rather than silently falling
-      // back to `fast`.
-      throw new Error("Captioner profile 'quality' is not yet implemented (scheduled for Phase 2)")
+      // Load failures from the heavier Qwen2.5-VL model propagate as the
+      // wrapped Error (later re-thrown per-page as `VlmError`) — there is
+      // deliberately no silent fallback to `fast` so a misconfigured
+      // `quality` install surfaces immediately.
+      return createQualityCaptioner(resolvedDevice)
   }
 }
