@@ -58,10 +58,20 @@ export function createCaptioner(config: CaptionerConfig): Captioner {
     case 'fast':
       return createFastCaptioner(resolvedDevice)
     case 'quality':
-      // Load failures from the heavier Qwen2.5-VL model propagate as the
-      // wrapped Error (later re-thrown per-page as `VlmError`) — there is
-      // deliberately no silent fallback to `fast` so a misconfigured
-      // `quality` install surfaces immediately.
+      // No silent fallback to `fast` on load failure. The heavier Qwen2.5-VL
+      // model surfaces its load error as a wrapped `VlmError` per page (see
+      // `enrichPagesWithCaptions` in `./index.ts`); per FR-3 the file ingest
+      // as a whole still completes text-only, so a misconfigured install
+      // degrades each candidate page rather than masking the misconfig by
+      // switching to `fast`. Operators see one warn line per candidate page.
       return createQualityCaptioner(resolvedDevice)
+    default: {
+      // Exhaustiveness guard. `QualityProfile` is statically narrow at the
+      // call sites (CLI + MCP both validate before reaching here) so this
+      // branch is unreachable today; the throw is defensive for future
+      // ProfileType additions that forget to extend this switch.
+      const _exhaustive: never = config.profile
+      throw new Error(`Unknown QualityProfile: ${_exhaustive as string}`)
+    }
   }
 }
