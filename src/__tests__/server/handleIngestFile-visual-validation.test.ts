@@ -163,7 +163,6 @@ function buildServer(): InstanceType<RAGServerCtor> {
     dbPath: '/tmp/test/visual-validation-db',
     modelName: 'mock-model',
     cacheDir: '/tmp/test/visual-validation-cache',
-    vlmModelName: 'mock-vlm-model',
     baseDir: '/tmp/test',
     maxFileSize: 1024 * 1024,
     device: 'cpu',
@@ -410,5 +409,133 @@ describe('handleIngestFile - `visual` Runtime Validation (AC-012)', () => {
     expect(mocks.createCaptioner).toHaveBeenCalledTimes(1)
     expect(mocks.detectVisualCandidates).toHaveBeenCalledTimes(1)
     expect(mocks.enrichPagesWithCaptions).toHaveBeenCalledTimes(1)
+  })
+})
+
+// =============================================================================
+// `visualQuality` boundary validation + normalization
+// =============================================================================
+//
+// The MCP boundary receives `unknown`, so the JSON Schema enum is necessary
+// but not sufficient. Accepted inputs at the boundary: undefined, "", "fast",
+// "quality" (with undefined and "" normalized to "fast"); any other value
+// fails fast with McpError(InvalidParams) before reaching the captioner.
+const QUALITY_INVALID_MESSAGE = "'visualQuality' must be 'fast' or 'quality' if provided"
+
+describe('handleIngestFile - `visualQuality` Runtime Validation', () => {
+  beforeAll(async () => {
+    vi.resetModules()
+    vi.doMock('../../parser/index.js', parserFactory)
+    vi.doMock('../../chunker/index.js', chunkerFactory)
+    vi.doMock('../../embedder/index.js', embedderFactory)
+    vi.doMock('../../vectordb/index.js', vectordbFactory)
+    vi.doMock('../../pdf-visual/index.js', pdfVisualFactory)
+    const mod = await import('../../server/index.js')
+    RAGServer = mod.RAGServer as RAGServerCtor
+  })
+
+  afterAll(() => {
+    for (const p of MOCKED_PATHS) vi.doUnmock(p)
+    vi.resetModules()
+  })
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mocks.initialize.mockResolvedValue(undefined)
+    mocks.deleteChunks.mockResolvedValue(undefined)
+    mocks.optimize.mockResolvedValue(undefined)
+    mocks.listFiles.mockResolvedValue([])
+    mocks.search.mockResolvedValue([])
+    mocks.embedInitialize.mockResolvedValue(undefined)
+    mocks.embed.mockResolvedValue([0.1, 0.2])
+    mocks.embedBatch.mockResolvedValue([[0.1, 0.2]])
+    mocks.validateFilePath.mockResolvedValue(undefined)
+    mocks.parseFile.mockResolvedValue({ content: 'plain content', title: 'plain title' })
+    mocks.parsePdf.mockResolvedValue({ content: 'pdf content', title: 'pdf title' })
+    mocks.parsePdfPages.mockResolvedValue({
+      doc: { destroy: vi.fn() },
+      metadataTitle: undefined,
+      pages: [{ pageNum: 1, text: 'page 1 text', stextJson: { blocks: [] } }],
+    })
+    mocks.enrichPagesWithCaptions.mockImplementation(async (pages: unknown) => ({
+      pages,
+      captions: [],
+    }))
+    mocks.detectVisualCandidates.mockReturnValue([])
+    mocks.createCaptioner.mockReturnValue({ caption: vi.fn().mockResolvedValue(null) })
+    mocks.chunkText.mockResolvedValue([{ text: 'chunk 0 text', index: 0 }])
+  })
+
+  it("rejects visualQuality === 'high' with McpError(InvalidParams)", async () => {
+    const server = buildServer()
+    let caught: unknown
+    try {
+      await server.handleIngestFile({
+        filePath: FIXTURE_PDF_PATH,
+        visual: true,
+        visualQuality: 'high',
+      } as unknown as { filePath: string })
+    } catch (error) {
+      caught = error
+    }
+    expect(caught).toBeInstanceOf(McpError)
+    expect((caught as McpError).code).toBe(ErrorCode.InvalidParams)
+    expect((caught as McpError).message).toContain(QUALITY_INVALID_MESSAGE)
+    // Validation short-circuited before any downstream work.
+    expect(mocks.parsePdfPages).toHaveBeenCalledTimes(0)
+    expect(mocks.createCaptioner).toHaveBeenCalledTimes(0)
+  })
+
+  it('rejects non-string visualQuality (number) with McpError(InvalidParams)', async () => {
+    const server = buildServer()
+    let caught: unknown
+    try {
+      await server.handleIngestFile({
+        filePath: FIXTURE_PDF_PATH,
+        visual: true,
+        visualQuality: 1,
+      } as unknown as { filePath: string })
+    } catch (error) {
+      caught = error
+    }
+    expect(caught).toBeInstanceOf(McpError)
+    expect((caught as McpError).code).toBe(ErrorCode.InvalidParams)
+  })
+
+  it('normalizes visualQuality === "" to "fast" without throwing (empty-string MCP convention)', async () => {
+    const server = buildServer()
+    await server.handleIngestFile({
+      filePath: FIXTURE_PDF_PATH,
+      visual: true,
+      visualQuality: '',
+    } as unknown as { filePath: string })
+    // Reached the visual dispatch path → captioner constructed with the
+    // normalized 'fast' profile (empty string did NOT propagate).
+    expect(mocks.createCaptioner).toHaveBeenCalledTimes(1)
+    const captionerConfig = mocks.createCaptioner.mock.calls[0]?.[0] as { profile?: unknown }
+    expect(captionerConfig?.profile).toBe('fast')
+  })
+
+  it("forwards visualQuality === 'quality' to createCaptioner", async () => {
+    const server = buildServer()
+    await server.handleIngestFile({
+      filePath: FIXTURE_PDF_PATH,
+      visual: true,
+      visualQuality: 'quality',
+    } as unknown as { filePath: string })
+    expect(mocks.createCaptioner).toHaveBeenCalledTimes(1)
+    const captionerConfig = mocks.createCaptioner.mock.calls[0]?.[0] as { profile?: unknown }
+    expect(captionerConfig?.profile).toBe('quality')
+  })
+
+  it("defaults to 'fast' when visualQuality is absent (undefined)", async () => {
+    const server = buildServer()
+    await server.handleIngestFile({
+      filePath: FIXTURE_PDF_PATH,
+      visual: true,
+    } as unknown as { filePath: string })
+    expect(mocks.createCaptioner).toHaveBeenCalledTimes(1)
+    const captionerConfig = mocks.createCaptioner.mock.calls[0]?.[0] as { profile?: unknown }
+    expect(captionerConfig?.profile).toBe('fast')
   })
 })

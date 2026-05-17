@@ -945,6 +945,44 @@ describe('CLI ingest', () => {
         errorSpy.mockRestore()
       }
     })
+
+    it('should parse --visual-quality fast', () => {
+      const result = parseArgs(['--visual', '--visual-quality', 'fast', '/target'])
+      expect(result.positional).toBe('/target')
+      expect(result.options.visual).toBe(true)
+      expect(result.options.visualQuality).toBe('fast')
+    })
+
+    it('should parse --visual-quality quality', () => {
+      const result = parseArgs(['--visual', '--visual-quality', 'quality', '/target'])
+      expect(result.options.visualQuality).toBe('quality')
+    })
+
+    it('should reject --visual-quality with an invalid value', () => {
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+      try {
+        expect(() => parseArgs(['--visual', '--visual-quality', 'extreme', '/target'])).toThrow(
+          'process.exit(1)'
+        )
+        expect(
+          errorSpy.mock.calls.some((call) =>
+            String(call[0]).includes('Invalid value for --visual-quality')
+          )
+        ).toBe(true)
+      } finally {
+        errorSpy.mockRestore()
+      }
+    })
+
+    it('should error when --visual-quality value is missing', () => {
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+      try {
+        expect(() => parseArgs(['--visual-quality'])).toThrow('process.exit(1)')
+        expect(errorSpy).toHaveBeenCalledWith('Missing value for --visual-quality')
+      } finally {
+        errorSpy.mockRestore()
+      }
+    })
   })
 
   // --------------------------------------------

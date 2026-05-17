@@ -219,7 +219,6 @@ function buildServer(): InstanceType<RAGServerCtor> {
     dbPath: '/tmp/test/default-mode-db',
     modelName: 'mock-model',
     cacheDir: '/tmp/test/default-mode-cache',
-    vlmModelName: 'mock-vlm-model',
     baseDir: '/tmp/test',
     maxFileSize: 1024 * 1024,
     device: 'cpu',
