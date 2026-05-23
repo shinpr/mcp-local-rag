@@ -138,27 +138,27 @@ export async function startServer(): Promise<void> {
 
     let baseDirsForServer: string[]
     let configError: BaseDirsConfigError | undefined
-    if (baseDirsResult.ok) {
-      // Apply the sensitive-path policy to every env-resolved root (post-
-      // realpath) as well as the pre-check above. A path that traversed a
-      // symlink into a sensitive directory only shows up in the realpath
-      // form. Attribute rejections to the env var that supplied the value.
+    // Raw sensitive-path matches take precedence over resolver errors — on
+    // platforms where the sensitive path does not exist (e.g. `/etc` on
+    // Windows) the resolver fails with a generic "Failed to resolve" before
+    // the post-realpath check runs, but the raw check has already flagged
+    // the security policy violation and that is the actionable message.
+    if (rawSensitiveErrors.length > 0) {
+      baseDirsForServer = []
+      configError = new BaseDirsConfigError([...new Set(rawSensitiveErrors)].join('; '))
+      configWarnings.push(configError.message)
+    } else if (baseDirsResult.ok) {
       const sourceFlag =
         process.env['BASE_DIRS'] !== undefined && process.env['BASE_DIRS'].length > 0
           ? 'BASE_DIRS'
           : 'BASE_DIR'
-      const sensitiveErrors: string[] = [...rawSensitiveErrors]
+      const sensitiveErrors: string[] = []
       for (const root of baseDirsResult.config.baseDirs) {
         const sensitive = checkSensitivePath(root, sourceFlag)
         if (sensitive) sensitiveErrors.push(sensitive)
       }
       if (sensitiveErrors.length > 0) {
-        // Treat the rejection as a config error: the server stays callable
-        // (so `status` works) but every root-dependent tool fails fast. No
-        // silent cwd fallback — see Finding #4.
         baseDirsForServer = []
-        // Dedup identical messages so a path that matches the raw-form check
-        // AND the post-realpath check reports once.
         configError = new BaseDirsConfigError([...new Set(sensitiveErrors)].join('; '))
         configWarnings.push(configError.message)
       } else {
@@ -168,12 +168,6 @@ export async function startServer(): Promise<void> {
         }
       }
     } else {
-      // Degraded mode: pass an empty `baseDirs` so any code path that
-      // forgets the `assertConfigOk` guard fails closed (rather than
-      // operating against `cwd`). The `configError` is stashed on the
-      // server so root-dependent tools surface it; `status` remains callable
-      // and exposes the diagnostic content block (AC-010). Removed the
-      // pre-existing `[process.cwd()]` fallback per Finding #4.
       baseDirsForServer = []
       configError = baseDirsResult.error
       configWarnings.push(baseDirsResult.error.message)

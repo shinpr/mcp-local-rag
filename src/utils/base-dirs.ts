@@ -13,6 +13,7 @@
 // currently inlines.
 
 import { realpath, stat } from 'node:fs/promises'
+import { homedir } from 'node:os'
 import { resolve, sep } from 'node:path'
 
 // ============================================
@@ -91,14 +92,11 @@ export type ParseBaseDirsResult =
  * supported; other paths pass through unchanged.
  */
 export function displayPath(path: string): string {
-  const home = process.env['HOME']
-  if (home === undefined || home.length === 0) return path
+  const home = process.env['HOME'] || homedir()
+  if (home.length === 0) return path
   if (path === home) return '~'
-  // Match `${home}/...` only — guard against `/Users/me-other/...` colliding
-  // with a literal substring check.
   if (path.startsWith(home + sep) || path.startsWith(`${home}/`)) {
-    const tail = path.slice(home.length)
-    return `~${tail}`
+    return `~${path.slice(home.length)}`
   }
   return path
 }

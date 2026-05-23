@@ -730,12 +730,12 @@ describe('CLI ingest', () => {
   // --------------------------------------------
   it('should exit gracefully with message when directory has no supported files', async () => {
     // Arrange
-    const dirPath = '/tmp/test/empty'
+    const dirPath = resolve('/tmp/test/empty')
     mocks.stat.mockResolvedValueOnce(mockDirStat()).mockResolvedValueOnce(mockDirStat())
     mocks.resolveCliBaseDirs.mockResolvedValue({ config: { baseDirs: [dirPath] }, warnings: [] })
 
     setupMockOpendir({
-      '/tmp/test/empty': [mockDirent('readme.jpg')],
+      [dirPath]: [mockDirent('readme.jpg')],
     })
 
     // Act

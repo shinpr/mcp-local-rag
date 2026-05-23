@@ -586,10 +586,14 @@ describe('post-launch findings #3 + #4: server-main wiring rejects sensitive roo
     let baseDirs: string[]
     let configError: BaseDirsConfigError | undefined
 
-    if (baseDirsResult.ok) {
+    if (rawSensitiveErrors.length > 0) {
+      baseDirs = []
+      configError = new BaseDirsConfigError([...new Set(rawSensitiveErrors)].join('; '))
+      warnings.push(configError.message)
+    } else if (baseDirsResult.ok) {
       const sourceFlag =
         opts.envBaseDirs !== undefined && opts.envBaseDirs.length > 0 ? 'BASE_DIRS' : 'BASE_DIR'
-      const sensitiveErrors: string[] = [...rawSensitiveErrors]
+      const sensitiveErrors: string[] = []
       for (const root of baseDirsResult.config.baseDirs) {
         const sensitive = checkSensitivePath(root, sourceFlag)
         if (sensitive) sensitiveErrors.push(sensitive)

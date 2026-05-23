@@ -14,6 +14,12 @@ import { join, sep } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { type BaseDirsConfigWarning, resolveBaseDirs, withTrailingSeparator } from '../base-dirs.js'
 
+// Windows uses DOS-8.3 short names in TEMP (e.g. RUNNER~1). `realpathSync`
+// (pure JS) returns the short form; production's `fs/promises.realpath` is
+// libuv-native and returns the long form. Use the native sync variant in
+// fixtures so expected and actual canonicalize identically.
+const realpathNative: (p: string) => string = realpathSync.native ?? realpathSync
+
 // ============================================
 // Shared temp directory fixture
 // ============================================
@@ -41,9 +47,9 @@ beforeAll(() => {
   mkdirSync(dirA, { recursive: true })
   mkdirSync(dirB, { recursive: true })
   mkdirSync(nestedChild, { recursive: true })
-  realA = realpathSync(dirA)
-  realB = realpathSync(dirB)
-  realNestedParent = realpathSync(nestedParent)
+  realA = realpathNative(dirA)
+  realB = realpathNative(dirB)
+  realNestedParent = realpathNative(nestedParent)
 })
 
 afterAll(() => {
@@ -470,7 +476,7 @@ describe('resolveBaseDirs — $HOME redaction in user-visible messages', () => {
     // displayPath substitution operates against the realpath form. Pin HOME
     // to the realpath of tmpRoot (on macOS, `/var/folders/...` realpaths to
     // `/private/var/folders/...`) so the substitution fires deterministically.
-    const realTmpRoot = realpathSync(tmpRoot)
+    const realTmpRoot = realpathNative(tmpRoot)
     process.env['HOME'] = realTmpRoot
     const result = await resolveBaseDirs({
       cliRoots: [nestedParent, nestedChild],
