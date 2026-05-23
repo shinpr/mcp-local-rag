@@ -13,6 +13,16 @@
 // remains the authoritative path-traversal / symlink-escape boundary.
 
 import { realpathSync } from 'node:fs'
+import { homedir } from 'node:os'
+
+// Normalize a path for comparison: forward-slash separators throughout and
+// lower-case on Windows (case-insensitive filesystem). Used by the security
+// boundary checks below so `C:\Users\me\.ssh` and `c:/users/me/.ssh` resolve
+// to the same comparable form.
+function toComparable(p: string): string {
+  const slashed = p.replace(/\\/g, '/')
+  return process.platform === 'win32' ? slashed.toLowerCase() : slashed
+}
 
 const SENSITIVE_PATH_LITERALS = ['/etc', '/usr', '/sys', '/proc', '/var'] as const
 
@@ -63,23 +73,25 @@ const SENSITIVE_HOME_PREFIXES = ['.ssh', '.gnupg']
  * rejected so the policy holds when `$HOME` is unset.
  */
 export function checkSensitivePath(value: string, flagName: string): string | undefined {
-  const normalized = value.startsWith('~/')
-    ? `${process.env['HOME'] ?? ''}/${value.slice(2)}`
-    : value
+  const home = process.env['HOME'] || homedir()
+  const expanded = value.startsWith('~/') ? `${home}/${value.slice(2)}` : value
+  const valueCmp = toComparable(expanded)
 
   for (const prefix of SENSITIVE_PATH_PREFIXES) {
-    if (normalized === prefix || normalized.startsWith(`${prefix}/`)) {
+    const prefixCmp = toComparable(prefix)
+    if (valueCmp === prefixCmp || valueCmp.startsWith(`${prefixCmp}/`)) {
       return `Refusing to use sensitive system path for ${flagName}: ${value}`
     }
   }
 
   for (const dir of SENSITIVE_HOME_PREFIXES) {
-    const homePath = `${process.env['HOME'] ?? ''}/${dir}`
-    if (normalized === homePath || normalized.startsWith(`${homePath}/`)) {
-      return `Refusing to use sensitive system path for ${flagName}: ${value}`
+    if (home.length > 0) {
+      const homePathCmp = toComparable(`${home}/${dir}`)
+      if (valueCmp === homePathCmp || valueCmp.startsWith(`${homePathCmp}/`)) {
+        return `Refusing to use sensitive system path for ${flagName}: ${value}`
+      }
     }
-    // Also reject the unexpanded form so `~/.ssh` cannot bypass the check
-    // when `$HOME` is unset.
+    // Unexpanded `~/...` form — caught even when `home` is empty.
     if (value === `~/${dir}` || value.startsWith(`~/${dir}/`)) {
       return `Refusing to use sensitive system path for ${flagName}: ${value}`
     }

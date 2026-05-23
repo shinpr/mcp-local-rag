@@ -94,8 +94,12 @@ export type ParseBaseDirsResult =
 export function displayPath(path: string): string {
   const home = process.env['HOME'] || homedir()
   if (home.length === 0) return path
-  if (path === home) return '~'
-  if (path.startsWith(home + sep) || path.startsWith(`${home}/`)) {
+  const isWin = process.platform === 'win32'
+  const cmp = (s: string) => (isWin ? s.toLowerCase() : s)
+  const homeCmp = cmp(home)
+  const pathCmp = cmp(path)
+  if (pathCmp === homeCmp) return '~'
+  if (pathCmp.startsWith(homeCmp + sep) || pathCmp.startsWith(`${homeCmp}/`)) {
     return `~${path.slice(home.length)}`
   }
   return path
