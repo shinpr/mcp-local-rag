@@ -5,9 +5,8 @@
     "module": "node16",
     "lib": ["ES2023"],
     "types": ["node"],
-    "baseUrl": ".",  // Use project root as reference
     "paths": {
-      "src/*": ["src/*"]
+      "src/*": ["./src/*"]
     },
     
     // Output configuration
