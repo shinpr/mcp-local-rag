@@ -40,7 +40,7 @@ if (firstArg !== undefined && isSubcommand(firstArg)) {
   if (Object.keys(globalOptions).length > 0) {
     console.error('Global CLI options are not supported when launching the MCP server directly.')
     console.error(
-      'Use environment variables like DB_PATH, CACHE_DIR, MODEL_NAME, BASE_DIR, and MAX_FILE_SIZE instead.'
+      'Use environment variables like DB_PATH, CACHE_DIR, MODEL_NAME, BASE_DIR, BASE_DIRS, and MAX_FILE_SIZE instead.'
     )
     process.exit(1)
   }

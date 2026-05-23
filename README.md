@@ -33,7 +33,7 @@ Semantic search with keyword boost for exact technical terms — fully private, 
 
 ## Quick Start
 
-Set `BASE_DIR` to the folder you want to search. Documents must live under it.
+Set `BASE_DIR` to the folder you want to search (or `BASE_DIRS` for multiple roots — see [Configuration](#configuration)). Documents must live under one of the configured roots.
 
 Add the MCP server to your AI coding tool:
 
@@ -206,7 +206,7 @@ Pass the `filePath` and `chunkIndex` from the search result. The response includ
 #### Managing Files
 
 ```
-"List all files in BASE_DIR and their ingested status"   # See what's indexed
+"List all files in configured base directories and their ingested status"   # See what's indexed
 "Delete old-spec.pdf from RAG"     # Remove a file
 "Show RAG server status"           # Check system health
 ```
@@ -237,12 +237,28 @@ npx mcp-local-rag delete --source "https://..."  # Remove by source URL
 npx mcp-local-rag --db-path ./my-db query "auth" --base-dir ./docs
 ```
 
+The `--base-dir` flag is repeatable on `ingest` and `list`; pass it once per root:
+
+```bash
+npx mcp-local-rag ingest --base-dir ./docs --base-dir ./specs ./readme.md
+npx mcp-local-rag list --base-dir ./docs --base-dir ./specs
+```
+
+When at least one `--base-dir` is supplied, CLI roots replace any env-var roots (no merge).
+
 **Environment variables** — set in your shell:
 
 ```bash
 export DB_PATH=./my-db
 export BASE_DIR=./docs
 npx mcp-local-rag query "auth"
+```
+
+For multiple roots, use `BASE_DIRS` (JSON array of non-empty path strings):
+
+```bash
+export BASE_DIRS='["/Users/me/Documents/work","/Users/me/Projects/specs"]'
+npx mcp-local-rag list
 ```
 
 **Sharing config between MCP and CLI** — if your MCP client inherits shell environment variables, you can set them in your shell profile (e.g., `~/.zshrc`) so both use the same values. Otherwise, set them explicitly in your MCP config as well.
@@ -359,7 +375,8 @@ The MCP server is configured by environment variables only — pass them through
 
 | Environment Variable | CLI Flag | Default | Description |
 |---------------------|----------|---------|-------------|
-| `BASE_DIR` | `--base-dir` | Current directory | Document root directory (security boundary) |
+| `BASE_DIR` | `--base-dir` (repeatable) | Current directory | Single document root directory (security boundary). See [Document Roots](#document-roots-base_dir-and-base_dirs) for multi-root setup. |
+| `BASE_DIRS` | — | (unset) | JSON array of document roots (security boundary). Takes precedence over `BASE_DIR`. See [Document Roots](#document-roots-base_dir-and-base_dirs). |
 | `DB_PATH` | `--db-path` | `./lancedb/` | Vector database location |
 | `CACHE_DIR` | `--cache-dir` | `./models/` | Model cache directory |
 | `MODEL_NAME` | `--model-name` | `Xenova/all-MiniLM-L6-v2` | HuggingFace model ID ([available models](https://huggingface.co/models?library=transformers.js&pipeline_tag=feature-extraction)) |
@@ -373,6 +390,89 @@ The MCP server is configured by environment variables only — pass them through
 - Code repositories → default often suffices; keyword boost matters more (or `jinaai/jina-embeddings-v2-base-code`)
 
 ⚠️ Changing `MODEL_NAME` changes embedding dimensions. Delete `DB_PATH` and re-ingest after switching models.
+
+### Document Roots (`BASE_DIR` and `BASE_DIRS`)
+
+mcp-local-rag enforces a security boundary: only files under a configured root are accessible to ingest, list, delete, or read-neighbor operations.
+
+**Single root** — use `BASE_DIR`:
+
+```bash
+export BASE_DIR=/Users/me/Documents/work
+```
+
+**Multiple roots** — use `BASE_DIRS` with a JSON array:
+
+```bash
+export BASE_DIRS='["/Users/me/Documents/work","/Users/me/Projects/specs"]'
+```
+
+Only JSON-array syntax is supported. Delimiter syntax such as `BASE_DIRS=/a:/b` is intentionally **not** supported (avoids ambiguity with spaces, colons, commas, and Windows paths).
+
+**Resolution order** (highest precedence first):
+
+1. CLI `--base-dir <path>` flags (repeatable on `ingest` and `list`)
+2. `BASE_DIRS` environment variable
+3. `BASE_DIR` environment variable
+4. `process.cwd()` (current working directory)
+
+CLI roots **replace** env roots — they are never merged. `BASE_DIRS` and `BASE_DIR` are never merged either: `BASE_DIRS` wins when both are set.
+
+**Precedence warning** — when `BASE_DIRS` and `BASE_DIR` are both set (and no CLI `--base-dir` is supplied), `BASE_DIR` is ignored and a warning is surfaced. The warning is visible:
+
+- In MCP tool responses (as an additional content block, on every tool — including `status`, `query_documents`, `ingest_file`, `ingest_data`, `list_files`, `delete_file`, `read_chunk_neighbors`).
+- On CLI `stderr`.
+
+Unset `BASE_DIR` (or remove `BASE_DIRS`) to silence the warning.
+
+**Nested-root pruning** — if one configured root sits inside another after realpath resolution, the nested child is dropped to avoid duplicate scan results. A pruning warning is surfaced the same way as the precedence warning. The surviving parent root still defines the security boundary.
+
+**Invalid `BASE_DIRS`** — when `BASE_DIRS` is not a valid JSON array of non-empty strings (malformed JSON, empty array, non-string elements, ...), root-dependent MCP tools return a structured error and CLI subcommands exit non-zero. There is **no silent fallback** to `BASE_DIR` or `cwd`. The MCP `status` tool remains callable so you can diagnose the config error through your MCP client.
+
+**MCP client examples** — multi-root setup:
+
+Cursor (`~/.cursor/mcp.json`):
+```json
+{
+  "mcpServers": {
+    "local-rag": {
+      "command": "npx",
+      "args": ["-y", "mcp-local-rag"],
+      "env": {
+        "BASE_DIRS": "[\"/Users/me/Documents/work\",\"/Users/me/Projects/specs\"]"
+      }
+    }
+  }
+}
+```
+
+Codex (`~/.codex/config.toml`):
+```toml
+[mcp_servers.local-rag]
+command = "npx"
+args = ["-y", "mcp-local-rag"]
+
+[mcp_servers.local-rag.env]
+BASE_DIRS = "[\"/Users/me/Documents/work\",\"/Users/me/Projects/specs\"]"
+```
+
+Claude Code:
+```bash
+claude mcp add local-rag --scope user \
+  --env BASE_DIRS='["/Users/me/Documents/work","/Users/me/Projects/specs"]' \
+  -- npx -y mcp-local-rag
+```
+
+**CLI examples** — multi-root invocations:
+
+```bash
+# Repeatable --base-dir
+npx mcp-local-rag ingest --base-dir /Users/me/work --base-dir /Users/me/specs ./readme.md
+npx mcp-local-rag list --base-dir /Users/me/work --base-dir /Users/me/specs
+
+# Or via BASE_DIRS env
+BASE_DIRS='["/Users/me/work","/Users/me/specs"]' npx mcp-local-rag list
+```
 
 ### Client-Specific Setup
 
@@ -417,7 +517,7 @@ The embedding model (~90MB) downloads on first use. Takes 1-2 minutes, then work
 
 ### Security
 
-- **Path restriction**: Only files within `BASE_DIR` are accessible
+- **Path restriction**: Only files within a configured root (`BASE_DIR` or any `BASE_DIRS` / `--base-dir` entry) are accessible. Symlinks resolving outside all configured roots, and sibling-prefix paths (e.g. `/foo/barista` for root `/foo/bar`), are rejected.
 - **Local only**: No network requests after model download
 - **Model sources** (all official HuggingFace repositories):
   - Embedder: [`Xenova/all-MiniLM-L6-v2`](https://huggingface.co/Xenova/all-MiniLM-L6-v2)
@@ -465,7 +565,18 @@ Check chunk count with `status`. Large documents with many chunks may slow queri
 
 ### "Path outside BASE_DIR"
 
-Ensure file paths are within `BASE_DIR`. Use absolute paths.
+Ensure file paths are within one of the configured roots (`BASE_DIR`, any `BASE_DIRS` entry, or any CLI `--base-dir`). Use absolute paths.
+
+### "BASE_DIRS must be a JSON array..."
+
+`BASE_DIRS` accepts only a JSON array of one or more non-empty path strings. Examples:
+
+- Valid: `BASE_DIRS='["/Users/me/work","/Users/me/specs"]'`
+- Invalid: `BASE_DIRS=/a:/b` (delimiter syntax not supported)
+- Invalid: `BASE_DIRS='[]'` (empty array)
+- Invalid: `BASE_DIRS='["",""]'` (empty string element)
+
+When invalid, root-dependent operations fail with a clear error rather than silently falling back. The MCP `status` tool remains callable so you can inspect the diagnostic.
 
 ### MCP client doesn't see tools
 

@@ -222,6 +222,27 @@ CLI subcommands mirror MCP tools. Useful for bulk operations, scripting, and env
 - Use `--help` on any command for options
 - See [cli-reference.md](references/cli-reference.md) for options and config matching
 
+## Document Roots (Security Boundary)
+
+All ingest/list/delete/read-neighbor operations are confined to one or more configured root directories. Files outside every configured root are rejected.
+
+| Setting | How | When |
+|---------|-----|------|
+| `BASE_DIR` | Single path string env var | Single-root setups (legacy, still supported) |
+| `BASE_DIRS` | JSON array env var: `'["/a","/b"]'` | Multi-root setups via env (MCP and CLI) |
+| `--base-dir <path>` | Repeatable CLI flag on `ingest` and `list` | Multi-root setups via CLI; CLI roots replace env roots |
+
+**Resolution order**: CLI `--base-dir` > `BASE_DIRS` > `BASE_DIR` > `process.cwd()`.
+
+**Warnings surfaced in MCP tool responses** (additional content block on every tool):
+
+- `BASE_DIRS is set; BASE_DIR is ignored.` — both env vars set with no CLI override. `BASE_DIR` is silently shadowed; unset it or remove `BASE_DIRS` to silence.
+- `Nested base directory pruned: <child> is inside <parent>.` — a configured root sits inside another. Child is dropped to avoid duplicate scan results; parent remains the boundary.
+
+**Invalid `BASE_DIRS`** — malformed JSON, empty array, or non-string entries cause root-dependent tools to return a structured error. There is no fallback to `BASE_DIR` or `cwd`. `status` remains callable so users can diagnose via your MCP client.
+
+When a user reports unexpected ingest scope or "path outside BASE_DIR" errors, call `status` first to inspect the resolved roots and any active config warnings.
+
 ## References
 
 For edge cases and examples:
