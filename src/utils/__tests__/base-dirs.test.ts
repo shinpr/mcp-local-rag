@@ -209,8 +209,8 @@ describe('dedupAndPruneRoots', () => {
     expect(warnings).toHaveLength(1)
     const warning = warnings[0] as BaseDirsConfigWarning
     expect(warning.kind).toBe('nested-root-pruned')
-    expect(warning.message).toContain(resolvedParent)
-    expect(warning.message).toContain(resolvedChild)
+    expect(warning.message).toContain(displayPath(resolvedParent))
+    expect(warning.message).toContain(displayPath(resolvedChild))
   })
 
   it('prunes a nested child even when listed before its parent', async () => {
