@@ -1371,4 +1371,148 @@ describe('CLI ingest', () => {
       }
     })
   })
+
+  // --------------------------------------------
+  // P2-T3: CLI multi-root precedence / fallback / config-error matrix
+  //
+  // Mirrors the cases added to `list.test.ts` so the boundary contract
+  // between `runIngest` and the shared resolver is asserted at both CLI
+  // entry points. Scenarios are driven from the resolver mock (no real env
+  // vars / filesystem) so they remain deterministic.
+  // --------------------------------------------
+  describe('multi-root precedence (P2-T3)', () => {
+    it('passes CLI roots verbatim to the resolver and suppresses any env precedence warning', async () => {
+      // Arrange: env vars are set but the user supplied --base-dir. The
+      // resolver contract is "CLI replaces env, no precedence warning".
+      process.env['BASE_DIR'] = '/env/single'
+      process.env['BASE_DIRS'] = '["/env/multi/a","/env/multi/b"]'
+      const cliRootA = resolve('/cli/precedence/a')
+      const cliRootB = resolve('/cli/precedence/b')
+      mocks.stat.mockResolvedValueOnce(mockDirStat()).mockResolvedValueOnce(mockDirStat())
+      mocks.resolveCliBaseDirs.mockResolvedValue({
+        config: { baseDirs: [cliRootA, cliRootB] },
+        warnings: [],
+      })
+      setupMockOpendir({ [cliRootA]: [mockDirent('a.md')], [cliRootB]: [mockDirent('b.md')] })
+      setupSuccessfulIngestion()
+
+      try {
+        // Act
+        const { output, error } = await captureStderr(() =>
+          runIngest(['--base-dir', cliRootA, '--base-dir', cliRootB, cliRootA])
+        )
+
+        // Assert: resolver received the CLI roots verbatim and in order.
+        expect(error).toBeUndefined()
+        expect(mocks.resolveCliBaseDirs).toHaveBeenCalledWith([cliRootA, cliRootB])
+
+        // Assert: no precedence warning surfaced to stderr.
+        const joined = output.join('\n')
+        expect(joined).not.toContain('BASE_DIRS is set')
+        expect(joined).not.toContain('BASE_DIR is ignored')
+      } finally {
+        delete process.env['BASE_DIR']
+        delete process.env['BASE_DIRS']
+      }
+    })
+
+    it('uses BASE_DIRS fallback (multi-root) when no --base-dir is provided', async () => {
+      // Arrange: no CLI roots; resolver returns the BASE_DIRS-driven multi-root
+      // set. The CLI must forward an empty `cliRoots` array so the resolver
+      // applies env precedence.
+      const envRootA = resolve('/env/multi/a')
+      const envRootB = resolve('/env/multi/b')
+      mocks.stat.mockResolvedValueOnce(mockDirStat()).mockResolvedValueOnce(mockDirStat())
+      mocks.resolveCliBaseDirs.mockResolvedValue({
+        config: { baseDirs: [envRootA, envRootB] },
+        warnings: [],
+      })
+      setupMockOpendir({ [envRootA]: [mockDirent('a.md')], [envRootB]: [mockDirent('b.md')] })
+      setupSuccessfulIngestion()
+
+      // Act
+      const { output, error } = await captureStderr(() => runIngest([envRootA]))
+
+      // Assert: resolver invoked with empty CLI roots.
+      expect(error).toBeUndefined()
+      expect(mocks.resolveCliBaseDirs).toHaveBeenCalledWith([])
+
+      // Assert: both roots were scanned (aggregated file count).
+      const joined = output.join('\n')
+      expect(joined).toContain('Found 2 file(s) to ingest')
+      expect(joined).toContain(resolve(envRootA, 'a.md'))
+      expect(joined).toContain(resolve(envRootB, 'b.md'))
+    })
+
+    it('surfaces BASE_DIRS > BASE_DIR precedence warning on stderr (no CLI roots)', async () => {
+      // Arrange: resolver yields the precedence warning. The CLI prints
+      // every resolver warning to stderr before the scan output begins.
+      const root = resolve('/env/multi/only')
+      mocks.stat.mockResolvedValueOnce(mockDirStat()).mockResolvedValueOnce(mockDirStat())
+      mocks.resolveCliBaseDirs.mockResolvedValue({
+        config: { baseDirs: [root] },
+        warnings: [
+          {
+            kind: 'base-dirs-overrides-base-dir',
+            message:
+              'BASE_DIRS is set; BASE_DIR is ignored. Unset BASE_DIR or remove BASE_DIRS to silence this warning.',
+          },
+        ],
+      })
+      setupMockOpendir({ [root]: [mockDirent('a.md')] })
+      setupSuccessfulIngestion()
+
+      // Act
+      const { output, error } = await captureStderr(() => runIngest([root]))
+
+      // Assert: precedence warning reached stderr.
+      expect(error).toBeUndefined()
+      const joined = output.join('\n')
+      expect(joined).toContain('BASE_DIRS is set')
+      expect(joined).toContain('BASE_DIR is ignored')
+    })
+
+    it('exits non-zero with a stderr error when the resolver rejects invalid BASE_DIRS', async () => {
+      // Arrange: `resolveCliBaseDirsOrExit` exits with code 1 after printing
+      // the BASE_DIRS config error. We simulate that path with a throwing
+      // mock so the CLI's exit handling can be verified.
+      mocks.stat.mockResolvedValue(mockFileStat())
+      mocks.resolveCliBaseDirs.mockImplementation(() => {
+        console.error('BASE_DIRS must be a JSON array of non-empty path strings.')
+        throw new Error('process.exit(1)')
+      })
+
+      // Act
+      const { output, error } = await captureStderr(() => runIngest(['/tmp/test/document.md']))
+
+      // Assert: CLI propagates exit(1) and config error is visible.
+      expect(error).toBeInstanceOf(Error)
+      expect((error as Error).message).toBe('process.exit(1)')
+      const joined = output.join('\n')
+      expect(joined).toContain('BASE_DIRS')
+    })
+
+    it('uses cwd as the only effective root when neither CLI roots nor env vars are set', async () => {
+      // Arrange: resolver returns cwd as the only effective root (final
+      // fallback). The ingest scan walks cwd as the sole effective root.
+      const cwd = process.cwd()
+      mocks.stat.mockResolvedValueOnce(mockDirStat()).mockResolvedValueOnce(mockDirStat())
+      mocks.resolveCliBaseDirs.mockResolvedValue({
+        config: { baseDirs: [cwd] },
+        warnings: [],
+      })
+      setupMockOpendir({ [cwd]: [mockDirent('a.md')] })
+      setupSuccessfulIngestion()
+
+      // Act
+      const { output, error } = await captureStderr(() => runIngest([cwd]))
+
+      // Assert: resolver received no CLI roots; the cwd-rooted file was ingested.
+      expect(error).toBeUndefined()
+      expect(mocks.resolveCliBaseDirs).toHaveBeenCalledWith([])
+      const joined = output.join('\n')
+      expect(joined).toContain('Found 1 file(s) to ingest')
+      expect(joined).toContain(resolve(cwd, 'a.md'))
+    })
+  })
 })
