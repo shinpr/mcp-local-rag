@@ -74,6 +74,36 @@ export type ParseBaseDirsResult =
   | { ok: false; error: BaseDirsConfigError }
 
 // ============================================
+// Path display helpers
+// ============================================
+
+/**
+ * Render an absolute path for inclusion in user-visible error/warning
+ * messages, substituting the current `$HOME` prefix with `~`. The substitution
+ * keeps the message useful for debugging while avoiding leaking the operating
+ * username when warnings/errors flow out through MCP responses to clients.
+ *
+ * `$HOME` resolution is read once at call time, so processes that mutate
+ * `HOME` between invocations still see the current value (no caching).
+ *
+ * Exact-match on the home directory itself (`/Users/me` → `~`) and prefix
+ * match with a trailing separator (`/Users/me/work` → `~/work`) are both
+ * supported; other paths pass through unchanged.
+ */
+export function displayPath(path: string): string {
+  const home = process.env['HOME']
+  if (home === undefined || home.length === 0) return path
+  if (path === home) return '~'
+  // Match `${home}/...` only — guard against `/Users/me-other/...` colliding
+  // with a literal substring check.
+  if (path.startsWith(home + sep) || path.startsWith(`${home}/`)) {
+    const tail = path.slice(home.length)
+    return `~${tail}`
+  }
+  return path
+}
+
+// ============================================
 // JSON-array parser for BASE_DIRS
 // ============================================
 
@@ -182,7 +212,7 @@ export async function normalizeRealpath(path: string): Promise<string> {
     resolved = await realpath(resolve(path))
   } catch (error) {
     throw new BaseDirsConfigError(
-      `Failed to resolve base directory: ${path}. The directory may not exist or is inaccessible.`,
+      `Failed to resolve base directory: ${displayPath(path)}. The directory may not exist or is inaccessible.`,
       error as Error
     )
   }
@@ -192,14 +222,14 @@ export async function normalizeRealpath(path: string): Promise<string> {
     stats = await stat(resolved)
   } catch (error) {
     throw new BaseDirsConfigError(
-      `Failed to stat resolved base directory: ${resolved}.`,
+      `Failed to stat resolved base directory: ${displayPath(resolved)}.`,
       error as Error
     )
   }
 
   if (!stats.isDirectory()) {
     throw new BaseDirsConfigError(
-      `Base directory is not a directory: ${path} (resolved: ${resolved}).`
+      `Base directory is not a directory: ${displayPath(path)} (resolved: ${displayPath(resolved)}).`
     )
   }
 
@@ -288,7 +318,7 @@ export function dedupAndPruneRoots(inputs: string[]): DedupAndPruneResult {
     }
     warnings.push({
       kind: 'nested-root-pruned',
-      message: `Nested base directory pruned: ${candidate} is inside ${survivingAncestor}. Keeping ${survivingAncestor} only.`,
+      message: `Nested base directory pruned: ${displayPath(candidate)} is inside ${displayPath(survivingAncestor)}. Keeping ${displayPath(survivingAncestor)} only.`,
       parent: survivingAncestor,
       pruned: candidate,
     })

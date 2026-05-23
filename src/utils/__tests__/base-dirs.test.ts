@@ -19,6 +19,7 @@ import {
   BaseDirsConfigError,
   type BaseDirsConfigWarning,
   dedupAndPruneRoots,
+  displayPath,
   legacyBaseDir,
   normalizeRealpath,
   parseBaseDirsEnv,
@@ -286,5 +287,53 @@ describe('legacyBaseDir', () => {
   it('returns the only element for a single-root config', () => {
     const config: BaseDirsConfig = { baseDirs: ['/only/'] }
     expect(legacyBaseDir(config)).toBe('/only/')
+  })
+})
+
+// ============================================
+// displayPath — $HOME substitution for user-visible messages
+// ============================================
+
+describe('displayPath', () => {
+  // Save+restore $HOME so the assertions stay deterministic even when the
+  // test runner inherits the developer's actual home directory.
+  let originalHome: string | undefined
+
+  beforeAll(() => {
+    originalHome = process.env['HOME']
+  })
+
+  afterAll(() => {
+    if (originalHome === undefined) {
+      delete process.env['HOME']
+    } else {
+      process.env['HOME'] = originalHome
+    }
+  })
+
+  it('substitutes the exact $HOME prefix with ~', () => {
+    process.env['HOME'] = '/Users/jdoe'
+    expect(displayPath('/Users/jdoe/work/docs')).toBe('~/work/docs')
+  })
+
+  it('returns the exact $HOME path as ~', () => {
+    process.env['HOME'] = '/Users/jdoe'
+    expect(displayPath('/Users/jdoe')).toBe('~')
+  })
+
+  it('leaves sibling paths that merely share a prefix unchanged', () => {
+    // `/Users/jdoe-other/...` MUST NOT collapse to `~-other/...`.
+    process.env['HOME'] = '/Users/jdoe'
+    expect(displayPath('/Users/jdoe-other/docs')).toBe('/Users/jdoe-other/docs')
+  })
+
+  it('returns the path unchanged when $HOME is unset', () => {
+    delete process.env['HOME']
+    expect(displayPath('/Users/jdoe/work/docs')).toBe('/Users/jdoe/work/docs')
+  })
+
+  it('returns the path unchanged when $HOME does not match', () => {
+    process.env['HOME'] = '/Users/jdoe'
+    expect(displayPath('/var/lib/data')).toBe('/var/lib/data')
   })
 })

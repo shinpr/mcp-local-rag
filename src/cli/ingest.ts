@@ -1,7 +1,7 @@
 // CLI ingest subcommand — bulk file ingestion with single optimize() at end
 
 import { randomUUID } from 'node:crypto'
-import { opendir, stat } from 'node:fs/promises'
+import { opendir, realpath, stat } from 'node:fs/promises'
 import { basename, extname, join, resolve, sep } from 'node:path'
 
 import { SemanticChunker } from '../chunker/index.js'
@@ -328,7 +328,10 @@ async function walkDirectory(
     for await (const entry of dir) {
       const fullPath = join(dirPath, entry.name)
 
-      if (!fullPath.startsWith(rootPath)) continue
+      // `join(dirPath, entry.name)` always produces a path under `dirPath`,
+      // which itself stays under `rootPath` because the BFS only enqueues
+      // descendants of `rootPath`. We therefore do not need a per-entry
+      // `startsWith(rootPath)` re-check here.
       if (entry.isSymbolicLink()) continue
       if (excludePaths.some((ep) => fullPath.startsWith(ep))) continue
 
@@ -349,23 +352,21 @@ async function walkDirectory(
  * Two modes:
  *  - **Single-file mode**: `targetPath` resolves to a regular file. Returns
  *    `[resolved]` when the extension is supported, otherwise the empty array
- *    (after warning on stderr). Single-file mode ignores `baseDirs` because
- *    the parser still validates the file path against the configured roots —
- *    this preserves the pre-P2-T2 behavior for users who pass an explicit
- *    file path to ingest.
- *  - **Directory mode**: `targetPath` resolves to a directory. Walks EVERY
- *    effective root in `baseDirs` (not `targetPath`) using {@link walkDirectory},
- *    aggregates the per-root file lists, and deduplicates by absolute path so
- *    overlap that survived nested-root pruning (e.g. symlinks pointing into
- *    multiple roots) does not produce duplicate ingest activity. Sorted for
- *    deterministic ingest order.
+ *    (after warning on stderr). The parser still validates the file path
+ *    against the configured roots, so a file outside all roots is rejected
+ *    downstream.
+ *  - **Directory mode**: `targetPath` resolves to a directory. Walks only the
+ *    positional directory `resolved` using {@link walkDirectory}. The multi-
+ *    root configuration is the SECURITY boundary (passed to the parser via
+ *    `DocumentParser.validateFilePath`), not a replacement for the user's
+ *    scan target. `resolved` must live under one of the configured roots
+ *    after realpath normalization; otherwise we fail loud with a clear
+ *    message rather than scanning every configured root (which was the
+ *    pre-Finding-#1 behavior and broke the `ingest <dir>` contract).
  *
- * Why iterate `baseDirs` rather than `targetPath` in directory mode: the
- * multi-base-dirs plan (§ Phase 2 completion criteria, AC-008/AC-011/AC-012)
- * makes the configured roots the security AND scan boundary. A directory
- * positional with multiple `--base-dir` flags scans across all roots, not
- * only the positional directory. Users who want to ingest a single subtree
- * can pass it via `--base-dir` or use the single-file mode.
+ * Sibling-prefix safety: the `startsWith(root)` check uses `baseDirs`
+ * entries with their realpath-normalized trailing separator, so
+ * `/foo/barista` does not match root `/foo/bar/`.
  */
 async function collectFiles(
   targetPath: string,
@@ -387,16 +388,37 @@ async function collectFiles(
   }
 
   if (info.isDirectory()) {
-    const state = { depthLimited: false }
-    const collected: string[] = []
-    for (const root of baseDirs) {
-      // `baseDirs` entries from `resolveCliBaseDirsOrExit` already carry a
-      // trailing separator (realpath-normalized). `walkDirectory`'s
-      // `startsWith(rootPath)` prefix check uses that separator so it stays
-      // sibling-prefix safe across roots.
-      const perRoot = await walkDirectory(root, excludePaths, state)
-      collected.push(...perRoot)
+    // Resolve the symlink-targets of the positional path before the prefix
+    // check, so a symlinked CLI argument still passes when its realpath
+    // agrees with one of the configured (already-realpath-normalized) roots.
+    // Roots from `resolveCliBaseDirsOrExit` already end with `sep`.
+    const realResolved = await realpath(resolved)
+    // Append a trailing separator to the positional path so the
+    // `startsWith` prefix-check is sibling-prefix safe in BOTH directions.
+    const realResolvedWithSep = realResolved.endsWith(sep) ? realResolved : realResolved + sep
+    // A path is "under" a root iff:
+    //  - the path equals the root (with both ending in sep), or
+    //  - the path starts with the root's trailing-separator form.
+    const insideAnyRoot = baseDirs.some(
+      (root) => realResolvedWithSep === root || realResolvedWithSep.startsWith(root)
+    )
+    if (!insideAnyRoot) {
+      // Fail loud — silently scanning baseDirs in this case (the pre-fix
+      // behavior) violated the CLI contract by ingesting unrelated content.
+      console.error(
+        `Error: ${targetPath} is not under any configured base directory. ` +
+          `Allowed roots: ${baseDirs.join(', ')}. ` +
+          `Provide a path inside one of the configured roots, or set BASE_DIRS / --base-dir to include the desired tree.`
+      )
+      process.exit(1)
     }
+
+    // Walk only the user-supplied positional directory. The configured roots
+    // remain the security boundary (enforced by the parser); they do not
+    // replace the user's scan target. This restores the pre-multi-root CLI
+    // contract: `ingest <dir>` scans `<dir>`, not every configured root.
+    const state = { depthLimited: false }
+    const collected = await walkDirectory(resolved, excludePaths, state)
 
     if (state.depthLimited) {
       console.error(
@@ -404,10 +426,8 @@ async function collectFiles(
       )
     }
 
-    // Cross-root dedup by absolute path string. Nested-root pruning already
-    // removes ancestor/descendant overlap at resolve time, but two disjoint
-    // realpath-normalized roots can still surface the same file via symlinks
-    // or bind mounts. Use a Set so the output is unique-and-sorted.
+    // Single-tree scan — no cross-root dedup necessary. Sort for
+    // deterministic ingest order.
     return [...new Set(collected)].sort()
   }
 

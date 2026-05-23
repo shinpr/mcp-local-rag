@@ -5,8 +5,10 @@ import { Embedder } from '../embedder/index.js'
 import {
   type BaseDirsConfig,
   type BaseDirsConfigWarning,
+  parseBaseDirsEnv,
   resolveBaseDirs,
 } from '../utils/base-dirs.js'
+import { checkSensitivePath } from '../utils/sensitive-path.js'
 import { VectorStore } from '../vectordb/index.js'
 import { type ResolvedGlobalConfig, resolveDevice, validatePath } from './options.js'
 
@@ -71,6 +73,31 @@ export interface CliBaseDirsResolution {
  * to keep stderr clean even when warnings are present).
  */
 export async function resolveCliBaseDirsOrExit(cliRoots: string[]): Promise<CliBaseDirsResolution> {
+  // Screen the raw env-supplied paths before the resolver realpath-
+  // normalizes them, so a literal `BASE_DIR=/etc` is rejected with the
+  // env var as the attribution surface.
+  if (cliRoots.length === 0) {
+    if (process.env['BASE_DIRS'] !== undefined && process.env['BASE_DIRS'].length > 0) {
+      const parsed = parseBaseDirsEnv(process.env['BASE_DIRS'])
+      if (parsed.ok) {
+        for (const raw of parsed.value) {
+          const sensitive = checkSensitivePath(raw, 'BASE_DIRS')
+          if (sensitive) {
+            console.error(sensitive)
+            process.exit(1)
+          }
+        }
+      }
+      // Malformed BASE_DIRS surfaces below via resolveBaseDirs.
+    } else if (process.env['BASE_DIR'] !== undefined && process.env['BASE_DIR'].trim().length > 0) {
+      const sensitive = checkSensitivePath(process.env['BASE_DIR'], 'BASE_DIR')
+      if (sensitive) {
+        console.error(sensitive)
+        process.exit(1)
+      }
+    }
+  }
+
   const result = await resolveBaseDirs({
     cliRoots,
     envBaseDirs: process.env['BASE_DIRS'],

@@ -1,43 +1,20 @@
 // Shared CLI global options — parsed before subcommand routing
 
+import { checkSensitivePath } from '../utils/sensitive-path.js'
+
 // ============================================
 // Validation Helpers
 // ============================================
 
 /**
- * Sensitive system directories that should never be used as data paths.
- * Checked as path prefixes (after resolving ~ to $HOME).
- */
-const SENSITIVE_PATH_PREFIXES = ['/etc', '/usr', '/sys', '/proc', '/var']
-const SENSITIVE_HOME_PREFIXES = ['.ssh', '.gnupg']
-
-/**
  * Validate that a path is not a sensitive system directory.
+ * Delegates to the shared `checkSensitivePath` helper so the CLI and the
+ * MCP server entry point share one policy implementation.
+ *
  * Returns an error message if invalid, or undefined if valid.
  */
 export function validatePath(value: string, flagName: string): string | undefined {
-  const normalized = value.startsWith('~/')
-    ? `${process.env['HOME'] ?? ''}/${value.slice(2)}`
-    : value
-
-  for (const prefix of SENSITIVE_PATH_PREFIXES) {
-    if (normalized === prefix || normalized.startsWith(`${prefix}/`)) {
-      return `Refusing to use sensitive system path for ${flagName}: ${value}`
-    }
-  }
-
-  for (const dir of SENSITIVE_HOME_PREFIXES) {
-    const homePath = `${process.env['HOME'] ?? ''}/${dir}`
-    if (normalized === homePath || normalized.startsWith(`${homePath}/`)) {
-      return `Refusing to use sensitive system path for ${flagName}: ${value}`
-    }
-    // Also check the unexpanded form
-    if (value === `~/${dir}` || value.startsWith(`~/${dir}/`)) {
-      return `Refusing to use sensitive system path for ${flagName}: ${value}`
-    }
-  }
-
-  return undefined
+  return checkSensitivePath(value, flagName)
 }
 
 /**

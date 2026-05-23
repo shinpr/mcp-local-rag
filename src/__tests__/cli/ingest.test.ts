@@ -21,6 +21,11 @@ const mocks = vi.hoisted(() => {
     // fs/promises
     stat: vi.fn(),
     opendir: vi.fn(),
+    // `collectFiles` now realpath-resolves the positional path before the
+    // "inside any configured root" check (Finding #1). The default mock is
+    // identity (no symlinks) so existing tests behave as if the positional
+    // path is its own realpath; per-test mocks can override.
+    realpath: vi.fn().mockImplementation((p: string) => Promise.resolve(p)),
 
     // Shared CLI base-dirs resolver
     resolveCliBaseDirs: vi.fn().mockImplementation(defaultResolve),
@@ -62,6 +67,7 @@ const fsPromisesFactory = async (
     ...actual,
     stat: mocks.stat,
     opendir: mocks.opendir,
+    realpath: mocks.realpath,
   }
 }
 
@@ -341,10 +347,13 @@ describe('CLI ingest', () => {
   // --------------------------------------------
   // Multi-root directory ingest (P2-T2)
   // --------------------------------------------
-  it('should walk every effective root and aggregate files across roots', async () => {
-    // Arrange: two disjoint roots, each with one file. The resolver returns
-    // both as effective roots; the directory-mode scan walks each one and
-    // concatenates the per-root file lists.
+  it('should scan only the positional directory even when multiple roots are configured', async () => {
+    // Post-Finding-#1: `ingest <dir>` scans `<dir>` (the positional path).
+    // The configured roots are the VALIDATION boundary (passed to the
+    // parser), not a replacement for the user's scan target. Previously
+    // this test asserted the buggy behavior of aggregating every root; that
+    // broke the CLI contract by ingesting unrelated content under `rootB`
+    // when the user only asked for `rootA`.
     const rootA = resolve('/tmp/test/rootA')
     const rootB = resolve('/tmp/test/rootB')
     mocks.stat.mockResolvedValueOnce(mockDirStat()).mockResolvedValueOnce(mockDirStat())
@@ -355,95 +364,88 @@ describe('CLI ingest', () => {
 
     setupMockOpendir({
       [rootA]: [mockDirent('a.md')],
+      // rootB has a file too, but it must NOT be ingested because the
+      // positional path is `rootA`.
       [rootB]: [mockDirent('b.md')],
     })
     setupSuccessfulIngestion()
 
-    // Act: positional is one of the roots (or any extant path — directory
-    // mode just triggers the multi-root scan branch).
+    // Act: positional path is rootA.
     const { output, error } = await captureStderr(() =>
       runIngest(['--base-dir', rootA, '--base-dir', rootB, rootA])
     )
 
-    // Assert
-    expect(error).toBeUndefined()
-    const joined = output.join('\n')
-    expect(joined).toContain('Found 2 file(s) to ingest')
-    expect(joined).toContain(resolve(rootA, 'a.md'))
-    expect(joined).toContain(resolve(rootB, 'b.md'))
-    expect(joined).toContain('Succeeded: 2')
-  })
-
-  it('should dedup files by absolute path when roots surface the same file', async () => {
-    // Arrange: two roots that both surface the same absolute file path (the
-    // realistic scenario is a bind mount or symlink that survived nested
-    // pruning). The scan must emit the file exactly once.
-    const rootA = resolve('/tmp/test/share')
-    const rootB = resolve('/tmp/test/share') // duplicate after normalization
-    mocks.stat.mockResolvedValueOnce(mockDirStat()).mockResolvedValueOnce(mockDirStat())
-    mocks.resolveCliBaseDirs.mockResolvedValue({
-      // Caller emulates a scenario where the resolver still hands two roots
-      // that yield the same file (e.g., symlink-equivalent realpaths that
-      // landed in the post-dedup list because they came from different
-      // user-supplied strings).
-      config: { baseDirs: [rootA, rootB] },
-      warnings: [],
-    })
-
-    setupMockOpendir({
-      [rootA]: [mockDirent('shared.md')],
-      [rootB]: [mockDirent('shared.md')],
-    })
-    setupSuccessfulIngestion()
-
-    // Act
-    const { output, error } = await captureStderr(() => runIngest([rootA]))
-
-    // Assert: file appears exactly once in the ingest summary
+    // Assert: exactly one file (rootA/a.md) ingested.
     expect(error).toBeUndefined()
     const joined = output.join('\n')
     expect(joined).toContain('Found 1 file(s) to ingest')
+    expect(joined).toContain(resolve(rootA, 'a.md'))
+    expect(joined).not.toContain(resolve(rootB, 'b.md'))
     expect(joined).toContain('Succeeded: 1')
-    // The progress marker [1/1] appears for the single deduped file
-    expect(joined).toContain('[1/1]')
   })
 
-  it('should preserve dbPath and cacheDir exclusion across every root', async () => {
-    // Arrange: two roots, each containing a file that lives under the
-    // resolved dbPath / cacheDir prefix. Both should be excluded.
-    const rootA = resolve('/tmp/test/dbA')
-    const rootB = resolve('/tmp/test/dbB')
-    const dbPath = resolve('/tmp/test/dbA/lancedb')
-    const cacheDir = resolve('/tmp/test/dbB/cache')
-    mocks.stat.mockResolvedValueOnce(mockDirStat()).mockResolvedValueOnce(mockDirStat())
+  it('should exit 1 with a clear message when the positional path is outside all configured roots', async () => {
+    // Regression test for Finding #1: previously the CLI silently fell back
+    // to scanning every configured root when the positional path lived
+    // outside all of them. The contract is now: fail loud, exit 1, and tell
+    // the user which roots are allowed.
+    const rootA = resolve('/tmp/test/rootA')
+    const rootB = resolve('/tmp/test/rootB')
+    const outsidePath = resolve('/tmp/test/outside')
+    mocks.stat.mockResolvedValue(mockDirStat())
     mocks.resolveCliBaseDirs.mockResolvedValue({
       config: { baseDirs: [rootA, rootB] },
       warnings: [],
     })
 
+    const { output, error } = await captureStderr(() =>
+      runIngest(['--base-dir', rootA, '--base-dir', rootB, outsidePath])
+    )
+
+    // Process exits with code 1.
+    expect(error).toBeInstanceOf(Error)
+    expect((error as Error).message).toBe('process.exit(1)')
+
+    // Error message names the offending path and lists the allowed roots.
+    const joined = output.join('\n')
+    expect(joined).toContain('not under any configured base directory')
+    expect(joined).toContain(outsidePath)
+    expect(joined).toContain(rootA)
+    expect(joined).toContain(rootB)
+  })
+
+  it('should preserve dbPath and cacheDir exclusion when scanning the positional directory', async () => {
+    // Post-Finding-#1: only the positional path is scanned. The dbPath /
+    // cacheDir exclusion still applies under that single scanned tree, so
+    // files under either excluded path are skipped.
+    const rootA = resolve('/tmp/test/dbA')
+    const dbPath = resolve('/tmp/test/dbA/lancedb')
+    const cacheDir = resolve('/tmp/test/dbA/cache')
+    mocks.stat.mockResolvedValueOnce(mockDirStat()).mockResolvedValueOnce(mockDirStat())
+    mocks.resolveCliBaseDirs.mockResolvedValue({
+      config: { baseDirs: [rootA] },
+      warnings: [],
+    })
+
     setupMockOpendir({
-      [rootA]: [mockDirent('keep.md'), mockDirent('lancedb', 'directory')],
-      [dbPath]: [mockDirent('chunks.md')], // should be excluded under rootA
-      [rootB]: [mockDirent('also-keep.md'), mockDirent('cache', 'directory')],
-      [cacheDir]: [mockDirent('model.md')], // should be excluded under rootB
+      [rootA]: [
+        mockDirent('keep.md'),
+        mockDirent('lancedb', 'directory'),
+        mockDirent('cache', 'directory'),
+      ],
+      [dbPath]: [mockDirent('chunks.md')], // excluded
+      [cacheDir]: [mockDirent('model.md')], // excluded
     })
     setupSuccessfulIngestion()
 
-    // Act
     const { output, error } = await captureStderr(() =>
-      runIngest([rootA], {
-        dbPath,
-        cacheDir,
-        modelName: 'm',
-      })
+      runIngest([rootA], { dbPath, cacheDir, modelName: 'm' })
     )
 
-    // Assert: only the two non-excluded files were ingested
     expect(error).toBeUndefined()
     const joined = output.join('\n')
-    expect(joined).toContain('Found 2 file(s) to ingest')
+    expect(joined).toContain('Found 1 file(s) to ingest')
     expect(joined).toContain('keep.md')
-    expect(joined).toContain('also-keep.md')
     expect(joined).not.toContain('chunks.md')
     expect(joined).not.toContain('model.md')
   })
@@ -1384,6 +1386,9 @@ describe('CLI ingest', () => {
     it('passes CLI roots verbatim to the resolver and suppresses any env precedence warning', async () => {
       // Arrange: env vars are set but the user supplied --base-dir. The
       // resolver contract is "CLI replaces env, no precedence warning".
+      // Post-Finding-#1: the scan walks only the positional path. We still
+      // assert resolver wiring + no-precedence-warning; the scan is single-
+      // tree under `cliRootA`.
       process.env['BASE_DIR'] = '/env/single'
       process.env['BASE_DIRS'] = '["/env/multi/a","/env/multi/b"]'
       const cliRootA = resolve('/cli/precedence/a')
@@ -1393,7 +1398,7 @@ describe('CLI ingest', () => {
         config: { baseDirs: [cliRootA, cliRootB] },
         warnings: [],
       })
-      setupMockOpendir({ [cliRootA]: [mockDirent('a.md')], [cliRootB]: [mockDirent('b.md')] })
+      setupMockOpendir({ [cliRootA]: [mockDirent('a.md')] })
       setupSuccessfulIngestion()
 
       try {
@@ -1419,7 +1424,9 @@ describe('CLI ingest', () => {
     it('uses BASE_DIRS fallback (multi-root) when no --base-dir is provided', async () => {
       // Arrange: no CLI roots; resolver returns the BASE_DIRS-driven multi-root
       // set. The CLI must forward an empty `cliRoots` array so the resolver
-      // applies env precedence.
+      // applies env precedence. Post-Finding-#1: only the positional path is
+      // scanned, but the resolver invocation contract is still
+      // "empty cliRoots when --base-dir is absent".
       const envRootA = resolve('/env/multi/a')
       const envRootB = resolve('/env/multi/b')
       mocks.stat.mockResolvedValueOnce(mockDirStat()).mockResolvedValueOnce(mockDirStat())
@@ -1427,7 +1434,7 @@ describe('CLI ingest', () => {
         config: { baseDirs: [envRootA, envRootB] },
         warnings: [],
       })
-      setupMockOpendir({ [envRootA]: [mockDirent('a.md')], [envRootB]: [mockDirent('b.md')] })
+      setupMockOpendir({ [envRootA]: [mockDirent('a.md')] })
       setupSuccessfulIngestion()
 
       // Act
@@ -1437,11 +1444,11 @@ describe('CLI ingest', () => {
       expect(error).toBeUndefined()
       expect(mocks.resolveCliBaseDirs).toHaveBeenCalledWith([])
 
-      // Assert: both roots were scanned (aggregated file count).
+      // Assert: only the positional tree was scanned.
       const joined = output.join('\n')
-      expect(joined).toContain('Found 2 file(s) to ingest')
+      expect(joined).toContain('Found 1 file(s) to ingest')
       expect(joined).toContain(resolve(envRootA, 'a.md'))
-      expect(joined).toContain(resolve(envRootB, 'b.md'))
+      expect(joined).not.toContain(resolve(envRootB, 'b.md'))
     })
 
     it('surfaces BASE_DIRS > BASE_DIR precedence warning on stderr (no CLI roots)', async () => {

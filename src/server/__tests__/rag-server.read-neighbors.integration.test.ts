@@ -19,7 +19,7 @@ import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { ErrorCode } from '@modelcontextprotocol/sdk/types.js'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
-import { isRawDataPath } from '../../utils/raw-data-utils.js'
+import { looksLikeRawDataPath } from '../../utils/raw-data-utils.js'
 import type { VectorChunk, VectorStore } from '../../vectordb/index.js'
 import { RAGServer } from '../index.js'
 import type { ReadChunkNeighborsInput, ReadChunkNeighborsResultItem } from '../types.js'
@@ -470,7 +470,7 @@ describe('read_chunk_neighbors integration', () => {
   //   - Response is a non-empty array
   //   - All returned items share the same filePath value
   //   - The shared filePath is under the raw-data storage directory
-  //     (isRawDataPath(filePath) === true)
+  //     (looksLikeRawDataPath(filePath) === true)
   //   - Exactly one item has isTarget: true with chunkIndex === 1
   //
   // Pass criteria:
@@ -520,7 +520,7 @@ describe('read_chunk_neighbors integration', () => {
       const filePaths = new Set(items.map((i) => i.filePath))
       expect(filePaths.size).toBe(1)
       const sharedPath = items[0]?.filePath ?? ''
-      expect(isRawDataPath(sharedPath)).toBe(true)
+      expect(looksLikeRawDataPath(sharedPath)).toBe(true)
 
       const targets = items.filter((i) => i.isTarget)
       expect(targets).toHaveLength(1)
@@ -1089,7 +1089,7 @@ describe('read_chunk_neighbors integration', () => {
       expect(items.length).toBeGreaterThan(0)
       const filePaths = new Set(items.map((i) => i.filePath))
       expect(filePaths.size).toBe(1)
-      expect(isRawDataPath(items[0]?.filePath ?? '')).toBe(true)
+      expect(looksLikeRawDataPath(items[0]?.filePath ?? '')).toBe(true)
       for (const item of items) {
         expect(item.source).toBe(SOURCE)
       }

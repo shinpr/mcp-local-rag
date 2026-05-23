@@ -170,7 +170,7 @@ mcp-local-rag enforces a security boundary: only files under a configured root a
 3. `BASE_DIR` env var — single path string
 4. `process.cwd()` (final fallback when none of the above is set)
 
-CLI roots **replace** env roots; they are never merged. `BASE_DIRS` and `BASE_DIR` are also never merged: `BASE_DIRS` wins when both are set.
+CLI roots **replace** env roots. When both `BASE_DIRS` and `BASE_DIR` are set, `BASE_DIRS` wins.
 
 **`BASE_DIRS` syntax** — JSON array only:
 
@@ -178,13 +178,13 @@ CLI roots **replace** env roots; they are never merged. `BASE_DIRS` and `BASE_DI
 export BASE_DIRS='["/Users/me/Documents/work","/Users/me/Projects/specs"]'
 ```
 
-Delimiter syntax such as `BASE_DIRS=/a:/b` is intentionally unsupported (avoids ambiguity with spaces, colons, commas, and Windows paths).
+`BASE_DIRS` accepts JSON arrays only; this keeps parsing unambiguous across spaces, colons, commas, and Windows paths.
 
 **Repeatable `--base-dir` examples**:
 
 ```bash
-# Two roots via CLI
-npx mcp-local-rag ingest --base-dir /Users/me/work --base-dir /Users/me/specs ./readme.md
+# Two roots via CLI (the positional path must sit inside one of the roots).
+npx mcp-local-rag ingest --base-dir /Users/me/work --base-dir /Users/me/specs /Users/me/work/readme.md
 npx mcp-local-rag list --base-dir /Users/me/work --base-dir /Users/me/specs
 
 # Two roots via env
@@ -199,7 +199,7 @@ BASE_DIRS='["/ignored"]' npx mcp-local-rag list --base-dir /Users/me/work
 - `BASE_DIRS is set; BASE_DIR is ignored.` — both env vars set with no CLI override.
 - `Nested base directory pruned: <child> is inside <parent>.` — one configured root sits inside another after realpath resolution. The child is dropped to avoid duplicate scan results; the parent remains the boundary.
 
-**Invalid `BASE_DIRS`** — malformed JSON, empty array, or empty/non-string entries cause root-dependent subcommands and MCP tools to fail with a structured error. There is no silent fallback to `BASE_DIR` or `cwd`. The MCP `status` tool stays callable so the diagnostic remains visible through your MCP client.
+**Invalid `BASE_DIRS`** — malformed JSON, empty array, or empty/non-string entries cause root-dependent subcommands and MCP tools to fail loud with a structured error, surfacing the misconfiguration at the call site. The MCP `status` tool stays callable so the diagnostic remains visible through your MCP client.
 
 ## Config Matching
 

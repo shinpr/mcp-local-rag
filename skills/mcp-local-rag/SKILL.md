@@ -239,7 +239,7 @@ All ingest/list/delete/read-neighbor operations are confined to one or more conf
 - `BASE_DIRS is set; BASE_DIR is ignored.` — both env vars set with no CLI override. `BASE_DIR` is silently shadowed; unset it or remove `BASE_DIRS` to silence.
 - `Nested base directory pruned: <child> is inside <parent>.` — a configured root sits inside another. Child is dropped to avoid duplicate scan results; parent remains the boundary.
 
-**Invalid `BASE_DIRS`** — malformed JSON, empty array, or non-string entries cause root-dependent tools to return a structured error. There is no fallback to `BASE_DIR` or `cwd`. `status` remains callable so users can diagnose via your MCP client.
+**Invalid `BASE_DIRS`** — malformed JSON, empty array, or non-string entries cause root-dependent tools to return a structured error so the misconfiguration surfaces at the call site. `status` remains callable for diagnosis via the MCP client.
 
 When a user reports unexpected ingest scope or "path outside BASE_DIR" errors, call `status` first to inspect the resolved roots and any active config warnings.
 

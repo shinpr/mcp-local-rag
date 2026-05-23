@@ -132,7 +132,7 @@ describe('DocumentParser', () => {
       await expect(parser.validateFilePath('/etc/passwd')).rejects.toThrow(
         expect.objectContaining({
           name: 'ValidationError',
-          message: expect.stringMatching(/outside BASE_DIR/),
+          message: expect.stringMatching(/outside all configured roots/),
         })
       )
     })
@@ -270,14 +270,21 @@ describe('DocumentParser', () => {
       }
     })
 
-    it('should reject construction with an empty baseDirs array', () => {
-      // An empty allow-list would silently permit zero files; the constructor
-      // must surface this as a configuration error rather than build a parser
-      // that rejects every path with a confusing "outside BASE_DIR" message.
-      expect(() => new DocumentParser({ baseDirs: [], maxFileSize })).toThrow(
+    it('accepts construction with an empty baseDirs array (degraded mode) and fails closed on validateFilePath', async () => {
+      // Empty baseDirs is legitimate only when the MCP server is in degraded
+      // mode (resolveBaseDirs returned a configError). The parser must be
+      // constructible in that case so the rest of the wiring (status, etc.)
+      // works, but every path validation must fail closed with a structured
+      // error rather than silently permitting zero files OR silently
+      // permitting every file. See Finding #4 in the post-launch review.
+      const parser = new DocumentParser({ baseDirs: [], maxFileSize })
+      const probe = join(rootA, 'anything.txt')
+      await writeFile(probe, 'x')
+
+      await expect(parser.validateFilePath(probe)).rejects.toThrow(
         expect.objectContaining({
           name: 'ValidationError',
-          message: expect.stringMatching(/at least one base directory/),
+          message: expect.stringMatching(/No configured base directory/),
         })
       )
     })

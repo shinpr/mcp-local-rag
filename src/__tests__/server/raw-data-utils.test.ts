@@ -1,8 +1,8 @@
 // Raw Data Utilities Test
 // Test Type: Unit Test
 
-import { mkdir, readFile, rm } from 'node:fs/promises'
-import { join, sep } from 'node:path'
+import { mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises'
+import { join, resolve, sep } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 import {
@@ -12,7 +12,8 @@ import {
   formatToExtension,
   generateRawDataPath,
   getRawDataDir,
-  isRawDataPath,
+  isPathInRawDataDir,
+  looksLikeRawDataPath,
   normalizeSource,
   saveRawData,
 } from '../../utils/raw-data-utils.js'
@@ -232,15 +233,85 @@ describe('Raw Data Utilities', () => {
   // --------------------------------------------
   // Path Detection
   // --------------------------------------------
-  describe('Path Detection', () => {
-    it('isRawDataPath returns true for raw-data paths', () => {
-      expect(isRawDataPath('/path/to/lancedb/raw-data/abc123.html')).toBe(true)
-      expect(isRawDataPath('./lancedb/raw-data/xyz.txt')).toBe(true)
+  describe('Path Detection (display heuristic)', () => {
+    it('looksLikeRawDataPath returns true for raw-data paths', () => {
+      expect(looksLikeRawDataPath('/path/to/lancedb/raw-data/abc123.html')).toBe(true)
+      expect(looksLikeRawDataPath('./lancedb/raw-data/xyz.txt')).toBe(true)
     })
 
-    it('isRawDataPath returns false for non-raw-data paths', () => {
-      expect(isRawDataPath('/path/to/documents/file.pdf')).toBe(false)
-      expect(isRawDataPath('/home/user/raw-data-backup/file.txt')).toBe(false)
+    it('looksLikeRawDataPath returns false for non-raw-data paths', () => {
+      expect(looksLikeRawDataPath('/path/to/documents/file.pdf')).toBe(false)
+      expect(looksLikeRawDataPath('/home/user/raw-data-backup/file.txt')).toBe(false)
+    })
+  })
+
+  // --------------------------------------------
+  // Boundary Containment (security)
+  // --------------------------------------------
+  describe('isPathInRawDataDir (security boundary)', () => {
+    const boundaryDbPath = resolve('./tmp/test-raw-data-db-boundary')
+    const boundaryRawDir = `${boundaryDbPath}${sep}raw-data`
+    const outsideFile = resolve('./tmp/test-raw-data-db-boundary-outside.txt')
+    const symlinkEscape = `${boundaryRawDir}${sep}escape.md`
+    const realFile = `${boundaryRawDir}${sep}real.md`
+    const nestedFile = `${boundaryRawDir}${sep}sub${sep}deep${sep}file.md`
+
+    beforeAll(async () => {
+      await mkdir(`${boundaryRawDir}${sep}sub${sep}deep`, { recursive: true })
+      await writeFile(realFile, 'real')
+      await writeFile(nestedFile, 'nested')
+      await writeFile(outsideFile, 'secret')
+      await symlink(outsideFile, symlinkEscape)
+    })
+
+    afterAll(async () => {
+      await rm(boundaryDbPath, { recursive: true, force: true })
+      await rm(outsideFile, { force: true })
+    })
+
+    it('accepts a real raw-data file inside the configured dbPath', async () => {
+      await expect(isPathInRawDataDir(realFile, boundaryDbPath)).resolves.toBe(true)
+    })
+
+    it('rejects a traversal payload that escapes the raw-data dir', async () => {
+      const evil = `${boundaryDbPath}/raw-data/../../../etc/passwd`
+      await expect(isPathInRawDataDir(evil, boundaryDbPath)).resolves.toBe(false)
+    })
+
+    it('rejects a path matching the directory name but a different dbPath', async () => {
+      await expect(isPathInRawDataDir('/other/db/raw-data/abc.md', boundaryDbPath)).resolves.toBe(
+        false
+      )
+    })
+
+    it('rejects sibling-prefix paths', async () => {
+      const sibling = `${boundaryDbPath}/raw-data-backup/foo.md`
+      await expect(isPathInRawDataDir(sibling, boundaryDbPath)).resolves.toBe(false)
+    })
+
+    it('accepts the raw-data directory itself', async () => {
+      await expect(isPathInRawDataDir(getRawDataDir(boundaryDbPath), boundaryDbPath)).resolves.toBe(
+        true
+      )
+    })
+
+    it('accepts nested children of the raw-data directory', async () => {
+      await expect(isPathInRawDataDir(nestedFile, boundaryDbPath)).resolves.toBe(true)
+    })
+
+    it('rejects a symlink under raw-data that resolves outside the directory', async () => {
+      // Lexical containment passes (the symlink path string is under raw-data),
+      // so without realpath this would be a false positive. realpath collapses
+      // the symlink to the outside target which is no longer contained.
+      await expect(isPathInRawDataDir(symlinkEscape, boundaryDbPath)).resolves.toBe(false)
+    })
+
+    it('treats matching paths case-insensitively on win32', async () => {
+      // Skip on POSIX where the filesystem is case-sensitive — the lexical
+      // comparison stays strict there, matching FS semantics.
+      if (process.platform !== 'win32') return
+      const mixed = realFile.toUpperCase()
+      await expect(isPathInRawDataDir(mixed, boundaryDbPath)).resolves.toBe(true)
     })
   })
 

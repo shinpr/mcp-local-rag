@@ -4,7 +4,7 @@ import { resolve } from 'node:path'
 import {
   extractSourceFromPath,
   generateRawDataPath,
-  isRawDataPath,
+  looksLikeRawDataPath,
 } from '../utils/raw-data-utils.js'
 import { createVectorStore } from './common.js'
 import type { GlobalOptions } from './options.js'
@@ -225,7 +225,7 @@ export async function runReadNeighbors(
     const rows = await vectorStore.getChunksByRange(targetPath, minIdx, maxIdx)
 
     // Post-fetch marking: isTarget per item; source attached for raw-data rows.
-    const isRaw = isRawDataPath(targetPath)
+    const isRaw = looksLikeRawDataPath(targetPath)
     const sourceForAll = isRaw ? extractSourceFromPath(targetPath) : null
     const items = rows.map((row) => {
       const item: {

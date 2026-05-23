@@ -64,7 +64,7 @@ export type ParserConfig =
     }
   | {
       /** Security: one or more allowed base directories (multi-root shape). */
-      baseDirs: string[]
+      baseDirs: readonly string[]
       baseDir?: undefined
       /** Maximum file size (100MB). */
       maxFileSize: number
@@ -128,12 +128,14 @@ export class DocumentParser {
     // The type system already rejects supplying both fields simultaneously,
     // but defensively pick `baseDirs` first so a future relaxation does not
     // accidentally fall back to the legacy single-root field.
+    //
+    // Empty `baseDirs` is accepted here so the parser can be constructed in
+    // the MCP server's degraded mode (configError present); `validateFilePath`
+    // fails closed in that case so no file is accepted while the empty root
+    // list stands. This is the only legitimate way to reach empty
+    // `rawBaseDirs`; production wiring always supplies a non-empty list when
+    // `configError` is absent.
     if (config.baseDirs !== undefined) {
-      if (config.baseDirs.length === 0) {
-        throw new ValidationError(
-          'DocumentParser requires at least one base directory (baseDirs was empty).'
-        )
-      }
       this.rawBaseDirs = config.baseDirs
     } else {
       this.rawBaseDirs = [config.baseDir]
@@ -157,10 +159,23 @@ export class DocumentParser {
    * @throws ValidationError - When path is not absolute or outside all allowed roots
    */
   async validateFilePath(filePath: string): Promise<void> {
+    // Fail-closed in degraded mode: when the parser was constructed with an
+    // empty allow-list (only legitimate when the MCP server is in degraded
+    // mode with a configError set), reject every path with a structured
+    // error rather than performing the realpath check against an empty
+    // surviving-roots set. Server-level `assertConfigOk` should have fired
+    // first; this is a defense-in-depth fallback for code paths that
+    // bypass that gate.
+    if (this.rawBaseDirs.length === 0) {
+      throw new ValidationError(
+        'No configured base directory: file access is disabled. Resolve the BASE_DIR / BASE_DIRS configuration error reported by the `status` tool before retrying.'
+      )
+    }
+
     // Check if path is absolute (fast-fail without syscall)
     if (!isAbsolute(filePath)) {
       throw new ValidationError(
-        `File path must be absolute path (received: ${filePath}). Please provide an absolute path within BASE_DIR.`
+        `File path must be absolute path (received: ${filePath}). Please provide an absolute path within a configured base directory (BASE_DIR/BASE_DIRS/--base-dir).`
       )
     }
 
@@ -210,7 +225,7 @@ export class DocumentParser {
           ? this.resolvedBaseDirs[0]
           : this.resolvedBaseDirs.join(', ')
       throw new ValidationError(
-        `File path must be within BASE_DIR (${rootsDisplay}). Received path outside BASE_DIR: ${filePath}`
+        `File path must be within a configured base directory (BASE_DIR/BASE_DIRS/--base-dir). Allowed roots: ${rootsDisplay}. Received path outside all configured roots: ${filePath}`
       )
     }
   }

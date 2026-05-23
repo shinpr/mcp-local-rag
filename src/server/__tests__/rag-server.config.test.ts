@@ -78,7 +78,11 @@ describe('RAGServerConfig shape compatibility (P3-T1)', () => {
     expect((server as any).configWarnings).toEqual(warnings)
   })
 
-  it('is constructible with configError in degraded mode (status still callable)', async () => {
+  it('is constructible with configError in degraded mode and exposes empty baseDirs', () => {
+    // Post-Finding-#4: server-main.ts no longer falls back to `[cwd()]` on
+    // configError. The server stays constructible with `baseDirs: []` so
+    // `status` remains callable, and downstream guards (`assertConfigOk`,
+    // parser fail-close) keep every root-dependent code path inert.
     const configError = new BaseDirsConfigError(
       'BASE_DIRS must be a JSON array of non-empty path strings.'
     )
@@ -86,15 +90,52 @@ describe('RAGServerConfig shape compatibility (P3-T1)', () => {
       dbPath: testDbPath,
       modelName: 'Xenova/all-MiniLM-L6-v2',
       cacheDir: './tmp/models',
-      // In the degraded-mode path, baseDirs falls back to [cwd()] so the
-      // parser can still be constructed, but configError flags the server
-      // as degraded so root-dependent tools surface it (handled in P3-T3).
-      baseDir: process.cwd(),
+      baseDirs: [],
       maxFileSize: 100 * 1024 * 1024,
       configError,
     })
     // The configError must be reachable from the instance.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     expect((server as any).configError).toBe(configError)
+    // The internal baseDirs MUST be empty (no silent cwd fallback).
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect((server as any).baseDirs).toEqual([])
+  })
+
+  it('rejects construction with an empty baseDirs array when configError is absent', () => {
+    // Without configError, empty `baseDirs` is misconfiguration: the
+    // constructor must throw rather than silently build a parser that
+    // rejects every path.
+    expect(
+      () =>
+        new RAGServer({
+          dbPath: testDbPath,
+          modelName: 'Xenova/all-MiniLM-L6-v2',
+          cacheDir: './tmp/models',
+          baseDirs: [],
+          maxFileSize: 100 * 1024 * 1024,
+        })
+    ).toThrow(/non-empty `baseDirs` array/)
+  })
+
+  it('parser constructed with empty baseDirs fails closed on validateFilePath', async () => {
+    // Defense-in-depth: even when a handler bypasses `assertConfigOk`, the
+    // parser must reject every path under degraded mode.
+    const configError = new BaseDirsConfigError(
+      'BASE_DIRS must be a JSON array of non-empty path strings.'
+    )
+    const server = new RAGServer({
+      dbPath: testDbPath,
+      modelName: 'Xenova/all-MiniLM-L6-v2',
+      cacheDir: './tmp/models',
+      baseDirs: [],
+      maxFileSize: 100 * 1024 * 1024,
+      configError,
+    })
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const parser = (server as any).parser
+    await expect(parser.validateFilePath('/tmp/anything.txt')).rejects.toThrow(
+      /No configured base directory/
+    )
   })
 })

@@ -32,7 +32,7 @@ import { mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { McpError } from '@modelcontextprotocol/sdk/types.js'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { type BaseDirsConfigError, resolveBaseDirs } from '../../utils/base-dirs.js'
+import { type BaseDirsConfigError, displayPath, resolveBaseDirs } from '../../utils/base-dirs.js'
 import { RAGServer } from '../index.js'
 
 // =============================================================================
@@ -78,9 +78,10 @@ async function buildServerFromResolver(opts: {
     baseDirs = result.config.baseDirs
     for (const w of result.warnings) warnings.push(w.message)
   } else {
-    // Degraded mode mirror of server-main.ts: fall back to cwd for construction,
-    // surface the error via configError + warnings.
-    baseDirs = [opts.cwd]
+    // Degraded mode mirror of server-main.ts (post-Finding-#4): pass an empty
+    // `baseDirs` so any handler bypassing `assertConfigOk` fails closed at the
+    // parser level rather than silently operating against `cwd`.
+    baseDirs = []
     configError = result.error
     warnings.push(result.error.message)
   }
@@ -448,6 +449,223 @@ describe('AC-003/AC-013: real resolveBaseDirs warnings surface in MCP responses'
 })
 
 // =============================================================================
+// Finding #10 (post-launch review): list_files survives a permission-denied
+// error on one root and emits a per-root warning instead of failing the
+// whole call. Mocks `node:fs/promises.readdir` so this is deterministic
+// across CI environments — the production code under test is the new BFS
+// loop in `scanBaseDir`.
+// =============================================================================
+describe('post-launch finding #10: list_files per-root error tolerance', () => {
+  const testBase = resolve('./tmp/test-list-files-per-root-err')
+  const rootA = resolve(testBase, 'rootA')
+  const rootB = resolve(testBase, 'rootB')
+  const dbPath = resolve(testBase, 'lancedb')
+  const cacheDir = resolve(testBase, 'cache')
+
+  beforeAll(() => {
+    mkdirSync(rootA, { recursive: true })
+    mkdirSync(rootB, { recursive: true })
+    mkdirSync(dbPath, { recursive: true })
+    mkdirSync(cacheDir, { recursive: true })
+    writeFileSync(resolve(rootB, 'survives.md'), 'a small markdown file under the accessible root')
+  })
+
+  afterAll(() => {
+    // Restore permissions before tearing down so rmSync can recurse.
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      require('node:fs').chmodSync(rootA, 0o755)
+    } catch {
+      // Ignore — chmod may fail if rootA was already removed.
+    }
+    rmSync(testBase, { recursive: true, force: true })
+  })
+
+  it('list_files surfaces files from accessible roots when another root is inaccessible', async () => {
+    // Make rootA unreadable using chmod so `readdir(rootA)` throws EACCES
+    // at the syscall layer (Linux/macOS only; Windows skips this test).
+    // We rely on the bounded BFS new in Finding #10 to capture the error
+    // as a per-root warning and keep scanning rootB.
+    if (process.platform === 'win32') return
+
+    const { chmodSync } = await import('node:fs')
+    chmodSync(rootA, 0o000)
+
+    const server = new RAGServer({
+      dbPath,
+      modelName: 'Xenova/all-MiniLM-L6-v2',
+      cacheDir,
+      baseDirs: [rootA, rootB],
+      maxFileSize: 100 * 1024 * 1024,
+    })
+    await server.initialize()
+    try {
+      const result = await server.handleListFiles()
+      const parsed = JSON.parse(result.content[0]?.text ?? '{}')
+      const filePaths: string[] = parsed.files.map((f: { filePath: string }) => f.filePath)
+      // rootB's file survives even though rootA failed.
+      expect(filePaths).toContain(resolve(rootB, 'survives.md'))
+      // Warning content block names the failing root via `displayPath`
+      // (HOME prefix is collapsed to `~` to avoid leaking the OS username
+      // through MCP responses; see Finding #10 sanitization).
+      const warningBlock = findBlock(
+        result.content as ContentBlock[],
+        `cannot read directory: ${displayPath(rootA)}`
+      )
+      expect(warningBlock).toBeDefined()
+      // The raw OS error message must not leak into the warning text.
+      expect(warningBlock?.text ?? '').not.toContain('permission denied')
+    } finally {
+      await server.close()
+      // Restore permissions so afterAll's rmSync can recurse.
+      chmodSync(rootA, 0o755)
+    }
+  }, 60000)
+})
+
+// =============================================================================
+// Finding #3 + Finding #4 (post-launch review): the MCP server entry point
+// must apply the sensitive-path policy to env-resolved roots and must not
+// fall back to cwd on a config error.
+//
+// These tests exercise `startServer`-equivalent wiring directly — we replicate
+// the relevant section of `server-main.ts` here so the assertion is anchored
+// to the same logic the production entry point runs.
+// =============================================================================
+describe('post-launch findings #3 + #4: server-main wiring rejects sensitive roots and never falls back to cwd', () => {
+  const testBase = resolve('./tmp/test-server-main-policy')
+  const dbPath = resolve(testBase, 'lancedb')
+  const cacheDir = resolve(testBase, 'cache')
+
+  beforeAll(() => {
+    mkdirSync(dbPath, { recursive: true })
+    mkdirSync(cacheDir, { recursive: true })
+  })
+
+  afterAll(() => {
+    rmSync(testBase, { recursive: true, force: true })
+  })
+
+  /**
+   * Mirror of the env-resolution branch in `src/server-main.ts` so the test
+   * exercises the same wiring without invoking `startServer` (which calls
+   * `process.exit` on errors and starts the MCP transport — both unsafe
+   * inside a vitest worker). The body MUST stay in sync with `server-main.ts`.
+   */
+  async function buildServerLikeMain(opts: {
+    envBaseDirs?: string | undefined
+    envBaseDir?: string | undefined
+  }): Promise<{ server: RAGServer; configError: BaseDirsConfigError | undefined }> {
+    const { checkSensitivePath } = await import('../../utils/sensitive-path.js')
+    const { BaseDirsConfigError, parseBaseDirsEnv: parseEnv } = await import(
+      '../../utils/base-dirs.js'
+    )
+
+    // Pre-check raw user-supplied paths (mirrors server-main.ts, Finding #3).
+    const rawSensitiveErrors: string[] = []
+    if (opts.envBaseDirs !== undefined && opts.envBaseDirs.length > 0) {
+      const parsed = parseEnv(opts.envBaseDirs)
+      if (parsed.ok) {
+        for (const raw of parsed.value) {
+          const sensitive = checkSensitivePath(raw, 'BASE_DIRS')
+          if (sensitive) rawSensitiveErrors.push(sensitive)
+        }
+      }
+    } else if (opts.envBaseDir !== undefined && opts.envBaseDir.trim().length > 0) {
+      const sensitive = checkSensitivePath(opts.envBaseDir, 'BASE_DIR')
+      if (sensitive) rawSensitiveErrors.push(sensitive)
+    }
+
+    const baseDirsResult = await resolveBaseDirs({
+      envBaseDirs: opts.envBaseDirs,
+      envBaseDir: opts.envBaseDir,
+      cwd: testBase,
+    })
+
+    const warnings: string[] = []
+    let baseDirs: string[]
+    let configError: BaseDirsConfigError | undefined
+
+    if (baseDirsResult.ok) {
+      const sourceFlag =
+        opts.envBaseDirs !== undefined && opts.envBaseDirs.length > 0 ? 'BASE_DIRS' : 'BASE_DIR'
+      const sensitiveErrors: string[] = [...rawSensitiveErrors]
+      for (const root of baseDirsResult.config.baseDirs) {
+        const sensitive = checkSensitivePath(root, sourceFlag)
+        if (sensitive) sensitiveErrors.push(sensitive)
+      }
+      if (sensitiveErrors.length > 0) {
+        baseDirs = []
+        configError = new BaseDirsConfigError([...new Set(sensitiveErrors)].join('; '))
+        warnings.push(configError.message)
+      } else {
+        baseDirs = baseDirsResult.config.baseDirs
+        for (const w of baseDirsResult.warnings) warnings.push(w.message)
+      }
+    } else {
+      baseDirs = []
+      configError = baseDirsResult.error
+      warnings.push(baseDirsResult.error.message)
+    }
+
+    const server = new RAGServer({
+      dbPath,
+      modelName: 'Xenova/all-MiniLM-L6-v2',
+      cacheDir,
+      baseDirs,
+      maxFileSize: 100 * 1024 * 1024,
+      configWarnings: warnings,
+      ...(configError !== undefined ? { configError } : {}),
+    })
+
+    return { server, configError }
+  }
+
+  // AC: BASE_DIRS=["/etc"] must NOT be silently accepted by server-main.
+  // The server enters degraded mode (configError set, baseDirs empty); root-
+  // dependent tools fail fast; `status` surfaces the diagnostic.
+  it('rejects BASE_DIRS=["/etc"] as a sensitive system path (degraded mode)', async () => {
+    const { server, configError } = await buildServerLikeMain({
+      envBaseDirs: JSON.stringify(['/etc']),
+    })
+
+    expect(configError).toBeDefined()
+    expect(configError?.message).toMatch(/sensitive system path/)
+    expect(configError?.message).toContain('BASE_DIRS')
+
+    // baseDirs MUST be empty: no silent cwd fallback.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect((server as any).baseDirs).toEqual([])
+
+    // Root-dependent tool: must fail fast.
+    await expect(server.handleListFiles()).rejects.toBeInstanceOf(McpError)
+
+    // status: must remain callable and expose the diagnostic.
+    await server.initialize()
+    try {
+      const status = await server.handleStatus()
+      const diagnostic = findBlock(status.content as ContentBlock[], 'Configuration error:')
+      expect(diagnostic).toBeDefined()
+      expect(diagnostic?.text).toMatch(/sensitive system path/)
+    } finally {
+      await server.close()
+    }
+  }, 60000)
+
+  // AC: BASE_DIR=/usr (single-root sensitive path) is likewise rejected and
+  // attributed to BASE_DIR (not BASE_DIRS).
+  it('rejects BASE_DIR=/usr as a sensitive system path attributed to BASE_DIR', async () => {
+    const { server, configError } = await buildServerLikeMain({ envBaseDir: '/usr' })
+
+    expect(configError).toBeDefined()
+    expect(configError?.message).toMatch(/sensitive system path/)
+    expect(configError?.message).toContain('BASE_DIR')
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect((server as any).baseDirs).toEqual([])
+  })
+})
+
+// =============================================================================
 // AC-010: invalid BASE_DIRS end-to-end via real resolveBaseDirs.
 // `status` callable; root-dependent tools throw structured McpError.
 // =============================================================================
@@ -502,12 +720,16 @@ describe('AC-010: invalid BASE_DIRS end-to-end (real resolveBaseDirs)', () => {
     }
   }, 60000)
 
-  // AC interpretation: [AC-010] All root-dependent tools fail fast with the resolver's structured error end-to-end —
-  // not just list_files. Verifies the assertConfigOk() gate fires before any DB/embedder/parser access for the full
-  // set of root-dependent handlers when configError comes from the real resolver path.
-  // Validation: ingest_file, ingest_data, delete_file, read_chunk_neighbors, and query_documents all throw McpError
-  // whose message includes "BASE_DIRS".
-  it('every root-dependent tool fails fast with the resolver error message', async () => {
+  // AC interpretation: [AC-010] Root-dependent tools — the ones that read or
+  // write through `baseDirs` — fail fast with the resolver's structured error
+  // end-to-end. After the post-launch scope review, the fail-fast set is
+  // narrower than every tool: `query_documents` (DB only) and `ingest_data`
+  // (DB + dbPath/raw-data only) operate without reading any configured root,
+  // so they MUST remain callable in degraded mode. The `source`-mode branches
+  // of `delete_file` / `read_chunk_neighbors` likewise route around the
+  // configured roots and stay callable. `filePath` mode for either dual-mode
+  // tool, plus `ingest_file` and `list_files`, fail fast.
+  it('root-dependent tools (filePath/list/ingest_file) fail fast with the resolver error message', async () => {
     const { server } = await buildServerFromResolver({
       dbPath,
       cacheDir,
@@ -517,24 +739,19 @@ describe('AC-010: invalid BASE_DIRS end-to-end (real resolveBaseDirs)', () => {
 
     try {
       // No need to initialize — the assertConfigOk() guard fires before any
-      // DB access, so we can skip the heavy initialize() path for this case.
+      // DB access for the fail-fast set, so we can skip the heavy
+      // initialize() path for this case.
 
       await expect(server.handleIngestFile({ filePath: '/tmp/x.txt' })).rejects.toBeInstanceOf(
         McpError
       )
-      await expect(
-        server.handleIngestData({
-          content: 'x',
-          metadata: { source: 'clipboard://x', format: 'text' },
-        })
-      ).rejects.toBeInstanceOf(McpError)
       await expect(server.handleDeleteFile({ filePath: '/tmp/x.txt' })).rejects.toBeInstanceOf(
         McpError
       )
       await expect(
         server.handleReadChunkNeighbors({ filePath: '/tmp/x.txt', chunkIndex: 0 })
       ).rejects.toBeInstanceOf(McpError)
-      await expect(server.handleQueryDocuments({ query: 'x' })).rejects.toBeInstanceOf(McpError)
+      await expect(server.handleListFiles()).rejects.toBeInstanceOf(McpError)
     } finally {
       // Do not close — server was never initialized.
     }

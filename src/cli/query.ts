@@ -1,6 +1,6 @@
 // CLI query subcommand — search ingested documents
 
-import { extractSourceFromPath, isRawDataPath } from '../utils/raw-data-utils.js'
+import { extractSourceFromPath, looksLikeRawDataPath } from '../utils/raw-data-utils.js'
 import { createEmbedder, createVectorStore } from './common.js'
 import type { GlobalOptions } from './options.js'
 import { resolveGlobalConfig } from './options.js'
@@ -186,8 +186,7 @@ export async function runQuery(args: string[], globalOptions: GlobalOptions = {}
         fileTitle: result.fileTitle ?? null,
       }
 
-      // Restore source for raw-data files (ingested via ingest_data)
-      if (isRawDataPath(result.filePath)) {
+      if (looksLikeRawDataPath(result.filePath)) {
         const source = extractSourceFromPath(result.filePath)
         if (source) {
           output.source = source

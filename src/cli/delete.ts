@@ -5,7 +5,7 @@ import { resolve } from 'node:path'
 import {
   generateMetaJsonPath,
   generateRawDataPath,
-  isRawDataPath,
+  isPathInRawDataDirLexical,
 } from '../utils/raw-data-utils.js'
 import { createVectorStore } from './common.js'
 import type { GlobalOptions } from './options.js'
@@ -148,8 +148,8 @@ export async function runDelete(args: string[], globalOptions: GlobalOptions = {
     // Delete chunks from VectorStore
     await vectorStore.deleteChunks(targetPath)
 
-    // Clean up physical raw-data files if applicable
-    if (isRawDataPath(targetPath)) {
+    // Clean up physical raw-data files if applicable.
+    if (isPathInRawDataDirLexical(targetPath, globalConfig.dbPath)) {
       try {
         await unlink(targetPath)
       } catch (error: unknown) {

@@ -1,8 +1,8 @@
 // Raw Data Utilities for ingest_data tool
 // Handles: base64url encoding, source normalization, file saving, source extraction
 
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
-import { dirname, join, resolve } from 'node:path'
+import { mkdir, readFile, realpath, writeFile } from 'node:fs/promises'
+import { dirname, join, resolve, sep } from 'node:path'
 
 // ============================================
 // Base64URL Encoding/Decoding
@@ -159,15 +159,47 @@ export async function saveRawData(
 // ============================================
 
 /**
- * Check if file path is in raw-data directory
- *
- * @param filePath - File path to check
- * @returns True if path is in raw-data directory
+ * Display-only heuristic. NOT a security boundary — use
+ * {@link isPathInRawDataDir} when the result gates filesystem access.
  */
-export function isRawDataPath(filePath: string): boolean {
-  // Normalize Windows backslashes for cross-platform path detection
+export function looksLikeRawDataPath(filePath: string): boolean {
   const normalized = filePath.replace(/\\/g, '/')
   return normalized.includes('/raw-data/')
+}
+
+/**
+ * Case-normalize a path for prefix containment. Windows filesystems are
+ * case-insensitive by default, so the boundary check must mirror that.
+ */
+function caseNormalize(p: string): string {
+  return process.platform === 'win32' ? p.toLowerCase() : p
+}
+
+/**
+ * Lexical containment in `<dbPath>/raw-data/`. Safe for cleanup gates
+ * (`unlink` does not follow symlinks). Use {@link isPathInRawDataDir}
+ * when the result controls `readFile`.
+ */
+export function isPathInRawDataDirLexical(filePath: string, dbPath: string): boolean {
+  const target = caseNormalize(resolve(filePath))
+  const rawDir = caseNormalize(resolve(getRawDataDir(dbPath)))
+  return target === rawDir || target.startsWith(rawDir + sep)
+}
+
+/**
+ * Lexical containment plus `realpath` so a symlink under raw-data
+ * pointing outside cannot route a read through the raw-data fast-path.
+ * Fail-closed on `realpath` errors.
+ */
+export async function isPathInRawDataDir(filePath: string, dbPath: string): Promise<boolean> {
+  if (!isPathInRawDataDirLexical(filePath, dbPath)) return false
+  try {
+    const realTarget = caseNormalize(await realpath(resolve(filePath)))
+    const realRaw = caseNormalize(await realpath(resolve(getRawDataDir(dbPath))))
+    return realTarget === realRaw || realTarget.startsWith(realRaw + sep)
+  } catch {
+    return false
+  }
 }
 
 /**

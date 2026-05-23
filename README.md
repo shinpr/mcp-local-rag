@@ -240,11 +240,11 @@ npx mcp-local-rag --db-path ./my-db query "auth" --base-dir ./docs
 The `--base-dir` flag is repeatable on `ingest` and `list`; pass it once per root:
 
 ```bash
-npx mcp-local-rag ingest --base-dir ./docs --base-dir ./specs ./readme.md
+npx mcp-local-rag ingest --base-dir ./docs --base-dir ./specs ./docs/readme.md
 npx mcp-local-rag list --base-dir ./docs --base-dir ./specs
 ```
 
-When at least one `--base-dir` is supplied, CLI roots replace any env-var roots (no merge).
+The positional path to `ingest` must sit inside one of the configured roots. When at least one `--base-dir` is supplied, CLI roots replace any env-var roots (no merge).
 
 **Environment variables** — set in your shell:
 
@@ -467,7 +467,7 @@ claude mcp add local-rag --scope user \
 
 ```bash
 # Repeatable --base-dir
-npx mcp-local-rag ingest --base-dir /Users/me/work --base-dir /Users/me/specs ./readme.md
+npx mcp-local-rag ingest --base-dir /Users/me/work --base-dir /Users/me/specs /Users/me/work/readme.md
 npx mcp-local-rag list --base-dir /Users/me/work --base-dir /Users/me/specs
 
 # Or via BASE_DIRS env

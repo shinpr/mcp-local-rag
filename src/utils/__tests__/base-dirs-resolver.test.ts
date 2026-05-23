@@ -425,3 +425,63 @@ describe('resolveBaseDirs — parity with current single-root BASE_DIR behavior'
     }
   })
 })
+
+// ============================================
+// User-visible message hygiene ($HOME redaction)
+// ============================================
+
+describe('resolveBaseDirs — $HOME redaction in user-visible messages', () => {
+  // These tests pin the post-Finding-#8 contract: errors and warnings flow
+  // out through MCP responses to clients, so they must not embed the
+  // operating user's literal $HOME path. We assert against the literal
+  // current $HOME so a regression that leaks "/Users/<name>/..." fails here.
+  let savedHome: string | undefined
+
+  beforeAll(() => {
+    savedHome = process.env['HOME']
+  })
+
+  afterAll(() => {
+    if (savedHome === undefined) {
+      delete process.env['HOME']
+    } else {
+      process.env['HOME'] = savedHome
+    }
+  })
+
+  it('omits $HOME from a missing-directory error message', async () => {
+    // The missing-directory error message is built BEFORE realpath
+    // resolution succeeds, so the pre-realpath form is what flows out.
+    // Pin HOME to the raw tmpRoot (matches the value `normalizeRealpath`
+    // passes to the error message) and assert the substitution kicks in.
+    process.env['HOME'] = tmpRoot
+    const missing = join(tmpRoot, 'does-not-exist-leak-check')
+    const result = await resolveBaseDirs({ cliRoots: [missing], cwd: tmpRoot })
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      // The substituted form uses `~`; the literal HOME must not appear.
+      expect(result.error.message).toContain('~')
+      expect(result.error.message).not.toContain(tmpRoot)
+    }
+  })
+
+  it('omits $HOME from the nested-root-pruned warning message', async () => {
+    // The pruning warning is emitted AFTER realpath normalization, so the
+    // displayPath substitution operates against the realpath form. Pin HOME
+    // to the realpath of tmpRoot (on macOS, `/var/folders/...` realpaths to
+    // `/private/var/folders/...`) so the substitution fires deterministically.
+    const realTmpRoot = realpathSync(tmpRoot)
+    process.env['HOME'] = realTmpRoot
+    const result = await resolveBaseDirs({
+      cliRoots: [nestedParent, nestedChild],
+      cwd: tmpRoot,
+    })
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      const pruned = result.warnings.find((w) => w.kind === 'nested-root-pruned')
+      expect(pruned).toBeDefined()
+      expect(pruned?.message).toContain('~')
+      expect(pruned?.message).not.toContain(realTmpRoot)
+    }
+  })
+})

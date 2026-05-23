@@ -1,7 +1,8 @@
 // MCP Server entry point
 import { resolveDevice } from './cli/options.js'
 import { RAGServer } from './server/index.js'
-import { type BaseDirsConfigError, resolveBaseDirs } from './utils/base-dirs.js'
+import { BaseDirsConfigError, parseBaseDirsEnv, resolveBaseDirs } from './utils/base-dirs.js'
+import { checkSensitivePath } from './utils/sensitive-path.js'
 import type { GroupingMode } from './vectordb/index.js'
 
 // ============================================
@@ -106,6 +107,29 @@ export async function startServer(): Promise<void> {
     // dependent tools will surface the error; `status` remains callable).
     // Server startup does not consume CLI flags (env-only for MCP client
     // compatibility), so `cliRoots` is intentionally omitted here.
+    //
+    // Sensitive-path pre-check on the RAW user-supplied paths (Finding #3):
+    // run the policy against the values supplied via env before the resolver
+    // realpath-normalizes them. On platforms where `/etc` realpaths to
+    // `/private/etc` (macOS), checking only the post-realpath value would
+    // miss the sensitive prefix. Errors from this pre-check produce a
+    // configError mirroring the post-realpath path below.
+    const rawSensitiveErrors: string[] = []
+    if (process.env['BASE_DIRS'] !== undefined && process.env['BASE_DIRS'].length > 0) {
+      const parsed = parseBaseDirsEnv(process.env['BASE_DIRS'])
+      if (parsed.ok) {
+        for (const raw of parsed.value) {
+          const sensitive = checkSensitivePath(raw, 'BASE_DIRS')
+          if (sensitive) rawSensitiveErrors.push(sensitive)
+        }
+      }
+      // Malformed BASE_DIRS surfaces via resolveBaseDirs below; nothing
+      // additional to do here.
+    } else if (process.env['BASE_DIR'] !== undefined && process.env['BASE_DIR'].trim().length > 0) {
+      const sensitive = checkSensitivePath(process.env['BASE_DIR'], 'BASE_DIR')
+      if (sensitive) rawSensitiveErrors.push(sensitive)
+    }
+
     const baseDirsResult = await resolveBaseDirs({
       envBaseDirs: process.env['BASE_DIRS'],
       envBaseDir: process.env['BASE_DIR'],
@@ -115,16 +139,42 @@ export async function startServer(): Promise<void> {
     let baseDirsForServer: string[]
     let configError: BaseDirsConfigError | undefined
     if (baseDirsResult.ok) {
-      baseDirsForServer = baseDirsResult.config.baseDirs
-      for (const warning of baseDirsResult.warnings) {
-        configWarnings.push(warning.message)
+      // Apply the sensitive-path policy to every env-resolved root (post-
+      // realpath) as well as the pre-check above. A path that traversed a
+      // symlink into a sensitive directory only shows up in the realpath
+      // form. Attribute rejections to the env var that supplied the value.
+      const sourceFlag =
+        process.env['BASE_DIRS'] !== undefined && process.env['BASE_DIRS'].length > 0
+          ? 'BASE_DIRS'
+          : 'BASE_DIR'
+      const sensitiveErrors: string[] = [...rawSensitiveErrors]
+      for (const root of baseDirsResult.config.baseDirs) {
+        const sensitive = checkSensitivePath(root, sourceFlag)
+        if (sensitive) sensitiveErrors.push(sensitive)
+      }
+      if (sensitiveErrors.length > 0) {
+        // Treat the rejection as a config error: the server stays callable
+        // (so `status` works) but every root-dependent tool fails fast. No
+        // silent cwd fallback — see Finding #4.
+        baseDirsForServer = []
+        // Dedup identical messages so a path that matches the raw-form check
+        // AND the post-realpath check reports once.
+        configError = new BaseDirsConfigError([...new Set(sensitiveErrors)].join('; '))
+        configWarnings.push(configError.message)
+      } else {
+        baseDirsForServer = baseDirsResult.config.baseDirs
+        for (const warning of baseDirsResult.warnings) {
+          configWarnings.push(warning.message)
+        }
       }
     } else {
-      // Degraded mode: fall back to cwd so the parser / server can still be
-      // constructed and `status` works, but stash the error so P3-T3 can
-      // surface it from root-dependent tool responses. AC-010: no silent
-      // fallback to BASE_DIR — the resolver already returned an error.
-      baseDirsForServer = [process.cwd()]
+      // Degraded mode: pass an empty `baseDirs` so any code path that
+      // forgets the `assertConfigOk` guard fails closed (rather than
+      // operating against `cwd`). The `configError` is stashed on the
+      // server so root-dependent tools surface it; `status` remains callable
+      // and exposes the diagnostic content block (AC-010). Removed the
+      // pre-existing `[process.cwd()]` fallback per Finding #4.
+      baseDirsForServer = []
       configError = baseDirsResult.error
       configWarnings.push(baseDirsResult.error.message)
     }

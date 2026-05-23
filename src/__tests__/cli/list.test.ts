@@ -91,18 +91,20 @@ function captureOutput(
 function mockDirent(
   name: string,
   parentPath: string,
-  type: 'file' | 'directory' = 'file'
+  type: 'file' | 'directory' | 'symlink' = 'file'
 ): {
   name: string
   parentPath: string
   isFile: () => boolean
   isDirectory: () => boolean
+  isSymbolicLink: () => boolean
 } {
   return {
     name,
     parentPath,
     isFile: () => type === 'file',
     isDirectory: () => type === 'directory',
+    isSymbolicLink: () => type === 'symlink',
   }
 }
 
@@ -195,10 +197,13 @@ describe('CLI list', () => {
     // Assert: no error
     expect(error).toBeUndefined()
 
-    // Assert: JSON output to stdout
+    // Assert: JSON output to stdout (multi-root-aware shape, Finding #5)
     expect(stdout.length).toBeGreaterThan(0)
     const result = JSON.parse(stdout.join(''))
     expect(result).toHaveProperty('baseDir')
+    expect(result).toHaveProperty('baseDirs')
+    expect(Array.isArray(result.baseDirs)).toBe(true)
+    expect(result.baseDir).toBe(result.baseDirs[0])
     expect(result).toHaveProperty('files')
     expect(result).toHaveProperty('sources')
 
@@ -207,11 +212,11 @@ describe('CLI list', () => {
     const docEntry = result.files.find((f: Record<string, unknown>) =>
       String(f.filePath).endsWith('doc.md')
     )
-    expect(docEntry).toMatchObject({ ingested: true, chunkCount: 3 })
+    expect(docEntry).toMatchObject({ ingested: true, chunkCount: 3, baseDir: baseDir })
     const txtEntry = result.files.find((f: Record<string, unknown>) =>
       String(f.filePath).endsWith('notes.txt')
     )
-    expect(txtEntry).toMatchObject({ ingested: false })
+    expect(txtEntry).toMatchObject({ ingested: false, baseDir: baseDir })
   })
 
   // --------------------------------------------
@@ -324,14 +329,23 @@ describe('CLI list', () => {
   // Excludes dbPath and cacheDir from scan
   // --------------------------------------------
   it('should exclude dbPath and cacheDir paths from file scan', async () => {
-    // Arrange
+    // Arrange — scanRoot now uses bounded BFS (Finding #10), so the
+    // exclude check must see a real subdirectory under the root. The
+    // `lancedb` directory and its `chunks.md` file are returned by
+    // `readdir(lancedb)`, where the join() composes a path under
+    // `resolvedDbPath` that the excludePaths prefix check rejects.
     const baseDir = process.cwd()
     const resolvedDbPath = resolve(baseDir, 'lancedb')
 
-    mocks.readdir.mockResolvedValue([
-      mockDirent('doc.md', baseDir),
-      mockDirent('chunks.md', resolvedDbPath),
-    ])
+    mocks.readdir.mockImplementation(async (path: string) => {
+      if (path === baseDir) {
+        return [mockDirent('doc.md', baseDir), mockDirent('lancedb', baseDir, 'directory')]
+      }
+      if (path === resolvedDbPath) {
+        return [mockDirent('chunks.md', resolvedDbPath)]
+      }
+      return []
+    })
     mocks.listFiles.mockResolvedValue([])
 
     // Act
@@ -396,10 +410,20 @@ describe('CLI list', () => {
     // Assert
     expect(error).toBeUndefined()
     const result = JSON.parse(stdout.join(''))
+    expect(result.baseDirs).toEqual([rootA, rootB])
     const filePaths = result.files.map((f: Record<string, unknown>) => f.filePath)
     expect(filePaths).toContain(resolve(rootA, 'a.md'))
     expect(filePaths).toContain(resolve(rootB, 'b.md'))
     expect(filePaths).toHaveLength(2)
+    // Each file is annotated with its producing root (Finding #5).
+    const aEntry = result.files.find((f: Record<string, unknown>) =>
+      String(f.filePath).endsWith('a.md')
+    )
+    const bEntry = result.files.find((f: Record<string, unknown>) =>
+      String(f.filePath).endsWith('b.md')
+    )
+    expect(aEntry.baseDir).toBe(rootA)
+    expect(bEntry.baseDir).toBe(rootB)
   })
 
   it('should dedup file entries when roots surface the same absolute path', async () => {
@@ -438,9 +462,16 @@ describe('CLI list', () => {
       config: { baseDirs: [rootA, rootB] },
       warnings: [],
     })
+    // Post-Finding-#10: scanRoot now uses bounded BFS. The `lancedb`
+    // directory under rootA is returned as a child entry and walked into
+    // separately so the excludePaths prefix check actually sees a path
+    // under `dbPath`.
     mocks.readdir.mockImplementation(async (path: string) => {
       if (path === rootA) {
-        return [mockDirent('keep.md', rootA), mockDirent('chunks.md', dbPath)]
+        return [mockDirent('keep.md', rootA), mockDirent('lancedb', rootA, 'directory')]
+      }
+      if (path === dbPath) {
+        return [mockDirent('chunks.md', dbPath)]
       }
       if (path === rootB) {
         return [mockDirent('also-keep.md', rootB)]
@@ -465,6 +496,85 @@ describe('CLI list', () => {
     expect(filePaths).toContain(resolve(rootA, 'keep.md'))
     expect(filePaths).toContain(resolve(rootB, 'also-keep.md'))
     expect(filePaths.some((p: string) => p.includes('chunks.md'))).toBe(false)
+  })
+
+  it('should keep listing other roots when one root readdir errors (Finding #10)', async () => {
+    // Per-root error tolerance: an EACCES under rootA must not hide files
+    // under rootB. The CLI prints a per-root warning to stderr and continues.
+    mocks.initialize.mockResolvedValue(undefined)
+    const rootA = resolve('/tmp/list/inaccessible')
+    const rootB = resolve('/tmp/list/accessible')
+    mocks.resolveCliBaseDirs.mockResolvedValue({
+      config: { baseDirs: [rootA, rootB] },
+      warnings: [],
+    })
+    mocks.readdir.mockImplementation(async (path: string) => {
+      if (path === rootA) {
+        const err = new Error('EACCES: permission denied, scandir') as NodeJS.ErrnoException
+        err.code = 'EACCES'
+        throw err
+      }
+      if (path === rootB) return [mockDirent('survives.md', rootB)]
+      return []
+    })
+    mocks.listFiles.mockResolvedValue([])
+
+    const { stdout, stderr, error } = await captureOutput(() =>
+      runList(['--base-dir', rootA, '--base-dir', rootB])
+    )
+
+    expect(error).toBeUndefined()
+    // rootB's file is still listed.
+    const result = JSON.parse(stdout.join(''))
+    const filePaths = result.files.map((f: Record<string, unknown>) => f.filePath)
+    expect(filePaths).toContain(resolve(rootB, 'survives.md'))
+    // Per-root warning was surfaced on stderr.
+    const joined = stderr.join('\n')
+    expect(joined).toContain(`Warning [${rootA}]: cannot read directory`)
+    expect(joined).toContain('EACCES')
+    // Do not leak the raw OS error message into the warning content.
+    expect(joined).not.toContain('permission denied, scandir')
+  })
+
+  it('should stop scanning a root at MAX_DEPTH=10 and emit a depth warning (Finding #10)', async () => {
+    // Build a chain of 11 nested directories. The BFS must skip depth 10
+    // and produce a warning, but the file at depth 9 must still appear.
+    mocks.initialize.mockResolvedValue(undefined)
+    const root = resolve('/tmp/list/deep')
+    mocks.resolveCliBaseDirs.mockResolvedValue({
+      config: { baseDirs: [root] },
+      warnings: [],
+    })
+
+    const dirMap: Record<string, ReturnType<typeof mockDirent>[]> = {
+      [root]: [mockDirent('d1', root, 'directory')],
+    }
+    let current = root
+    for (let i = 1; i <= 10; i++) {
+      const next = resolve(`${current}/d${i}`)
+      // Depth 9 contains a markdown file (within MAX_DEPTH); depths above
+      // continue chaining so depth 10 entry remains a directory that must
+      // be SKIPPED with a depth warning.
+      if (i === 9) {
+        dirMap[next] = [mockDirent('boundary.md', next), mockDirent(`d${i + 1}`, next, 'directory')]
+      } else if (i < 10) {
+        dirMap[next] = [mockDirent(`d${i + 1}`, next, 'directory')]
+      }
+      current = next
+    }
+    mocks.readdir.mockImplementation(async (path: string) => dirMap[path] ?? [])
+    mocks.listFiles.mockResolvedValue([])
+
+    const { stdout, stderr, error } = await captureOutput(() => runList(['--base-dir', root]))
+
+    expect(error).toBeUndefined()
+    const result = JSON.parse(stdout.join(''))
+    const filePaths = result.files.map((f: Record<string, unknown>) => f.filePath)
+    // The depth-9 file is present (within MAX_DEPTH=10).
+    expect(filePaths.some((p: string) => p.endsWith('boundary.md'))).toBe(true)
+    // The depth warning reached stderr.
+    const joined = stderr.join('\n')
+    expect(joined).toContain('maximum depth')
   })
 
   it('should surface nested-root pruning warnings from the resolver to stderr', async () => {

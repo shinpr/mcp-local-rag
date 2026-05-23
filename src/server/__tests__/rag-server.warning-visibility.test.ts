@@ -39,10 +39,15 @@ function findWarningBlock(
 
 // =============================================================================
 // Construction-only tests (no initialize/DB). Cover the early-error path that
-// fires BEFORE any I/O — root-dependent tools must reject when configError is
-// present, regardless of whether the server has been initialized.
+// fires BEFORE any I/O — root-dependent tools (the ones that touch
+// `baseDirs` directly, plus the user-supplied-filePath branches of dual-mode
+// tools) must reject when configError is present. Tools that do NOT touch
+// `baseDirs` (`query_documents`, `ingest_data`, and the source-mode branches
+// of `delete_file` / `read_chunk_neighbors`) MUST remain callable so MCP
+// users can still query, capture raw data, and operate by `source` while
+// they fix the config error visible from `status`.
 // =============================================================================
-describe('P3-T3: root-dependent tools fail fast on configError', () => {
+describe('root-dependent tools fail fast on configError; non-root-dependent stay callable', () => {
   const testDbPath = resolve('./tmp/test-lancedb-warning-visibility-err')
   const testDataDir = resolve('./tmp/test-data-warning-visibility-err')
 
@@ -70,28 +75,12 @@ describe('P3-T3: root-dependent tools fail fast on configError', () => {
     })
   }
 
-  it('query_documents rejects with the configError message', async () => {
-    const server = newServerWithConfigError()
-    await expect(server.handleQueryDocuments({ query: 'anything' })).rejects.toThrow(
-      /BASE_DIRS must be a JSON array of non-empty path strings/
-    )
-  })
-
+  // Fail-fast set: tools whose work requires `baseDirs` to be valid.
   it('ingest_file rejects with the configError message', async () => {
     const server = newServerWithConfigError()
     await expect(server.handleIngestFile({ filePath: '/tmp/anything.txt' })).rejects.toThrow(
       /BASE_DIRS must be a JSON array of non-empty path strings/
     )
-  })
-
-  it('ingest_data rejects with the configError message', async () => {
-    const server = newServerWithConfigError()
-    await expect(
-      server.handleIngestData({
-        content: 'hello',
-        metadata: { source: 'clipboard://2026-05-23', format: 'text' },
-      })
-    ).rejects.toThrow(/BASE_DIRS must be a JSON array of non-empty path strings/)
   })
 
   it('list_files rejects with the configError message', async () => {
@@ -101,18 +90,33 @@ describe('P3-T3: root-dependent tools fail fast on configError', () => {
     )
   })
 
-  it('delete_file rejects with the configError message', async () => {
+  it('delete_file (filePath mode) rejects with the configError message', async () => {
     const server = newServerWithConfigError()
     await expect(server.handleDeleteFile({ filePath: '/tmp/x.txt' })).rejects.toThrow(
       /BASE_DIRS must be a JSON array of non-empty path strings/
     )
   })
 
-  it('read_chunk_neighbors rejects with the configError message', async () => {
+  it('read_chunk_neighbors (filePath mode) rejects with the configError message', async () => {
     const server = newServerWithConfigError()
     await expect(
       server.handleReadChunkNeighbors({ filePath: '/tmp/x.txt', chunkIndex: 0 })
     ).rejects.toThrow(/BASE_DIRS must be a JSON array of non-empty path strings/)
+  })
+
+  it('ingest_file rejects raw-data-shaped path traversal in degraded mode', async () => {
+    const server = newServerWithConfigError()
+    const traversal = `${testDbPath}/raw-data/../../../etc/passwd`
+    await expect(server.handleIngestFile({ filePath: traversal })).rejects.toThrow(
+      /BASE_DIRS must be a JSON array of non-empty path strings/
+    )
+  })
+
+  it('ingest_file rejects a raw-data substring in an unrelated path', async () => {
+    const server = newServerWithConfigError()
+    await expect(server.handleIngestFile({ filePath: '/foo/raw-data/bar.md' })).rejects.toThrow(
+      /BASE_DIRS must be a JSON array of non-empty path strings/
+    )
   })
 })
 
@@ -161,6 +165,72 @@ describe('P3-T3: status callable with configError and exposes diagnostic', () =>
     )
     expect(errorBlock).toBeDefined()
   })
+
+  // Non-root-dependent tools must stay callable in degraded mode. The
+  // contract for these tools is "operates against the LanceDB or the
+  // raw-data store, never against the configured roots", so a configError
+  // is informational here, surfaced as a warning content block via
+  // `withWarnings` but never converted into a thrown McpError.
+
+  it('query_documents remains callable in degraded mode (operates on DB only)', async () => {
+    // An uninitialized vector store returns an empty result set — the
+    // contract under test is that the handler does not throw an
+    // assertConfigOk error before the DB call. The handler attaches the
+    // configError-derived warning via `configWarnings` only when the caller
+    // also supplied them; this test fixture passes only `configError`, so we
+    // assert on callability + primary content shape, not on the warning
+    // block content (covered by the configWarnings suite below).
+    const result = await server.handleQueryDocuments({ query: 'no-op', limit: 1 })
+    expect(result.content.length).toBeGreaterThanOrEqual(1)
+    expect(result.content[0]?.type).toBe('text')
+  }, 30000)
+
+  it('ingest_data remains callable in degraded mode (writes to dbPath/raw-data only)', async () => {
+    const result = await server.handleIngestData({
+      content:
+        'A small markdown document used solely to confirm ingest_data does not fail-fast on configError. ' +
+        'It is long enough to clear the minimum chunk filter so the raw-data write produces a real row.',
+      metadata: {
+        source: 'clipboard://2026-05-23/degraded-mode-callable',
+        format: 'markdown',
+      },
+    })
+    const parsed = JSON.parse(result.content[0]?.text ?? '{}')
+    expect(parsed.chunkCount).toBeGreaterThan(0)
+    expect(typeof parsed.filePath).toBe('string')
+  }, 60000)
+
+  it('delete_file (source mode) remains callable in degraded mode', async () => {
+    // Source mode operates on the raw-data path generated from `source` and
+    // does not touch the configured roots. Even when no chunks exist for the
+    // source yet, the call must not throw the configError.
+    const result = await server.handleDeleteFile({
+      source: 'clipboard://2026-05-23/degraded-mode-callable-delete',
+    })
+    expect(result.content.length).toBeGreaterThanOrEqual(1)
+    expect(result.content[0]?.type).toBe('text')
+  }, 30000)
+
+  it('read_chunk_neighbors (source mode) remains callable in degraded mode', async () => {
+    // First seed a raw-data row by source so chunkIndex 0 is reachable.
+    await server.handleIngestData({
+      content:
+        'A markdown document used to seed the source-mode read_chunk_neighbors test. ' +
+        'It must produce at least one chunk so the neighbors lookup has a target row.',
+      metadata: {
+        source: 'clipboard://2026-05-23/degraded-mode-callable-neighbors',
+        format: 'markdown',
+      },
+    })
+
+    const result = await server.handleReadChunkNeighbors({
+      source: 'clipboard://2026-05-23/degraded-mode-callable-neighbors',
+      chunkIndex: 0,
+    })
+    const parsed = JSON.parse(result.content[0]?.text ?? '[]')
+    expect(Array.isArray(parsed)).toBe(true)
+    expect(parsed.length).toBeGreaterThan(0)
+  }, 60000)
 })
 
 // =============================================================================

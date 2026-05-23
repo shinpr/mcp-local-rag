@@ -42,9 +42,15 @@ const fsPromisesFactory = async (
 
 const MOCKED_PATHS = ['../../cli/common.js', 'node:fs/promises'] as const
 
+import { mkdir, rm, writeFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 
 let runDelete: typeof import('../../cli/delete.js').runDelete
+
+// Temp dbPath used by the raw-data cleanup tests so the boundary check's
+// realpath() resolves a real file. `unlink` itself stays mocked, so we
+// observe the call without actually removing anything.
+const cleanupDbPath = resolve('./tmp/test-cli-delete-cleanup-db')
 
 // ============================================
 // Helpers
@@ -83,7 +89,8 @@ describe('CLI delete', () => {
     ;({ runDelete } = await import('../../cli/delete.js'))
   })
 
-  afterAll(() => {
+  afterAll(async () => {
+    await rm(cleanupDbPath, { recursive: true, force: true })
     for (const p of MOCKED_PATHS) vi.doUnmock(p)
     vi.resetModules()
   })
@@ -217,8 +224,17 @@ describe('CLI delete', () => {
   // Raw-data file cleanup (unlink .md and .meta.json)
   // --------------------------------------------
   it('should clean up raw-data files (.md and .meta.json) when path is a raw-data path', async () => {
-    // Use --source to generate a raw-data path
-    const { error } = await captureStderr(() => runDelete(['--source', 'https://example.com/page']))
+    // Pre-create the on-disk raw-data .md so `isPathInRawDataDir`'s realpath
+    // resolves and the cleanup branch runs. `unlink` is mocked so the file
+    // stays on disk and is removed by the afterAll cleanup below.
+    const { generateRawDataPath } = await import('../../utils/raw-data-utils.js')
+    const mdPath = generateRawDataPath(cleanupDbPath, 'https://example.com/page', 'markdown')
+    await mkdir(resolve(cleanupDbPath, 'raw-data'), { recursive: true })
+    await writeFile(mdPath, 'fixture')
+
+    const { error } = await captureStderr(() =>
+      runDelete(['--source', 'https://example.com/page'], { dbPath: cleanupDbPath })
+    )
 
     expect(error).toBeUndefined()
 
@@ -259,6 +275,19 @@ describe('CLI delete', () => {
     const writtenData = stdoutSpy.mock.calls[0]![0] as string
     const parsed = JSON.parse(writtenData)
     expect(parsed.deleted).toBe(true)
+  })
+
+  it('attempts .meta.json cleanup even when the .md file is already missing', async () => {
+    mocks.deleteChunks.mockResolvedValue(undefined)
+    const enoentError = Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+    mocks.unlink.mockRejectedValue(enoentError)
+
+    await captureStderr(() => runDelete(['--source', 'https://example.com/missing']))
+
+    expect(mocks.unlink).toHaveBeenCalledTimes(2)
+    const paths = mocks.unlink.mock.calls.map((c: unknown[]) => c[0] as string)
+    expect(paths.some((p: string) => p.endsWith('.md'))).toBe(true)
+    expect(paths.some((p: string) => p.endsWith('.meta.json'))).toBe(true)
   })
 
   // --------------------------------------------
