@@ -1,20 +1,21 @@
 // Type definitions for RAGServer
 
+import type { BaseDirsConfigError } from '../utils/base-dirs.js'
 import type { ContentFormat } from '../utils/raw-data-utils.js'
 import type { GroupingMode } from '../vectordb/index.js'
 
 /**
- * RAGServer configuration
+ * Fields shared by both `RAGServerConfig` shapes (legacy single-root and
+ * multi-root). Extracted so the union below only needs to describe the
+ * `baseDir` / `baseDirs` axis.
  */
-export interface RAGServerConfig {
+interface RAGServerConfigBase {
   /** LanceDB database path */
   dbPath: string
   /** Transformers.js model path */
   modelName: string
   /** Model cache directory */
   cacheDir: string
-  /** Document base directory */
-  baseDir: string
   /** Maximum file size (100MB) */
   maxFileSize: number
   /** Compute device (cpu, webgpu, dml, etc) */
@@ -31,7 +32,36 @@ export interface RAGServerConfig {
   chunkMinLength?: number
   /** Configuration validation warnings to surface to users via MCP annotations */
   configWarnings?: string[]
+  /**
+   * Structured base-dirs resolution error. When present, the server is in
+   * degraded mode: `status` remains callable so the user can diagnose the
+   * problem via MCP, while root-dependent tools surface the error (handled
+   * in P3-T3). See `resolveBaseDirs` for the error semantics.
+   */
+  configError?: BaseDirsConfigError
 }
+
+/**
+ * RAGServer configuration.
+ *
+ * Accepts either a single `baseDir` (legacy shape — preserved so existing
+ * direct callers and tests that pass `{ baseDir }` continue to work) or
+ * `baseDirs` (multi-root shape produced by `resolveBaseDirs`). Exactly one
+ * of the two MUST be supplied. The constructor normalizes both into a single
+ * `baseDirs: string[]` internally and derives the legacy `baseDir` accessor
+ * as `baseDirs[0]`.
+ */
+export type RAGServerConfig =
+  | (RAGServerConfigBase & {
+      /** Document base directory (legacy single-root shape). */
+      baseDir: string
+      baseDirs?: undefined
+    })
+  | (RAGServerConfigBase & {
+      /** One or more allowed document base directories (multi-root shape). */
+      baseDirs: string[]
+      baseDir?: undefined
+    })
 
 /**
  * query_documents tool input

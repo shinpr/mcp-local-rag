@@ -19,6 +19,7 @@ import { prepareVisualPdfChunks } from '../ingest/visual.js'
 import { parseHtml } from '../parser/html-parser.js'
 import { DocumentParser, SUPPORTED_EXTENSIONS } from '../parser/index.js'
 import { extractMarkdownTitle, extractTxtTitle } from '../parser/title-extractor.js'
+import type { BaseDirsConfigError } from '../utils/base-dirs.js'
 import {
   type ContentFormat,
   extractSourceFromPath,
@@ -56,20 +57,54 @@ export class RAGServer {
   private readonly chunker: SemanticChunker
   private readonly parser: DocumentParser
   private readonly dbPath: string
+  /**
+   * One or more allowed document base directories. The single source of
+   * truth for both the security boundary (passed to `DocumentParser`) and
+   * for scan iteration in `list_files` (P3-T2). Normalized from either the
+   * legacy `{ baseDir }` config shape or the new `{ baseDirs }` shape so
+   * downstream readers do not need to branch on shape.
+   */
+  private readonly baseDirs: string[]
+  /**
+   * Legacy single-root accessor. Derived from `baseDirs[0]`. Preserved so
+   * the legacy `ListFilesResult.baseDir` field and any direct readers of
+   * `this.baseDir` continue to work; multi-root iteration uses `baseDirs`.
+   */
   private readonly baseDir: string
   private readonly cacheDir: string
   // Used by handleListFiles filter to exclude system-managed directories
   private readonly excludePaths: string[]
   private readonly configWarnings: string[]
+  /**
+   * Structured base-dirs resolution error. When non-null, the server is in
+   * degraded mode: `status` remains callable so the user can diagnose the
+   * problem via MCP, while root-dependent tools should surface this error
+   * (wired in P3-T3). See `resolveBaseDirs` for the error semantics.
+   */
+  private readonly configError: BaseDirsConfigError | null
   private readonly minChunkLength: number
   private readonly device: string | undefined
   private queryWarningsShown = false
 
   constructor(config: RAGServerConfig) {
     this.dbPath = config.dbPath
-    this.baseDir = config.baseDir
+    // Normalize both config shapes into a single `baseDirs: string[]`.
+    // Exactly one of `baseDir` / `baseDirs` is supplied (enforced by the
+    // discriminated union in `RAGServerConfig`); the runtime check below
+    // catches misuse from JS-only callers and degraded-mode bugs.
+    const normalizedBaseDirs =
+      config.baseDirs !== undefined ? [...config.baseDirs] : [config.baseDir]
+    const firstBaseDir = normalizedBaseDirs[0]
+    if (firstBaseDir === undefined) {
+      throw new Error(
+        'RAGServerConfig must provide either `baseDir` or a non-empty `baseDirs` array.'
+      )
+    }
+    this.baseDirs = normalizedBaseDirs
+    this.baseDir = firstBaseDir
     this.cacheDir = config.cacheDir
     this.configWarnings = config.configWarnings ?? []
+    this.configError = config.configError ?? null
     this.minChunkLength = config.chunkMinLength ?? DEFAULT_MIN_CHUNK_LENGTH
     this.device = config.device
     this.excludePaths = [`${resolve(this.dbPath)}${sep}`, `${resolve(this.cacheDir)}${sep}`]
@@ -109,12 +144,26 @@ export class RAGServer {
     this.chunker = new SemanticChunker(
       config.chunkMinLength !== undefined ? { minChunkLength: config.chunkMinLength } : {}
     )
+    // Always construct the parser with the multi-root shape — the parser
+    // accepts a single-element `baseDirs` array as the byte-equivalent of
+    // the legacy `baseDir` shape, so passing `this.baseDirs` covers both
+    // config inputs without branching here.
     this.parser = new DocumentParser({
-      baseDir: config.baseDir,
+      baseDirs: this.baseDirs,
       maxFileSize: config.maxFileSize,
     })
 
     this.setupHandlers()
+  }
+
+  /**
+   * Expose the base-dirs resolution error (if any) for the warning/error
+   * attachment layer added in P3-T3. Returns `null` when configuration
+   * resolved cleanly. Kept as a method so the field stays `private readonly`
+   * — only the handler layer that wires error responses needs read access.
+   */
+  getConfigError(): BaseDirsConfigError | null {
+    return this.configError
   }
 
   /**

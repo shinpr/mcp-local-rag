@@ -1,6 +1,7 @@
 // MCP Server entry point
 import { resolveDevice } from './cli/options.js'
 import { RAGServer } from './server/index.js'
+import { type BaseDirsConfigError, resolveBaseDirs } from './utils/base-dirs.js'
 import type { GroupingMode } from './vectordb/index.js'
 
 // ============================================
@@ -93,17 +94,52 @@ export async function startServer(): Promise<void> {
     // VLM profile selection (`fast` vs `quality`) is a per-ingest parameter
     // on the `ingest_file` MCP tool and is not configured here.
     const device = resolveDevice(process.env['RAG_DEVICE'])
+
+    // Collect configuration warnings (resolver + parse* helpers all funnel
+    // into this single array so RAGServer.configWarnings stays the one
+    // source of truth surfaced via MCP content blocks — P3-T3).
+    const configWarnings: string[] = []
+
+    // Resolve effective base directories from env. The resolver is the
+    // single source of truth for BASE_DIRS / BASE_DIR / cwd precedence and
+    // never silently falls back on invalid BASE_DIRS (AC-010 — root-
+    // dependent tools will surface the error; `status` remains callable).
+    // Server startup does not consume CLI flags (env-only for MCP client
+    // compatibility), so `cliRoots` is intentionally omitted here.
+    const baseDirsResult = await resolveBaseDirs({
+      envBaseDirs: process.env['BASE_DIRS'],
+      envBaseDir: process.env['BASE_DIR'],
+      cwd: process.cwd(),
+    })
+
+    let baseDirsForServer: string[]
+    let configError: BaseDirsConfigError | undefined
+    if (baseDirsResult.ok) {
+      baseDirsForServer = baseDirsResult.config.baseDirs
+      for (const warning of baseDirsResult.warnings) {
+        configWarnings.push(warning.message)
+      }
+    } else {
+      // Degraded mode: fall back to cwd so the parser / server can still be
+      // constructed and `status` works, but stash the error so P3-T3 can
+      // surface it from root-dependent tool responses. AC-010: no silent
+      // fallback to BASE_DIR — the resolver already returned an error.
+      baseDirsForServer = [process.cwd()]
+      configError = baseDirsResult.error
+      configWarnings.push(baseDirsResult.error.message)
+    }
+
+    // Build the immutable config object. `baseDirs` carries the resolver
+    // output (or the degraded-mode cwd fallback); the discriminated union
+    // in RAGServerConfig forbids passing `baseDir` alongside `baseDirs`.
     const config: ConstructorParameters<typeof RAGServer>[0] = {
       dbPath: process.env['DB_PATH'] || './lancedb/',
       modelName: process.env['MODEL_NAME'] || 'Xenova/all-MiniLM-L6-v2',
       cacheDir: process.env['CACHE_DIR'] || './models/',
-      baseDir: process.env['BASE_DIR'] || process.cwd(),
+      baseDirs: baseDirsForServer,
       maxFileSize: Number.parseInt(process.env['MAX_FILE_SIZE'] || '104857600', 10), // 100MB
       device,
     }
-
-    // Collect configuration warnings
-    const configWarnings: string[] = []
 
     // Add quality filter settings only if defined
     const maxDistance = parseMaxDistance(process.env['RAG_MAX_DISTANCE'])
@@ -145,6 +181,9 @@ export async function startServer(): Promise<void> {
     if (configWarnings.length > 0) {
       config.configWarnings = configWarnings
       console.error('Configuration warnings:', configWarnings.join(' | '))
+    }
+    if (configError !== undefined) {
+      config.configError = configError
     }
 
     console.error('Starting RAG MCP Server...')
