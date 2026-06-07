@@ -412,15 +412,21 @@ export class VectorStore {
     }
 
     try {
-      // Retrieve all records
-      const allRecords = await this.table.query().toArray()
+      // Project to only the columns needed for aggregation, excluding the
+      // embedding vector payload. LanceDB JS has no group-by, so the per-file
+      // count + latest-timestamp aggregation still runs here — but over a much
+      // smaller row payload than a full `query().toArray()`.
+      const allRecords = await this.table.query().select(['filePath', 'timestamp']).toArray()
 
       // Group by file path
       const fileMap = new Map<string, { chunkCount: number; timestamp: string }>()
 
       for (const record of allRecords) {
-        const filePath = record.filePath as string
-        const timestamp = record.timestamp as string
+        const filePath = record.filePath
+        const timestamp = record.timestamp
+        // Type-guard parity with toSearchResult/toChunkRow: skip rows missing
+        // the expected string columns rather than coercing via `as string`.
+        if (typeof filePath !== 'string' || typeof timestamp !== 'string') continue
 
         if (fileMap.has(filePath)) {
           const fileInfo = fileMap.get(filePath)
@@ -472,12 +478,18 @@ export class VectorStore {
     }
 
     try {
-      // Retrieve all records
-      const allRecords = await this.table.query().toArray()
-      const chunkCount = allRecords.length
+      // Total chunk count comes straight from LanceDB's row count — no need to
+      // materialize every row just to read `.length`.
+      const chunkCount = await this.table.countRows()
 
-      // Count unique file paths
-      const uniqueFilePaths = new Set(allRecords.map((record) => record.filePath as string))
+      // Distinct document count: LanceDB JS has no DISTINCT, so project to just
+      // the filePath column (excludes the vector payload) and dedupe here.
+      const records = await this.table.query().select(['filePath']).toArray()
+      const uniqueFilePaths = new Set<string>()
+      for (const record of records) {
+        const filePath = record.filePath
+        if (typeof filePath === 'string') uniqueFilePaths.add(filePath)
+      }
       const documentCount = uniqueFilePaths.size
 
       // Get memory usage (in MB)
