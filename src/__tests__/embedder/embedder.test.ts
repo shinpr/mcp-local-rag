@@ -55,6 +55,24 @@ describe('Embedder', () => {
       expect(err.message).toBe('Cannot generate embedding for empty text')
       expect(err.message).not.toMatch(/Failed to generate batch embeddings/)
     })
+
+    it('produces per-text vectors equivalent to embed() (true batching)', async () => {
+      const embedder = makeEmbedder('cpu')
+      const texts = ['alpha text one', 'beta different two', 'gamma third sample']
+
+      const batched = await embedder.embedBatch(texts)
+      const single = await Promise.all(texts.map((t) => embedder.embed(t)))
+
+      expect(batched).toHaveLength(texts.length)
+      for (let i = 0; i < texts.length; i++) {
+        expect(batched[i]).toHaveLength(single[i].length)
+        for (let j = 0; j < batched[i].length; j++) {
+          // Batched matmuls vs single-input differ only at float epsilon;
+          // mean-pooling honors the attention mask so padding does not skew rows.
+          expect(batched[i][j]).toBeCloseTo(single[i][j], 4)
+        }
+      }
+    }, 180000)
   })
 
   describe('device validation', () => {
