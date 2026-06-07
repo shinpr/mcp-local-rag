@@ -146,15 +146,10 @@ export class DocumentParser {
   /**
    * File path validation (Absolute path requirement + Path traversal prevention).
    *
-   * Path-canonicalization policy: this is THE place realpath is allowed.
-   * realpath is confined to the validation/security domain — here (the
-   * containment check) and the base-dir resolver. Following symlinks on both
-   * the file and the allowed roots is what makes the prefix containment check
-   * unforgeable (a symlink under an allowed root cannot escape it, and a
-   * symlinked root still matches its real target). This is intentionally
-   * INDEPENDENT of what is stored/scanned/looked up elsewhere, which all use
-   * the resolve() path. Invariant: realpath only in the validation/security
-   * domain; resolve() everywhere user-facing.
+   * This is THE place realpath is used (with the base-dir resolver): the
+   * security/containment boundary. Following symlinks here makes prefix
+   * containment unforgeable. Stored/scanned/looked-up paths elsewhere use
+   * resolve() — see {@link BaseDirsConfig} for the path policy.
    *
    * Multi-root semantics: a file is accepted iff its realpath (or, for a
    * non-symlink path that does not yet exist, its `resolve()`-normalized

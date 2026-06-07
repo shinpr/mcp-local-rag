@@ -133,10 +133,8 @@ export async function runDelete(args: string[], globalOptions: GlobalOptions = {
       // Generate raw-data path from source URL
       targetPath = generateRawDataPath(globalConfig.dbPath, parsed.source, 'markdown')
     } else {
-      // Use provided file path, resolve() to absolute. Path-canonicalization invariant:
-      // realpath only in the validation/security domain; resolve() everywhere
-      // user-facing. The DB key is the resolve()'d ingest path, so delete MUST
-      // look up by resolve() (never realpath) to match what was stored.
+      // DB key is the resolve()'d ingest path, so look up by resolve() (never
+      // realpath) — realpath stays in validatePath/validateFilePath.
       targetPath = resolve(parsed.filePath!)
 
       // Validate path (reject sensitive system directories)

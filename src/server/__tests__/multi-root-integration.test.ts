@@ -73,16 +73,22 @@ async function buildServerFromResolver(opts: {
 
   const warnings: string[] = []
   let baseDirs: string[]
+  // Mirror server-main.ts: pass both the realpath'd `baseDirs` (security) and
+  // the normal-path `rawBaseDirs` (list scan/display) so the test exercises the
+  // real production wiring rather than the rawBaseDirs→baseDirs fallback.
+  let rawBaseDirs: string[]
   let configError: BaseDirsConfigError | undefined
 
   if (result.ok) {
     baseDirs = result.config.baseDirs
+    rawBaseDirs = result.config.rawBaseDirs
     for (const w of result.warnings) warnings.push(w.message)
   } else {
     // Degraded mode mirror of server-main.ts (post-Finding-#4): pass an empty
     // `baseDirs` so any handler bypassing `assertConfigOk` fails closed at the
     // parser level rather than silently operating against `cwd`.
     baseDirs = []
+    rawBaseDirs = []
     configError = result.error
     warnings.push(result.error.message)
   }
@@ -92,6 +98,7 @@ async function buildServerFromResolver(opts: {
     modelName: 'Xenova/all-MiniLM-L6-v2',
     cacheDir: opts.cacheDir,
     baseDirs,
+    rawBaseDirs,
     maxFileSize: 100 * 1024 * 1024,
     configWarnings: warnings,
     ...(configError !== undefined ? { configError } : {}),
@@ -367,7 +374,8 @@ describe('AC-003/AC-013: real resolveBaseDirs warnings surface in MCP responses'
       // Effective baseDirs came from BASE_DIRS, not BASE_DIR.
       const listed = await server.handleListFiles()
       const parsed = JSON.parse(listed.content[0].text)
-      // realpath-normalized roots have a trailing separator — match prefix.
+      // list_files returns the normal-path roots (== realpath here — no symlink
+      // in the test tmp); trailing-separator prefix match.
       expect(parsed.baseDirs).toHaveLength(2)
       expect(parsed.baseDirs[0].startsWith(realpathSync(rootA))).toBe(true)
       expect(parsed.baseDirs[1].startsWith(realpathSync(rootB))).toBe(true)

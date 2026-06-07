@@ -204,12 +204,8 @@ export async function runReadNeighbors(
       // Generate raw-data path from source identifier.
       targetPath = generateRawDataPath(globalConfig.dbPath, parsed.source, 'markdown')
     } else {
-      // resolve() to absolute, then validate (mirrors runDelete).
-      // Path-canonicalization invariant: realpath only in the validation/
-      // security domain; resolve() everywhere user-facing. The DB key is the
-      // resolve()'d ingest path, so
-      // this lookup MUST use resolve() (never realpath) to match what was
-      // stored — validateFilePath below still applies the realpath boundary.
+      // DB key is the resolve()'d ingest path, so look up by resolve() (never
+      // realpath); validate below (mirrors runDelete; realpath stays there).
       targetPath = resolve(parsed.filePath!)
       const pathError = validatePath(targetPath, '--file-path')
       if (pathError) {

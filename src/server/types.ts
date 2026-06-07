@@ -31,20 +31,11 @@ interface RAGServerConfigBase {
   /** Minimum chunk length in characters (optional, default: 50) */
   chunkMinLength?: number
   /**
-   * NORMAL (resolve(), non-realpath) effective roots, index-aligned with the
-   * realpath'd `baseDirs`/`baseDir` security boundary. Produced by
-   * `resolveBaseDirs` (`BaseDirsConfig.rawBaseDirs`).
-   *
-   * Path-canonicalization policy: realpath lives ONLY in the
-   * validation/security domain. `list_files` is user-facing, so it scans and
-   * displays THESE roots so the scanned file paths match the resolve()-stored
-   * DB keys (what `query`/`delete`/`read_chunk_neighbors` use). Without this, a
-   * symlinked base-dir prefix (e.g. macOS /tmp → /private/tmp) would make
-   * ingested files wrongly show as not-ingested.
-   *
-   * Optional for backward compatibility: legacy `{ baseDir }` callers and tests
-   * that do not supply it fall back to the realpath'd roots for scanning (no
-   * behavior change when no symlinked prefix is involved).
+   * Normal-path (resolve()) roots, index-aligned with the realpath'd `baseDirs`
+   * security boundary; used for user-facing `list_files` scan/display so paths
+   * match the resolve()-stored DB keys. From `BaseDirsConfig.rawBaseDirs` (see
+   * it for the path policy). Optional: legacy `{ baseDir }` callers fall back to
+   * `baseDirs`.
    */
   rawBaseDirs?: readonly string[]
   /** Configuration validation warnings to surface to users via MCP annotations */
@@ -191,8 +182,7 @@ export type SourceEntry =
  * list_files tool output.
  *
  * Multi-root contract:
- * - `baseDirs`: all effective roots (post realpath normalization and
- *   nested-root pruning).
+ * - `baseDirs`: all effective roots (normal resolve() form, nested-root pruned).
  * - `baseDir`: the first effective root (`baseDirs[0]`). Preserved as a
  *   legacy field so clients written against the single-root shape continue to
  *   work.

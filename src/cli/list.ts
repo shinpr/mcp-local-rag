@@ -5,7 +5,7 @@ import { resolve, sep } from 'node:path'
 import { displayPath } from '../utils/base-dirs.js'
 import { MAX_SCAN_DEPTH } from '../utils/limits.js'
 import { extractSourceFromPath, looksLikeRawDataPath } from '../utils/raw-data-utils.js'
-import { bfsCollectSupportedFiles } from '../utils/scan.js'
+import { bfsCollectSupportedFiles, realpathForMatch } from '../utils/scan.js'
 import { createVectorStore, resolveCliBaseDirsOrExit, toErrorMessage } from './common.js'
 import type { GlobalOptions } from './options.js'
 import { consumeBaseDirArg, resolveGlobalConfig, validatePath } from './options.js'
@@ -90,7 +90,7 @@ interface SourceEntry {
  *
  * Multi-root shape (post-Finding-#5 alignment with the MCP `list_files`
  * response):
- *  - `baseDirs`: every effective root (after realpath + nested-pruning).
+ *  - `baseDirs`: every effective root (normal resolve() form, nested-pruned).
  *  - `baseDir`: legacy first-effective-root, preserved so single-root
  *    clients continue to work unchanged.
  *  - `files[].baseDir`: per-file producing root.
@@ -217,14 +217,9 @@ export async function runList(args: string[], globalOptions: GlobalOptions = {})
     console.error(warning.message)
   }
 
-  // Path-canonicalization invariant: realpath only in the validation/security domain; resolve()
-  // everywhere user-facing. `list` is user-facing, so it scans and displays the
-  // NORMAL (resolve(), non-realpath) root space (`rawBaseDirs`). This is what
-  // makes the scanned file paths match the resolve()-stored DB keys so the
-  // `ingested` cross-reference is correct even under a symlinked base-dir prefix
-  // (e.g. macOS /tmp → /private/tmp). The realpath'd `baseDirs` are the security
-  // boundary and are NOT used here. `rawBaseDirs[0]` is the first effective root,
-  // surfaced as the JSON `baseDir` field for response back-compat.
+  // Scan/display the normal-path roots (`rawBaseDirs`) so scanned paths match
+  // the resolve()-stored DB keys; the realpath'd `baseDirs` are the security
+  // boundary, not used here. `rawBaseDirs[0]` is the legacy `baseDir` field.
   const rawBaseDirs = baseDirsConfig.rawBaseDirs
   const firstRawBaseDir = rawBaseDirs[0]
   if (firstRawBaseDir === undefined) {
@@ -249,61 +244,59 @@ export async function runList(args: string[], globalOptions: GlobalOptions = {})
       `${resolve(globalConfig.cacheDir)}${sep}`,
     ]
 
-    // Get all ingested entries from the vector store
+    // Get ingested entries and index by file IDENTITY (realpath), so a file
+    // ingested via a different spelling (symlinked prefix or alias) still
+    // matches the scan. realpath is used only for this "same file?" comparison;
+    // storage/display stay normal-path (see utils/base-dirs.ts BaseDirsConfig).
     const ingested = await vectorStore.listFiles()
-    const ingestedMap = new Map(ingested.map((f) => [f.filePath, f]))
+    const ingestedKeyed = await Promise.all(
+      ingested.map(async (f) => ({ entry: f, key: await realpathForMatch(f.filePath) }))
+    )
+    const ingestedByKey = new Map(ingestedKeyed.map(({ entry, key }) => [key, entry]))
 
-    // Scan every effective root, recording the producing root for each
-    // file path. Disjoint roots can still surface the same file through
-    // symlinks or bind mounts; the first-occurrence-wins dedup preserves
-    // root iteration order, mirroring the MCP `list_files` contract.
-    // Per-root errors are non-fatal: collect them as stderr warnings and
-    // continue with the remaining roots so one unreadable
-    // root does not hide the others.
-    const fileToRoot = new Map<string, string>()
+    // Scan every effective root, deduping by identity key (a file reachable
+    // from multiple roots — via symlinks/bind mounts — appears once, first root
+    // wins). Per-root errors are non-fatal stderr warnings.
+    const keyToRoot = new Map<string, string>()
+    const keyToScanned = new Map<string, string>()
     for (const root of rawBaseDirs) {
       const { files: perRoot, warnings: rootWarnings } = await scanRoot(root, excludePaths)
       for (const warning of rootWarnings) {
         console.error(`Warning [${root}]: ${warning}`)
       }
-      for (const filePath of perRoot) {
-        if (!fileToRoot.has(filePath)) {
-          fileToRoot.set(filePath, root)
+      for (const scannedPath of perRoot) {
+        const key = await realpathForMatch(scannedPath)
+        if (!keyToRoot.has(key)) {
+          keyToRoot.set(key, root)
+          keyToScanned.set(key, scannedPath)
         }
       }
     }
-    const baseDirFiles = [...fileToRoot.keys()].sort()
-    const baseDirSet = new Set(baseDirFiles)
 
-    // Files with ingestion status and producing-root annotation. The
-    // producing root is guaranteed to be present because the path came from
-    // the scan above; the non-null assertion below documents the invariant.
-    const files: FileEntry[] = baseDirFiles.map((filePath) => {
-      const producingRoot = fileToRoot.get(filePath)
-      if (producingRoot === undefined) {
-        // Cannot happen by construction (the key came from the same map).
-        // Surface as a programming error rather than silently shipping an
-        // empty `baseDir` field.
-        throw new Error(`internal: missing producing root for ${filePath}`)
+    // Ingested rows display the stored (normal) path so it round-trips into
+    // delete/read; not-ingested rows display the scanned path.
+    const matchedKeys = new Set<string>()
+    const files: FileEntry[] = [...keyToRoot.entries()].map(([key, producingRoot]) => {
+      const entry = ingestedByKey.get(key)
+      if (entry) {
+        matchedKeys.add(key)
+        return {
+          filePath: entry.filePath,
+          baseDir: producingRoot,
+          ingested: true,
+          chunkCount: entry.chunkCount,
+          timestamp: entry.timestamp,
+        }
       }
-      const entry = ingestedMap.get(filePath)
-      return entry
-        ? {
-            filePath,
-            baseDir: producingRoot,
-            ingested: true,
-            chunkCount: entry.chunkCount,
-            timestamp: entry.timestamp,
-          }
-        : { filePath, baseDir: producingRoot, ingested: false }
+      return { filePath: keyToScanned.get(key) ?? key, baseDir: producingRoot, ingested: false }
     })
+    files.sort((a, b) => (a.filePath < b.filePath ? -1 : a.filePath > b.filePath ? 1 : 0))
 
-    // Content ingested via ingest_data (web pages, clipboard, etc.) plus any
-    // orphaned DB entries whose files no longer exist on disk. Sources are
-    // never annotated with a producing root — matches the MCP contract.
-    const sources: SourceEntry[] = ingested
-      .filter((f) => !baseDirSet.has(f.filePath))
-      .map((f) => {
+    // Content ingested via ingest_data plus orphaned DB entries: ingested
+    // entries whose identity key matched no scanned file.
+    const sources: SourceEntry[] = ingestedKeyed
+      .filter(({ key }) => !matchedKeys.has(key))
+      .map(({ entry: f }) => {
         if (looksLikeRawDataPath(f.filePath)) {
           const source = extractSourceFromPath(f.filePath)
           if (source) return { source, chunkCount: f.chunkCount, timestamp: f.timestamp }

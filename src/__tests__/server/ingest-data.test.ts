@@ -3,6 +3,7 @@
 // Tests handleIngestData functionality including HTML parsing and raw-data storage
 
 import { mkdir, readFile, rm } from 'node:fs/promises'
+import { resolve } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { RAGServer } from '../../server/index.js'
 
@@ -15,7 +16,11 @@ const testConfig = {
   dbPath: testDbPath,
   modelName: 'Xenova/all-MiniLM-L6-v2',
   cacheDir: './tmp/test-model-cache',
-  baseDir: '.',
+  // Absolute root, matching the production contract (server-main.ts always
+  // resolves roots to absolute). A relative '.' would make the scan emit
+  // relative paths that never match the absolute excludePaths, so the raw-data
+  // dir would leak into the scan instead of being excluded.
+  baseDir: resolve('.'),
   maxFileSize: 10 * 1024 * 1024,
 }
 

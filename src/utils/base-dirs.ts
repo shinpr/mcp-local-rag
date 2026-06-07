@@ -18,27 +18,18 @@ import { resolve, sep } from 'node:path'
 // ============================================
 
 /**
- * Internal representation of the effective document roots.
+ * Effective document roots, in two index-aligned forms.
  *
- * Path-canonicalization policy: realpath lives ONLY in the
- * validation/security domain. Two parallel, index-aligned root lists are
- * exposed so each consumer picks the correct path space:
- *
- * `baseDirs` is the post-normalization, post-deduplication, post-nested-prune
- * list of REALPATH-resolved directories — the SECURITY BOUNDARY passed to
- * `DocumentParser`. Order is preserved from the original configuration input so
- * the first element is meaningful as the legacy single-root accessor (see
- * {@link legacyBaseDir}).
- *
- * `rawBaseDirs` is the SAME surviving roots in the SAME order, but
- * resolve()-normalized only (NOT realpath'd). This is the NORMAL path space
- * that everything user-facing uses: `list` / `list_files` scan and display
- * these so the scanned file paths match the resolve()-stored DB keys (what
- * `query` / `delete` / `read_chunk_neighbors` use). Without this, a symlinked
- * base-dir prefix (e.g. macOS /tmp → /private/tmp) would make ingested files
- * wrongly show as not-ingested. Dedup/nested-prune decisions are still made on
- * the realpath'd `baseDirs` (security semantics); `rawBaseDirs` mirrors those
- * decisions index-for-index.
+ * Path policy (the canonical statement; other sites just reference it):
+ * realpath is used ONLY for the security boundary; everything user-facing uses
+ * resolve() (normal) paths.
+ * - `baseDirs`: realpath-resolved, deduped, nested-pruned — the containment
+ *   boundary passed to `DocumentParser`. Input order preserved (first = legacy
+ *   single-root accessor; see {@link legacyBaseDir}).
+ * - `rawBaseDirs`: the SAME roots, same order, resolve()-only. The normal path
+ *   space `list`/`list_files` scan + display, so paths match the
+ *   resolve()-stored DB keys; otherwise a symlinked prefix (e.g. macOS
+ *   /tmp → /private/tmp) would make ingested files show as not-ingested.
  */
 export interface BaseDirsConfig {
   baseDirs: string[]
@@ -216,12 +207,8 @@ export function withTrailingSeparator(path: string): string {
  * Resolve a directory to its realpath form and append a trailing separator
  * so the result can be used directly as a prefix in security checks.
  *
- * Path-canonicalization policy: realpath = the SECURITY boundary. The
- * realpath here is what makes dedup/nested-prune and `DocumentParser`'s
- * containment check robust against symlinked roots. It is deliberately NOT the
- * value user-facing surfaces store or scan — those use the resolve()-only
- * `rawBaseDirs` (see {@link resolveBaseDirs}). Invariant: realpath only in the
- * validation/security domain; resolve() everywhere user-facing.
+ * realpath here is the security boundary (see {@link BaseDirsConfig} for the
+ * path policy); user-facing surfaces use the resolve()-only `rawBaseDirs`.
  *
  * Throws {@link BaseDirsConfigError} when the directory does not exist or
  * is not a directory — root configuration must point at real directories
@@ -457,12 +444,9 @@ export async function resolveBaseDirs(input: ResolveBaseDirsInput): Promise<Reso
   // Realpath-normalize each selected root. Failures (missing directory,
   // permission denied, ...) are surfaced as a structured config error.
   //
-  // Path-canonicalization: realpath is the SECURITY domain. We compute the realpath'd form for
-  // dedup/nested-prune and the parser boundary, but ALSO keep each root's
-  // resolve()-only (non-realpath) form so the resolver can return the NORMAL
-  // path space that `list`/`list_files` scan and display. The two forms are
-  // paired by realpath key so the raw output mirrors the dedup/prune decisions
-  // made on the realpath'd set.
+  // Pair each realpath'd root (security form) with its resolve()-only form so
+  // `rawBaseDirs` mirrors the dedup/prune decisions index-for-index. See
+  // {@link BaseDirsConfig} for the path policy.
   const normalized: string[] = []
   const realToRaw = new Map<string, string>()
   for (const root of selection.roots) {

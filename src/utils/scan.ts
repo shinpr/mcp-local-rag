@@ -9,10 +9,26 @@
 // structured facts (`unreadableDirs`, `depthLimited`) so callers preserve
 // their own, intentionally-different, user-facing messages.
 
-import { readdir } from 'node:fs/promises'
+import { readdir, realpath } from 'node:fs/promises'
 import { extname, join } from 'node:path'
 import { SUPPORTED_EXTENSIONS } from '../parser/index.js'
 import { MAX_SCAN_DEPTH } from './limits.js'
+
+/**
+ * Canonical identity key for the `list`/`list_files` cross-reference: a file's
+ * realpath, falling back to the input path when realpath fails (orphaned or
+ * raw-data entries). Matching ingested DB entries against scanned files by this
+ * key recognizes the same physical file across symlinked spellings (prefix or
+ * alias). Storage, lookup, and display still use the normal resolve() path —
+ * realpath here is the file-identity comparison, not a user-facing value.
+ */
+export async function realpathForMatch(filePath: string): Promise<string> {
+  try {
+    return await realpath(filePath)
+  } catch {
+    return filePath
+  }
+}
 
 /** A directory that could not be read during the scan. */
 export interface UnreadableDir {

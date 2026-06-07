@@ -125,8 +125,8 @@ export async function resolveServerConfig(
   })
 
   let baseDirsForServer: string[]
-  // Path-canonicalization: normal-path (resolve(), non-realpath) roots kept index-aligned with
-  // baseDirsForServer so list_files scans/displays the resolve()-stored space.
+  // Normal-path roots, index-aligned with baseDirsForServer, for list_files
+  // scan/display (see BaseDirsConfig for the path policy).
   let rawBaseDirsForServer: string[]
   let configError: BaseDirsConfigError | undefined
   // Raw sensitive-path matches take precedence over resolver errors.

@@ -30,6 +30,7 @@ import {
   saveMetaJson,
   saveRawData,
 } from '../utils/raw-data-utils.js'
+import { realpathForMatch } from '../utils/scan.js'
 import { type VectorChunk, VectorStore } from '../vectordb/index.js'
 import { DatabaseError } from '../vectordb/types.js'
 import {
@@ -74,13 +75,9 @@ export class RAGServer {
    */
   private readonly baseDirs: readonly string[]
   /**
-   * NORMAL (resolve(), non-realpath) effective roots, index-aligned with
-   * `baseDirs`. Path-canonicalization: `list_files` is user-facing, so it scans and displays
-   * THESE so scanned file paths match the resolve()-stored DB keys (what
-   * `query`/`delete`/`read_chunk_neighbors` use). Falls back to the realpath'd
-   * `baseDirs` when the config omits `rawBaseDirs` (legacy `{ baseDir }`
-   * callers / tests with no symlinked prefix). The realpath SECURITY boundary
-   * stays in `baseDirs` (the parser), never here.
+   * Normal-path (resolve()) roots, index-aligned with `baseDirs`, for
+   * user-facing `list_files` scan/display. Falls back to `baseDirs` for legacy
+   * `{ baseDir }` callers. See {@link BaseDirsConfig} for the path policy.
    */
   private readonly rawBaseDirs: readonly string[]
   /** Legacy single-root accessor for `rawBaseDirs`. Derived from `rawBaseDirs[0]`. */
@@ -107,11 +104,8 @@ export class RAGServer {
     // mode and misuse semantics.
     const { baseDirs, baseDir } = normalizeBaseDirs(config)
     this.baseDirs = baseDirs
-    // Path-canonicalization: NORMAL-path roots for user-facing scanning. Fall back to the
-    // realpath'd security roots when the config omits `rawBaseDirs` so legacy
-    // `{ baseDir }` callers keep working unchanged. `baseDir` (the realpath'd
-    // first root from `normalizeBaseDirs`) is used only as the degraded-mode
-    // fallback for the legacy single-root accessor.
+    // Normal-path roots for user-facing scanning; fall back to the realpath'd
+    // roots for legacy `{ baseDir }` callers.
     const rawBaseDirs = config.rawBaseDirs !== undefined ? [...config.rawBaseDirs] : [...baseDirs]
     this.rawBaseDirs = rawBaseDirs
     this.rawBaseDir = rawBaseDirs[0] ?? baseDir
@@ -309,12 +303,9 @@ export class RAGServer {
     if (!(await isPathInRawDataDir(args.filePath, this.dbPath))) {
       this.assertConfigOk()
     }
-    // Path-canonicalization invariant: realpath only in the validation/security domain;
-    // resolve() everywhere user-facing. `args.filePath` is the DB key for
-    // backup / delete / insert / result and is stored verbatim (never
-    // realpath-normalized), so the value `list`/`delete`/`read_chunk_neighbors`
-    // look up matches what ingestion wrote. The realpath boundary is enforced
-    // separately by `parser.validateFilePath`.
+    // `args.filePath` is the DB key (backup/delete/insert/result), stored
+    // verbatim so lookups match (realpath stays in validateFilePath; see
+    // BaseDirsConfig for the path policy).
     // Runtime validation: the MCP JSON Schema declares `visual` as a
     // boolean and `IngestFileInput.visual` types it as `boolean | undefined`,
     // but tool arguments arrive as `unknown` at the SDK boundary so the
@@ -590,13 +581,8 @@ export class RAGServer {
   /**
    * list_files tool handler
    *
-   * Path-canonicalization invariant: realpath only in the validation/security domain; resolve()
-   * everywhere user-facing. `list_files` is user-facing, so it scans and
-   * displays the NORMAL-path roots (`this.rawBaseDirs`) — NOT the realpath'd
-   * security roots (`this.baseDirs`, which are the parser boundary). Scanning in
-   * normal-path space makes the scanned file paths match the resolve()-stored DB
-   * keys, so the `ingested` cross-reference is correct even under a symlinked
-   * base-dir prefix (e.g. macOS /tmp → /private/tmp).
+   * Scans the normal-path roots (`this.rawBaseDirs`) so scanned paths match the
+   * resolve()-stored DB keys (see {@link BaseDirsConfig} for the path policy).
    *
    * Scans every effective base directory (`this.rawBaseDirs`) for supported
    * files and cross-references with ingested documents. Multi-root contract:
@@ -615,18 +601,23 @@ export class RAGServer {
     // Root-dependent tool: fail fast on configError BEFORE any DB / FS access.
     this.assertConfigOk()
     try {
-      // Get all ingested entries from the vector store
+      // Get all ingested entries and index them by file IDENTITY (realpath), so
+      // a file ingested via a different spelling (symlinked prefix or alias)
+      // still matches the scan. Storage/display stay normal-path; realpath is
+      // used here only for the "same file?" comparison (see BaseDirsConfig).
       const ingested = await this.vectorStore.listFiles()
-      const ingestedMap = new Map(ingested.map((f) => [f.filePath, f]))
+      const ingestedKeyed = await Promise.all(
+        ingested.map(async (f) => ({ entry: f, key: await realpathForMatch(f.filePath) }))
+      )
+      const ingestedByKey = new Map(ingestedKeyed.map(({ entry, key }) => [key, entry]))
 
-      // Iterate every effective root and collect entries with their producing
-      // root. Deduplicate exact duplicate file paths across roots; the first
-      // occurrence wins so iteration order in `this.rawBaseDirs` determines the
-      // recorded producing root for files reachable from multiple roots.
-      // Per-root scan warnings are aggregated and surfaced
-      // alongside the primary content block via `withWarnings` below.
+      // Scan each effective root (normal-path `rawBaseDirs`), dedup by identity
+      // key (a file reachable from multiple roots appears once, first root wins),
+      // and cross-reference by that key. Per-root scan warnings are surfaced via
+      // `withWarnings` below.
       const files: FileEntry[] = []
-      const seenPaths = new Set<string>()
+      const seenKeys = new Set<string>()
+      const matchedKeys = new Set<string>()
       const scanWarnings: string[] = []
       for (const baseDir of this.rawBaseDirs) {
         const { files: scanned, warnings: rootWarnings } = await scanBaseDir(
@@ -636,31 +627,33 @@ export class RAGServer {
         for (const w of rootWarnings) {
           scanWarnings.push(`[${baseDir}] ${w}`)
         }
-        for (const filePath of scanned) {
-          if (seenPaths.has(filePath)) continue
-          seenPaths.add(filePath)
-          const entry = ingestedMap.get(filePath)
+        for (const scannedPath of scanned) {
+          const key = await realpathForMatch(scannedPath)
+          if (seenKeys.has(key)) continue
+          seenKeys.add(key)
+          const entry = ingestedByKey.get(key)
+          // Ingested rows display the stored (normal) path so it round-trips
+          // into delete/read; not-ingested rows display the scanned path.
           files.push(
             entry
               ? {
-                  filePath,
+                  filePath: entry.filePath,
                   baseDir,
                   ingested: true,
                   chunkCount: entry.chunkCount,
                   timestamp: entry.timestamp,
                 }
-              : { filePath, baseDir, ingested: false }
+              : { filePath: scannedPath, baseDir, ingested: false }
           )
+          if (entry) matchedKeys.add(key)
         }
       }
 
-      // Content ingested via ingest_data (web pages, clipboard, etc.) plus any
-      // orphaned DB entries whose files no longer exist on disk. `seenPaths`
-      // is the union across every scanned root, so a DB entry is only a
-      // source when it is not reachable from any effective root.
-      const sources: SourceEntry[] = ingested
-        .filter((f) => !seenPaths.has(f.filePath))
-        .map((f) => {
+      // Content ingested via ingest_data plus orphaned DB entries: ingested
+      // entries whose identity key matched no scanned file.
+      const sources: SourceEntry[] = ingestedKeyed
+        .filter(({ key }) => !matchedKeys.has(key))
+        .map(({ entry: f }) => {
           if (looksLikeRawDataPath(f.filePath)) {
             const source = extractSourceFromPath(f.filePath)
             if (source) return { source, chunkCount: f.chunkCount, timestamp: f.timestamp }
@@ -743,14 +736,13 @@ export class RAGServer {
         // invalid. Placed AFTER the `source` branch so source-mode requests
         // continue to work in degraded mode.
         this.assertConfigOk()
-        // Path-canonicalization invariant: realpath only in the validation/security domain;
-        // resolve() everywhere user-facing. The DB key is the verbatim path
-        // ingestion stored (never realpath-normalized), so delete looks up by
-        // `args.filePath` as-is. The realpath boundary is enforced separately
-        // by `parser.validateFilePath` below.
+        // DB key = the verbatim resolve()-stored path; look up as-is (realpath
+        // stays in validateFilePath; see BaseDirsConfig for the path policy).
         targetPath = args.filePath
       } else {
-        throw new Error('Either filePath or source must be provided')
+        // Missing required input is a client error → InvalidParams (matches
+        // read_chunk_neighbors); a plain Error would surface as InternalError.
+        throw new McpError(ErrorCode.InvalidParams, 'Either filePath or source must be provided')
       }
 
       // Only validate user-provided filePath (not internally generated paths)
@@ -867,11 +859,8 @@ export class RAGServer {
       } else {
         // XOR + hasSource === false guarantees filePath is a non-empty string here.
         this.assertConfigOk()
-        // Path-canonicalization invariant: realpath only in the validation/security domain;
-        // resolve() everywhere user-facing. The DB key is the verbatim path
-        // ingestion stored (never realpath-normalized), so read_chunk_neighbors
-        // looks up by `args.filePath` as-is. The realpath boundary is enforced
-        // separately by `parser.validateFilePath` below.
+        // DB key = the verbatim resolve()-stored path; look up as-is (realpath
+        // stays in validateFilePath; see BaseDirsConfig for the path policy).
         targetPath = args.filePath as string
       }
       if (!skipValidation) {
