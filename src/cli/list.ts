@@ -1,12 +1,11 @@
 // CLI list subcommand — list files and ingestion status
 
-import { readdir } from 'node:fs/promises'
-import { extname, join, resolve, sep } from 'node:path'
+import { resolve, sep } from 'node:path'
 
-import { SUPPORTED_EXTENSIONS } from '../parser/index.js'
 import { displayPath, legacyBaseDir } from '../utils/base-dirs.js'
 import { MAX_SCAN_DEPTH } from '../utils/limits.js'
 import { extractSourceFromPath, looksLikeRawDataPath } from '../utils/raw-data-utils.js'
+import { bfsCollectSupportedFiles } from '../utils/scan.js'
 import { createVectorStore, resolveCliBaseDirsOrExit } from './common.js'
 import type { GlobalOptions } from './options.js'
 import { consumeBaseDirArg, resolveGlobalConfig, validatePath } from './options.js'
@@ -27,63 +26,19 @@ interface ScanRootResult {
 }
 
 /**
- * Bounded BFS scan of a single root, up to {@link MAX_SCAN_DEPTH} levels deep.
- * Symlinks are skipped (mirrors `walkDirectory` in `cli/ingest.ts`) and
- * paths under `excludePaths` are filtered out. Per-directory `readdir`
- * errors are captured into the returned `warnings` and do not abort the
- * scan; this is the key change introduced by Finding #10 — a permission-
- * denied error under one root must not hide files under another root.
+ * Bounded BFS scan of a single root, up to `MAX_SCAN_DEPTH` levels deep.
+ * Delegates the traversal to {@link bfsCollectSupportedFiles} and renders the
+ * `list`-specific warnings: per-directory read failures (Finding #10 — one
+ * unreadable subtree must not hide files under another root) and the depth-
+ * limit warning, both annotated with `displayPath`.
  */
 async function scanRoot(root: string, excludePaths: string[]): Promise<ScanRootResult> {
-  const files: string[] = []
+  const { files, unreadableDirs, depthLimited } = await bfsCollectSupportedFiles(root, excludePaths)
+
   const warnings: string[] = []
-  let depthLimited = false
-
-  const queue: { dirPath: string; depth: number }[] = [{ dirPath: root, depth: 0 }]
-
-  while (queue.length > 0) {
-    const { dirPath, depth } = queue.shift()!
-
-    if (depth >= MAX_SCAN_DEPTH) {
-      depthLimited = true
-      continue
-    }
-
-    // TypeScript's `readdir` has overloads keyed on the options shape; when
-    // `withFileTypes: true` is passed as a literal-typed object the inferred
-    // return is `Dirent<string>[]`, which we use directly. The explicit
-    // type here keeps the loop body's `entry.isFile()` / `entry.name`
-    // accesses pointed at the string-encoded Dirent shape.
-    let entries: import('node:fs').Dirent<string>[]
-    try {
-      entries = (await readdir(dirPath, {
-        withFileTypes: true,
-        encoding: 'utf8',
-      })) as import('node:fs').Dirent<string>[]
-    } catch (error) {
-      // Per-root error tolerance: record the warning and continue. The
-      // typical case is permission-denied under a subdirectory; previously
-      // this killed the whole `list` invocation.
-      const code =
-        error && typeof error === 'object' && 'code' in error
-          ? ((error as NodeJS.ErrnoException).code ?? 'UNKNOWN')
-          : 'UNKNOWN'
-      warnings.push(`cannot read directory: ${displayPath(dirPath)} (${code})`)
-      continue
-    }
-
-    for (const entry of entries) {
-      const fullPath = join(dirPath, entry.name)
-      if (entry.isSymbolicLink()) continue
-      if (excludePaths.some((ep) => fullPath.startsWith(ep))) continue
-      if (entry.isDirectory()) {
-        queue.push({ dirPath: fullPath, depth: depth + 1 })
-      } else if (entry.isFile() && SUPPORTED_EXTENSIONS.has(extname(entry.name).toLowerCase())) {
-        files.push(fullPath)
-      }
-    }
+  for (const { dirPath, code } of unreadableDirs) {
+    warnings.push(`cannot read directory: ${displayPath(dirPath)} (${code})`)
   }
-
   if (depthLimited) {
     warnings.push(
       `some directories under ${displayPath(root)} were skipped because they exceed the maximum depth (${MAX_SCAN_DEPTH})`

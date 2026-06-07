@@ -1,7 +1,7 @@
 // CLI ingest subcommand — bulk file ingestion with single optimize() at end
 
-import { opendir, realpath, stat } from 'node:fs/promises'
-import { extname, join, resolve, sep } from 'node:path'
+import { realpath, stat } from 'node:fs/promises'
+import { extname, resolve, sep } from 'node:path'
 
 import { SemanticChunker } from '../chunker/index.js'
 import type { Embedder } from '../embedder/index.js'
@@ -11,6 +11,7 @@ import { DocumentParser, SUPPORTED_EXTENSIONS } from '../parser/index.js'
 import type { QualityProfile } from '../pdf-visual/types.js'
 import type { BaseDirsConfig, BaseDirsConfigWarning } from '../utils/base-dirs.js'
 import { DEFAULT_MAX_FILE_SIZE, MAX_SCAN_DEPTH } from '../utils/limits.js'
+import { bfsCollectSupportedFiles } from '../utils/scan.js'
 import type { VectorStore } from '../vectordb/index.js'
 import { createEmbedder, createVectorStore, resolveCliBaseDirsOrExit } from './common.js'
 import type { GlobalOptions, ResolvedGlobalConfig } from './options.js'
@@ -287,59 +288,6 @@ export async function resolveConfig(
 // File Collection
 // ============================================
 
-/**
- * BFS-walk a single directory up to {@link MAX_SCAN_DEPTH} levels, returning every
- * supported file path under it. Skips symlinks, permission errors, and excluded
- * directories. Reports a single shared `depthLimited` flag via an out-param so
- * the caller can emit one combined warning across multiple roots instead of
- * one per root.
- */
-async function walkDirectory(
-  rootPath: string,
-  excludePaths: string[],
-  state: { depthLimited: boolean }
-): Promise<string[]> {
-  const files: string[] = []
-
-  const queue: { dirPath: string; depth: number }[] = [{ dirPath: rootPath, depth: 0 }]
-
-  while (queue.length > 0) {
-    const { dirPath, depth } = queue.shift()!
-
-    if (depth >= MAX_SCAN_DEPTH) {
-      state.depthLimited = true
-      continue
-    }
-
-    let dir: Awaited<ReturnType<typeof opendir>>
-    try {
-      dir = await opendir(dirPath)
-    } catch {
-      console.error(`Warning: cannot read directory: ${dirPath}`)
-      continue
-    }
-
-    for await (const entry of dir) {
-      const fullPath = join(dirPath, entry.name)
-
-      // `join(dirPath, entry.name)` always produces a path under `dirPath`,
-      // which itself stays under `rootPath` because the BFS only enqueues
-      // descendants of `rootPath`. We therefore do not need a per-entry
-      // `startsWith(rootPath)` re-check here.
-      if (entry.isSymbolicLink()) continue
-      if (excludePaths.some((ep) => fullPath.startsWith(ep))) continue
-
-      if (entry.isDirectory()) {
-        queue.push({ dirPath: fullPath, depth: depth + 1 })
-      } else if (entry.isFile() && SUPPORTED_EXTENSIONS.has(extname(entry.name).toLowerCase())) {
-        files.push(fullPath)
-      }
-    }
-  }
-
-  return files
-}
-
 async function collectFiles(
   targetPath: string,
   baseDirs: readonly string[],
@@ -377,10 +325,17 @@ async function collectFiles(
       process.exit(1)
     }
 
-    const state = { depthLimited: false }
-    const collected = await walkDirectory(resolved, excludePaths, state)
+    const {
+      files: collected,
+      unreadableDirs,
+      depthLimited,
+    } = await bfsCollectSupportedFiles(resolved, excludePaths)
 
-    if (state.depthLimited) {
+    for (const { dirPath } of unreadableDirs) {
+      console.error(`Warning: cannot read directory: ${dirPath}`)
+    }
+
+    if (depthLimited) {
       console.error(
         `Warning: some directories were skipped because they exceed the maximum depth (${MAX_SCAN_DEPTH})`
       )

@@ -20,7 +20,7 @@ const mocks = vi.hoisted(() => {
   return {
     // fs/promises
     stat: vi.fn(),
-    opendir: vi.fn(),
+    readdir: vi.fn(),
     // `collectFiles` now realpath-resolves the positional path before the
     // "inside any configured root" check (Finding #1). The default mock is
     // identity (no symlinks) so existing tests behave as if the positional
@@ -66,7 +66,7 @@ const fsPromisesFactory = async (
   return {
     ...actual,
     stat: mocks.stat,
-    opendir: mocks.opendir,
+    readdir: mocks.readdir,
     realpath: mocks.realpath,
   }
 }
@@ -184,20 +184,13 @@ function mockDirent(
 }
 
 /**
- * Create a mock opendir result that yields entries as an async iterator.
- * dirMap: maps directory paths to their Dirent entries.
+ * Drive the `readdir({ withFileTypes: true })` mock from a directory map.
+ * dirMap: maps directory paths to their Dirent entries. `readdir(dirPath)`
+ * resolves to the Dirent[] array for that directory (empty when absent),
+ * mirroring the shared `bfsCollectSupportedFiles` scan helper.
  */
-function setupMockOpendir(dirMap: Record<string, ReturnType<typeof mockDirent>[]>) {
-  mocks.opendir.mockImplementation(async (dirPath: string) => {
-    const entries = dirMap[dirPath] ?? []
-    return {
-      [Symbol.asyncIterator]: async function* () {
-        for (const entry of entries) {
-          yield entry
-        }
-      },
-    }
-  })
+function setupMockReaddir(dirMap: Record<string, ReturnType<typeof mockDirent>[]>) {
+  mocks.readdir.mockImplementation(async (dirPath: string) => dirMap[dirPath] ?? [])
 }
 
 /**
@@ -318,7 +311,7 @@ describe('CLI ingest', () => {
       .mockResolvedValueOnce(mockDirStat()) // stat in collectFiles
     mocks.resolveCliBaseDirs.mockResolvedValue({ config: { baseDirs: [dirPath] }, warnings: [] })
 
-    setupMockOpendir({
+    setupMockReaddir({
       [dirPath]: [mockDirent('file1.md'), mockDirent('sub', 'directory')],
       [resolve('/tmp/test/docs/sub')]: [mockDirent('file2.txt')],
     })
@@ -362,7 +355,7 @@ describe('CLI ingest', () => {
       warnings: [],
     })
 
-    setupMockOpendir({
+    setupMockReaddir({
       [rootA]: [mockDirent('a.md')],
       // rootB has a file too, but it must NOT be ingested because the
       // positional path is `rootA`.
@@ -421,7 +414,7 @@ describe('CLI ingest', () => {
       warnings: [],
     })
 
-    setupMockOpendir({
+    setupMockReaddir({
       [rootA]: [
         mockDirent('keep.md'),
         mockDirent('lancedb', 'directory'),
@@ -463,7 +456,7 @@ describe('CLI ingest', () => {
       ],
     })
 
-    setupMockOpendir({ [root]: [mockDirent('a.md')] })
+    setupMockReaddir({ [root]: [mockDirent('a.md')] })
     setupSuccessfulIngestion()
 
     // Act
@@ -502,7 +495,7 @@ describe('CLI ingest', () => {
       current = next
     }
 
-    setupMockOpendir(dirMap)
+    setupMockReaddir(dirMap)
     setupSuccessfulIngestion()
 
     // Act
@@ -538,7 +531,7 @@ describe('CLI ingest', () => {
       current = next
     }
 
-    setupMockOpendir(dirMap)
+    setupMockReaddir(dirMap)
     setupSuccessfulIngestion()
 
     // Act
@@ -569,7 +562,7 @@ describe('CLI ingest', () => {
       current = next
     }
 
-    setupMockOpendir(dirMap)
+    setupMockReaddir(dirMap)
 
     // Act
     const { output, error } = await captureStderr(() => runIngest([dirPath]))
@@ -594,7 +587,7 @@ describe('CLI ingest', () => {
     mocks.stat.mockResolvedValueOnce(mockDirStat()).mockResolvedValueOnce(mockDirStat())
     mocks.resolveCliBaseDirs.mockResolvedValue({ config: { baseDirs: [dirPath] }, warnings: [] })
 
-    setupMockOpendir({
+    setupMockReaddir({
       [dirPath]: [
         mockDirent('real.md'),
         mockDirent('link-to-secret.md', 'symlink'),
@@ -625,7 +618,7 @@ describe('CLI ingest', () => {
     mocks.stat.mockResolvedValueOnce(mockDirStat()).mockResolvedValueOnce(mockDirStat())
     mocks.resolveCliBaseDirs.mockResolvedValue({ config: { baseDirs: [dirPath] }, warnings: [] })
 
-    mocks.opendir.mockImplementation(async (path: string) => {
+    mocks.readdir.mockImplementation(async (path: string) => {
       if (path === restrictedPath) {
         throw new Error('EACCES: permission denied')
       }
@@ -637,14 +630,7 @@ describe('CLI ingest', () => {
         ],
         [subPath]: [mockDirent('also-ok.md')],
       }
-      const entries = dirMap[path] ?? []
-      return {
-        [Symbol.asyncIterator]: async function* () {
-          for (const entry of entries) {
-            yield entry
-          }
-        },
-      }
+      return dirMap[path] ?? []
     })
 
     setupSuccessfulIngestion()
@@ -689,7 +675,7 @@ describe('CLI ingest', () => {
     mocks.stat.mockResolvedValueOnce(mockDirStat()).mockResolvedValueOnce(mockDirStat())
     mocks.resolveCliBaseDirs.mockResolvedValue({ config: { baseDirs: [dirPath] }, warnings: [] })
 
-    setupMockOpendir({
+    setupMockReaddir({
       [dirPath]: [mockDirent('bad.md'), mockDirent('good.md'), mockDirent('good2.txt')],
     })
 
@@ -734,7 +720,7 @@ describe('CLI ingest', () => {
     mocks.stat.mockResolvedValueOnce(mockDirStat()).mockResolvedValueOnce(mockDirStat())
     mocks.resolveCliBaseDirs.mockResolvedValue({ config: { baseDirs: [dirPath] }, warnings: [] })
 
-    setupMockOpendir({
+    setupMockReaddir({
       [dirPath]: [mockDirent('readme.jpg')],
     })
 
@@ -778,7 +764,7 @@ describe('CLI ingest', () => {
     mocks.stat.mockResolvedValueOnce(mockDirStat()).mockResolvedValueOnce(mockDirStat())
     mocks.resolveCliBaseDirs.mockResolvedValue({ config: { baseDirs: [dirPath] }, warnings: [] })
 
-    setupMockOpendir({
+    setupMockReaddir({
       [dirPath]: [mockDirent('a.md'), mockDirent('b.txt'), mockDirent('sub', 'directory')],
       [resolve('/tmp/test/docs/sub')]: [mockDirent('c.md')],
     })
@@ -1392,7 +1378,7 @@ describe('CLI ingest', () => {
         config: { baseDirs: [cliRootA, cliRootB] },
         warnings: [],
       })
-      setupMockOpendir({ [cliRootA]: [mockDirent('a.md')] })
+      setupMockReaddir({ [cliRootA]: [mockDirent('a.md')] })
       setupSuccessfulIngestion()
 
       try {
@@ -1428,7 +1414,7 @@ describe('CLI ingest', () => {
         config: { baseDirs: [envRootA, envRootB] },
         warnings: [],
       })
-      setupMockOpendir({ [envRootA]: [mockDirent('a.md')] })
+      setupMockReaddir({ [envRootA]: [mockDirent('a.md')] })
       setupSuccessfulIngestion()
 
       // Act
@@ -1460,7 +1446,7 @@ describe('CLI ingest', () => {
           },
         ],
       })
-      setupMockOpendir({ [root]: [mockDirent('a.md')] })
+      setupMockReaddir({ [root]: [mockDirent('a.md')] })
       setupSuccessfulIngestion()
 
       // Act
@@ -1502,7 +1488,7 @@ describe('CLI ingest', () => {
         config: { baseDirs: [cwd] },
         warnings: [],
       })
-      setupMockOpendir({ [cwd]: [mockDirent('a.md')] })
+      setupMockReaddir({ [cwd]: [mockDirent('a.md')] })
       setupSuccessfulIngestion()
 
       // Act
