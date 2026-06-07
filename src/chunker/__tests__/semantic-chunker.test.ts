@@ -150,16 +150,13 @@ Topic B is completely different. Topic B continues here.`
 
       const result = await strictChunker.chunkText(text, mockEmbedder)
 
-      // With high threshold (0.95):
-      // - 1st sentence → new chunk
-      // - 2nd sentence → initConst * 0.8 = 1.2 > 0.95 → same chunk (passes initConst check)
-      // - 3rd sentence → maxSim ≈ 0.6-0.7 < 0.95 → new chunk
-      // Result: 2 chunks, but second may be too short (23 chars < minChunkLength even with 10)
-      expect(result.length).toBeGreaterThanOrEqual(1)
-      expect(result.length).toBeLessThanOrEqual(2)
-
-      // Verify the strictness is reflected
+      // hardThreshold 0.95 splits sentence 3 (sim ≈0.94 < 0.95) into its own
+      // chunk; a lower threshold would merge all three. → deterministically 2.
+      expect(result).toHaveLength(2)
       expect(result[0]?.text).toContain('First sentence')
+      expect(result[0]?.text).toContain('Second sentence')
+      expect(result[1]?.text).toContain('Third sentence')
+      expect(result[1]?.text).not.toContain('Second sentence')
     })
 
     it('should filter chunks shorter than minChunkLength', async () => {
@@ -179,9 +176,9 @@ Topic B is completely different. Topic B continues here.`
 
       const result = await chunkerWithHighMin.chunkText(text, mockEmbedder)
 
-      // Both sentences are too short, but might be combined
-      // If combined and still too short, should be filtered
-      expect(result.every((chunk) => chunk.text.length >= 100 || result.length === 0)).toBe(true)
+      // Orthogonal sentences split into two chunks, both < minChunkLength (100),
+      // so every chunk is filtered out → empty result.
+      expect(result).toHaveLength(0)
     })
   })
 

@@ -6,7 +6,7 @@
 
 import { mkdir, rm, symlink, writeFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DocumentParser, ValidationError } from '../../parser/index.js'
 import { RAGServer } from '../../server/index.js'
 
@@ -347,27 +347,40 @@ The chunker requires sufficient text length to generate meaningful chunks.`
   // S-004: MCP security best practices compliance
   // --------------------------------------------
   describe('S-004: MCP security best practices compliance', () => {
+    // The stack-trace policy (formatErrorMessage) governs INTERNAL (non-input)
+    // failures only. Input errors (bad path, missing file, unsupported format,
+    // size) surface as McpError InvalidParams with a clean message and never
+    // reach formatErrorMessage. To exercise the policy substantively we induce a
+    // genuine internal failure: path/size validation passes for an existing
+    // fixture, then the parse step throws a generic Error.
+    const internalErrorMessage = 'Induced internal parse failure'
+
     // Default behavior: Stack traces NOT included (secure by default for MCP servers)
     it('Stack traces not included by default when NODE_ENV is not set', async () => {
       const originalEnv = process.env['NODE_ENV']
       process.env['NODE_ENV'] = undefined
 
-      const nonExistentFile = resolve('./tmp/nonexistent.txt')
+      const sampleFile = resolve(fixturesDir, 'sample.txt')
+      const parseSpy = vi
+        .spyOn(DocumentParser.prototype, 'parseFile')
+        .mockRejectedValue(new Error(internalErrorMessage))
 
       try {
-        await server.handleIngestFile({ filePath: nonExistentFile })
+        await server.handleIngestFile({ filePath: sampleFile })
         expect.fail('Expected error to be thrown')
       } catch (error) {
         const errorMessage = (error as Error).message
 
-        // Verify stack trace is not included
+        // The internal failure surfaces, but without stack-trace details
+        expect(errorMessage).toContain(internalErrorMessage)
         expect(errorMessage).not.toContain(' at ')
         expect(errorMessage).not.toContain('.ts:')
         expect(errorMessage).not.toContain('.js:')
+      } finally {
+        parseSpy.mockRestore()
+        // Restore environment variable
+        process.env['NODE_ENV'] = originalEnv
       }
-
-      // Restore environment variable
-      process.env['NODE_ENV'] = originalEnv
     })
 
     // Development mode: Stack traces ARE included for debugging
@@ -375,20 +388,24 @@ The chunker requires sufficient text length to generate meaningful chunks.`
       const originalEnv = process.env['NODE_ENV']
       process.env['NODE_ENV'] = 'development'
 
-      const nonExistentFile = resolve('./tmp/nonexistent.txt')
+      const sampleFile = resolve(fixturesDir, 'sample.txt')
+      const parseSpy = vi
+        .spyOn(DocumentParser.prototype, 'parseFile')
+        .mockRejectedValue(new Error(internalErrorMessage))
 
       try {
-        await server.handleIngestFile({ filePath: nonExistentFile })
+        await server.handleIngestFile({ filePath: sampleFile })
         expect.fail('Expected error to be thrown')
       } catch (error) {
         const errorMessage = (error as Error).message
 
         // Verify stack trace IS included in development mode
         expect(errorMessage).toContain(' at ')
+      } finally {
+        parseSpy.mockRestore()
+        // Restore environment variable
+        process.env['NODE_ENV'] = originalEnv
       }
-
-      // Restore environment variable
-      process.env['NODE_ENV'] = originalEnv
     })
   })
 })

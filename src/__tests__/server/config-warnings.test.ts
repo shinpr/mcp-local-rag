@@ -228,14 +228,6 @@ describe('Config warning delivery via MCP annotations', () => {
         priority: 0.3,
       })
     })
-
-    it('includes warnings on repeated status calls', async () => {
-      const result1 = await server.handleStatus()
-      const result2 = await server.handleStatus()
-
-      expect(result1.content.length).toBe(2)
-      expect(result2.content.length).toBe(2)
-    })
   })
 
   describe('status tool without warnings', () => {

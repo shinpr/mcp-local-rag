@@ -4,7 +4,6 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
-  GLOBAL_DEFAULTS,
   parseGlobalOptions,
   ROOT_HELP_TEXT,
   resolveGlobalConfig,
@@ -201,10 +200,11 @@ describe('CLI global options', () => {
 
     it('should use defaults when no options or env vars', () => {
       const config = resolveGlobalConfig({})
+      // Independent literals (not GLOBAL_DEFAULTS) so default changes are caught here.
       expect(config).toEqual({
-        dbPath: GLOBAL_DEFAULTS.dbPath,
-        cacheDir: GLOBAL_DEFAULTS.cacheDir,
-        modelName: GLOBAL_DEFAULTS.modelName,
+        dbPath: './lancedb/',
+        cacheDir: './models/',
+        modelName: 'Xenova/all-MiniLM-L6-v2',
       })
     })
 
@@ -257,7 +257,7 @@ describe('CLI global options', () => {
       const config = resolveGlobalConfig({ dbPath: '/cli/db' })
       expect(config.dbPath).toBe('/cli/db')
       expect(config.cacheDir).toBe('/env/cache')
-      expect(config.modelName).toBe(GLOBAL_DEFAULTS.modelName)
+      expect(config.modelName).toBe('Xenova/all-MiniLM-L6-v2')
     })
   })
 

@@ -18,7 +18,7 @@
 
 import * as mupdf from 'mupdf'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { renderPdfPage, VlmError } from '../renderer'
+import { renderPdfPage, VlmError } from '../renderer.js'
 
 // PNG magic bytes per RFC 2083 §3.1.
 const PNG_MAGIC = [0x89, 0x50, 0x4e, 0x47] as const

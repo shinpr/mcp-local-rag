@@ -231,26 +231,24 @@ describe('read_chunk_neighbors integration', () => {
       expect(hits.length).toBeGreaterThan(0)
       const firstHit = hits[0]
       if (!firstHit) throw new Error('Expected at least one query hit')
-      const { filePath: hitFilePath, chunkIndex: hitChunkIndex } = firstHit
+      const hitFilePath = firstHit.filePath
 
       // Install spy AFTER the query step so query path doesn't contribute
       const vectorStore = getVectorStore(ragServer)
       const spy = vi.spyOn(vectorStore, 'getChunksByRange')
       spy.mockClear()
 
+      // chunkIndex 0 → expected range is the literal [0, 2] (independent of the
+      // handler's clamp formula) and checks min clamps to 0, not -2.
       const neighborRes = await ragServer.handleReadChunkNeighbors({
         filePath: hitFilePath,
-        chunkIndex: hitChunkIndex,
+        chunkIndex: 0,
       })
-      // Sanity: response resolved with valid payload
       expect(neighborRes.content[0]).toBeDefined()
 
+      // No-N+1: the window resolves in one DB call (spy-verified; no observable surface).
       expect(spy.mock.calls).toHaveLength(1)
-      // Handler clamps minIdx via Math.max(0, chunkIndex - before) per Design Doc
-      // §Main Components → Handler. maxIdx is unclamped.
-      const expectedMinIdx = Math.max(0, hitChunkIndex - 2)
-      const expectedMaxIdx = hitChunkIndex + 2
-      expect(spy.mock.calls[0]).toEqual([hitFilePath, expectedMinIdx, expectedMaxIdx])
+      expect(spy.mock.calls[0]).toEqual([hitFilePath, 0, 2])
 
       spy.mockRestore()
     })

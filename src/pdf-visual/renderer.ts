@@ -3,10 +3,9 @@
 // Given an already-open mupdf `Document` and a 1-based page number, renders
 // either the full page or a crop rectangle to a PNG byte array at the
 // renderer-internal DPI. The renderer does NOT own the document lifecycle —
-// the caller (orchestrator) opens and destroys the document; see DD
-// §pdf-visual/renderer.ts and §AC-013.
+// the caller opens and destroys the document.
 //
-// Contract (DD §Component → renderer.ts):
+// Contract:
 //   1. `page = doc.loadPage(pageNum - 1)`              (1-based → 0-based)
 //   2. `matrix = [RENDER_DPI/72, 0, 0, RENDER_DPI/72, 0, 0]`
 //   3. Full page: `page.toPixmap(matrix, ColorSpace.DeviceRGB, false, true)`
@@ -14,10 +13,6 @@
 //   4. return `pixmap.asPNG()`                          (Uint8Array, not Buffer)
 //   5. on mupdf error → throw `VlmError('Failed to render PDF page',
 //                                       { cause: err, pageNum })`
-//
-// `VlmError` was staged here at T3.1 and promoted to `./types.ts` at T3.3 —
-// renderer re-exports it from the canonical location so existing importers
-// keep working.
 
 import type { Document as MupdfDocument } from 'mupdf'
 import * as mupdf from 'mupdf'

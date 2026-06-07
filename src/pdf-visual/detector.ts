@@ -50,8 +50,7 @@ const VECTOR_STROKE_COUNT_THRESHOLD = 5
 /**
  * Input page record consumed by the detector. `stextJson` is typed `unknown`
  * because mupdf's `StructuredText.asJSON()` shape is not statically declared
- * by `mupdf.d.ts` (DD §Risks → "mupdf JSON block.type taxonomy"). The
- * implementation narrows it locally.
+ * by `mupdf.d.ts`. The implementation narrows it locally.
  */
 interface DetectorPage {
   pageNum: number
@@ -60,8 +59,7 @@ interface DetectorPage {
 
 /**
  * Output record. Separate from the input page record (not joined back) so
- * the detector stays dispatch-agnostic; the orchestrator (T3.4) joins via
- * `pageNum`.
+ * the detector stays dispatch-agnostic; the orchestrator joins via `pageNum`.
  */
 interface DetectorResult {
   pageNum: number

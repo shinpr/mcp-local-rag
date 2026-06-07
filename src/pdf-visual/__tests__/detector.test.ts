@@ -7,7 +7,7 @@
 
 import type { Document as MupdfDocument } from 'mupdf'
 import { describe, expect, it, vi } from 'vitest'
-import { detectVisualCandidates } from '../detector'
+import { detectVisualCandidates } from '../detector.js'
 
 const PAGE_BOUNDS = [0, 0, 1000, 1000] as const
 

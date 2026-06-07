@@ -8,7 +8,7 @@ import {
   filterPageBoundarySentences,
   joinFilteredPages,
   type PageData,
-} from '../pdf-filter'
+} from '../pdf-filter.js'
 
 describe('pdf-filter', () => {
   describe('joinFilteredPages', () => {

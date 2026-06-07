@@ -1,6 +1,6 @@
 {
   "name": "mcp-local-rag",
-  "version": "0.14.2",
+  "version": "0.15.0",
   "description": "Local RAG MCP Server - Easy-to-setup document search with minimal configuration",
   "type": "module",
   "main": "dist/index.js",
@@ -45,6 +45,7 @@
     "dev": "tsx src/index.ts",
     "watch": "tsx watch src/index.ts",
     "type-check": "tsc --noEmit",
+    "type-check:test": "tsc -p tsconfig.test.json",
     "test": "vitest run --exclude 'src/__tests__/e2e/visual-ingest-e2e.test.ts'",
     "test:watch": "vitest",
     "test:e2e": "RUN_E2E=1 vitest run src/__tests__/e2e/visual-ingest-e2e.test.ts",
@@ -56,14 +57,14 @@
     "check:fix": "biome check --write src",
     "check:unused": "knip --include exports",
     "check:deps": "dpdm --no-tree --no-warning --exit-code circular:1 -T --tsconfig ./tsconfig.json --exclude \"(node_modules|__tests__|\\.test\\.ts$|\\.spec\\.ts$)\" \"src/**/*.ts\"",
-    "check:all": "pnpm run check && pnpm run lint && pnpm run format:check && pnpm run check:unused && pnpm run check:deps && pnpm run build && pnpm run test",
+    "check:all": "pnpm run check && pnpm run lint && pnpm run format:check && pnpm run check:unused && pnpm run check:deps && pnpm run build && pnpm run type-check:test && pnpm run test",
     "cleanup:processes": "bash ./scripts/cleanup-test-processes.sh",
     "test:safe": "pnpm test && pnpm run cleanup:processes",
     "prepare": "husky"
   },
   "dependencies": {
     "@huggingface/transformers": "^4.2.0",
-    "@lancedb/lancedb": "^0.29.0",
+    "@lancedb/lancedb": "^0.30.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@mozilla/readability": "0.6.0",
     "jsdom": "^29.1.1",
@@ -72,18 +73,18 @@
     "turndown": "7.2.4"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.4.15",
+    "@biomejs/biome": "^2.4.16",
     "@types/jsdom": "^28.0.3",
-    "@types/node": "^25.9.1",
+    "@types/node": "^25.9.2",
     "@types/turndown": "5.0.6",
     "dpdm": "^4.2.0",
     "husky": "^9.1.7",
-    "knip": "^6.14.2",
-    "lint-staged": "^17.0.5",
+    "knip": "^6.16.1",
+    "lint-staged": "^17.0.7",
     "tsc-alias": "^1.8.17",
-    "tsx": "^4.22.3",
+    "tsx": "^4.22.4",
     "typescript": "^6.0.3",
-    "vitest": "^4.1.7"
+    "vitest": "^4.1.8"
   },
   "engines": {
     "node": ">=22"

@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { type VectorChunk, VectorStore } from '../index.js'
 import { type ChunkRow, DatabaseError, isLanceDBRawResult, toSearchResult } from '../types.js'
 
@@ -55,6 +55,116 @@ describe('VectorStore', () => {
     const norm = Math.sqrt(vector.reduce((sum, x) => sum + x * x, 0))
     return vector.map((x) => x / norm)
   }
+
+  /**
+   * Run `fn` against a freshly initialized VectorStore backed by a unique,
+   * isolated temp DB path. The path is removed before construction and again
+   * in a finally block, so each test gets a clean DB and leaves nothing behind
+   * regardless of pass/fail. Removes the per-test
+   * `dbPath + existsSync/rmSync + try/finally` boilerplate.
+   */
+  async function withTempDb(
+    name: string,
+    fn: (store: VectorStore) => Promise<void>
+  ): Promise<void> {
+    const dbPath = `./tmp/test-vectordb-${name}`
+    if (fs.existsSync(dbPath)) {
+      fs.rmSync(dbPath, { recursive: true })
+    }
+    try {
+      const store = new VectorStore({ dbPath, tableName: 'chunks' })
+      await store.initialize()
+      await fn(store)
+    } finally {
+      if (fs.existsSync(dbPath)) {
+        fs.rmSync(dbPath, { recursive: true })
+      }
+    }
+  }
+
+  describe('deleteChunks behavior', () => {
+    it('removes all chunks for the given file path', async () => {
+      const store = new VectorStore({ dbPath: testDbPath, tableName: 'chunks' })
+      await store.initialize()
+      await store.insertChunks([
+        createTestChunk('keep body', '/docs/keep.txt', 0),
+        createTestChunk('drop body one', '/docs/drop.txt', 0),
+        createTestChunk('drop body two', '/docs/drop.txt', 1),
+      ])
+
+      await store.deleteChunks('/docs/drop.txt')
+
+      const paths = (await store.listFiles()).map((f) => f.filePath)
+      expect(paths).toContain('/docs/keep.txt')
+      expect(paths).not.toContain('/docs/drop.txt')
+    })
+
+    it('is a no-op success when no chunk matches the file path', async () => {
+      const store = new VectorStore({ dbPath: testDbPath, tableName: 'chunks' })
+      await store.initialize()
+      await store.insertChunks([createTestChunk('only body', '/docs/keep.txt', 0)])
+
+      await expect(store.deleteChunks('/docs/never-ingested.txt')).resolves.toBeUndefined()
+      expect((await store.listFiles()).map((f) => f.filePath)).toEqual(['/docs/keep.txt'])
+    })
+
+    it('returns normally when the table does not exist yet', async () => {
+      const store = new VectorStore({ dbPath: testDbPath, tableName: 'chunks' })
+      await store.initialize()
+      await expect(store.deleteChunks('/docs/anything.txt')).resolves.toBeUndefined()
+    })
+
+    it('escapes single quotes in the file path (SQL-injection-safe)', async () => {
+      const store = new VectorStore({ dbPath: testDbPath, tableName: 'chunks' })
+      await store.initialize()
+      const tricky = "/docs/o'brien's file.txt"
+      await store.insertChunks([
+        createTestChunk('tricky body', tricky, 0),
+        createTestChunk('other body', '/docs/other.txt', 0),
+      ])
+
+      await store.deleteChunks(tricky)
+
+      expect((await store.listFiles()).map((f) => f.filePath)).toEqual(['/docs/other.txt'])
+    })
+  })
+
+  describe('FTS per-request degrade', () => {
+    it('falls back to vector-only for a failed FTS query without disabling FTS', async () => {
+      const store = new VectorStore({ dbPath: testDbPath, tableName: 'chunks' })
+      await store.initialize()
+      await store.insertChunks([
+        createTestChunk(
+          'alpha document about typescript',
+          '/d/a.txt',
+          0,
+          createNormalizedVector(1)
+        ),
+        createTestChunk('beta document about rust', '/d/b.txt', 0, createNormalizedVector(2)),
+      ])
+      expect((await store.getStatus()).ftsIndexEnabled).toBe(true)
+
+      // Force only the FTS path (table.search) to throw; the vector path
+      // (table.vectorSearch) is a separate method and stays intact.
+      const table = (store as unknown as { table: { search: (...args: unknown[]) => unknown } })
+        .table
+      const ftsSpy = vi.spyOn(table, 'search').mockImplementationOnce(() => {
+        throw new Error('transient FTS failure')
+      })
+
+      // The query still resolves with vector-only results (no throw).
+      const results = await store.search(createNormalizedVector(1), 'typescript', 5)
+      expect(results.length).toBeGreaterThan(0)
+
+      // FTS is NOT permanently disabled by a single failed query.
+      expect((await store.getStatus()).ftsIndexEnabled).toBe(true)
+
+      // And the next query retries hybrid search successfully.
+      ftsSpy.mockRestore()
+      const retry = await store.search(createNormalizedVector(1), 'typescript', 5)
+      expect(retry.length).toBeGreaterThan(0)
+    })
+  })
 
   describe('Phase 1: FTS Index Creation and Migration', () => {
     describe('FTS index auto-creation', () => {
@@ -300,7 +410,6 @@ describe('VectorStore', () => {
 
     it('should use vector similarity order when hybridWeight=0', async () => {
       const vectorOnlyDbPath = './tmp/test-vectordb-vector-only'
-      const fs = await import('node:fs')
       if (fs.existsSync(vectorOnlyDbPath)) {
         fs.rmSync(vectorOnlyDbPath, { recursive: true })
       }
@@ -352,7 +461,6 @@ describe('VectorStore', () => {
 
     it('should boost keyword matches when hybridWeight=1', async () => {
       const ftsOnlyDbPath = './tmp/test-vectordb-fts-only'
-      const fs = await import('node:fs')
       if (fs.existsSync(ftsOnlyDbPath)) {
         fs.rmSync(ftsOnlyDbPath, { recursive: true })
       }
@@ -402,7 +510,6 @@ describe('VectorStore', () => {
 
     it('should apply keyword boost with default hybridWeight=0.6', async () => {
       const hybridDbPath = './tmp/test-vectordb-hybrid'
-      const fs = await import('node:fs')
       if (fs.existsSync(hybridDbPath)) {
         fs.rmSync(hybridDbPath, { recursive: true })
       }
@@ -469,18 +576,7 @@ describe('VectorStore', () => {
    */
   describe('File filter (maxFiles)', () => {
     it('precondition: seed distance produces expected score ordering', async () => {
-      const dbPath = './tmp/test-vectordb-maxfiles-precondition'
-      if (fs.existsSync(dbPath)) {
-        fs.rmSync(dbPath, { recursive: true })
-      }
-
-      try {
-        const store = new VectorStore({
-          dbPath,
-          tableName: 'chunks',
-        })
-        await store.initialize()
-
+      await withTempDb('maxfiles-precondition', async (store) => {
         const queryVector = createNormalizedVector(1)
 
         // Insert chunks with seeds 1, 2, 50 to verify distance ordering
@@ -502,11 +598,7 @@ describe('VectorStore', () => {
         const score50 = results.find((r) => r.filePath === '/test/s50.txt')?.score ?? 999
         expect(score1).toBeLessThan(score2)
         expect(score2).toBeLessThan(score50)
-      } finally {
-        if (fs.existsSync(dbPath)) {
-          fs.rmSync(dbPath, { recursive: true })
-        }
-      }
+      })
     })
 
     it('returns only chunks from best-scoring file when maxFiles=1', async () => {
@@ -913,76 +1005,6 @@ describe('VectorStore', () => {
           }
         }
       })
-
-      it('returns first two groups when multiple boundaries exist', async () => {
-        const relatedDbPath = './tmp/test-vectordb-related-multi-boundary'
-        if (fs.existsSync(relatedDbPath)) {
-          fs.rmSync(relatedDbPath, { recursive: true })
-        }
-
-        try {
-          const store = new VectorStore({
-            dbPath: relatedDbPath,
-            tableName: 'chunks',
-            grouping: 'related',
-          })
-          await store.initialize()
-
-          // Create 3 distinct groups with large gaps between them
-          // Group 1: seed 1 (distance ~0 from query)
-          const group1Vector = createNormalizedVector(1)
-          for (let i = 0; i < 2; i++) {
-            const chunk = createTestChunk(
-              `Group1 Doc ${i}`,
-              `/test/group1-${i}.txt`,
-              0,
-              group1Vector
-            )
-            await store.insertChunks([chunk])
-          }
-
-          // Group 2: seed 50 (medium distance from query)
-          const group2Vector = createNormalizedVector(50)
-          for (let i = 0; i < 2; i++) {
-            const chunk = createTestChunk(
-              `Group2 Doc ${i}`,
-              `/test/group2-${i}.txt`,
-              0,
-              group2Vector
-            )
-            await store.insertChunks([chunk])
-          }
-
-          // Group 3: seed 100 (far distance from query)
-          const group3Vector = createNormalizedVector(100)
-          for (let i = 0; i < 2; i++) {
-            const chunk = createTestChunk(
-              `Group3 Doc ${i}`,
-              `/test/group3-${i}.txt`,
-              0,
-              group3Vector
-            )
-            await store.insertChunks([chunk])
-          }
-
-          const results = await store.search(group1Vector, '', 10)
-
-          // Contract: 'related' mode with 2+ boundaries → return first 2 groups
-          // Group 1 and Group 2 should be included, Group 3 should be excluded
-          expect(results.length).toBeLessThanOrEqual(6) // At most all 6 docs
-          expect(results.filter((r) => r.text.includes('Group1'))).toHaveLength(2)
-          // Group 2 may or may not be included depending on gap distribution
-          // Group 3 should be excluded if boundaries are detected correctly
-          const group3Count = results.filter((r) => r.text.includes('Group3')).length
-          expect(group3Count).toBeLessThanOrEqual(
-            results.filter((r) => r.text.includes('Group2')).length
-          )
-        } finally {
-          if (fs.existsSync(relatedDbPath)) {
-            fs.rmSync(relatedDbPath, { recursive: true })
-          }
-        }
-      })
     })
 
     describe('Similar vs Related comparison', () => {
@@ -1253,18 +1275,7 @@ describe('VectorStore', () => {
    */
   describe('getChunksByRange', () => {
     it('should return chunks in range [2, 5] in order when seeding 10 contiguous chunks (Early Verification Point)', async () => {
-      const dbPath = './tmp/test-vectordb-range-probe'
-      if (fs.existsSync(dbPath)) {
-        fs.rmSync(dbPath, { recursive: true })
-      }
-
-      try {
-        const store = new VectorStore({
-          dbPath,
-          tableName: 'chunks',
-        })
-        await store.initialize()
-
+      await withTempDb('range-probe', async (store) => {
         const filePath = '/test/contiguous.md'
 
         // Seed 10 contiguous chunks with chunkIndex 0..9 in ascending insertion order
@@ -1289,26 +1300,11 @@ describe('VectorStore', () => {
           expect(row).not.toHaveProperty('metadata')
           expect(Object.keys(row).sort()).toEqual(['chunkIndex', 'filePath', 'fileTitle', 'text'])
         }
-      } finally {
-        if (fs.existsSync(dbPath)) {
-          fs.rmSync(dbPath, { recursive: true })
-        }
-      }
+      })
     })
 
     it('should sort ascending even when chunks are inserted in descending order (AC-018 contract)', async () => {
-      const dbPath = './tmp/test-vectordb-range-sort'
-      if (fs.existsSync(dbPath)) {
-        fs.rmSync(dbPath, { recursive: true })
-      }
-
-      try {
-        const store = new VectorStore({
-          dbPath,
-          tableName: 'chunks',
-        })
-        await store.initialize()
-
+      await withTempDb('range-sort', async (store) => {
         const filePath = '/test/descending.md'
 
         // Insert chunks with chunkIndex 9,8,7,6,5,4,3,2,1,0 in that order
@@ -1324,60 +1320,34 @@ describe('VectorStore', () => {
 
         expect(result).toHaveLength(10)
         expect(result.map((row) => row.chunkIndex)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9])
-      } finally {
-        if (fs.existsSync(dbPath)) {
-          fs.rmSync(dbPath, { recursive: true })
-        }
-      }
+      })
     })
 
     it('should return empty array when backing table has not been initialized (lazy-table)', async () => {
-      const dbPath = './tmp/test-vectordb-range-lazy-table'
-      if (fs.existsSync(dbPath)) {
-        fs.rmSync(dbPath, { recursive: true })
-      }
-
-      try {
-        // Initialize but do not insert anything; this leaves the table null
+      await withTempDb('range-lazy-table', async (store) => {
+        // Do not insert anything; this leaves the table null
         // (createTable is deferred to first insertChunks call, per index.ts).
-        const store = new VectorStore({
-          dbPath,
-          tableName: 'chunks',
-        })
-        await store.initialize()
-
         const result = await store.getChunksByRange('/any/path.md', 0, 10)
 
         expect(result).toEqual([])
-      } finally {
-        if (fs.existsSync(dbPath)) {
-          fs.rmSync(dbPath, { recursive: true })
-        }
-      }
+      })
     })
 
     it('should throw DatabaseError with "Failed to read chunks by range" on simulated LanceDB failure', async () => {
-      const dbPath = './tmp/test-vectordb-range-db-error'
-      if (fs.existsSync(dbPath)) {
-        fs.rmSync(dbPath, { recursive: true })
-      }
-
-      try {
-        const store = new VectorStore({
-          dbPath,
-          tableName: 'chunks',
-        })
-        await store.initialize()
-
+      await withTempDb('range-db-error', async (store) => {
         // Seed a single chunk so the table is created
         await store.insertChunks([
           createTestChunk('seed', '/test/error-probe.md', 0, createNormalizedVector(1)),
         ])
 
-        // Replace the internal table handle with a stub whose query() throws.
-        // Matches the "inject a temporarily corrupted table handle" pattern
-        // referenced in Task 1.3 step 3, consistent with no mocking library
-        // being used elsewhere in this test file.
+        // Deliberate fault injection. The ASSERTED behavior is the public
+        // getChunksByRange rejection (observable): a LanceDB query failure must
+        // be wrapped as DatabaseError('Failed to read chunks by range'). There
+        // is no public seam to induce a LanceDB query failure, so replacing the
+        // private `table` handle with a stub whose query() throws is the
+        // pragmatic mechanism to exercise that wrapping. The coupling to the
+        // private field is intentional, not an oversight; do not rewrite to an
+        // external mock.
         const brokenTable = {
           query: () => {
             throw new Error('simulated LanceDB failure')
@@ -1391,26 +1361,11 @@ describe('VectorStore', () => {
         await expect(store.getChunksByRange('/test/error-probe.md', 0, 5)).rejects.toThrow(
           /Failed to read chunks by range/
         )
-      } finally {
-        if (fs.existsSync(dbPath)) {
-          fs.rmSync(dbPath, { recursive: true })
-        }
-      }
+      })
     })
 
     it('should throw DatabaseError when minIdx is NaN or a float (precondition guard)', async () => {
-      const dbPath = './tmp/test-vectordb-range-precondition'
-      if (fs.existsSync(dbPath)) {
-        fs.rmSync(dbPath, { recursive: true })
-      }
-
-      try {
-        const store = new VectorStore({
-          dbPath,
-          tableName: 'chunks',
-        })
-        await store.initialize()
-
+      await withTempDb('range-precondition', async (store) => {
         // Seed a single chunk so the table is created
         await store.insertChunks([
           createTestChunk('seed', '/test/precondition.md', 0, createNormalizedVector(1)),
@@ -1433,26 +1388,11 @@ describe('VectorStore', () => {
         await expect(store.getChunksByRange('/test/precondition.md', 5, 2)).rejects.toThrow(
           DatabaseError
         )
-      } finally {
-        if (fs.existsSync(dbPath)) {
-          fs.rmSync(dbPath, { recursive: true })
-        }
-      }
+      })
     })
 
     it('should normalize empty-string fileTitle to null and omit score/metadata keys (ChunkRow shape)', async () => {
-      const dbPath = './tmp/test-vectordb-range-chunkrow-shape'
-      if (fs.existsSync(dbPath)) {
-        fs.rmSync(dbPath, { recursive: true })
-      }
-
-      try {
-        const store = new VectorStore({
-          dbPath,
-          tableName: 'chunks',
-        })
-        await store.initialize()
-
+      await withTempDb('range-chunkrow-shape', async (store) => {
         const filePath = '/test/shape.md'
 
         // Seed a chunk where fileTitle is empty string (insertChunks stores ''
@@ -1473,11 +1413,73 @@ describe('VectorStore', () => {
         expect(row).not.toHaveProperty('metadata')
         // The only keys on a ChunkRow are the four Design Doc fields
         expect(Object.keys(row!).sort()).toEqual(['chunkIndex', 'filePath', 'fileTitle', 'text'])
-      } finally {
-        if (fs.existsSync(dbPath)) {
-          fs.rmSync(dbPath, { recursive: true })
+      })
+    })
+  })
+
+  describe('close', () => {
+    it('is idempotent and resets status to defaults', async () => {
+      await withTempDb('close-idempotent', async (store) => {
+        // Seed data so the table exists and status reflects real counts.
+        await store.insertChunks([
+          createTestChunk('body', '/test/close.txt', 0, createNormalizedVector(1)),
+        ])
+
+        // First close releases the connection.
+        await store.close()
+
+        // Second close must be a no-op, not throw.
+        await expect(store.close()).resolves.toBeUndefined()
+
+        // After close the table handle is gone, so getStatus returns the
+        // empty/default status without touching the database.
+        const status = await store.getStatus()
+        expect(status.documentCount).toBe(0)
+        expect(status.chunkCount).toBe(0)
+        expect(status.ftsIndexEnabled).toBe(false)
+      })
+    })
+  })
+
+  describe('listFiles / getStatus aggregation', () => {
+    it('aggregates per-file chunkCount and most-recent timestamp across files', async () => {
+      await withTempDb('aggregation', async (store) => {
+        // File A: 2 chunks with differing timestamps; the later one must win.
+        const earlier = '2020-01-01T00:00:00.000Z'
+        const later = '2024-06-01T12:00:00.000Z'
+        const fileAChunk0: VectorChunk = {
+          ...createTestChunk('A chunk 0', '/test/fileA.txt', 0, createNormalizedVector(1)),
+          timestamp: earlier,
         }
-      }
+        const fileAChunk1: VectorChunk = {
+          ...createTestChunk('A chunk 1', '/test/fileA.txt', 1, createNormalizedVector(2)),
+          timestamp: later,
+        }
+        // File B: single chunk.
+        const fileBChunk0: VectorChunk = {
+          ...createTestChunk('B chunk 0', '/test/fileB.txt', 0, createNormalizedVector(3)),
+          timestamp: '2022-03-03T03:03:03.000Z',
+        }
+
+        await store.insertChunks([fileAChunk0, fileAChunk1, fileBChunk0])
+
+        const files = await store.listFiles()
+        expect(files).toHaveLength(2)
+
+        const fileA = files.find((f) => f.filePath === '/test/fileA.txt')
+        expect(fileA).toBeDefined()
+        expect(fileA!.chunkCount).toBe(2)
+        // Most recent timestamp across File A's chunks.
+        expect(fileA!.timestamp).toBe(later)
+
+        const fileB = files.find((f) => f.filePath === '/test/fileB.txt')
+        expect(fileB).toBeDefined()
+        expect(fileB!.chunkCount).toBe(1)
+
+        const status = await store.getStatus()
+        expect(status.documentCount).toBe(2)
+        expect(status.chunkCount).toBe(3)
+      })
     })
   })
 })

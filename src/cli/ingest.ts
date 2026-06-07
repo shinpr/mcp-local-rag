@@ -1,33 +1,34 @@
 // CLI ingest subcommand — bulk file ingestion with single optimize() at end
 
-import { randomUUID } from 'node:crypto'
-import { opendir, realpath, stat } from 'node:fs/promises'
-import { basename, extname, join, resolve, sep } from 'node:path'
+import { stat } from 'node:fs/promises'
+import { resolve, sep } from 'node:path'
 
 import { SemanticChunker } from '../chunker/index.js'
 import type { Embedder } from '../embedder/index.js'
-import { buildChunksAndEmbeddings } from '../ingest/compute.js'
+import { buildChunksAndEmbeddings, buildVectorChunks } from '../ingest/compute.js'
 import { prepareVisualPdfChunks } from '../ingest/visual.js'
-import { DocumentParser, SUPPORTED_EXTENSIONS } from '../parser/index.js'
+import { DocumentParser } from '../parser/index.js'
 import type { QualityProfile } from '../pdf-visual/types.js'
 import type { BaseDirsConfig, BaseDirsConfigWarning } from '../utils/base-dirs.js'
-import type { VectorChunk, VectorStore } from '../vectordb/index.js'
-import { createEmbedder, createVectorStore, resolveCliBaseDirsOrExit } from './common.js'
+import { DEFAULT_MAX_FILE_SIZE } from '../utils/limits.js'
+import type { VectorStore } from '../vectordb/index.js'
+import {
+  createEmbedder,
+  createVectorStore,
+  resolveCliBaseDirsOrExit,
+  toErrorMessage,
+} from './common.js'
+import { collectFiles } from './file-collection.js'
 import type { GlobalOptions, ResolvedGlobalConfig } from './options.js'
 import {
   consumeBaseDirArg,
+  requireFlagValue,
   resolveDevice,
   resolveGlobalConfig,
   validateChunkMinLength,
   validateMaxFileSize,
   validatePath,
 } from './options.js'
-
-// ============================================
-// Constants
-// ============================================
-
-const MAX_DEPTH = 10
 
 // ============================================
 // Types
@@ -78,7 +79,7 @@ interface ParsedArgs {
 // ============================================
 
 const INGEST_DEFAULTS = {
-  maxFileSize: 104857600,
+  maxFileSize: DEFAULT_MAX_FILE_SIZE,
 } as const
 
 // ============================================
@@ -138,33 +139,25 @@ export function parseArgs(args: string[]): ParsedArgs {
         break
       }
       case '--max-file-size': {
-        const raw = args[++i]
-        if (raw === undefined || raw.startsWith('-')) {
-          console.error('Missing value for --max-file-size')
-          process.exit(1)
-        }
+        const raw = requireFlagValue(args, i, '--max-file-size')
         if (!/^\d+$/.test(raw)) {
           console.error(`Invalid value for --max-file-size: "${raw.slice(0, 100)}"`)
 
           process.exit(1)
         }
         options.maxFileSize = Number.parseInt(raw, 10)
-        i++
+        i += 2
         break
       }
       case '--chunk-min-length': {
-        const raw = args[++i]
-        if (raw === undefined || raw.startsWith('-')) {
-          console.error('Missing value for --chunk-min-length')
-          process.exit(1)
-        }
+        const raw = requireFlagValue(args, i, '--chunk-min-length')
         if (!/^\d+$/.test(raw)) {
           console.error(`Invalid value for --chunk-min-length: "${raw.slice(0, 100)}"`)
 
           process.exit(1)
         }
         options.chunkMinLength = Number.parseInt(raw, 10)
-        i++
+        i += 2
         break
       }
       case '--visual':
@@ -173,11 +166,7 @@ export function parseArgs(args: string[]): ParsedArgs {
         i++
         break
       case '--visual-quality': {
-        const value = args[++i]
-        if (value === undefined || value.startsWith('-')) {
-          console.error('Missing value for --visual-quality')
-          process.exit(1)
-        }
+        const value = requireFlagValue(args, i, '--visual-quality')
         if (value !== 'fast' && value !== 'quality') {
           console.error(
             `Invalid value for --visual-quality: "${value.slice(0, 100)}". Expected "fast" or "quality".`
@@ -185,7 +174,7 @@ export function parseArgs(args: string[]): ParsedArgs {
           process.exit(1)
         }
         options.visualQuality = value
-        i++
+        i += 2
         break
       }
       default:
@@ -290,115 +279,6 @@ export async function resolveConfig(
 }
 
 // ============================================
-// File Collection
-// ============================================
-
-/**
- * BFS-walk a single directory up to {@link MAX_DEPTH} levels, returning every
- * supported file path under it. Skips symlinks, permission errors, and excluded
- * directories. Reports a single shared `depthLimited` flag via an out-param so
- * the caller can emit one combined warning across multiple roots instead of
- * one per root.
- */
-async function walkDirectory(
-  rootPath: string,
-  excludePaths: string[],
-  state: { depthLimited: boolean }
-): Promise<string[]> {
-  const files: string[] = []
-
-  const queue: { dirPath: string; depth: number }[] = [{ dirPath: rootPath, depth: 0 }]
-
-  while (queue.length > 0) {
-    const { dirPath, depth } = queue.shift()!
-
-    if (depth >= MAX_DEPTH) {
-      state.depthLimited = true
-      continue
-    }
-
-    let dir: Awaited<ReturnType<typeof opendir>>
-    try {
-      dir = await opendir(dirPath)
-    } catch {
-      console.error(`Warning: cannot read directory: ${dirPath}`)
-      continue
-    }
-
-    for await (const entry of dir) {
-      const fullPath = join(dirPath, entry.name)
-
-      // `join(dirPath, entry.name)` always produces a path under `dirPath`,
-      // which itself stays under `rootPath` because the BFS only enqueues
-      // descendants of `rootPath`. We therefore do not need a per-entry
-      // `startsWith(rootPath)` re-check here.
-      if (entry.isSymbolicLink()) continue
-      if (excludePaths.some((ep) => fullPath.startsWith(ep))) continue
-
-      if (entry.isDirectory()) {
-        queue.push({ dirPath: fullPath, depth: depth + 1 })
-      } else if (entry.isFile() && SUPPORTED_EXTENSIONS.has(extname(entry.name).toLowerCase())) {
-        files.push(fullPath)
-      }
-    }
-  }
-
-  return files
-}
-
-async function collectFiles(
-  targetPath: string,
-  baseDirs: readonly string[],
-  excludePaths: string[]
-): Promise<string[]> {
-  const resolved = resolve(targetPath)
-  const info = await stat(resolved)
-
-  if (info.isFile()) {
-    const ext = extname(resolved).toLowerCase()
-    if (!SUPPORTED_EXTENSIONS.has(ext)) {
-      console.error(
-        `Unsupported file extension: ${ext} (supported: ${[...SUPPORTED_EXTENSIONS].join(', ')})`
-      )
-      return []
-    }
-    return [resolved]
-  }
-
-  if (info.isDirectory()) {
-    // realpath both sides so a symlinked positional path still matches a
-    // root whose realpath agrees. baseDirs from resolveCliBaseDirsOrExit
-    // are already realpath-normalized with a trailing sep.
-    const realResolved = await realpath(resolved)
-    const realResolvedWithSep = realResolved.endsWith(sep) ? realResolved : realResolved + sep
-    const insideAnyRoot = baseDirs.some(
-      (root) => realResolvedWithSep === root || realResolvedWithSep.startsWith(root)
-    )
-    if (!insideAnyRoot) {
-      console.error(
-        `Error: ${targetPath} is not under any configured base directory. ` +
-          `Allowed roots: ${baseDirs.join(', ')}. ` +
-          `Provide a path inside one of the configured roots, or set BASE_DIRS / --base-dir to include the desired tree.`
-      )
-      process.exit(1)
-    }
-
-    const state = { depthLimited: false }
-    const collected = await walkDirectory(resolved, excludePaths, state)
-
-    if (state.depthLimited) {
-      console.error(
-        `Warning: some directories were skipped because they exceed the maximum depth (${MAX_DEPTH})`
-      )
-    }
-
-    return [...new Set(collected)].sort()
-  }
-
-  return []
-}
-
-// ============================================
 // Per-file Ingestion
 // ============================================
 
@@ -431,12 +311,10 @@ export type IngestSingleFileOptions =
  * visual-enrichment path: `parsePdfPages` + VLM captioning (`pdf-visual`
  * orchestrator) + joined-text chunking. `pdf-visual` is loaded via dynamic
  * `await import('../pdf-visual/index.js')` so the default (non-visual) path
- * never pulls the VLM module into the bundle (NFR-1 dynamic-import discipline,
- * verified by AC-001 Proxy sentinel in T4.6).
+ * never pulls the VLM module into the bundle.
  *
- * Non-visual, non-PDF, and `visual: true` + non-PDF (silently falls through
- * to the default branch — AC-006) paths are byte-identical to the post-T0.3
- * state and never load `pdf-visual`.
+ * Non-visual, non-PDF, and `visual: true` + non-PDF paths all use the default
+ * text-only branch and never load `pdf-visual`.
  */
 export async function ingestSingleFile(
   filePath: string,
@@ -478,26 +356,12 @@ export async function ingestSingleFile(
     // pre-existing `metadata.fileSize` semantics (post-enrichment,
     // pre-chunking text length).
     await vectorStore.deleteChunks(filePath)
-    const timestamp = new Date().toISOString()
-    const vectorChunks: VectorChunk[] = chunks.map((chunk, index) => {
-      const embedding = embeddings[index]
-      if (!embedding) {
-        throw new Error(`Missing embedding for chunk ${index}`)
-      }
-      return {
-        id: randomUUID(),
-        filePath,
-        chunkIndex: chunk.index,
-        text: chunk.text,
-        vector: embedding,
-        metadata: {
-          fileName: basename(filePath),
-          fileSize: visualResult.text.length,
-          fileType: extname(filePath).slice(1),
-        },
-        fileTitle: title,
-        timestamp,
-      }
+    const vectorChunks = buildVectorChunks({
+      filePath,
+      chunks,
+      embeddings,
+      fileSize: visualResult.text.length,
+      fileTitle: title,
     })
     await vectorStore.insertChunks(vectorChunks)
     return vectorChunks.length
@@ -511,7 +375,7 @@ export async function ingestSingleFile(
     title = result.title || null
   }
 
-  // Chunk text + generate embeddings via the shared computation layer (Phase 0).
+  // Chunk text + generate embeddings via the shared computation layer.
   const { chunks, embeddings } = await buildChunksAndEmbeddings(text, title, chunker, embedder)
   if (chunks.length === 0) {
     console.error(`  Warning: 0 chunks generated (file may be empty or too short)`)
@@ -522,26 +386,12 @@ export async function ingestSingleFile(
   await vectorStore.deleteChunks(filePath)
 
   // Build vector chunks
-  const timestamp = new Date().toISOString()
-  const vectorChunks: VectorChunk[] = chunks.map((chunk, index) => {
-    const embedding = embeddings[index]
-    if (!embedding) {
-      throw new Error(`Missing embedding for chunk ${index}`)
-    }
-    return {
-      id: randomUUID(),
-      filePath,
-      chunkIndex: chunk.index,
-      text: chunk.text,
-      vector: embedding,
-      metadata: {
-        fileName: basename(filePath),
-        fileSize: text.length,
-        fileType: extname(filePath).slice(1),
-      },
-      fileTitle: title,
-      timestamp,
-    }
+  const vectorChunks = buildVectorChunks({
+    filePath,
+    chunks,
+    embeddings,
+    fileSize: text.length,
+    fileTitle: title,
   })
 
   // Insert chunks
@@ -593,15 +443,14 @@ export async function runIngest(args: string[], globalOptions: GlobalOptions = {
   const excludePaths = [`${resolve(config.dbPath)}${sep}`, `${resolve(config.cacheDir)}${sep}`]
 
   // Surface resolver warnings (precedence, nested-root pruning) on stderr
-  // before scan output starts. Scan-loop multi-root behavior is P2-T2; this
-  // task only wires the resolver so the warnings are visible today.
+  // before scan output starts.
   for (const warning of config.baseDirsWarnings) {
     console.error(warning.message)
   }
 
   // Collect files: when `targetPath` is a directory, the scan iterates every
-  // effective root in `config.baseDirs.baseDirs` (P2-T2) — the positional
-  // directory only triggers directory mode and is no longer the scan target.
+  // effective root in `config.baseDirs.baseDirs`; the positional directory
+  // only triggers directory mode and is no longer the scan target.
   // Single-file mode is unchanged. See `collectFiles` for the full rationale.
   const files = await collectFiles(targetPath, config.baseDirs.baseDirs, excludePaths)
   if (files.length === 0) {
@@ -614,9 +463,7 @@ export async function runIngest(args: string[], globalOptions: GlobalOptions = {
   // Initialize components (single instances reused across all files).
   // The parser receives the full multi-root config. The directory-scan loop
   // (`collectFiles`) iterates every effective root in `config.baseDirs.baseDirs`
-  // (P2-T2). Under a single configured root this is byte-identical to the
-  // pre-P2-T2 single-root scan; under multiple roots it walks each one and
-  // dedupes overlap.
+  // and dedupes overlap.
   const parser = new DocumentParser({
     baseDirs: config.baseDirs.baseDirs,
     maxFileSize: config.maxFileSize,
@@ -674,7 +521,7 @@ export async function runIngest(args: string[], globalOptions: GlobalOptions = {
           summary.totalChunks += chunkCount
         }
       } catch (error) {
-        const reason = error instanceof Error ? error.message : String(error)
+        const reason = toErrorMessage(error)
         console.error(`${label} ${filePath} ... FAILED: ${reason}`)
         summary.failed++
       }

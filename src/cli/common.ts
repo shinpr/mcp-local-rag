@@ -13,6 +13,15 @@ import { VectorStore } from '../vectordb/index.js'
 import { type ResolvedGlobalConfig, resolveDevice, validatePath } from './options.js'
 
 /**
+ * Extract a human-readable message from an unknown caught value. Returns
+ * `error.message` for `Error` instances and `String(error)` otherwise.
+ * Single source for the CLI catch-block error-rendering pattern.
+ */
+export function toErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
+/**
  * Create an uninitialized VectorStore from resolved global config.
  * Callers are responsible for calling initialize() before use.
  */

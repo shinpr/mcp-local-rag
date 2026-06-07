@@ -10,13 +10,10 @@
 // per call); only the shared "produce chunks + embeddings + title from a PDF
 // using VLM captions" computation lives here.
 //
-// NFR-1 dynamic-import discipline: this module lives under `src/ingest/`,
-// which is safe to import statically from dispatch sites. The `pdf-visual`
-// package is loaded HERE via a single dynamic `await import('../pdf-visual/index.js')`
-// so the default (non-visual) path never pulls VLM code into the bundle.
-// AC-001's Proxy sentinel (default-mode invariance witness) continues to
-// observe `pdf-visual` untouched as long as the dispatch sites only call into
-// `prepareVisualPdfChunks` when `visual === true && isPdf`.
+// This module is safe to import statically from dispatch sites. The
+// `pdf-visual` package is loaded here via a single dynamic
+// `await import('../pdf-visual/index.js')` so the default (non-visual) path
+// never pulls VLM code into the bundle.
 
 import { basename } from 'node:path'
 
@@ -87,7 +84,7 @@ export interface PrepareVisualPdfChunksResult {
  *   6. Join enriched page texts with `\n\n` (DD-documented join).
  *   7. `buildChunksAndEmbeddings(text, null, chunker, embedder)`.
  *   8. `extractPdfTitle(metadataTitle, chunks[0]?.text, basename(filePath),
- *      pages[0]?.page1FontHint)` (matches DD §Title resolution).
+ *      pages[0]?.page1FontHint)`.
  *   9. `doc.destroy()` in `finally` so the mupdf WASM handle is released on
  *      both success and error paths.
  *
@@ -109,10 +106,7 @@ export async function prepareVisualPdfChunks(
   captionerConfig: CaptionerConfig
 ): Promise<PrepareVisualPdfChunksResult> {
   // Dynamic import — load-bearing for NFR-1. The default (non-visual) path
-  // must never reach a static `pdf-visual` reference; AC-001 Proxy sentinel
-  // verifies this. Both former dispatch sites previously held their own
-  // dynamic import; consolidating to a single one here preserves the
-  // invariant while removing the duplication.
+  // must never reach a static `pdf-visual` reference.
   const pdfVisual = await import('../pdf-visual/index.js')
 
   const captioner = pdfVisual.createCaptioner(captionerConfig)
@@ -166,9 +160,9 @@ export async function prepareVisualPdfChunks(
 
     return { chunks, embeddings, title, text }
   } finally {
-    // Caller owns `doc` per `parsePdfPages` contract (AC-013) — release the
-    // mupdf WASM handle on both success and error paths. Wrap so a destroy
-    // failure cannot mask the original try-body error (finally-overrides-try).
+    // Caller owns `doc` per `parsePdfPages` contract. Release the mupdf WASM
+    // handle on both success and error paths. Wrap so a destroy failure
+    // cannot mask the original try-body error.
     try {
       doc.destroy()
     } catch (destroyErr) {

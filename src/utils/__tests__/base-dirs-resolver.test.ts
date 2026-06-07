@@ -125,6 +125,54 @@ describe('resolveBaseDirs — CLI roots precedence', () => {
 })
 
 // ============================================
+// Path-canonicalization: rawBaseDirs (normal-path) vs baseDirs (realpath/security)
+// ============================================
+
+describe('resolveBaseDirs — rawBaseDirs (normal-path) projection', () => {
+  // On macOS the temp dir lives under a symlinked prefix (/var → /private/var),
+  // so `realpath(dirA) !== resolve(dirA)`. This is the exact scenario the path-canonicalization policy
+  // fix targets: `baseDirs` (security boundary) must be realpath'd, while
+  // `rawBaseDirs` (what `list`/`list_files` scan and display) must be the
+  // resolve()-only form so it matches the resolve()-stored DB keys. The
+  // assertion below is meaningful only when the two forms actually differ.
+  it('returns the resolve()-only (non-realpath) form in rawBaseDirs', async () => {
+    const result = await resolveBaseDirs({
+      cliRoots: [dirA, dirB],
+      cwd: tmpRoot,
+    })
+
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      // Security boundary: realpath'd.
+      expect(result.config.baseDirs).toEqual([
+        withTrailingSeparator(realA),
+        withTrailingSeparator(realB),
+      ])
+      // User-facing scan/display space: resolve()-only, NOT realpath'd.
+      expect(result.config.rawBaseDirs).toEqual([
+        withTrailingSeparator(dirA),
+        withTrailingSeparator(dirB),
+      ])
+    }
+  })
+
+  it('rawBaseDirs mirrors the dedup/nested-prune decisions made on baseDirs', async () => {
+    // nestedChild is pruned (it lives under nestedParent). Both lists must drop
+    // it in lockstep so `rawBaseDirs[i]` stays aligned with `baseDirs[i]`.
+    const result = await resolveBaseDirs({
+      cliRoots: [nestedParent, nestedChild],
+      cwd: tmpRoot,
+    })
+
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.config.baseDirs).toEqual([withTrailingSeparator(realNestedParent)])
+      expect(result.config.rawBaseDirs).toEqual([withTrailingSeparator(nestedParent)])
+    }
+  })
+})
+
+// ============================================
 // BASE_DIRS precedence
 // ============================================
 

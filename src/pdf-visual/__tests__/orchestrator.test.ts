@@ -250,7 +250,7 @@ describe('enrichPagesWithCaptions', () => {
     // The null path must be warn-level, not error-level (it is not a failure).
     const warnMessages = warnSpy.mock.calls
       .flat()
-      .map((arg) => (typeof arg === 'string' ? arg : ''))
+      .map((arg: unknown) => (typeof arg === 'string' ? arg : ''))
       .join(' | ')
     expect(warnMessages).toMatch(/page 2/)
     // And no error log for the null case (it is the documented non-error skip).

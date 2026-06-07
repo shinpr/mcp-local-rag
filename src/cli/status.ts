@@ -1,6 +1,6 @@
 // CLI status subcommand — show vector database status
 
-import { createVectorStore } from './common.js'
+import { createVectorStore, toErrorMessage } from './common.js'
 import type { GlobalOptions } from './options.js'
 import { resolveGlobalConfig } from './options.js'
 
@@ -82,7 +82,7 @@ export async function runStatus(args: string[], globalOptions: GlobalOptions = {
     // Output JSON to stdout
     process.stdout.write(JSON.stringify(status))
   } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error)
+    const reason = toErrorMessage(error)
     console.error(`Error: ${reason}`)
     process.exit(1)
   }

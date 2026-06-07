@@ -7,7 +7,7 @@ import type { GroupingMode, SearchResult } from './types.js'
  * A gap is considered a "boundary" if it exceeds mean + k*std.
  * Value of 1.5 means gaps > 1.5 standard deviations above mean are boundaries.
  */
-export const GROUPING_BOUNDARY_STD_MULTIPLIER = 1.5
+const GROUPING_BOUNDARY_STD_MULTIPLIER = 1.5
 
 /**
  * Apply grouping algorithm to filter results by detecting group boundaries.

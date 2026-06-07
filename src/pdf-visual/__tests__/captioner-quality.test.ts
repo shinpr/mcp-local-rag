@@ -130,8 +130,8 @@ const MOCKED_PATHS = ['@huggingface/transformers'] as const
 // Test suite
 // ============================================
 
-let createCaptioner: typeof import('../captioner').createCaptioner
-let VlmError: typeof import('../types').VlmError
+let createCaptioner: typeof import('../captioner.js').createCaptioner
+let VlmError: typeof import('../types.js').VlmError
 
 const PNG_BYTES = new Uint8Array([0x89, 0x50, 0x4e, 0x47])
 const QUALITY_MODEL_ID = 'onnx-community/Qwen2.5-VL-3B-Instruct-ONNX'
@@ -145,8 +145,8 @@ describe('createCaptioner — quality profile dispatch (Qwen2.5-VL-3B-Instruct-O
   beforeAll(async () => {
     vi.resetModules()
     vi.doMock('@huggingface/transformers', transformersFactory)
-    ;({ createCaptioner } = await import('../captioner'))
-    ;({ VlmError } = await import('../types'))
+    ;({ createCaptioner } = await import('../captioner.js'))
+    ;({ VlmError } = await import('../types.js'))
   })
 
   afterAll(() => {
@@ -263,10 +263,10 @@ describe('createCaptioner — quality profile dispatch (Qwen2.5-VL-3B-Instruct-O
     }
 
     expect(captured).toBeInstanceOf(VlmError)
-    expect((captured as VlmError).pageNum).toBe(5)
-    expect((captured as VlmError).message).toBe('Captioning failed for page 5')
+    expect((captured as InstanceType<typeof VlmError>).pageNum).toBe(5)
+    expect((captured as InstanceType<typeof VlmError>).message).toBe('Captioning failed for page 5')
 
-    const cause = (captured as VlmError).cause as Error
+    const cause = (captured as InstanceType<typeof VlmError>).cause as Error
     expect(cause.message).toContain('Captioner load failed')
     expect(cause.message).toContain(`modelName=${QUALITY_MODEL_ID}`)
     expect(cause.message).toContain('boom-quality-load')
@@ -286,7 +286,7 @@ describe('createCaptioner — quality profile dispatch (Qwen2.5-VL-3B-Instruct-O
     }
 
     expect(captured).toBeInstanceOf(VlmError)
-    expect((captured as VlmError).pageNum).toBe(9)
-    expect((captured as VlmError).cause).toBe(originalErr)
+    expect((captured as InstanceType<typeof VlmError>).pageNum).toBe(9)
+    expect((captured as InstanceType<typeof VlmError>).cause).toBe(originalErr)
   })
 })

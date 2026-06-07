@@ -21,8 +21,10 @@ export const toolDefinitions: Tool[] = [
         },
         limit: {
           type: 'number',
+          minimum: 1,
+          maximum: 20,
           description:
-            'Maximum number of results to return (default: 10). Recommended: 5 for precision, 10 for balance, 20 for broad exploration.',
+            'Maximum number of results to return (default: 10, range: 1-20). Recommended: 5 for precision, 10 for balance, 20 for broad exploration.',
         },
       },
       required: ['query'],
@@ -122,7 +124,7 @@ export const toolDefinitions: Tool[] = [
   {
     name: 'read_chunk_neighbors',
     description:
-      "Expand a query_documents result by reading the chunks immediately before and after it in the same document. Use when the hit needs more surrounding context — for example, a definition without its example, or a conclusion without its reasoning. Pass chunkIndex from the query_documents result, along with the document's filePath (from ingest_file) or source (from ingest_data). Returns the target chunk (isTarget: true) plus neighbors, sorted ascending by chunkIndex. Out-of-range indices are silently clamped to existing chunks. Defaults: before=2, after=2 (max 50 each). Provide exactly one of filePath or source.",
+      "Expand a query_documents result by reading the chunks immediately before and after it in the same document. Use when the hit needs more surrounding context — for example, a definition without its example, or a conclusion without its reasoning. Pass chunkIndex from the query_documents result, along with the document's filePath (from ingest_file) or source (from ingest_data). Returns the target chunk (isTarget: true) plus neighbors, sorted ascending by chunkIndex. The before/after window is clamped to the document's existing chunks; a chunkIndex beyond the document returns an empty result. Defaults: before=2, after=2 (max 50 each). Provide exactly one of filePath or source.",
     inputSchema: {
       type: 'object',
       properties: {

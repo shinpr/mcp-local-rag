@@ -1,12 +1,11 @@
 // `pdf-visual` package — orchestrator + intermediate barrel.
 //
-// `enrichPagesWithCaptions` glues `renderPdfPage` (T3.1) and the `Captioner`
-// (T3.3) together for every page flagged as a visual candidate by
-// `detectVisualCandidates` (T3.2). Per-page failure semantics — the heart of
-// FR-3 / AC-004 — live HERE and ONLY here: the renderer and captioner each
-// throw `VlmError` on their own failures; the orchestrator is the single
-// site that catches those errors and continues with text-only output for the
-// offending page.
+// `enrichPagesWithCaptions` glues `renderPdfPage` and the `Captioner`
+// together for every page flagged as a visual candidate by
+// `detectVisualCandidates`. Per-page failure handling lives here: the
+// renderer and captioner throw `VlmError` on their own failures, and the
+// orchestrator catches those errors so only the offending page falls back to
+// text-only output.
 //
 // Captions are NOT mutated into `page.text`. Returning them as a separate
 // `captions` array lets the ingest layer emit them as dedicated chunks
@@ -41,11 +40,12 @@ import type { Document as MupdfDocument } from 'mupdf'
 import { renderPdfPage } from './renderer.js'
 import type { Captioner } from './types.js'
 
-// Public surface re-exports (T3.5). The Phase 4 dispatch sites in
-// `src/cli/ingest.ts` and `src/server/index.ts` reach the visual-mode
+// Public surface re-exports. The dispatch sites in `src/cli/ingest.ts` and
+// `src/server/index.ts` reach the visual-mode
 // implementation exclusively through `await import('../pdf-visual/index.js')`
-// (NFR-1 dynamic-import discipline). Keeping every public symbol re-exported
-// here means those sites never need to know the internal module layout.
+// so default-mode ingest does not load visual dependencies. Keeping every
+// public symbol re-exported here means those sites never need to know the
+// internal module layout.
 // Re-export ordering below is alphabetical by source module to match Biome's
 // `organizeImports` rule (`./captioner` → `./detector` → `./renderer` → `./types`).
 export { createCaptioner } from './captioner.js'
@@ -133,11 +133,9 @@ export async function enrichPagesWithCaptions(
       captions.push({ pageNum: page.pageNum, text: caption })
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
-      // Per FR-3 ("logs a warning"), a per-page captioner failure is
-      // emitted at warn-level. The file ingest as a whole completes
-      // successfully — only this single page degrades to text-only.
+      // Warn and continue so the file ingest succeeds while only this page
+      // degrades to text-only.
       console.warn(`VLM caption failed for page ${page.pageNum}: ${message}`)
-      // No caption record for this page — AC-004 (text-only fallback).
     }
   }
 

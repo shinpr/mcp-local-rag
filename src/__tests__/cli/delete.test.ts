@@ -28,6 +28,9 @@ const cliCommonFactory = () => ({
     deleteChunks: mocks.deleteChunks,
     optimize: mocks.optimize,
   })),
+  // Pure helper used by the catch block; real implementation preserves the
+  // `Error: <message>` stderr behavior the tests assert.
+  toErrorMessage: (error: unknown) => (error instanceof Error ? error.message : String(error)),
 })
 
 const fsPromisesFactory = async (

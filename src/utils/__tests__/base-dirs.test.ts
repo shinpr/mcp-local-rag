@@ -280,12 +280,15 @@ describe('dedupAndPruneRoots', () => {
 
 describe('legacyBaseDir', () => {
   it('returns the first effective root as the legacy baseDir', () => {
-    const config: BaseDirsConfig = { baseDirs: ['/first/', '/second/'] }
+    const config: BaseDirsConfig = {
+      baseDirs: ['/first/', '/second/'],
+      rawBaseDirs: ['/first/', '/second/'],
+    }
     expect(legacyBaseDir(config)).toBe('/first/')
   })
 
   it('returns the only element for a single-root config', () => {
-    const config: BaseDirsConfig = { baseDirs: ['/only/'] }
+    const config: BaseDirsConfig = { baseDirs: ['/only/'], rawBaseDirs: ['/only/'] }
     expect(legacyBaseDir(config)).toBe('/only/')
   })
 })

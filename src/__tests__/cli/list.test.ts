@@ -45,6 +45,9 @@ const cliCommonFactory = () => ({
   resolveCliBaseDirsOrExit: vi
     .fn()
     .mockImplementation((cliRoots: string[]) => mocks.resolveCliBaseDirs(cliRoots)),
+  // Pure helper used by the catch block; real implementation preserves the
+  // `Error: <message>` stderr behavior the tests assert.
+  toErrorMessage: (error: unknown) => (error instanceof Error ? error.message : String(error)),
 })
 
 const MOCKED_PATHS = ['node:fs/promises', '../../cli/common.js'] as const
@@ -135,7 +138,13 @@ describe('CLI list', () => {
     // calling `runList`.
     mocks.resolveCliBaseDirs.mockImplementation((cliRoots: string[]) => {
       const first = cliRoots[0] ?? process.env['BASE_DIR'] ?? process.cwd()
-      return Promise.resolve({ config: { baseDirs: [first] }, warnings: [] })
+      // Path-canonicalization: `list` scans/displays the NORMAL-path `rawBaseDirs`. These tests
+      // do not involve symlinked prefixes, so the raw and realpath'd roots are
+      // identical.
+      return Promise.resolve({
+        config: { baseDirs: [first], rawBaseDirs: [first] },
+        warnings: [],
+      })
     })
     exitSpy = vi
       .spyOn(process, 'exit')
@@ -390,7 +399,7 @@ describe('CLI list', () => {
     const rootA = resolve('/tmp/list/rootA')
     const rootB = resolve('/tmp/list/rootB')
     mocks.resolveCliBaseDirs.mockResolvedValue({
-      config: { baseDirs: [rootA, rootB] },
+      config: { baseDirs: [rootA, rootB], rawBaseDirs: [rootA, rootB] },
       warnings: [],
     })
     // readdir is called once per root; mock matches the requested path so
@@ -435,7 +444,7 @@ describe('CLI list', () => {
     const rootB = resolve('/tmp/list/share') // duplicate after normalization
     const sharedPath = resolve(rootA, 'shared.md')
     mocks.resolveCliBaseDirs.mockResolvedValue({
-      config: { baseDirs: [rootA, rootB] },
+      config: { baseDirs: [rootA, rootB], rawBaseDirs: [rootA, rootB] },
       warnings: [],
     })
     mocks.readdir.mockImplementation(async () => [mockDirent('shared.md', rootA)])
@@ -459,7 +468,7 @@ describe('CLI list', () => {
     const rootB = resolve('/tmp/list/dbB')
     const dbPath = resolve('/tmp/list/dbA/lancedb')
     mocks.resolveCliBaseDirs.mockResolvedValue({
-      config: { baseDirs: [rootA, rootB] },
+      config: { baseDirs: [rootA, rootB], rawBaseDirs: [rootA, rootB] },
       warnings: [],
     })
     // Post-Finding-#10: scanRoot now uses bounded BFS. The `lancedb`
@@ -505,7 +514,7 @@ describe('CLI list', () => {
     const rootA = resolve('/tmp/list/inaccessible')
     const rootB = resolve('/tmp/list/accessible')
     mocks.resolveCliBaseDirs.mockResolvedValue({
-      config: { baseDirs: [rootA, rootB] },
+      config: { baseDirs: [rootA, rootB], rawBaseDirs: [rootA, rootB] },
       warnings: [],
     })
     mocks.readdir.mockImplementation(async (path: string) => {
@@ -542,7 +551,7 @@ describe('CLI list', () => {
     mocks.initialize.mockResolvedValue(undefined)
     const root = resolve('/tmp/list/deep')
     mocks.resolveCliBaseDirs.mockResolvedValue({
-      config: { baseDirs: [root] },
+      config: { baseDirs: [root], rawBaseDirs: [root] },
       warnings: [],
     })
 
@@ -584,7 +593,7 @@ describe('CLI list', () => {
     mocks.initialize.mockResolvedValue(undefined)
     const root = resolve('/tmp/list/parent')
     mocks.resolveCliBaseDirs.mockResolvedValue({
-      config: { baseDirs: [root] },
+      config: { baseDirs: [root], rawBaseDirs: [root] },
       warnings: [
         {
           kind: 'nested-root-pruned',
@@ -696,7 +705,7 @@ describe('CLI list', () => {
       const cliRootB = resolve('/cli/precedence/b')
       // Resolver behaves like the real one: CLI overrides env, no warnings.
       mocks.resolveCliBaseDirs.mockResolvedValue({
-        config: { baseDirs: [cliRootA, cliRootB] },
+        config: { baseDirs: [cliRootA, cliRootB], rawBaseDirs: [cliRootA, cliRootB] },
         warnings: [],
       })
       mocks.readdir.mockResolvedValue([])
@@ -730,7 +739,7 @@ describe('CLI list', () => {
       const envRootA = resolve('/env/multi/a')
       const envRootB = resolve('/env/multi/b')
       mocks.resolveCliBaseDirs.mockResolvedValue({
-        config: { baseDirs: [envRootA, envRootB] },
+        config: { baseDirs: [envRootA, envRootB], rawBaseDirs: [envRootA, envRootB] },
         warnings: [],
       })
       mocks.readdir.mockImplementation(async (path: string) => {
@@ -764,7 +773,7 @@ describe('CLI list', () => {
       mocks.initialize.mockResolvedValue(undefined)
       const root = resolve('/env/multi/only')
       mocks.resolveCliBaseDirs.mockResolvedValue({
-        config: { baseDirs: [root] },
+        config: { baseDirs: [root], rawBaseDirs: [root] },
         warnings: [
           {
             kind: 'base-dirs-overrides-base-dir',
@@ -816,7 +825,7 @@ describe('CLI list', () => {
       mocks.initialize.mockResolvedValue(undefined)
       const cwd = process.cwd()
       mocks.resolveCliBaseDirs.mockResolvedValue({
-        config: { baseDirs: [cwd] },
+        config: { baseDirs: [cwd], rawBaseDirs: [cwd] },
         warnings: [],
       })
       mocks.readdir.mockResolvedValue([])

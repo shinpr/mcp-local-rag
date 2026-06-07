@@ -132,9 +132,12 @@ const MOCKED_PATHS = ['@huggingface/transformers'] as const
 // Test suite
 // ============================================
 
-let createCaptioner: typeof import('../captioner').createCaptioner
-let VLM_DTYPE: typeof import('../captioner').VLM_DTYPE
-let VlmError: typeof import('../types').VlmError
+let createCaptioner: typeof import('../captioner.js').createCaptioner
+let VlmError: typeof import('../types.js').VlmError
+
+// The `fast` profile pins ONNX quantization to `q4` (see `captioners/fast.ts`).
+// Asserted as an independent literal so an accidental dtype change is loud.
+const VLM_DTYPE = 'q4'
 
 const PNG_BYTES = new Uint8Array([0x89, 0x50, 0x4e, 0x47])
 
@@ -149,8 +152,8 @@ describe('createCaptioner — fast profile dispatch (CaptionerConfig flow + AC-0
   beforeAll(async () => {
     vi.resetModules()
     vi.doMock('@huggingface/transformers', transformersFactory)
-    ;({ createCaptioner, VLM_DTYPE } = await import('../captioner'))
-    ;({ VlmError } = await import('../types'))
+    ;({ createCaptioner } = await import('../captioner.js'))
+    ;({ VlmError } = await import('../types.js'))
   })
 
   afterAll(() => {
@@ -348,13 +351,13 @@ describe('createCaptioner — fast profile dispatch (CaptionerConfig flow + AC-0
 
     // Per-page wrap: VlmError with pageNum + user-facing message.
     expect(captured).toBeInstanceOf(VlmError)
-    expect((captured as VlmError).pageNum).toBe(1)
-    expect((captured as VlmError).message).toBe('Captioning failed for page 1')
+    expect((captured as InstanceType<typeof VlmError>).pageNum).toBe(1)
+    expect((captured as InstanceType<typeof VlmError>).message).toBe('Captioning failed for page 1')
 
     // The immediate cause is the wrapper produced by ensureLoaded(); its
     // message names the resolved modelName and device so operators can
     // identify the source.
-    const cause = (captured as VlmError).cause as Error
+    const cause = (captured as InstanceType<typeof VlmError>).cause as Error
     expect(cause).toBeInstanceOf(Error)
     expect(cause.message).toContain('Captioner load failed')
     expect(cause.message).toContain(`modelName=${FAST_MODEL_ID}`)
@@ -405,7 +408,7 @@ describe('createCaptioner — fast profile dispatch (CaptionerConfig flow + AC-0
     // load-aware wrapper.
     for (const captured of thrownErrors) {
       expect(captured).toBeInstanceOf(VlmError)
-      const cause = (captured as VlmError).cause as Error & { cause?: unknown }
+      const cause = (captured as InstanceType<typeof VlmError>).cause as Error & { cause?: unknown }
       expect(cause.cause).toBe(originalErr)
     }
   })
@@ -427,9 +430,9 @@ describe('createCaptioner — fast profile dispatch (CaptionerConfig flow + AC-0
     }
 
     expect(captured).toBeInstanceOf(VlmError)
-    expect((captured as VlmError).pageNum).toBe(7)
-    expect((captured as VlmError).message).toBe('Captioning failed for page 7')
-    expect((captured as VlmError).cause).toBe(originalErr)
+    expect((captured as InstanceType<typeof VlmError>).pageNum).toBe(7)
+    expect((captured as InstanceType<typeof VlmError>).message).toBe('Captioning failed for page 7')
+    expect((captured as InstanceType<typeof VlmError>).cause).toBe(originalErr)
   })
 
   // ----- Failure: image decode -----
@@ -449,8 +452,8 @@ describe('createCaptioner — fast profile dispatch (CaptionerConfig flow + AC-0
     }
 
     expect(captured).toBeInstanceOf(VlmError)
-    expect((captured as VlmError).pageNum).toBe(3)
-    expect((captured as VlmError).message).toBe('Captioning failed for page 3')
-    expect((captured as VlmError).cause).toBe(originalErr)
+    expect((captured as InstanceType<typeof VlmError>).pageNum).toBe(3)
+    expect((captured as InstanceType<typeof VlmError>).message).toBe('Captioning failed for page 3')
+    expect((captured as InstanceType<typeof VlmError>).cause).toBe(originalErr)
   })
 })

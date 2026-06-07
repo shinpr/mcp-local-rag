@@ -13,6 +13,9 @@ export const FTS_INDEX_NAME = 'fts_index_v2'
 /** Threshold for cleaning up old index versions (1 minute) */
 export const FTS_CLEANUP_THRESHOLD_MS = 60 * 1000
 
+/** Default hybrid-search weight (vector vs FTS blend) when not configured */
+export const DEFAULT_HYBRID_WEIGHT = 0.6
+
 // ============================================
 // Type Definitions
 // ============================================
@@ -96,10 +99,9 @@ export interface SearchResult {
 
 /**
  * Row returned by VectorStore.getChunksByRange.
- * Distinct from SearchResult (see Design Doc §Contract Definitions):
- * no score (not a ranked result) and no metadata (not needed for
- * index-adjacent retrieval). Consumed by handleReadChunkNeighbors
- * and runReadNeighbors (Task 1.2).
+ * Distinct from SearchResult: no score (not a ranked result) and no metadata
+ * (not needed for index-adjacent retrieval). Consumed by
+ * handleReadChunkNeighbors and runReadNeighbors.
  */
 export interface ChunkRow {
   /** File path (absolute) */
@@ -133,7 +135,7 @@ export interface LanceDBRawResult {
 /**
  * Type guard for DocumentMetadata
  */
-export function isDocumentMetadata(value: unknown): value is DocumentMetadata {
+function isDocumentMetadata(value: unknown): value is DocumentMetadata {
   if (typeof value !== 'object' || value === null) return false
   const obj = value as Record<string, unknown>
   return (
@@ -165,6 +167,13 @@ export function toSearchResult(raw: unknown): SearchResult {
   if (!isLanceDBRawResult(raw)) {
     throw new DatabaseError('Invalid search result format from LanceDB')
   }
+  // Score source: vector search rows carry `_distance` (dot distance, the
+  // normal path). `_score` is a defensive fallback for any FTS-shaped row that
+  // reaches here (the live FTS path consumes `_score` directly in
+  // applyKeywordBoost, not via this mapper). The final `?? 0` is an
+  // effectively-unreachable guard: vectorSearch always returns `_distance`. It
+  // is kept defensive rather than throwing, since a missing score is not worth
+  // failing a whole search over.
   return {
     filePath: raw.filePath,
     chunkIndex: raw.chunkIndex,
@@ -176,10 +185,49 @@ export function toSearchResult(raw: unknown): SearchResult {
 }
 
 /**
+ * Map a raw LanceDB row to a full {@link VectorChunk}, including the stored
+ * embedding vector and metadata. Used for backup/restore (ingest rollback),
+ * where the row must round-trip back through `insertChunks` intact — unlike
+ * {@link toChunkRow} / {@link toSearchResult}, which drop the vector. The
+ * embedding is normalized to `number[]` (LanceDB returns a typed array).
+ */
+export function toVectorChunk(raw: unknown): VectorChunk {
+  if (typeof raw !== 'object' || raw === null) {
+    throw new DatabaseError('Invalid chunk row shape from LanceDB')
+  }
+  const obj = raw as Record<string, unknown>
+  const { id, filePath, chunkIndex, text, vector, metadata, fileTitle, timestamp } = obj
+  if (
+    typeof id !== 'string' ||
+    typeof filePath !== 'string' ||
+    typeof chunkIndex !== 'number' ||
+    typeof text !== 'string' ||
+    typeof timestamp !== 'string'
+  ) {
+    throw new DatabaseError('Invalid chunk row shape from LanceDB (scalar fields)')
+  }
+  if (!isDocumentMetadata(metadata)) {
+    throw new DatabaseError('Invalid chunk row shape from LanceDB (metadata)')
+  }
+  if (vector == null || typeof (vector as { length?: unknown }).length !== 'number') {
+    throw new DatabaseError('Invalid chunk row shape from LanceDB (vector)')
+  }
+  return {
+    id,
+    filePath,
+    chunkIndex,
+    text,
+    vector: Array.from(vector as ArrayLike<number>),
+    metadata,
+    fileTitle: typeof fileTitle === 'string' && fileTitle.length > 0 ? fileTitle : null,
+    timestamp,
+  }
+}
+
+/**
  * Convert LanceDB raw row to ChunkRow with type validation.
- * Mirrors toSearchResult but returns the minimal shape defined in
- * Design Doc §Contract Definitions: no score (not ranked) and no
- * metadata (not needed for index-adjacent retrieval).
+ * Mirrors toSearchResult but returns the minimal range-read shape: no score
+ * (not ranked) and no metadata (not needed for index-adjacent retrieval).
  *
  * Uses a narrower shape check than isLanceDBRawResult: only
  * filePath/chunkIndex/text are required because getChunksByRange

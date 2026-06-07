@@ -141,6 +141,12 @@ function splitItemsIntoSentencesWithY(items: TextItemWithPosition[]): SentenceWi
   for (const sentence of sentences) {
     // Find where this sentence starts in fullText
     const sentenceStart = fullText.indexOf(sentence.trim(), searchStart)
+    // Benign skip (not error masking): this builds the Y-coordinate map used
+    // only for header/footer boundary detection. A miss means this sentence
+    // is omitted from boundary detection — it does NOT drop the sentence from
+    // the document body (that text comes from `fullText`). Misses are expected
+    // when `splitIntoSentences` normalizes whitespace differently than the
+    // reconstructed `fullText`, so logging here would be noise, not signal.
     if (sentenceStart === -1) continue
 
     // Find the item that contains this position
@@ -431,6 +437,58 @@ interface SentencePatternResult {
  * @param config - Configuration options
  * @returns Detection result
  */
+/**
+ * Shared boundary-pattern detection for the header (first-sentence) and footer
+ * (last-sentence) cases of {@link detectSentencePatterns}. Embeds the sampled
+ * boundary sentences, computes their median pairwise similarity, applies the
+ * (optionally block-hint-boosted) threshold, logs on detection, and returns
+ * the similarity plus the detection flag. The divergent part — which sentence
+ * each page contributes and how its Y is derived — is computed by the caller
+ * and passed in via `sentences` / `sentenceYs`, so this helper is identical
+ * for both boundaries.
+ */
+async function detectBoundaryPattern(params: {
+  label: 'header' | 'footer'
+  sentences: string[]
+  sentenceYs: number[]
+  candidateYs: Set<number> | undefined
+  similarityThreshold: number
+  boostedThreshold: number | undefined
+  embedder: EmbedderInterface
+  startIndex: number
+  endIndex: number
+}): Promise<{ similarity: number; detected: boolean }> {
+  const {
+    label,
+    sentences,
+    sentenceYs,
+    candidateYs,
+    similarityThreshold,
+    boostedThreshold,
+    embedder,
+    startIndex,
+    endIndex,
+  } = params
+
+  const embeddings = await embedder.embedBatch(sentences)
+  const medianSim = medianPairwiseSimilarity(embeddings)
+
+  // Determine effective threshold (boosted if block hints match)
+  let threshold = similarityThreshold
+  if (candidateYs && sentenceYs.some((y) => candidateYs.has(y))) {
+    threshold = boostedThreshold ?? 0.75
+  }
+
+  const detected = medianSim >= threshold
+  if (detected) {
+    console.error(
+      `Sentence ${label} detected: sampled ${sentences.length} center pages (${startIndex + 1}-${endIndex}), median similarity: ${medianSim.toFixed(3)}`
+    )
+  }
+
+  return { similarity: medianSim, detected }
+}
+
 export async function detectSentencePatterns(
   pages: PageData[],
   embedder: EmbedderInterface,
@@ -475,56 +533,42 @@ export async function detectSentencePatterns(
 
   // 5. Detect header pattern (sampled first sentences are semantically similar)
   if (firstSentences.length >= cfg.minPages) {
-    const embeddings = await embedder.embedBatch(firstSentences)
-    const medianSim = medianPairwiseSimilarity(embeddings)
-    result.headerSimilarity = medianSim
-
-    // Determine effective threshold (boosted if block hints match)
-    let headerThreshold = cfg.similarityThreshold
-    if (cfg.blockHints) {
-      const firstSentenceYs = pageSentences
-        .filter((s) => s.length > 0)
-        .map((s) => Math.round(s[0]!.y))
-      const hasBlockHintMatch = firstSentenceYs.some((y) =>
-        cfg.blockHints!.headerCandidateYs.has(y)
-      )
-      if (hasBlockHintMatch) {
-        headerThreshold = cfg.boostedThreshold ?? 0.75
-      }
-    }
-
-    if (medianSim >= headerThreshold) {
-      result.removeFirstSentence = true
-      console.error(
-        `Sentence header detected: sampled ${firstSentences.length} center pages (${startIndex + 1}-${endIndex}), median similarity: ${medianSim.toFixed(3)}`
-      )
-    }
+    const firstSentenceYs = pageSentences
+      .filter((s) => s.length > 0)
+      .map((s) => Math.round(s[0]!.y))
+    const { similarity, detected } = await detectBoundaryPattern({
+      label: 'header',
+      sentences: firstSentences,
+      sentenceYs: firstSentenceYs,
+      candidateYs: cfg.blockHints?.headerCandidateYs,
+      similarityThreshold: cfg.similarityThreshold,
+      boostedThreshold: cfg.boostedThreshold,
+      embedder,
+      startIndex,
+      endIndex,
+    })
+    result.headerSimilarity = similarity
+    result.removeFirstSentence = detected
   }
 
   // 6. Detect footer pattern (sampled last sentences are semantically similar)
   if (lastSentences.length >= cfg.minPages) {
-    const embeddings = await embedder.embedBatch(lastSentences)
-    const medianSim = medianPairwiseSimilarity(embeddings)
-    result.footerSimilarity = medianSim
-
-    // Determine effective threshold (boosted if block hints match)
-    let footerThreshold = cfg.similarityThreshold
-    if (cfg.blockHints) {
-      const lastSentenceYs = pageSentences
-        .filter((s) => s.length > 1)
-        .map((s) => Math.round(s[s.length - 1]!.y))
-      const hasBlockHintMatch = lastSentenceYs.some((y) => cfg.blockHints!.footerCandidateYs.has(y))
-      if (hasBlockHintMatch) {
-        footerThreshold = cfg.boostedThreshold ?? 0.75
-      }
-    }
-
-    if (medianSim >= footerThreshold) {
-      result.removeLastSentence = true
-      console.error(
-        `Sentence footer detected: sampled ${lastSentences.length} center pages (${startIndex + 1}-${endIndex}), median similarity: ${medianSim.toFixed(3)}`
-      )
-    }
+    const lastSentenceYs = pageSentences
+      .filter((s) => s.length > 1)
+      .map((s) => Math.round(s[s.length - 1]!.y))
+    const { similarity, detected } = await detectBoundaryPattern({
+      label: 'footer',
+      sentences: lastSentences,
+      sentenceYs: lastSentenceYs,
+      candidateYs: cfg.blockHints?.footerCandidateYs,
+      similarityThreshold: cfg.similarityThreshold,
+      boostedThreshold: cfg.boostedThreshold,
+      embedder,
+      startIndex,
+      endIndex,
+    })
+    result.footerSimilarity = similarity
+    result.removeLastSentence = detected
   }
 
   return result

@@ -1,5 +1,6 @@
 // Shared CLI global options — parsed before subcommand routing
 
+import { MAX_FILE_SIZE_LIMIT } from '../utils/limits.js'
 import { checkSensitivePath } from '../utils/sensitive-path.js'
 
 // ============================================
@@ -37,8 +38,8 @@ export function validateModelName(value: string): string | undefined {
  * Returns an error message if invalid, or undefined if valid.
  */
 export function validateMaxFileSize(value: number): string | undefined {
-  if (!Number.isFinite(value) || value < 1 || value > 524288000) {
-    return '--max-file-size must be between 1 and 524288000 (500MB)'
+  if (!Number.isFinite(value) || value < 1 || value > MAX_FILE_SIZE_LIMIT) {
+    return `--max-file-size must be between 1 and ${MAX_FILE_SIZE_LIMIT} (500MB)`
   }
   return undefined
 }
@@ -73,8 +74,7 @@ export function validateChunkMinLength(value: number): string | undefined {
  *
  * Why a shared helper: both `ingest` and `list` parse `--base-dir` in
  * identical fashion, so centralizing the accumulate-and-validate step keeps
- * the two argv loops in lockstep when the contract evolves (e.g. P2-T2
- * adding per-path validation).
+ * the two argv loops in lockstep when the contract evolves.
  */
 export function consumeBaseDirArg(argv: string[], flagIndex: number, collected: string[]): number {
   const valueIndex = flagIndex + 1
@@ -85,6 +85,24 @@ export function consumeBaseDirArg(argv: string[], flagIndex: number, collected: 
   }
   collected.push(value)
   return valueIndex
+}
+
+/**
+ * Read the required value that follows a value-taking flag at `argv[flagIndex]`.
+ * Centralizes the identical "missing value" guard every value flag used to
+ * inline (`--db-path`, `--cache-dir`, `--model-name`, `--max-file-size`,
+ * `--chunk-min-length`, `--limit`): when the next token is absent or is itself
+ * a flag, prints `Missing value for <flag>` and exits 1. The caller advances
+ * its index by 2 (flag + value). Numeric flags apply their own format/range
+ * validation to the returned string.
+ */
+export function requireFlagValue(argv: string[], flagIndex: number, flag: string): string {
+  const value = argv[flagIndex + 1]
+  if (value === undefined || value.startsWith('-')) {
+    console.error(`Missing value for ${flag}`)
+    process.exit(1)
+  }
+  return value
 }
 
 // ============================================
@@ -165,33 +183,18 @@ export function parseGlobalOptions(args: string[]): ParsedGlobalResult {
         i++
         break
       case '--db-path': {
-        const value = args[++i]
-        if (value === undefined || value.startsWith('-')) {
-          console.error('Missing value for --db-path')
-          process.exit(1)
-        }
-        globalOptions.dbPath = value
-        i++
+        globalOptions.dbPath = requireFlagValue(args, i, '--db-path')
+        i += 2
         break
       }
       case '--cache-dir': {
-        const value = args[++i]
-        if (value === undefined || value.startsWith('-')) {
-          console.error('Missing value for --cache-dir')
-          process.exit(1)
-        }
-        globalOptions.cacheDir = value
-        i++
+        globalOptions.cacheDir = requireFlagValue(args, i, '--cache-dir')
+        i += 2
         break
       }
       case '--model-name': {
-        const value = args[++i]
-        if (value === undefined || value.startsWith('-')) {
-          console.error('Missing value for --model-name')
-          process.exit(1)
-        }
-        globalOptions.modelName = value
-        i++
+        globalOptions.modelName = requireFlagValue(args, i, '--model-name')
+        i += 2
         break
       }
       default:

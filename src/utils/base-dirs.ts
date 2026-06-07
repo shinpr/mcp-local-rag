@@ -5,12 +5,9 @@
 // (`server-main.ts`), plus the pure helpers needed to derive it from raw
 // configuration inputs (env vars, CLI flags).
 //
-// Scope: this file ships only pure helpers and the types. Wiring into
-// `DocumentParser`, `RAGServer`, and CLI subcommands is performed by later
-// tasks (P1-T2 / P1-T3 / P2-T1 / P3-T1). Keeping the wiring out of this
-// module lets every consumer adopt the same realpath/prefix-safety semantics
-// without duplicating the trailing-separator pattern that `DocumentParser`
-// currently inlines.
+// Scope: this file ships only pure helpers and the types so every consumer
+// can adopt the same realpath/prefix-safety semantics without duplicating
+// the trailing-separator pattern.
 
 import { realpath, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
@@ -21,16 +18,22 @@ import { resolve, sep } from 'node:path'
 // ============================================
 
 /**
- * Internal representation of the effective document roots.
+ * Effective document roots, in two index-aligned forms.
  *
- * `baseDirs` is the post-normalization, post-deduplication, post-nested-prune
- * list of realpath-resolved directories used as the security boundary for
- * file access. Order is preserved from the original configuration input so
- * the first element is meaningful as the legacy single-root accessor (see
- * {@link legacyBaseDir}).
+ * Path policy (the canonical statement; other sites just reference it):
+ * realpath is used ONLY for the security boundary; everything user-facing uses
+ * resolve() (normal) paths.
+ * - `baseDirs`: realpath-resolved, deduped, nested-pruned — the containment
+ *   boundary passed to `DocumentParser`. Input order preserved (first = legacy
+ *   single-root accessor; see {@link legacyBaseDir}).
+ * - `rawBaseDirs`: the SAME roots, same order, resolve()-only. The normal path
+ *   space `list`/`list_files` scan + display, so paths match the
+ *   resolve()-stored DB keys; otherwise a symlinked prefix (e.g. macOS
+ *   /tmp → /private/tmp) would make ingested files show as not-ingested.
  */
 export interface BaseDirsConfig {
   baseDirs: string[]
+  rawBaseDirs: string[]
 }
 
 /**
@@ -204,6 +207,9 @@ export function withTrailingSeparator(path: string): string {
  * Resolve a directory to its realpath form and append a trailing separator
  * so the result can be used directly as a prefix in security checks.
  *
+ * realpath here is the security boundary (see {@link BaseDirsConfig} for the
+ * path policy); user-facing surfaces use the resolve()-only `rawBaseDirs`.
+ *
  * Throws {@link BaseDirsConfigError} when the directory does not exist or
  * is not a directory — root configuration must point at real directories
  * the process is allowed to read.
@@ -273,7 +279,7 @@ export interface DedupAndPruneResult {
  * nested check safe against sibling-prefix paths like `/foo/barista`.
  */
 export function dedupAndPruneRoots(inputs: string[]): DedupAndPruneResult {
-  // Phase 1: exact dedup, preserving order.
+  // Pass 1: exact dedup, preserving order.
   const deduped: string[] = []
   const seen = new Set<string>()
   for (const root of inputs) {
@@ -283,7 +289,7 @@ export function dedupAndPruneRoots(inputs: string[]): DedupAndPruneResult {
     }
   }
 
-  // Phase 2: nested-root pruning.
+  // Pass 2: nested-root pruning.
   //
   // A root `child` is pruned when some other root `parent` (parent !== child)
   // is a strict prefix of `child`. Because every input ends with `sep`, the
@@ -295,11 +301,12 @@ export function dedupAndPruneRoots(inputs: string[]): DedupAndPruneResult {
   // closest SURVIVING ancestor (the grandparent). This is the same result the
   // user would have gotten by passing only the grandparent, and avoids the
   // confusing case where a warning points at another path that was itself
-  // pruned. Implementation note: a single pass over `deduped` in input order
-  // works because exact-prefix ancestors of a candidate must precede it in
-  // the realpath-sorted-by-discovery order only when shorter; we therefore
-  // compute the closest ancestor against the surviving `roots` set so the
-  // reported parent is always a surviving root.
+  // pruned. Implementation note: this runs in two passes over `deduped`. The
+  // pre-pass computes the `survivors` set (candidates with no ancestor in
+  // `deduped`); the main pass then resolves each candidate's closest ancestor
+  // against `survivors` so the reported parent is always a surviving root.
+  // The two `findParent` scans make this O(n^2) in the number of roots, which
+  // is harmless at realistic root counts.
   const roots: string[] = []
   const warnings: BaseDirsConfigWarning[] = []
   // Pre-pass: identify every candidate that has any ancestor in `deduped`
@@ -436,24 +443,40 @@ export async function resolveBaseDirs(input: ResolveBaseDirsInput): Promise<Reso
 
   // Realpath-normalize each selected root. Failures (missing directory,
   // permission denied, ...) are surfaced as a structured config error.
+  //
+  // Pair each realpath'd root (security form) with its resolve()-only form so
+  // `rawBaseDirs` mirrors the dedup/prune decisions index-for-index. See
+  // {@link BaseDirsConfig} for the path policy.
   const normalized: string[] = []
+  const realToRaw = new Map<string, string>()
   for (const root of selection.roots) {
+    let real: string
     try {
-      normalized.push(await normalizeRealpath(root))
+      real = await normalizeRealpath(root)
     } catch (error) {
       if (error instanceof BaseDirsConfigError) {
         return { ok: false, error }
       }
       throw error
     }
+    normalized.push(real)
+    // First-occurrence-wins so the surviving raw root matches the first
+    // configured spelling of a root that realpaths to the same directory.
+    if (!realToRaw.has(real)) {
+      realToRaw.set(real, withTrailingSeparator(resolve(root)))
+    }
   }
 
   const { roots, warnings: pruningWarnings } = dedupAndPruneRoots(normalized)
   warnings.push(...pruningWarnings)
 
+  // Project the surviving realpath'd roots back to their resolve()-only forms,
+  // preserving order so `rawBaseDirs[i]` and `baseDirs[i]` are the same root.
+  const rawRoots = roots.map((real) => realToRaw.get(real) ?? real)
+
   return {
     ok: true,
-    config: { baseDirs: roots },
+    config: { baseDirs: roots, rawBaseDirs: rawRoots },
     warnings,
   }
 }

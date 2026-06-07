@@ -72,9 +72,9 @@ describe('AC-004: Vector Search', () => {
     }
   })
 
-  // AC interpretation: [Technical requirement] Search results sorted by score (descending)
-  // Validation: Search result scores are sorted in descending order
-  it('Search results sorted by score (descending)', async () => {
+  // AC interpretation: [Technical requirement] Search results ordered by relevance (most similar first)
+  // Validation: LanceDB returns distance scores (smaller = more similar), so results are sorted in ascending score order
+  it('Search results ordered by relevance (ascending distance score, most similar first)', async () => {
     const result = await localRagServer.handleQueryDocuments({
       query: 'TypeScript',
       limit: 5,
@@ -83,8 +83,7 @@ describe('AC-004: Vector Search', () => {
     const results = JSON.parse(result.content[0].text)
     expect(Array.isArray(results)).toBe(true)
 
-    // Verify scores are sorted in descending order
-    // LanceDB returns distance scores (smaller means more similar), so verify ascending sort
+    // Distance score: smaller = more similar, so ascending = most relevant first.
     for (let i = 0; i < results.length - 1; i++) {
       expect(results[i].score).toBeLessThanOrEqual(results[i + 1].score)
     }

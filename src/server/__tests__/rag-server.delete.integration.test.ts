@@ -95,7 +95,11 @@ describe('AC-010: File Deletion', () => {
   })
 
   // AC interpretation: [Security] Relative path deletion is rejected (S-002)
-  // Validation: Attempt deletion with relative path, ValidationError is returned
+  // Validation: Attempt deletion with relative path, ValidationError is returned.
+  // Path-canonicalization contract: the filePath branch looks up `args.filePath` verbatim
+  // (resolve() everywhere user-facing, never realpath). A relative path is NOT
+  // absolutized before reaching the parser, so `validateFilePath` rejects it for
+  // not being an absolute path — preserving the S-002 boundary.
   it('Relative path deletion rejected with error (S-002 security)', async () => {
     await expect(
       localRagServer.handleDeleteFile({ filePath: '../../../etc/passwd' })

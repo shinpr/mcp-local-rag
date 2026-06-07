@@ -1,20 +1,20 @@
 // Shared chunk + embed computation for the ingest pipeline.
 //
-// Phase 0 of the VLM PDF enrichment work lifts the duplicated
-// `chunker.chunkText -> embedder.embedBatch` sequence out of
-// `handleIngestFile` (src/server/index.ts) and `ingestSingleFile`
-// (src/cli/ingest.ts) into this single shared function. Persistence
-// (delete + insert + rollback + optimize) stays in each caller because
-// the rollback semantics differ between the MCP path and the CLI path.
+// Lifts the duplicated `chunker.chunkText -> embedder.embedBatch` sequence
+// out of `handleIngestFile` and `ingestSingleFile` into this single shared
+// function. Persistence (delete + insert + rollback + optimize) stays in each
+// caller because the rollback semantics differ between the MCP path and the
+// CLI path.
 //
 // The function is dispatch-agnostic: it takes already-extracted `text`
 // and `title` and does not touch `vectorStore`. It is the single
-// chunker call site for any ingest path (default or, in later phases,
-// visual). See docs/design/vlm-pdf-enrichment-design.md §Main Components
-// -> `buildChunksAndEmbeddings`.
+// chunker call site for any ingest path.
 
+import { randomUUID } from 'node:crypto'
+import { basename, extname } from 'node:path'
 import type { SemanticChunker, TextChunk } from '../chunker/index.js'
 import type { EmbedderInterface } from '../chunker/semantic-chunker.js'
+import type { VectorChunk } from '../vectordb/index.js'
 
 /**
  * Result of the shared chunk + embed computation.
@@ -69,4 +69,51 @@ export async function buildChunksAndEmbeddings(
   }
   const embeddings = await embedder.embedBatch(chunks.map((chunk) => chunk.text))
   return { chunks, embeddings, title }
+}
+
+/**
+ * Build persistable `VectorChunk`s from computed chunks + embeddings.
+ *
+ * Single source of truth for the chunk→VectorChunk mapping shared by the MCP
+ * ingest handler (`handleIngestFile`) and both CLI ingest paths (default +
+ * visual). Assigns one shared `timestamp` to every chunk, a fresh `id`, and
+ * derives `fileName`/`fileType` from `filePath` via `node:path` (cross-platform).
+ * Does NOT touch `vectorStore` — persistence stays in each caller.
+ *
+ * Throws when a chunk has no corresponding embedding (index mismatch);
+ * `embeddings` must align 1:1 with `chunks`.
+ *
+ * @param fileSize Length value recorded in `metadata.fileSize`. The caller
+ *   chooses the source: the default path passes parsed text length; the visual
+ *   path passes the joined enriched-page text length (pre-chunking).
+ */
+export function buildVectorChunks(params: {
+  filePath: string
+  chunks: TextChunk[]
+  embeddings: number[][]
+  fileSize: number
+  fileTitle: string | null
+}): VectorChunk[] {
+  const { filePath, chunks, embeddings, fileSize, fileTitle } = params
+  const timestamp = new Date().toISOString()
+  return chunks.map((chunk, index) => {
+    const embedding = embeddings[index]
+    if (!embedding) {
+      throw new Error(`Missing embedding for chunk ${index}`)
+    }
+    return {
+      id: randomUUID(),
+      filePath,
+      chunkIndex: chunk.index,
+      text: chunk.text,
+      vector: embedding,
+      metadata: {
+        fileName: basename(filePath),
+        fileSize,
+        fileType: extname(filePath).slice(1),
+      },
+      fileTitle,
+      timestamp,
+    }
+  })
 }

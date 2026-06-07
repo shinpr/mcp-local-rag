@@ -16,21 +16,12 @@
 // `env.cacheDir` is set once here (not inside the per-profile modules) so the
 // shared global is configured before either profile's `from_pretrained` runs
 // and the per-profile modules stay free of the global side effect.
-//
-// `VLM_DTYPE` is exported for legacy test compatibility — it reflects the
-// quantization variant currently used by both profiles.
 
 import { env } from '@huggingface/transformers'
 
 import { createFastCaptioner } from './captioners/fast.js'
 import { createQualityCaptioner } from './captioners/quality.js'
 import type { Captioner, CaptionerConfig } from './types.js'
-
-/**
- * ONNX quantization variant. Pinned to the smallest viable variant for both
- * profiles. Exposed for tests only — production has no user-facing knob.
- */
-export const VLM_DTYPE = 'q4'
 
 /**
  * Create a captioner for the requested visual-quality profile. Sets

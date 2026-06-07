@@ -1,0 +1,20 @@
+{
+  // Type-check the whole source tree INCLUDING tests under the same strict
+  // settings as the build. The build's tsconfig.json excludes `__tests__` (it
+  // emits dist), so without this config test code was never type-checked and
+  // type drift between tests and production contracts went unnoticed.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    // Test code keeps the full strictness that catches contract drift (missing
+    // / wrong-typed fields, argument mismatches, implicit any). Two index-access
+    // safety flags are relaxed for tests only: they fire heavily on array
+    // index access in assertions and on dot-access of loosely-typed mock
+    // factories, where the runtime-safety value is low and would otherwise
+    // drown out the meaningful drift signals this config exists to surface.
+    "noUncheckedIndexedAccess": false,
+    "noPropertyAccessFromIndexSignature": false
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist"]
+}

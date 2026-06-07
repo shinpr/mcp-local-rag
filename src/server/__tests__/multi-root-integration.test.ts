@@ -32,6 +32,7 @@ import { mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { McpError } from '@modelcontextprotocol/sdk/types.js'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { resolveServerConfig } from '../../server-main.js'
 import { type BaseDirsConfigError, displayPath, resolveBaseDirs } from '../../utils/base-dirs.js'
 import { RAGServer } from '../index.js'
 
@@ -72,16 +73,22 @@ async function buildServerFromResolver(opts: {
 
   const warnings: string[] = []
   let baseDirs: string[]
+  // Mirror server-main.ts: pass both the realpath'd `baseDirs` (security) and
+  // the normal-path `rawBaseDirs` (list scan/display) so the test exercises the
+  // real production wiring rather than the rawBaseDirs→baseDirs fallback.
+  let rawBaseDirs: string[]
   let configError: BaseDirsConfigError | undefined
 
   if (result.ok) {
     baseDirs = result.config.baseDirs
+    rawBaseDirs = result.config.rawBaseDirs
     for (const w of result.warnings) warnings.push(w.message)
   } else {
     // Degraded mode mirror of server-main.ts (post-Finding-#4): pass an empty
     // `baseDirs` so any handler bypassing `assertConfigOk` fails closed at the
     // parser level rather than silently operating against `cwd`.
     baseDirs = []
+    rawBaseDirs = []
     configError = result.error
     warnings.push(result.error.message)
   }
@@ -91,6 +98,7 @@ async function buildServerFromResolver(opts: {
     modelName: 'Xenova/all-MiniLM-L6-v2',
     cacheDir: opts.cacheDir,
     baseDirs,
+    rawBaseDirs,
     maxFileSize: 100 * 1024 * 1024,
     configWarnings: warnings,
     ...(configError !== undefined ? { configError } : {}),
@@ -366,7 +374,8 @@ describe('AC-003/AC-013: real resolveBaseDirs warnings surface in MCP responses'
       // Effective baseDirs came from BASE_DIRS, not BASE_DIR.
       const listed = await server.handleListFiles()
       const parsed = JSON.parse(listed.content[0].text)
-      // realpath-normalized roots have a trailing separator — match prefix.
+      // list_files returns the normal-path roots (== realpath here — no symlink
+      // in the test tmp); trailing-separator prefix match.
       expect(parsed.baseDirs).toHaveLength(2)
       expect(parsed.baseDirs[0].startsWith(realpathSync(rootA))).toBe(true)
       expect(parsed.baseDirs[1].startsWith(realpathSync(rootB))).toBe(true)
@@ -528,9 +537,8 @@ describe('post-launch finding #10: list_files per-root error tolerance', () => {
 // must apply the sensitive-path policy to env-resolved roots and must not
 // fall back to cwd on a config error.
 //
-// These tests exercise `startServer`-equivalent wiring directly — we replicate
-// the relevant section of `server-main.ts` here so the assertion is anchored
-// to the same logic the production entry point runs.
+// These tests call the REAL entry-point resolver (`resolveServerConfig` from
+// server-main.ts) so the assertions are anchored to production logic, not a copy.
 // =============================================================================
 describe('post-launch findings #3 + #4: server-main wiring rejects sensitive roots and never falls back to cwd', () => {
   const testBase = resolve('./tmp/test-server-main-policy')
@@ -547,99 +555,42 @@ describe('post-launch findings #3 + #4: server-main wiring rejects sensitive roo
   })
 
   /**
-   * Mirror of the env-resolution branch in `src/server-main.ts` so the test
-   * exercises the same wiring without invoking `startServer` (which calls
-   * `process.exit` on errors and starts the MCP transport — both unsafe
-   * inside a vitest worker). The body MUST stay in sync with `server-main.ts`.
+   * Build a server via the REAL entry-point resolver (`resolveServerConfig`
+   * from server-main.ts), passing a synthetic env + cwd. Anchors the test to
+   * production wiring instead of a copy, without invoking `startServer` (which
+   * calls `process.exit` on errors and starts the MCP transport).
    */
   async function buildServerLikeMain(opts: {
     envBaseDirs?: string | undefined
     envBaseDir?: string | undefined
-  }): Promise<{ server: RAGServer; configError: BaseDirsConfigError | undefined }> {
-    const { checkSensitivePath } = await import('../../utils/sensitive-path.js')
-    const { BaseDirsConfigError, parseBaseDirsEnv: parseEnv } = await import(
-      '../../utils/base-dirs.js'
-    )
-
-    // Pre-check raw user-supplied paths (mirrors server-main.ts, Finding #3).
-    const rawSensitiveErrors: string[] = []
-    if (opts.envBaseDirs !== undefined && opts.envBaseDirs.length > 0) {
-      const parsed = parseEnv(opts.envBaseDirs)
-      if (parsed.ok) {
-        for (const raw of parsed.value) {
-          const sensitive = checkSensitivePath(raw, 'BASE_DIRS')
-          if (sensitive) rawSensitiveErrors.push(sensitive)
-        }
-      }
-    } else if (opts.envBaseDir !== undefined && opts.envBaseDir.trim().length > 0) {
-      const sensitive = checkSensitivePath(opts.envBaseDir, 'BASE_DIR')
-      if (sensitive) rawSensitiveErrors.push(sensitive)
+  }): Promise<{ server: RAGServer; config: Awaited<ReturnType<typeof resolveServerConfig>> }> {
+    const env: NodeJS.ProcessEnv = {
+      DB_PATH: dbPath,
+      CACHE_DIR: cacheDir,
+      MODEL_NAME: 'Xenova/all-MiniLM-L6-v2',
+      MAX_FILE_SIZE: String(100 * 1024 * 1024),
+      ...(opts.envBaseDirs !== undefined ? { BASE_DIRS: opts.envBaseDirs } : {}),
+      ...(opts.envBaseDir !== undefined ? { BASE_DIR: opts.envBaseDir } : {}),
     }
-
-    const baseDirsResult = await resolveBaseDirs({
-      envBaseDirs: opts.envBaseDirs,
-      envBaseDir: opts.envBaseDir,
-      cwd: testBase,
-    })
-
-    const warnings: string[] = []
-    let baseDirs: string[]
-    let configError: BaseDirsConfigError | undefined
-
-    if (rawSensitiveErrors.length > 0) {
-      baseDirs = []
-      configError = new BaseDirsConfigError([...new Set(rawSensitiveErrors)].join('; '))
-      warnings.push(configError.message)
-    } else if (baseDirsResult.ok) {
-      const sourceFlag =
-        opts.envBaseDirs !== undefined && opts.envBaseDirs.length > 0 ? 'BASE_DIRS' : 'BASE_DIR'
-      const sensitiveErrors: string[] = []
-      for (const root of baseDirsResult.config.baseDirs) {
-        const sensitive = checkSensitivePath(root, sourceFlag)
-        if (sensitive) sensitiveErrors.push(sensitive)
-      }
-      if (sensitiveErrors.length > 0) {
-        baseDirs = []
-        configError = new BaseDirsConfigError([...new Set(sensitiveErrors)].join('; '))
-        warnings.push(configError.message)
-      } else {
-        baseDirs = baseDirsResult.config.baseDirs
-        for (const w of baseDirsResult.warnings) warnings.push(w.message)
-      }
-    } else {
-      baseDirs = []
-      configError = baseDirsResult.error
-      warnings.push(baseDirsResult.error.message)
-    }
-
-    const server = new RAGServer({
-      dbPath,
-      modelName: 'Xenova/all-MiniLM-L6-v2',
-      cacheDir,
-      baseDirs,
-      maxFileSize: 100 * 1024 * 1024,
-      configWarnings: warnings,
-      ...(configError !== undefined ? { configError } : {}),
-    })
-
-    return { server, configError }
+    const config = await resolveServerConfig(env, testBase)
+    const server = new RAGServer(config)
+    return { server, config }
   }
 
   // AC: BASE_DIRS=["/etc"] must NOT be silently accepted by server-main.
   // The server enters degraded mode (configError set, baseDirs empty); root-
   // dependent tools fail fast; `status` surfaces the diagnostic.
   it('rejects BASE_DIRS=["/etc"] as a sensitive system path (degraded mode)', async () => {
-    const { server, configError } = await buildServerLikeMain({
+    const { server, config } = await buildServerLikeMain({
       envBaseDirs: JSON.stringify(['/etc']),
     })
 
-    expect(configError).toBeDefined()
-    expect(configError?.message).toMatch(/sensitive system path/)
-    expect(configError?.message).toContain('BASE_DIRS')
+    expect(config.configError).toBeDefined()
+    expect(config.configError?.message).toMatch(/sensitive system path/)
+    expect(config.configError?.message).toContain('BASE_DIRS')
 
     // baseDirs MUST be empty: no silent cwd fallback.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    expect((server as any).baseDirs).toEqual([])
+    expect(config.baseDirs).toEqual([])
 
     // Root-dependent tool: must fail fast.
     await expect(server.handleListFiles()).rejects.toBeInstanceOf(McpError)
@@ -659,13 +610,12 @@ describe('post-launch findings #3 + #4: server-main wiring rejects sensitive roo
   // AC: BASE_DIR=/usr (single-root sensitive path) is likewise rejected and
   // attributed to BASE_DIR (not BASE_DIRS).
   it('rejects BASE_DIR=/usr as a sensitive system path attributed to BASE_DIR', async () => {
-    const { server, configError } = await buildServerLikeMain({ envBaseDir: '/usr' })
+    const { config } = await buildServerLikeMain({ envBaseDir: '/usr' })
 
-    expect(configError).toBeDefined()
-    expect(configError?.message).toMatch(/sensitive system path/)
-    expect(configError?.message).toContain('BASE_DIR')
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    expect((server as any).baseDirs).toEqual([])
+    expect(config.configError).toBeDefined()
+    expect(config.configError?.message).toMatch(/sensitive system path/)
+    expect(config.configError?.message).toContain('BASE_DIR')
+    expect(config.baseDirs).toEqual([])
   })
 })
 

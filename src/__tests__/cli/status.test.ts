@@ -24,6 +24,9 @@ const cliCommonFactory = () => ({
     initialize: mocks.initialize,
     getStatus: mocks.getStatus,
   })),
+  // Pure helper used by the catch block; real implementation preserves the
+  // `Error: <message>` stderr behavior the tests assert.
+  toErrorMessage: (error: unknown) => (error instanceof Error ? error.message : String(error)),
 })
 
 const MOCKED_PATHS = ['../../cli/common.js'] as const

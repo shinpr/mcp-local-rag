@@ -22,6 +22,7 @@
 import { mkdir, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import type { EmbedderInterface } from '../pdf-filter.js'
 
 // ============================================
 // Mocks
@@ -59,7 +60,7 @@ let DocumentParser: typeof import('../index.js').DocumentParser
 describe('parsePdfPages return shape', () => {
   const testDir = join(process.cwd(), 'tmp', 'test-parsePdfPages-shape')
   const maxFileSize = 100 * 1024 * 1024 // 100MB
-  const mockEmbedder = { embed: vi.fn() }
+  const mockEmbedder: EmbedderInterface = { embedBatch: vi.fn() }
   let parser: InstanceType<typeof DocumentParser>
 
   beforeAll(async () => {

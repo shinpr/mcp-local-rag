@@ -92,17 +92,6 @@ describe('Title Extractor', () => {
       expect(result.title).toBe('my notes')
       expect(result.source).toBe('filename')
     })
-
-    it('should return source metadata for frontmatter, content for H1, filename for fallback', () => {
-      const frontmatter = extractMarkdownTitle('---\ntitle: Test\n---\n', 'test.md')
-      expect(frontmatter.source).toBe('metadata')
-
-      const h1 = extractMarkdownTitle('# Test\n', 'test.md')
-      expect(h1.source).toBe('content')
-
-      const fallback = extractMarkdownTitle('no title here', 'test.md')
-      expect(fallback.source).toBe('filename')
-    })
   })
 
   // --------------------------------------------

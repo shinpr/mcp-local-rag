@@ -2,6 +2,13 @@
 // Title is display-only metadata (NOT used for search scoring)
 
 // ============================================
+// Constants
+// ============================================
+
+/** Minimum font size (pt) for page-1 largest-font text to be treated as a title. */
+const TITLE_MIN_FONT_SIZE = 14
+
+// ============================================
 // Type Definitions
 // ============================================
 
@@ -136,10 +143,10 @@ export function extractPdfTitle(
     }
   }
 
-  // 2. Try largest-font text from page 1 (font size > 14pt indicates title)
+  // 2. Try largest-font text from page 1 (font size > threshold indicates title)
   if (
     firstPageFontHint &&
-    firstPageFontHint.fontSize > 14 &&
+    firstPageFontHint.fontSize > TITLE_MIN_FONT_SIZE &&
     firstPageFontHint.text.trim().length > 0
   ) {
     return { title: firstPageFontHint.text.trim(), source: 'content' }

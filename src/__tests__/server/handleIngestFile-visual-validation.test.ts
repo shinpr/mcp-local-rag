@@ -44,6 +44,7 @@ const mocks = vi.hoisted(() => {
     initialize: vi.fn().mockResolvedValue(undefined),
     listFiles: vi.fn().mockResolvedValue([]),
     search: vi.fn().mockResolvedValue([]),
+    getChunksByFilePath: vi.fn().mockResolvedValue([]),
     deleteChunks: vi.fn().mockResolvedValue(undefined),
     insertChunks: vi.fn().mockResolvedValue(undefined),
     optimize: vi.fn().mockResolvedValue(undefined),
@@ -115,6 +116,7 @@ const vectordbFactory = async (
       this.close = vi.fn()
       this.listFiles = mocks.listFiles
       this.search = mocks.search
+      this.getChunksByFilePath = mocks.getChunksByFilePath
       this.deleteChunks = mocks.deleteChunks
       this.deleteFiles = vi.fn()
       this.insertChunks = mocks.insertChunks
@@ -198,6 +200,7 @@ describe('handleIngestFile - `visual` Runtime Validation (AC-012)', () => {
     mocks.optimize.mockResolvedValue(undefined)
     mocks.listFiles.mockResolvedValue([])
     mocks.search.mockResolvedValue([])
+    mocks.getChunksByFilePath.mockResolvedValue([])
     mocks.embedInitialize.mockResolvedValue(undefined)
     mocks.embed.mockResolvedValue([0.1, 0.2])
     mocks.embedBatch.mockResolvedValue([])
@@ -446,6 +449,7 @@ describe('handleIngestFile - `visualQuality` Runtime Validation', () => {
     mocks.optimize.mockResolvedValue(undefined)
     mocks.listFiles.mockResolvedValue([])
     mocks.search.mockResolvedValue([])
+    mocks.getChunksByFilePath.mockResolvedValue([])
     mocks.embedInitialize.mockResolvedValue(undefined)
     mocks.embed.mockResolvedValue([0.1, 0.2])
     mocks.embedBatch.mockResolvedValue([[0.1, 0.2]])

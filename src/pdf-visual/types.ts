@@ -1,14 +1,12 @@
 // Shared types for the `pdf-visual` package.
 //
-// `VlmError` is the package-wide named error for the visual ingest path. It
-// was originally staged in `renderer.ts` (T3.1) and promoted here at T3.3 so
-// that `renderer.ts`, `captioner.ts`, and the orchestrator (`index.ts`) can
-// all import from a single source. Shape mirrors
-// `src/parser/index.ts:54-62`'s `ValidationError` pattern: a named class
+// `VlmError` is the package-wide named error for the visual ingest path.
+// `renderer.ts`, `captioner.ts`, and the orchestrator (`index.ts`) import it
+// from this single source. Shape mirrors `ValidationError`: a named class
 // extending `Error`, with `name` assignment and a public override `cause`.
 //
 // `CaptionerConfig` / `Captioner` are the captioner's public interface,
-// declared per DD § Component → pdf-visual/captioner.ts.
+// shared across the visual ingest modules.
 
 /**
  * Error raised by any module on the visual ingest path. Carries the offending

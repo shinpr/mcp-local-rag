@@ -59,12 +59,12 @@ import { type VectorChunk, VectorStore } from '../../vectordb/index.js'
 // Test Configuration
 // ============================================
 
-const testRoot = resolve('./tmp/test-phase0-equivalence')
+const testRoot = resolve('./tmp/test-cross-path-equivalence')
 const baseDir = resolve(testRoot, 'data')
 const serverDbPath = resolve(testRoot, 'server-db')
 const cliDbPath = resolve(testRoot, 'cli-db')
 const cacheDir = resolve('./tmp/models')
-const fixtureFileName = 'phase0-equivalence.md'
+const fixtureFileName = 'cross-path-equivalence.md'
 const fixtureFilePath = resolve(baseDir, fixtureFileName)
 
 // Substantial content guarantees the SemanticChunker produces >=1 chunk
@@ -221,11 +221,11 @@ describe('VLM PDF Enrichment - Phase 0 Equivalence (AC-008)', () => {
     // receives.
     serverInsertSpy = vi.spyOn(getServerVectorStore(server), 'insertChunks')
     cliInsertSpy = vi.spyOn(cliVectorStore, 'insertChunks')
-    serverInsertSpy.mockImplementation(async (chunks) => {
-      serverInsertCalls.push((chunks as VectorChunk[]).map((c) => ({ ...c })))
+    serverInsertSpy.mockImplementation(async (chunks: VectorChunk[]) => {
+      serverInsertCalls.push(chunks.map((c) => ({ ...c })))
     })
-    cliInsertSpy.mockImplementation(async (chunks) => {
-      cliInsertCalls.push((chunks as VectorChunk[]).map((c) => ({ ...c })))
+    cliInsertSpy.mockImplementation(async (chunks: VectorChunk[]) => {
+      cliInsertCalls.push(chunks.map((c) => ({ ...c })))
     })
 
     // Clear any incidental chunker invocations done during construction.

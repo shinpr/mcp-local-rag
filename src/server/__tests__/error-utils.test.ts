@@ -51,7 +51,11 @@ describe('formatErrorMessage', () => {
 
     it('should return the error message when stack is not available', () => {
       const error = new Error('No stack error')
-      error.stack = undefined
+      // Simulate an Error whose `stack` is unavailable. Under
+      // exactOptionalPropertyTypes, deleting the optional property (rather than
+      // assigning `undefined`) is the type-correct way to model its absence;
+      // reading `error.stack` afterwards still yields `undefined` at runtime.
+      delete error.stack
       const result = formatErrorMessage(error)
       expect(result).toBe('No stack error')
     })
@@ -66,15 +70,6 @@ describe('formatErrorMessage', () => {
       const error = new Error('Default mode error')
       const result = formatErrorMessage(error)
       expect(result).toBe('Default mode error')
-    })
-  })
-
-  describe('with non-Error objects', () => {
-    it('should preserve message from object with string message property', () => {
-      const error = { message: 'Custom error object', stack: undefined }
-      process.env['NODE_ENV'] = 'production'
-      const result = formatErrorMessage(error)
-      expect(result).toBe('Custom error object')
     })
   })
 

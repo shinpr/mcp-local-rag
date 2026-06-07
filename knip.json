@@ -1,5 +1,3 @@
 {
-  "project": ["src/**/*.ts"],
-  "ignore": ["src/__tests__/**"],
-  "ignoreExportsUsedInFile": true
+  "project": ["src/**/*.ts"]
 }

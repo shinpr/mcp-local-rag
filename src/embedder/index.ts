@@ -185,17 +185,50 @@ export class Embedder {
       return []
     }
 
+    // Preserve embed()'s empty-text contract for batch elements (the previous
+    // per-text implementation rejected empty strings via embed()).
+    if (texts.some((text) => text.length === 0)) {
+      throw new EmbeddingError('Cannot generate embedding for empty text')
+    }
+
     // Lazy initialization: initialize on first use if not already initialized
     await this.ensureInitialized()
 
     try {
-      const embeddings: number[][] = []
+      const options = { pooling: 'mean', normalize: true }
+      // True batched inference: the feature-extraction pipeline accepts an
+      // array of texts and returns a single [batchLen, dim] tensor in one
+      // forward pass. The previous implementation called the model once per
+      // text via Promise.all, so `batchSize` had no real effect (onnxruntime
+      // inference is not parallelized by Promise.all). Passing the whole batch
+      // lets the runtime batch the matmuls. Mean-pooling honors the attention
+      // mask, so per-row vectors match the single-text result.
+      const modelCall = this.model as (
+        input: string[],
+        options: unknown
+      ) => Promise<{ data: Float32Array; dims: number[] }>
 
-      // Process in batches according to batch size
+      const embeddings: number[][] = []
       for (let i = 0; i < texts.length; i += this.config.batchSize) {
         const batch = texts.slice(i, i + this.config.batchSize)
-        const batchEmbeddings = await Promise.all(batch.map((text) => this.embed(text)))
-        embeddings.push(...batchEmbeddings)
+        const output = await modelCall(batch, options)
+
+        // Validate the output shape before slicing so a runtime/model contract
+        // change surfaces as a clear error rather than silently wrong vectors.
+        const dim = output?.dims?.[output.dims.length - 1]
+        if (
+          !output ||
+          !(output.data instanceof Float32Array) ||
+          typeof dim !== 'number' ||
+          dim <= 0 ||
+          output.data.length !== batch.length * dim
+        ) {
+          throw new EmbeddingError('Unexpected embedder batch output shape')
+        }
+
+        for (let row = 0; row < batch.length; row++) {
+          embeddings.push(Array.from(output.data.subarray(row * dim, (row + 1) * dim)))
+        }
       }
 
       return embeddings

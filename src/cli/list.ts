@@ -1,25 +1,14 @@
 // CLI list subcommand — list files and ingestion status
 
-import { readdir } from 'node:fs/promises'
-import { extname, join, resolve, sep } from 'node:path'
+import { resolve, sep } from 'node:path'
 
-import { SUPPORTED_EXTENSIONS } from '../parser/index.js'
-import { displayPath, legacyBaseDir } from '../utils/base-dirs.js'
+import { displayPath } from '../utils/base-dirs.js'
+import { MAX_SCAN_DEPTH } from '../utils/limits.js'
 import { extractSourceFromPath, looksLikeRawDataPath } from '../utils/raw-data-utils.js'
-import { createVectorStore, resolveCliBaseDirsOrExit } from './common.js'
+import { bfsCollectSupportedFiles, realpathForMatch } from '../utils/scan.js'
+import { createVectorStore, resolveCliBaseDirsOrExit, toErrorMessage } from './common.js'
 import type { GlobalOptions } from './options.js'
 import { consumeBaseDirArg, resolveGlobalConfig, validatePath } from './options.js'
-
-// ============================================
-// Constants
-// ============================================
-
-/**
- * Maximum directory recursion depth for `list` scans. Mirrors the
- * `MAX_DEPTH` used by `ingest`'s `walkDirectory` so the two CLI subcommands
- * apply the same boundary to "how deep do we look under a root".
- */
-const MAX_DEPTH = 10
 
 // ============================================
 // Helpers
@@ -28,8 +17,8 @@ const MAX_DEPTH = 10
 /**
  * Result of scanning a single root: the supported file paths found plus a
  * non-fatal warning when applicable (depth limit hit, readdir error, ...).
- * Per-root errors no longer abort the entire `list` call (Finding #10): one
- * unreadable root must not hide files under the other roots.
+ * Per-root errors do not abort the entire `list` call: one unreadable root
+ * must not hide files under the other roots.
  */
 interface ScanRootResult {
   files: string[]
@@ -37,66 +26,21 @@ interface ScanRootResult {
 }
 
 /**
- * Bounded BFS scan of a single root, up to {@link MAX_DEPTH} levels deep.
- * Symlinks are skipped (mirrors `walkDirectory` in `cli/ingest.ts`) and
- * paths under `excludePaths` are filtered out. Per-directory `readdir`
- * errors are captured into the returned `warnings` and do not abort the
- * scan; this is the key change introduced by Finding #10 — a permission-
- * denied error under one root must not hide files under another root.
+ * Bounded BFS scan of a single root, up to `MAX_SCAN_DEPTH` levels deep.
+ * Delegates the traversal to {@link bfsCollectSupportedFiles} and renders the
+ * `list`-specific warnings: per-directory read failures and the depth-limit
+ * warning, both annotated with `displayPath`.
  */
 async function scanRoot(root: string, excludePaths: string[]): Promise<ScanRootResult> {
-  const files: string[] = []
+  const { files, unreadableDirs, depthLimited } = await bfsCollectSupportedFiles(root, excludePaths)
+
   const warnings: string[] = []
-  let depthLimited = false
-
-  const queue: { dirPath: string; depth: number }[] = [{ dirPath: root, depth: 0 }]
-
-  while (queue.length > 0) {
-    const { dirPath, depth } = queue.shift()!
-
-    if (depth >= MAX_DEPTH) {
-      depthLimited = true
-      continue
-    }
-
-    // TypeScript's `readdir` has overloads keyed on the options shape; when
-    // `withFileTypes: true` is passed as a literal-typed object the inferred
-    // return is `Dirent<string>[]`, which we use directly. The explicit
-    // type here keeps the loop body's `entry.isFile()` / `entry.name`
-    // accesses pointed at the string-encoded Dirent shape.
-    let entries: import('node:fs').Dirent<string>[]
-    try {
-      entries = (await readdir(dirPath, {
-        withFileTypes: true,
-        encoding: 'utf8',
-      })) as import('node:fs').Dirent<string>[]
-    } catch (error) {
-      // Per-root error tolerance: record the warning and continue. The
-      // typical case is permission-denied under a subdirectory; previously
-      // this killed the whole `list` invocation.
-      const code =
-        error && typeof error === 'object' && 'code' in error
-          ? ((error as NodeJS.ErrnoException).code ?? 'UNKNOWN')
-          : 'UNKNOWN'
-      warnings.push(`cannot read directory: ${displayPath(dirPath)} (${code})`)
-      continue
-    }
-
-    for (const entry of entries) {
-      const fullPath = join(dirPath, entry.name)
-      if (entry.isSymbolicLink()) continue
-      if (excludePaths.some((ep) => fullPath.startsWith(ep))) continue
-      if (entry.isDirectory()) {
-        queue.push({ dirPath: fullPath, depth: depth + 1 })
-      } else if (entry.isFile() && SUPPORTED_EXTENSIONS.has(extname(entry.name).toLowerCase())) {
-        files.push(fullPath)
-      }
-    }
+  for (const { dirPath, code } of unreadableDirs) {
+    warnings.push(`cannot read directory: ${displayPath(dirPath)} (${code})`)
   }
-
   if (depthLimited) {
     warnings.push(
-      `some directories under ${displayPath(root)} were skipped because they exceed the maximum depth (${MAX_DEPTH})`
+      `some directories under ${displayPath(root)} were skipped because they exceed the maximum depth (${MAX_SCAN_DEPTH})`
     )
   }
 
@@ -126,7 +70,7 @@ interface FileEntry {
   /**
    * Producing root for this file (one of `ListResult.baseDirs`). Mirrors the
    * MCP `list_files` response shape so a single client schema works for
-   * both surfaces. Added in Finding #5 (post-launch review).
+   * both surfaces.
    */
   baseDir: string
   ingested: boolean
@@ -146,7 +90,7 @@ interface SourceEntry {
  *
  * Multi-root shape (post-Finding-#5 alignment with the MCP `list_files`
  * response):
- *  - `baseDirs`: every effective root (after realpath + nested-pruning).
+ *  - `baseDirs`: every effective root (normal resolve() form, nested-pruned).
  *  - `baseDir`: legacy first-effective-root, preserved so single-root
  *    clients continue to work unchanged.
  *  - `files[].baseDir`: per-file producing root.
@@ -273,11 +217,18 @@ export async function runList(args: string[], globalOptions: GlobalOptions = {})
     console.error(warning.message)
   }
 
-  // Scan every effective root (P2-T2). `legacyBaseDir` still surfaces the
-  // first effective root as the JSON `baseDir` field for response back-compat;
-  // the `list_files` MCP response evolves to add `baseDirs` and per-file
-  // annotations in P3-T2, which is intentionally out of scope here.
-  const baseDir = legacyBaseDir(baseDirsConfig)
+  // Scan/display the normal-path roots (`rawBaseDirs`) so scanned paths match
+  // the resolve()-stored DB keys; the realpath'd `baseDirs` are the security
+  // boundary, not used here. `rawBaseDirs[0]` is the legacy `baseDir` field.
+  const rawBaseDirs = baseDirsConfig.rawBaseDirs
+  const firstRawBaseDir = rawBaseDirs[0]
+  if (firstRawBaseDir === undefined) {
+    // Cannot happen in non-degraded mode: the resolver always returns at least
+    // one effective root. Surface as a programming error rather than emitting
+    // an empty `baseDir` field.
+    throw new Error('internal: resolver returned no effective base directories')
+  }
+  const baseDir = firstRawBaseDir
 
   try {
     // Initialize VectorStore only (no Embedder needed for list)
@@ -287,67 +238,65 @@ export async function runList(args: string[], globalOptions: GlobalOptions = {})
     // Build exclude paths (resolved to absolute, platform-aware trailing
     // separator). Applied uniformly to every root so dbPath/cacheDir remain
     // excluded under each root even when they happen to live below one of
-    // them (AC-011).
+    // them.
     const excludePaths = [
       `${resolve(globalConfig.dbPath)}${sep}`,
       `${resolve(globalConfig.cacheDir)}${sep}`,
     ]
 
-    // Get all ingested entries from the vector store
+    // Get ingested entries and index by file IDENTITY (realpath), so a file
+    // ingested via a different spelling (symlinked prefix or alias) still
+    // matches the scan. realpath is used only for this "same file?" comparison;
+    // storage/display stay normal-path (see utils/base-dirs.ts BaseDirsConfig).
     const ingested = await vectorStore.listFiles()
-    const ingestedMap = new Map(ingested.map((f) => [f.filePath, f]))
+    const ingestedKeyed = await Promise.all(
+      ingested.map(async (f) => ({ entry: f, key: await realpathForMatch(f.filePath) }))
+    )
+    const ingestedByKey = new Map(ingestedKeyed.map(({ entry, key }) => [key, entry]))
 
-    // Scan every effective root, recording the producing root for each
-    // file path. Disjoint roots can still surface the same file through
-    // symlinks or bind mounts; the first-occurrence-wins dedup preserves
-    // root iteration order, mirroring the MCP `list_files` contract.
-    // Per-root errors are non-fatal (Finding #10): we collect them as stderr
-    // warnings and continue with the remaining roots so one unreadable
-    // root does not hide the others.
-    const fileToRoot = new Map<string, string>()
-    for (const root of baseDirsConfig.baseDirs) {
+    // Scan every effective root, deduping by identity key (a file reachable
+    // from multiple roots — via symlinks/bind mounts — appears once, first root
+    // wins). Per-root errors are non-fatal stderr warnings.
+    const keyToRoot = new Map<string, string>()
+    const keyToScanned = new Map<string, string>()
+    for (const root of rawBaseDirs) {
       const { files: perRoot, warnings: rootWarnings } = await scanRoot(root, excludePaths)
       for (const warning of rootWarnings) {
         console.error(`Warning [${root}]: ${warning}`)
       }
-      for (const filePath of perRoot) {
-        if (!fileToRoot.has(filePath)) {
-          fileToRoot.set(filePath, root)
+      for (const scannedPath of perRoot) {
+        const key = await realpathForMatch(scannedPath)
+        if (!keyToRoot.has(key)) {
+          keyToRoot.set(key, root)
+          keyToScanned.set(key, scannedPath)
         }
       }
     }
-    const baseDirFiles = [...fileToRoot.keys()].sort()
-    const baseDirSet = new Set(baseDirFiles)
 
-    // Files with ingestion status and producing-root annotation. The
-    // producing root is guaranteed to be present because the path came from
-    // the scan above; the non-null assertion below documents the invariant.
-    const files: FileEntry[] = baseDirFiles.map((filePath) => {
-      const producingRoot = fileToRoot.get(filePath)
-      if (producingRoot === undefined) {
-        // Cannot happen by construction (the key came from the same map).
-        // Surface as a programming error rather than silently shipping an
-        // empty `baseDir` field.
-        throw new Error(`internal: missing producing root for ${filePath}`)
+    // Ingested rows display the stored (normal) path so it round-trips into
+    // delete/read; not-ingested rows display the scanned path.
+    const matchedKeys = new Set<string>()
+    const files: FileEntry[] = [...keyToRoot.entries()].map(([key, producingRoot]) => {
+      const entry = ingestedByKey.get(key)
+      if (entry) {
+        matchedKeys.add(key)
+        return {
+          filePath: entry.filePath,
+          baseDir: producingRoot,
+          ingested: true,
+          chunkCount: entry.chunkCount,
+          timestamp: entry.timestamp,
+        }
       }
-      const entry = ingestedMap.get(filePath)
-      return entry
-        ? {
-            filePath,
-            baseDir: producingRoot,
-            ingested: true,
-            chunkCount: entry.chunkCount,
-            timestamp: entry.timestamp,
-          }
-        : { filePath, baseDir: producingRoot, ingested: false }
+      return { filePath: keyToScanned.get(key) ?? key, baseDir: producingRoot, ingested: false }
     })
+    files.sort((a, b) => (a.filePath < b.filePath ? -1 : a.filePath > b.filePath ? 1 : 0))
 
-    // Content ingested via ingest_data (web pages, clipboard, etc.) plus any
-    // orphaned DB entries whose files no longer exist on disk. Sources are
-    // never annotated with a producing root — matches the MCP contract.
-    const sources: SourceEntry[] = ingested
-      .filter((f) => !baseDirSet.has(f.filePath))
-      .map((f) => {
+    // Content ingested via ingest_data plus orphaned DB entries: ingested
+    // entries whose identity key matched no scanned file.
+    const sources: SourceEntry[] = ingestedKeyed
+      .filter(({ key }) => !matchedKeys.has(key))
+      .map(({ entry: f }) => {
         if (looksLikeRawDataPath(f.filePath)) {
           const source = extractSourceFromPath(f.filePath)
           if (source) return { source, chunkCount: f.chunkCount, timestamp: f.timestamp }
@@ -356,7 +305,7 @@ export async function runList(args: string[], globalOptions: GlobalOptions = {})
       })
 
     const result: ListResult = {
-      baseDirs: [...baseDirsConfig.baseDirs],
+      baseDirs: [...rawBaseDirs],
       baseDir,
       files,
       sources,
@@ -365,7 +314,7 @@ export async function runList(args: string[], globalOptions: GlobalOptions = {})
     // Output JSON to stdout
     process.stdout.write(JSON.stringify(result, null, 2))
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
+    const message = toErrorMessage(error)
     console.error(`Failed to list files: ${message}`)
     process.exit(1)
   }

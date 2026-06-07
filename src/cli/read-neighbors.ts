@@ -6,7 +6,7 @@ import {
   generateRawDataPath,
   looksLikeRawDataPath,
 } from '../utils/raw-data-utils.js'
-import { createVectorStore } from './common.js'
+import { createVectorStore, toErrorMessage } from './common.js'
 import type { GlobalOptions } from './options.js'
 import { resolveGlobalConfig, validatePath } from './options.js'
 
@@ -157,7 +157,7 @@ export async function runReadNeighbors(
   try {
     parsed = parseArgs(args)
   } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error)
+    const reason = toErrorMessage(error)
     console.error(`Error: ${reason}`)
     process.exit(1)
   }
@@ -170,7 +170,7 @@ export async function runReadNeighbors(
   }
 
   try {
-    // Validation order: chunkIndex → before → after → XOR (matches handler per Design Doc).
+    // Validation order matches the MCP handler: chunkIndex → before → after → XOR.
     if (parsed.chunkIndex === undefined) {
       throw new Error('--chunk-index is required and must be a non-negative integer')
     }
@@ -204,7 +204,8 @@ export async function runReadNeighbors(
       // Generate raw-data path from source identifier.
       targetPath = generateRawDataPath(globalConfig.dbPath, parsed.source, 'markdown')
     } else {
-      // Resolve to absolute path and validate (mirrors runDelete).
+      // DB key is the resolve()'d ingest path, so look up by resolve() (never
+      // realpath); validate below (mirrors runDelete; realpath stays there).
       targetPath = resolve(parsed.filePath!)
       const pathError = validatePath(targetPath, '--file-path')
       if (pathError) {
@@ -249,7 +250,7 @@ export async function runReadNeighbors(
     // Output JSON to stdout (2-space indent per query.ts convention).
     process.stdout.write(`${JSON.stringify(items, null, 2)}\n`)
   } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error)
+    const reason = toErrorMessage(error)
     console.error(`Error: ${reason}`)
     process.exit(1)
   }

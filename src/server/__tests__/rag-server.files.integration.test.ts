@@ -34,10 +34,10 @@ describe('AC-006: Additional Format Support (Phase 2)', () => {
     rmSync(localTestDataDir, { recursive: true, force: true })
   })
 
-  // AC interpretation: [Functional requirement] DOCX files ingested via ingest_file tool and text extracted
-  // Validation: Call ingest_file with DOCX file path, text extraction and chunk storage succeed
-  it('DOCX file ingested via ingest_file tool, text properly extracted and saved to LanceDB', async () => {
-    const { DocumentParser } = await import('../../parser/index')
+  // AC interpretation: [Functional requirement] The .docx extension is routed to the DOCX parser
+  // Validation: DocumentParser.parseFile dispatches a .docx path to parseDocx and surfaces a FileOperationError when the content is not a valid DOCX
+  it('DocumentParser routes .docx to parseDocx and surfaces FileOperationError on invalid DOCX content', async () => {
+    const { DocumentParser } = await import('../../parser/index.js')
     const parser = new DocumentParser({
       baseDir: localTestDataDir,
       maxFileSize: 100 * 1024 * 1024,
@@ -61,10 +61,10 @@ describe('AC-006: Additional Format Support (Phase 2)', () => {
     }
   })
 
-  // AC interpretation: [Functional requirement] All formats (PDF/DOCX/TXT/MD) ingested successfully
-  // Validation: All 4 formats (PDF, DOCX, TXT, MD) ingested successfully
-  it('Sample files for all formats (PDF, DOCX, TXT, MD) ingested successfully', async () => {
-    const { DocumentParser } = await import('../../parser/index')
+  // AC interpretation: [Functional requirement] Every supported format is routed to the correct parser
+  // Validation: DocumentParser.parseFile extracts text for TXT/MD, dispatches DOCX to parseDocx (FileOperationError on invalid content), and rejects PDF as an unsupported parseFile format (PDF uses parsePdf directly)
+  it('DocumentParser.parseFile dispatches each format (TXT/MD extracted, DOCX routed, PDF rejected as unsupported)', async () => {
+    const { DocumentParser } = await import('../../parser/index.js')
     const parser = new DocumentParser({
       baseDir: localTestDataDir,
       maxFileSize: 100 * 1024 * 1024,

@@ -5,12 +5,14 @@ import { applyFileFilter, applyGrouping, applyKeywordBoost } from './search-filt
 import {
   type ChunkRow,
   DatabaseError,
+  DEFAULT_HYBRID_WEIGHT,
   FTS_CLEANUP_THRESHOLD_MS,
   FTS_INDEX_NAME,
   HYBRID_SEARCH_CANDIDATE_MULTIPLIER,
   type SearchResult,
   toChunkRow,
   toSearchResult,
+  toVectorChunk,
   type VectorChunk,
   type VectorStoreConfig,
 } from './types.js'
@@ -90,28 +92,21 @@ export class VectorStore {
     }
 
     try {
-      // Use LanceDB delete API to remove records matching filePath
-      // Escape single quotes to prevent SQL injection
+      // Use LanceDB delete API to remove records matching filePath.
+      // Escape single quotes to prevent SQL injection.
+      // Note: Field names are case-sensitive, use backticks for camelCase fields.
       const escapedFilePath = filePath.replace(/'/g, "''")
-
-      // LanceDB's delete method doesn't throw errors if targets don't exist,
-      // so call delete directly
-      // Note: Field names are case-sensitive, use backticks for camelCase fields
       await this.table.delete(`\`filePath\` = '${escapedFilePath}'`)
       console.error(`VectorStore: Deleted chunks for file "${filePath}"`)
     } catch (error) {
-      // If error occurs, output warning log
+      // LanceDB's delete is a no-op (resolves normally) when no rows match the
+      // predicate, so reaching this catch means a genuine failure — a malformed
+      // predicate, or a schema/table-level error. Propagate it instead of
+      // swallowing based on brittle error-message string matching (which broke
+      // silently across LanceDB versions and could hide real delete failures
+      // as data-integrity bugs).
       console.warn(`VectorStore: Error occurred while deleting file "${filePath}":`, error)
-      // Don't treat as error if deletion targets don't exist or table is empty
-      // Otherwise throw exception
-      const errorMessage = (error as Error).message.toLowerCase()
-      if (
-        !errorMessage.includes('not found') &&
-        !errorMessage.includes('does not exist') &&
-        !errorMessage.includes('no matching')
-      ) {
-        throw new DatabaseError(`Failed to delete chunks for file: ${filePath}`, error as Error)
-      }
+      throw new DatabaseError(`Failed to delete chunks for file: ${filePath}`, error as Error)
     }
   }
 
@@ -119,20 +114,14 @@ export class VectorStore {
    * Return chunk rows for a single file whose chunkIndex is within the
    * inclusive [minIdx, maxIdx] range, sorted ascending by chunkIndex.
    *
-   * This is a feature-agnostic primitive (ADR-0001 D5): it knows nothing
+   * This is a feature-agnostic primitive: it knows nothing
    * about before/after/isTarget semantics — those live in the handler.
    * Ascending sort by chunkIndex is a contract, not incidental storage
-   * order (AC-018).
+   * order.
    *
    * Lazy-table null returns [] (mirrors search, listFiles, deleteChunks).
    * LanceDB errors are wrapped as DatabaseError with the original error
    * preserved as cause.
-   *
-   * Note: LanceDB numeric predicates (>=, <=) on chunkIndex are not
-   * exercised elsewhere in the repo today. Task 1.3 unit tests act as
-   * the probe for this SQL shape; see Design Doc §Main Components →
-   * VectorStore Limitation note for the fetch-all + in-memory-filter
-   * fallback plan if the probe fails.
    *
    * @param filePath - File path (absolute)
    * @param minIdx - Minimum chunk index (inclusive)
@@ -159,11 +148,36 @@ export class VectorStore {
 
       const raw = await this.table.query().where(predicate).toArray()
       const rows = raw.map((row) => toChunkRow(row))
-      // Contractual ascending sort (AC-018); do not rely on storage order
+      // Contractual ascending sort; do not rely on storage order.
       rows.sort((a, b) => a.chunkIndex - b.chunkIndex)
       return rows
     } catch (error) {
       throw new DatabaseError('Failed to read chunks by range', error as Error)
+    }
+  }
+
+  /**
+   * Return every stored chunk for a file as a full {@link VectorChunk},
+   * including the real embedding vector — suitable for re-insertion via
+   * {@link insertChunks}. Used by the ingest handler to back up existing data
+   * before a destructive re-ingest so a failure can be rolled back without
+   * data loss or vector corruption.
+   *
+   * Lazy-table null returns `[]`. LanceDB errors are wrapped as DatabaseError.
+   *
+   * @param filePath - File path (absolute)
+   */
+  async getChunksByFilePath(filePath: string): Promise<VectorChunk[]> {
+    if (!this.table) {
+      return []
+    }
+    try {
+      // Escape single quotes to prevent SQL injection (mirrors deleteChunks)
+      const escapedFilePath = filePath.replace(/'/g, "''")
+      const raw = await this.table.query().where(`\`filePath\` = '${escapedFilePath}'`).toArray()
+      return raw.map((row) => toVectorChunk(row))
+    } catch (error) {
+      throw new DatabaseError(`Failed to read chunks for file: ${filePath}`, error as Error)
     }
   }
 
@@ -339,7 +353,7 @@ export class VectorStore {
       }
 
       // Step 3: Apply keyword boost if enabled
-      const hybridWeight = this.config.hybridWeight ?? 0.6
+      const hybridWeight = this.config.hybridWeight ?? DEFAULT_HYBRID_WEIGHT
       if (this.ftsEnabled && queryText && queryText.trim().length > 0 && hybridWeight > 0) {
         try {
           // Get unique filePaths from vector results to filter FTS search
@@ -359,8 +373,11 @@ export class VectorStore {
 
           results = applyKeywordBoost(results, ftsResults, hybridWeight)
         } catch (ftsError) {
+          // Per-request degrade only: fall back to vector-only results for THIS
+          // query without disabling FTS on the instance. A transient FTS error
+          // (e.g. a momentary index issue) must not permanently drop the server
+          // to vector-only until restart — the next query retries hybrid search.
           console.error('VectorStore: FTS search failed, using vector-only results:', ftsError)
-          this.ftsEnabled = false
         }
       }
 
@@ -389,15 +406,21 @@ export class VectorStore {
     }
 
     try {
-      // Retrieve all records
-      const allRecords = await this.table.query().toArray()
+      // Project to only the columns needed for aggregation, excluding the
+      // embedding vector payload. LanceDB JS has no group-by, so the per-file
+      // count + latest-timestamp aggregation still runs here — but over a much
+      // smaller row payload than a full `query().toArray()`.
+      const allRecords = await this.table.query().select(['filePath', 'timestamp']).toArray()
 
       // Group by file path
       const fileMap = new Map<string, { chunkCount: number; timestamp: string }>()
 
       for (const record of allRecords) {
-        const filePath = record.filePath as string
-        const timestamp = record.timestamp as string
+        const filePath = record.filePath
+        const timestamp = record.timestamp
+        // Type-guard parity with toSearchResult/toChunkRow: skip rows missing
+        // the expected string columns rather than coercing via `as string`.
+        if (typeof filePath !== 'string' || typeof timestamp !== 'string') continue
 
         if (fileMap.has(filePath)) {
           const fileInfo = fileMap.get(filePath)
@@ -449,12 +472,18 @@ export class VectorStore {
     }
 
     try {
-      // Retrieve all records
-      const allRecords = await this.table.query().toArray()
-      const chunkCount = allRecords.length
+      // Total chunk count comes straight from LanceDB's row count — no need to
+      // materialize every row just to read `.length`.
+      const chunkCount = await this.table.countRows()
 
-      // Count unique file paths
-      const uniqueFilePaths = new Set(allRecords.map((record) => record.filePath as string))
+      // Distinct document count: LanceDB JS has no DISTINCT, so project to just
+      // the filePath column (excludes the vector payload) and dedupe here.
+      const records = await this.table.query().select(['filePath']).toArray()
+      const uniqueFilePaths = new Set<string>()
+      for (const record of records) {
+        const filePath = record.filePath
+        if (typeof filePath === 'string') uniqueFilePaths.add(filePath)
+      }
       const documentCount = uniqueFilePaths.size
 
       // Get memory usage (in MB)
@@ -470,7 +499,9 @@ export class VectorStore {
         uptime,
         ftsIndexEnabled: this.ftsEnabled,
         searchMode:
-          this.ftsEnabled && (this.config.hybridWeight ?? 0.6) > 0 ? 'hybrid' : 'vector-only',
+          this.ftsEnabled && (this.config.hybridWeight ?? DEFAULT_HYBRID_WEIGHT) > 0
+            ? 'hybrid'
+            : 'vector-only',
       }
     } catch (error) {
       throw new DatabaseError('Failed to get status', error as Error)
