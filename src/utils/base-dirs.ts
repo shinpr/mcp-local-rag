@@ -295,11 +295,12 @@ export function dedupAndPruneRoots(inputs: string[]): DedupAndPruneResult {
   // closest SURVIVING ancestor (the grandparent). This is the same result the
   // user would have gotten by passing only the grandparent, and avoids the
   // confusing case where a warning points at another path that was itself
-  // pruned. Implementation note: a single pass over `deduped` in input order
-  // works because exact-prefix ancestors of a candidate must precede it in
-  // the realpath-sorted-by-discovery order only when shorter; we therefore
-  // compute the closest ancestor against the surviving `roots` set so the
-  // reported parent is always a surviving root.
+  // pruned. Implementation note: this runs in two passes over `deduped`. The
+  // pre-pass computes the `survivors` set (candidates with no ancestor in
+  // `deduped`); the main pass then resolves each candidate's closest ancestor
+  // against `survivors` so the reported parent is always a surviving root.
+  // The two `findParent` scans make this O(n^2) in the number of roots, which
+  // is harmless at realistic root counts.
   const roots: string[] = []
   const warnings: BaseDirsConfigWarning[] = []
   // Pre-pass: identify every candidate that has any ancestor in `deduped`

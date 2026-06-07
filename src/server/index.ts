@@ -1,7 +1,7 @@
 // RAGServer implementation with MCP tools
 
-import { readdir, readFile, unlink } from 'node:fs/promises'
-import { extname, join, resolve, sep } from 'node:path'
+import { readFile, unlink } from 'node:fs/promises'
+import { resolve, sep } from 'node:path'
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import {
@@ -15,10 +15,9 @@ import { Embedder } from '../embedder/index.js'
 import { buildChunksAndEmbeddings, buildVectorChunks } from '../ingest/compute.js'
 import { prepareVisualPdfChunks } from '../ingest/visual.js'
 import { parseHtml } from '../parser/html-parser.js'
-import { DocumentParser, SUPPORTED_EXTENSIONS } from '../parser/index.js'
+import { DocumentParser } from '../parser/index.js'
 import { extractMarkdownTitle, extractTxtTitle } from '../parser/title-extractor.js'
-import { type BaseDirsConfigError, displayPath } from '../utils/base-dirs.js'
-import { MAX_SCAN_DEPTH } from '../utils/limits.js'
+import type { BaseDirsConfigError } from '../utils/base-dirs.js'
 import {
   type ContentFormat,
   extractSourceFromPath,
@@ -39,6 +38,7 @@ import {
   formatErrorMessage,
   type RagContentBlock,
 } from './error-utils.js'
+import { normalizeBaseDirs, scanBaseDir } from './list-scanner.js'
 import { toolDefinitions } from './tool-definitions.js'
 import { parseIngestDataInput, parseQueryDocumentsInput } from './tool-input.js'
 import type {
@@ -94,29 +94,12 @@ export class RAGServer {
 
   constructor(config: RAGServerConfig) {
     this.dbPath = config.dbPath
-    // Normalize both config shapes into a single `baseDirs: string[]`.
-    // Exactly one of `baseDir` / `baseDirs` is supplied (enforced by the
-    // discriminated union in `RAGServerConfig`); the runtime check below
-    // catches misuse from JS-only callers and degraded-mode bugs.
-    const normalizedBaseDirs =
-      config.baseDirs !== undefined ? [...config.baseDirs] : [config.baseDir]
-    const firstBaseDir = normalizedBaseDirs[0]
-    // Empty `baseDirs` is accepted ONLY in degraded mode (configError set).
-    // In that case the server stays constructible so `status` remains
-    // callable, but every root-dependent tool fails fast via
-    // `assertConfigOk` before any baseDirs-dependent work. Without
-    // configError, an empty array is a misuse: reject up front rather than
-    // build a parser that silently rejects every path.
-    if (firstBaseDir === undefined && config.configError === undefined) {
-      throw new Error(
-        'RAGServerConfig must provide either `baseDir` or a non-empty `baseDirs` array (empty `baseDirs` is allowed only in degraded mode with `configError` set).'
-      )
-    }
-    this.baseDirs = normalizedBaseDirs
-    // Legacy single-root accessor — empty-string when in degraded mode with
-    // an empty `baseDirs` array. `baseDir` is never consulted in degraded
-    // mode because `assertConfigOk` fires before any handler reaches it.
-    this.baseDir = firstBaseDir ?? ''
+    // Normalize both config shapes into a single `baseDirs: string[]` plus the
+    // legacy single-root accessor. See `normalizeBaseDirs` for the degraded-
+    // mode and misuse semantics.
+    const { baseDirs, baseDir } = normalizeBaseDirs(config)
+    this.baseDirs = baseDirs
+    this.baseDir = baseDir
     this.cacheDir = config.cacheDir
     this.configWarnings = config.configWarnings ?? []
     this.configError = config.configError ?? null
@@ -587,77 +570,6 @@ export class RAGServer {
   }
 
   /**
-   * Bounded BFS scan of a single base directory for supported files,
-   * excluding system-managed paths (dbPath, cacheDir). Returns sorted
-   * absolute paths plus a list of non-fatal warnings (Finding #10).
-   *
-   * Behavior contract:
-   *  - Depth is bounded by {@link MAX_SCAN_DEPTH}, mirroring the
-   *    CLI ingest walker so the same "how deep do we look under a root"
-   *    boundary applies to every list/ingest surface.
-   *  - A `readdir` failure under one directory is captured as a warning
-   *    rather than aborting the whole list call. Pre-Finding-#10 behavior
-   *    propagated the error, which meant one unreadable root could hide
-   *    files under the other roots — the multi-root contract makes this
-   *    asymmetry user-visible, so the policy is now best-effort per root.
-   *  - Symlinks are skipped (mirrors the CLI ingest walker).
-   */
-  private async scanBaseDir(baseDir: string): Promise<{ files: string[]; warnings: string[] }> {
-    const files: string[] = []
-    const warnings: string[] = []
-    let depthLimited = false
-
-    const queue: { dirPath: string; depth: number }[] = [{ dirPath: baseDir, depth: 0 }]
-
-    while (queue.length > 0) {
-      const { dirPath, depth } = queue.shift()!
-
-      if (depth >= MAX_SCAN_DEPTH) {
-        depthLimited = true
-        continue
-      }
-
-      // TypeScript's `readdir` has overloads keyed on the options shape;
-      // pin the encoding to `'utf8'` and cast so the loop body operates on
-      // string-encoded Dirent entries (matches the rest of the codebase).
-      let entries: import('node:fs').Dirent<string>[]
-      try {
-        entries = (await readdir(dirPath, {
-          withFileTypes: true,
-          encoding: 'utf8',
-        })) as import('node:fs').Dirent<string>[]
-      } catch (error) {
-        const code =
-          error && typeof error === 'object' && 'code' in error
-            ? ((error as NodeJS.ErrnoException).code ?? 'UNKNOWN')
-            : 'UNKNOWN'
-        warnings.push(`cannot read directory: ${displayPath(dirPath)} (${code})`)
-        continue
-      }
-
-      for (const entry of entries) {
-        const fullPath = join(dirPath, entry.name)
-        if (entry.isSymbolicLink()) continue
-        if (this.excludePaths.some((ep) => fullPath.startsWith(ep))) continue
-        if (entry.isDirectory()) {
-          queue.push({ dirPath: fullPath, depth: depth + 1 })
-        } else if (entry.isFile() && SUPPORTED_EXTENSIONS.has(extname(entry.name).toLowerCase())) {
-          files.push(fullPath)
-        }
-      }
-    }
-
-    if (depthLimited) {
-      warnings.push(
-        `some directories under ${displayPath(baseDir)} were skipped because they exceed the maximum depth (${MAX_SCAN_DEPTH})`
-      )
-    }
-
-    files.sort()
-    return { files, warnings }
-  }
-
-  /**
    * list_files tool handler
    *
    * Scans every effective base directory (`this.baseDirs`) for supported
@@ -692,7 +604,10 @@ export class RAGServer {
       const seenPaths = new Set<string>()
       const scanWarnings: string[] = []
       for (const baseDir of this.baseDirs) {
-        const { files: scanned, warnings: rootWarnings } = await this.scanBaseDir(baseDir)
+        const { files: scanned, warnings: rootWarnings } = await scanBaseDir(
+          baseDir,
+          this.excludePaths
+        )
         for (const w of rootWarnings) {
           scanWarnings.push(`[${baseDir}] ${w}`)
         }
