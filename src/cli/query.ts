@@ -3,7 +3,7 @@
 import { extractSourceFromPath, looksLikeRawDataPath } from '../utils/raw-data-utils.js'
 import { createEmbedder, createVectorStore, toErrorMessage } from './common.js'
 import type { GlobalOptions } from './options.js'
-import { resolveGlobalConfig } from './options.js'
+import { requireFlagValue, resolveGlobalConfig } from './options.js'
 
 // ============================================
 // Types
@@ -77,17 +77,13 @@ export function parseArgs(args: string[]): ParsedArgs {
         i++
         break
       case '--limit': {
-        const value = args[++i]
-        if (value === undefined || value.startsWith('-')) {
-          console.error('Missing value for --limit')
-          process.exit(1)
-        }
+        const value = requireFlagValue(args, i, '--limit')
         if (!/^\d+$/.test(value)) {
           console.error('--limit must be between 1 and 20')
           process.exit(1)
         }
         options.limit = Number.parseInt(value, 10)
-        i++
+        i += 2
         break
       }
       default:

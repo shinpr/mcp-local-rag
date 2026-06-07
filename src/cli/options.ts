@@ -88,6 +88,24 @@ export function consumeBaseDirArg(argv: string[], flagIndex: number, collected: 
   return valueIndex
 }
 
+/**
+ * Read the required value that follows a value-taking flag at `argv[flagIndex]`.
+ * Centralizes the identical "missing value" guard every value flag used to
+ * inline (`--db-path`, `--cache-dir`, `--model-name`, `--max-file-size`,
+ * `--chunk-min-length`, `--limit`): when the next token is absent or is itself
+ * a flag, prints `Missing value for <flag>` and exits 1. The caller advances
+ * its index by 2 (flag + value). Numeric flags apply their own format/range
+ * validation to the returned string.
+ */
+export function requireFlagValue(argv: string[], flagIndex: number, flag: string): string {
+  const value = argv[flagIndex + 1]
+  if (value === undefined || value.startsWith('-')) {
+    console.error(`Missing value for ${flag}`)
+    process.exit(1)
+  }
+  return value
+}
+
 // ============================================
 // Types
 // ============================================
@@ -166,33 +184,18 @@ export function parseGlobalOptions(args: string[]): ParsedGlobalResult {
         i++
         break
       case '--db-path': {
-        const value = args[++i]
-        if (value === undefined || value.startsWith('-')) {
-          console.error('Missing value for --db-path')
-          process.exit(1)
-        }
-        globalOptions.dbPath = value
-        i++
+        globalOptions.dbPath = requireFlagValue(args, i, '--db-path')
+        i += 2
         break
       }
       case '--cache-dir': {
-        const value = args[++i]
-        if (value === undefined || value.startsWith('-')) {
-          console.error('Missing value for --cache-dir')
-          process.exit(1)
-        }
-        globalOptions.cacheDir = value
-        i++
+        globalOptions.cacheDir = requireFlagValue(args, i, '--cache-dir')
+        i += 2
         break
       }
       case '--model-name': {
-        const value = args[++i]
-        if (value === undefined || value.startsWith('-')) {
-          console.error('Missing value for --model-name')
-          process.exit(1)
-        }
-        globalOptions.modelName = value
-        i++
+        globalOptions.modelName = requireFlagValue(args, i, '--model-name')
+        i += 2
         break
       }
       default:

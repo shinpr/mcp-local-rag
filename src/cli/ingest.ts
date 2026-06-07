@@ -22,6 +22,7 @@ import {
 import type { GlobalOptions, ResolvedGlobalConfig } from './options.js'
 import {
   consumeBaseDirArg,
+  requireFlagValue,
   resolveDevice,
   resolveGlobalConfig,
   validateChunkMinLength,
@@ -138,33 +139,25 @@ export function parseArgs(args: string[]): ParsedArgs {
         break
       }
       case '--max-file-size': {
-        const raw = args[++i]
-        if (raw === undefined || raw.startsWith('-')) {
-          console.error('Missing value for --max-file-size')
-          process.exit(1)
-        }
+        const raw = requireFlagValue(args, i, '--max-file-size')
         if (!/^\d+$/.test(raw)) {
           console.error(`Invalid value for --max-file-size: "${raw.slice(0, 100)}"`)
 
           process.exit(1)
         }
         options.maxFileSize = Number.parseInt(raw, 10)
-        i++
+        i += 2
         break
       }
       case '--chunk-min-length': {
-        const raw = args[++i]
-        if (raw === undefined || raw.startsWith('-')) {
-          console.error('Missing value for --chunk-min-length')
-          process.exit(1)
-        }
+        const raw = requireFlagValue(args, i, '--chunk-min-length')
         if (!/^\d+$/.test(raw)) {
           console.error(`Invalid value for --chunk-min-length: "${raw.slice(0, 100)}"`)
 
           process.exit(1)
         }
         options.chunkMinLength = Number.parseInt(raw, 10)
-        i++
+        i += 2
         break
       }
       case '--visual':
@@ -173,11 +166,7 @@ export function parseArgs(args: string[]): ParsedArgs {
         i++
         break
       case '--visual-quality': {
-        const value = args[++i]
-        if (value === undefined || value.startsWith('-')) {
-          console.error('Missing value for --visual-quality')
-          process.exit(1)
-        }
+        const value = requireFlagValue(args, i, '--visual-quality')
         if (value !== 'fast' && value !== 'quality') {
           console.error(
             `Invalid value for --visual-quality: "${value.slice(0, 100)}". Expected "fast" or "quality".`
@@ -185,7 +174,7 @@ export function parseArgs(args: string[]): ParsedArgs {
           process.exit(1)
         }
         options.visualQuality = value
-        i++
+        i += 2
         break
       }
       default:
