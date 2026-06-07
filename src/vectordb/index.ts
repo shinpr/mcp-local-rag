@@ -91,28 +91,21 @@ export class VectorStore {
     }
 
     try {
-      // Use LanceDB delete API to remove records matching filePath
-      // Escape single quotes to prevent SQL injection
+      // Use LanceDB delete API to remove records matching filePath.
+      // Escape single quotes to prevent SQL injection.
+      // Note: Field names are case-sensitive, use backticks for camelCase fields.
       const escapedFilePath = filePath.replace(/'/g, "''")
-
-      // LanceDB's delete method doesn't throw errors if targets don't exist,
-      // so call delete directly
-      // Note: Field names are case-sensitive, use backticks for camelCase fields
       await this.table.delete(`\`filePath\` = '${escapedFilePath}'`)
       console.error(`VectorStore: Deleted chunks for file "${filePath}"`)
     } catch (error) {
-      // If error occurs, output warning log
+      // LanceDB's delete is a no-op (resolves normally) when no rows match the
+      // predicate, so reaching this catch means a genuine failure — a malformed
+      // predicate, or a schema/table-level error. Propagate it instead of
+      // swallowing based on brittle error-message string matching (which broke
+      // silently across LanceDB versions and could hide real delete failures
+      // as data-integrity bugs).
       console.warn(`VectorStore: Error occurred while deleting file "${filePath}":`, error)
-      // Don't treat as error if deletion targets don't exist or table is empty
-      // Otherwise throw exception
-      const errorMessage = (error as Error).message.toLowerCase()
-      if (
-        !errorMessage.includes('not found') &&
-        !errorMessage.includes('does not exist') &&
-        !errorMessage.includes('no matching')
-      ) {
-        throw new DatabaseError(`Failed to delete chunks for file: ${filePath}`, error as Error)
-      }
+      throw new DatabaseError(`Failed to delete chunks for file: ${filePath}`, error as Error)
     }
   }
 

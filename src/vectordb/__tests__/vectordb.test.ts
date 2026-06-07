@@ -56,6 +56,53 @@ describe('VectorStore', () => {
     return vector.map((x) => x / norm)
   }
 
+  describe('deleteChunks behavior', () => {
+    it('removes all chunks for the given file path', async () => {
+      const store = new VectorStore({ dbPath: testDbPath, tableName: 'chunks' })
+      await store.initialize()
+      await store.insertChunks([
+        createTestChunk('keep body', '/docs/keep.txt', 0),
+        createTestChunk('drop body one', '/docs/drop.txt', 0),
+        createTestChunk('drop body two', '/docs/drop.txt', 1),
+      ])
+
+      await store.deleteChunks('/docs/drop.txt')
+
+      const paths = (await store.listFiles()).map((f) => f.filePath)
+      expect(paths).toContain('/docs/keep.txt')
+      expect(paths).not.toContain('/docs/drop.txt')
+    })
+
+    it('is a no-op success when no chunk matches the file path', async () => {
+      const store = new VectorStore({ dbPath: testDbPath, tableName: 'chunks' })
+      await store.initialize()
+      await store.insertChunks([createTestChunk('only body', '/docs/keep.txt', 0)])
+
+      await expect(store.deleteChunks('/docs/never-ingested.txt')).resolves.toBeUndefined()
+      expect((await store.listFiles()).map((f) => f.filePath)).toEqual(['/docs/keep.txt'])
+    })
+
+    it('returns normally when the table does not exist yet', async () => {
+      const store = new VectorStore({ dbPath: testDbPath, tableName: 'chunks' })
+      await store.initialize()
+      await expect(store.deleteChunks('/docs/anything.txt')).resolves.toBeUndefined()
+    })
+
+    it('escapes single quotes in the file path (SQL-injection-safe)', async () => {
+      const store = new VectorStore({ dbPath: testDbPath, tableName: 'chunks' })
+      await store.initialize()
+      const tricky = "/docs/o'brien's file.txt"
+      await store.insertChunks([
+        createTestChunk('tricky body', tricky, 0),
+        createTestChunk('other body', '/docs/other.txt', 0),
+      ])
+
+      await store.deleteChunks(tricky)
+
+      expect((await store.listFiles()).map((f) => f.filePath)).toEqual(['/docs/other.txt'])
+    })
+  })
+
   describe('Phase 1: FTS Index Creation and Migration', () => {
     describe('FTS index auto-creation', () => {
       it('should create FTS index on initialize when table exists', async () => {
