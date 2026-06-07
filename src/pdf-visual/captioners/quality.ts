@@ -4,7 +4,9 @@
 // quality design discussion. Higher fidelity than `fast` on figures with
 // in-image text (axis labels, panel sub-labels, annotations), at the cost of
 // a materially larger model cache (~10× `fast`) and ~2× per-page inference
-// time on CPU. Self-contained so `fast.ts` can stay frozen at v0.14.0.
+// time on CPU. Shares the profile-agnostic load/decode mechanics with `fast`
+// via `shared.ts`; keeps its own model class, prompt, resize, processor call
+// shape, and generation options.
 //
 // Implementation contract:
 //   1. Lazy-load processor + model on first `caption()` call with the pinned
@@ -32,25 +34,13 @@
 //   7. On model load / image decode / generation failure throw `VlmError`
 //      with `pageNum` + `cause`. No silent fallback to `fast`.
 
-import {
-  AutoProcessor,
-  type DeviceType,
-  Qwen2_5_VLForConditionalGeneration,
-  RawImage,
-} from '@huggingface/transformers'
+import { AutoProcessor, Qwen2_5_VLForConditionalGeneration } from '@huggingface/transformers'
 
 import type { Captioner } from '../types.js'
 import { VlmError } from '../types.js'
-import { postProcess } from './shared.js'
+import { createModelLoader, decodePngToRawImage, postProcess } from './shared.js'
 
 const MODEL_NAME = 'onnx-community/Qwen2.5-VL-3B-Instruct-ONNX'
-
-/**
- * ONNX quantization variant. Pinned to `q4` for the same disk-footprint /
- * accuracy trade-off applied to `fast`. Local to this profile so it can be
- * tuned independently if the `quality` model gains a smaller viable variant.
- */
-const DTYPE = 'q4'
 
 /**
  * Fixed input resolution (px) for the Qwen2.5-VL reference resize. Matches the
@@ -85,55 +75,25 @@ Use only details visible in the image. If a region is unreadable, skip it.`
  * `env.cacheDir`; this profile only owns lazy model loading and inference.
  */
 export function createQualityCaptioner(resolvedDevice: string): Captioner {
-  let processor: unknown = null
-  let model: unknown = null
-
-  type LoadState = { kind: 'pending' } | { kind: 'ok' } | { kind: 'failed'; cause: Error }
-  let loadState: LoadState = { kind: 'pending' }
-
-  async function ensureLoaded(): Promise<void> {
-    if (loadState.kind === 'ok') return
-    if (loadState.kind === 'failed') throw loadState.cause
-    try {
-      // Both classes accept `{ dtype }`. They load in sequence because the
-      // second resolves the runtime class — using the explicit
-      // `Qwen2_5_VLForConditionalGeneration` class matches the onnx-community
-      // reference example. The transformers.js declared `dtype` is a literal
-      // union; cast through `unknown` to widen-to-string-then-back.
-      const dtypeOpt = { dtype: DTYPE } as unknown as { dtype: 'q4' }
-      const modelOpt = { dtype: DTYPE, device: resolvedDevice } as unknown as {
-        dtype: 'q4'
-        device: DeviceType
-      }
-      processor = await AutoProcessor.from_pretrained(MODEL_NAME, dtypeOpt)
-      model = await Qwen2_5_VLForConditionalGeneration.from_pretrained(MODEL_NAME, modelOpt)
-      loadState = { kind: 'ok' }
-    } catch (err) {
-      const original = err instanceof Error ? err : new Error(String(err))
-      const wrapped = new Error(
-        `Captioner load failed (modelName=${MODEL_NAME}, device=${resolvedDevice}): ${original.message}`,
-        { cause: original }
-      )
-      loadState = { kind: 'failed', cause: wrapped }
-      throw wrapped
-    }
-  }
+  // The explicit `Qwen2_5_VLForConditionalGeneration` class matches the
+  // onnx-community reference example (rather than the architecture-agnostic
+  // AutoModelForImageTextToText entry point used by `fast`).
+  const loader = createModelLoader(MODEL_NAME, resolvedDevice, async ({ dtypeOpt, modelOpt }) => {
+    const processor = await AutoProcessor.from_pretrained(MODEL_NAME, dtypeOpt)
+    const model = await Qwen2_5_VLForConditionalGeneration.from_pretrained(MODEL_NAME, modelOpt)
+    return { processor, model }
+  })
 
   return {
     async caption(pngBytes: Uint8Array, pageNum: number): Promise<string | null> {
       try {
-        await ensureLoaded()
+        const { processor, model } = await loader.ensureLoaded()
 
-        // Decode PNG → RawImage. `Blob` accepts `Uint8Array` directly (the
-        // renderer returns `Uint8Array` from `Pixmap.asPNG()`, not `Buffer`).
-        // The `BlobPart` type does not include `Uint8Array<ArrayBufferLike>`
-        // due to SharedArrayBuffer subtyping; cast through unknown.
-        const blob = new Blob([pngBytes as unknown as ArrayBuffer], { type: 'image/png' })
-        // Resize to 448x448 to match the onnx-community Qwen2-VL reference
-        // example. Qwen2.5-VL supports dynamic resolution natively, but the
-        // reference example uses a fixed resize for stable behavior; revisit
-        // if empirical results show small in-figure text being lost.
-        const rawImage = await (await RawImage.fromBlob(blob)).resize(
+        // Decode PNG → RawImage, then resize to 448x448 to match the
+        // onnx-community Qwen2-VL reference example. Qwen2.5-VL supports dynamic
+        // resolution natively, but the reference example uses a fixed resize for
+        // stable behavior; revisit if small in-figure text is lost.
+        const rawImage = await (await decodePngToRawImage(pngBytes)).resize(
           QWEN_INPUT_SIZE,
           QWEN_INPUT_SIZE
         )

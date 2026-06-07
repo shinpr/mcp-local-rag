@@ -1,9 +1,10 @@
 // `fast` visual-quality profile — SmolVLM-256M-Instruct / IDEFICS3.
 //
-// Verbatim port of the v0.14.0 (HEAD) captioner implementation. Kept as a
-// self-contained module so the `quality` profile (Qwen2.5-VL-3B-Instruct-ONNX)
-// can evolve independently without risking subtle behavior drift in the
-// default profile.
+// Shares the profile-agnostic load/decode mechanics with `quality` via
+// `shared.ts` (`createModelLoader`, `decodePngToRawImage`, `VLM_DTYPE`,
+// post-processing). The profile-specific parts — model class, prompt,
+// processor call shape, and generation options — stay here so `fast` and
+// `quality` can diverge on exactly the parts that genuinely differ.
 //
 // Implementation contract (matches HEAD captioner contract steps 2–8):
 //   1. Lazy-load processor + model on first `caption()` call with the pinned
@@ -28,24 +29,13 @@
 //   7. On model load / image decode / generation failure throw `VlmError`
 //      with `pageNum` + `cause`.
 
-import {
-  AutoModelForImageTextToText,
-  AutoProcessor,
-  type DeviceType,
-  RawImage,
-} from '@huggingface/transformers'
+import { AutoModelForImageTextToText, AutoProcessor } from '@huggingface/transformers'
 
 import type { Captioner } from '../types.js'
 import { VlmError } from '../types.js'
-import { postProcess } from './shared.js'
+import { createModelLoader, decodePngToRawImage, postProcess } from './shared.js'
 
 const MODEL_NAME = 'HuggingFaceTB/SmolVLM-256M-Instruct'
-
-/**
- * ONNX quantization variant — smallest viable variant for SmolVLM-256M. Local
- * to this profile so `quality.ts` can pin its own variant independently.
- */
-const DTYPE = 'q4'
 
 /**
  * Static prompt — tuned for "describe for search retrieval" not "describe for
@@ -64,52 +54,24 @@ const PROMPT =
  * `env.cacheDir`; this profile only owns lazy model loading and inference.
  */
 export function createFastCaptioner(resolvedDevice: string): Captioner {
-  let processor: unknown = null
-  let model: unknown = null
-
-  type LoadState = { kind: 'pending' } | { kind: 'ok' } | { kind: 'failed'; cause: Error }
-  let loadState: LoadState = { kind: 'pending' }
-
-  async function ensureLoaded(): Promise<void> {
-    if (loadState.kind === 'ok') return
-    if (loadState.kind === 'failed') throw loadState.cause
-    try {
-      // Both classes accept `{ dtype }` (probe-verified). They load in sequence
-      // because the second resolves the runtime class
-      // (`Idefics3ForConditionalGeneration` for the default model) via the
-      // architecture-agnostic `AutoModelForImageTextToText` entry point. The
-      // transformers.js declared `dtype` is a literal union; cast through
-      // `unknown` to widen-to-string-then-back.
-      const dtypeOpt = { dtype: DTYPE } as unknown as { dtype: 'q4' }
-      const modelOpt = { dtype: DTYPE, device: resolvedDevice } as unknown as {
-        dtype: 'q4'
-        device: DeviceType
-      }
-      processor = await AutoProcessor.from_pretrained(MODEL_NAME, dtypeOpt)
-      model = await AutoModelForImageTextToText.from_pretrained(MODEL_NAME, modelOpt)
-      loadState = { kind: 'ok' }
-    } catch (err) {
-      const original = err instanceof Error ? err : new Error(String(err))
-      const wrapped = new Error(
-        `Captioner load failed (modelName=${MODEL_NAME}, device=${resolvedDevice}): ${original.message}`,
-        { cause: original }
-      )
-      loadState = { kind: 'failed', cause: wrapped }
-      throw wrapped
-    }
-  }
+  // Both classes accept `{ dtype }` (probe-verified). They load in sequence
+  // because the second resolves the runtime class
+  // (`Idefics3ForConditionalGeneration` for the default model) via the
+  // architecture-agnostic `AutoModelForImageTextToText` entry point.
+  const loader = createModelLoader(MODEL_NAME, resolvedDevice, async ({ dtypeOpt, modelOpt }) => {
+    const processor = await AutoProcessor.from_pretrained(MODEL_NAME, dtypeOpt)
+    const model = await AutoModelForImageTextToText.from_pretrained(MODEL_NAME, modelOpt)
+    return { processor, model }
+  })
 
   return {
     async caption(pngBytes: Uint8Array, pageNum: number): Promise<string | null> {
       try {
-        await ensureLoaded()
+        const { processor, model } = await loader.ensureLoaded()
 
-        // Decode PNG → RawImage. `Blob` accepts `Uint8Array` directly (the
-        // renderer returns `Uint8Array` from `Pixmap.asPNG()`, not `Buffer`).
-        // The `BlobPart` type does not include `Uint8Array<ArrayBufferLike>`
-        // due to SharedArrayBuffer subtyping; cast through unknown.
-        const blob = new Blob([pngBytes as unknown as ArrayBuffer], { type: 'image/png' })
-        const rawImage = await RawImage.fromBlob(blob)
+        // Decode PNG → RawImage. SmolVLM-256M is NOT resized client-side —
+        // IDEFICS3's processor handles its own preprocessing.
+        const rawImage = await decodePngToRawImage(pngBytes)
 
         // Build chat-style input. The IDEFICS3 conversation shape is
         // probe-verified for `Idefics3Processor.apply_chat_template`.
