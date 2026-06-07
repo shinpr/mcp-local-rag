@@ -57,7 +57,6 @@ const MOCKED_PATHS = [
 ] as const
 
 let DocumentParser: typeof import('../index.js').DocumentParser
-let FileOperationError: typeof import('../index.js').FileOperationError
 let ValidationError: typeof import('../index.js').ValidationError
 
 describe('DocumentParser', () => {
@@ -71,7 +70,7 @@ describe('DocumentParser', () => {
     vi.doMock('../pdf-filter.js', pdfFilterFactory)
     vi.doMock('../title-extractor.js', titleExtractorFactory)
     vi.doMock('../../chunker/index.js', chunkerFactory)
-    ;({ DocumentParser, FileOperationError, ValidationError } = await import('../index.js'))
+    ;({ DocumentParser, ValidationError } = await import('../index.js'))
   })
 
   afterAll(() => {
@@ -332,9 +331,14 @@ describe('DocumentParser', () => {
       )
     })
 
-    it('should throw FileOperationError for non-existent file', () => {
+    it('should throw ValidationError for non-existent file', () => {
       const filePath = join(testDir, 'nonexistent.txt')
-      expect(() => parser.validateFileSize(filePath)).toThrow(FileOperationError)
+      expect(() => parser.validateFileSize(filePath)).toThrow(
+        expect.objectContaining({
+          name: 'ValidationError',
+          message: expect.stringMatching(/File not found/),
+        })
+      )
     })
   })
 
@@ -387,9 +391,14 @@ describe('DocumentParser', () => {
       await expect(parser.parseFile('../outside.txt')).rejects.toThrow(ValidationError)
     })
 
-    it('should throw FileOperationError for non-existent file', async () => {
+    it('should throw ValidationError for non-existent file', async () => {
       const nonExistentFile = join(testDir, 'nonexistent.txt')
-      await expect(parser.parseFile(nonExistentFile)).rejects.toThrow(FileOperationError)
+      await expect(parser.parseFile(nonExistentFile)).rejects.toThrow(
+        expect.objectContaining({
+          name: 'ValidationError',
+          message: expect.stringMatching(/File not found/),
+        })
+      )
     })
   })
 

@@ -15,7 +15,7 @@ import { Embedder } from '../embedder/index.js'
 import { buildChunksAndEmbeddings, buildVectorChunks } from '../ingest/compute.js'
 import { prepareVisualPdfChunks } from '../ingest/visual.js'
 import { parseHtml } from '../parser/html-parser.js'
-import { DocumentParser } from '../parser/index.js'
+import { DocumentParser, ValidationError } from '../parser/index.js'
 import { extractMarkdownTitle, extractTxtTitle } from '../parser/title-extractor.js'
 import type { BaseDirsConfigError } from '../utils/base-dirs.js'
 import {
@@ -480,6 +480,12 @@ export class RAGServer {
       if (error instanceof McpError) {
         console.error('Failed to ingest file:', error.message)
         throw error
+      }
+
+      // Input errors (bad path, missing file, unsupported format, size) → InvalidParams.
+      if (error instanceof ValidationError) {
+        console.error('Failed to ingest file:', error.message)
+        throw new McpError(ErrorCode.InvalidParams, error.message)
       }
 
       const errorMessage = formatErrorMessage(error)

@@ -255,6 +255,10 @@ export class DocumentParser {
       if (error instanceof ValidationError) {
         throw error
       }
+      // Missing file is an input error, not an I/O fault.
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        throw new ValidationError(`File not found: ${filePath}`)
+      }
       throw new FileOperationError(`Failed to check file size: ${filePath}`, error as Error)
     }
   }

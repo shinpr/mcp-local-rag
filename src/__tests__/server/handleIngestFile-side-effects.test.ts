@@ -81,15 +81,24 @@ const mocks = vi.hoisted(() => {
 // via `vi.doUnmock` in `afterAll`, so they cannot leak to sibling test files
 // through the shared module registry under `isolate: false`.
 
-const parserFactory = () => ({
-  DocumentParser: vi.fn().mockImplementation(function (this: Record<string, unknown>) {
-    this.parseFile = mocks.parseFile
-    this.parsePdf = mocks.parsePdf
-    this.validateFilePath = mocks.validateFilePath
-    this.validateFileSize = mocks.validateFileSize
-  }),
-  SUPPORTED_EXTENSIONS: new Set(['.pdf', '.docx', '.txt', '.md']),
-})
+const parserFactory = async (
+  importOriginal: () => Promise<typeof import('../../parser/index.js')>
+) => {
+  const actual = await importOriginal()
+  return {
+    // Spread the real module so error classes (ValidationError,
+    // FileOperationError) remain exported — server/index.js imports
+    // ValidationError from this module and uses it in `instanceof` checks.
+    ...actual,
+    DocumentParser: vi.fn().mockImplementation(function (this: Record<string, unknown>) {
+      this.parseFile = mocks.parseFile
+      this.parsePdf = mocks.parsePdf
+      this.validateFilePath = mocks.validateFilePath
+      this.validateFileSize = mocks.validateFileSize
+    }),
+    SUPPORTED_EXTENSIONS: new Set(['.pdf', '.docx', '.txt', '.md']),
+  }
+}
 
 const chunkerFactory = async (
   importOriginal: () => Promise<typeof import('../../chunker/index.js')>
