@@ -36,8 +36,14 @@ describe('parseQueryDocumentsInput', () => {
     ['zero limit', { query: 'q', limit: 0 }],
     ['non-integer limit', { query: 'q', limit: 2.7 }],
     ['string limit', { query: 'q', limit: '5' }],
+    ['just-above-max limit', { query: 'q', limit: 21 }],
+    ['large limit', { query: 'q', limit: 999 }],
   ])('rejects %s', (_label, raw) => {
-    expect(() => parseQueryDocumentsInput(raw)).toThrow(/limit must be a positive integer/)
+    expect(() => parseQueryDocumentsInput(raw)).toThrow(/limit must be an integer between 1 and 20/)
+  })
+
+  it('accepts the max limit (20)', () => {
+    expect(parseQueryDocumentsInput({ query: 'q', limit: 20 })).toEqual({ query: 'q', limit: 20 })
   })
 
   it('throws InvalidParams error code', () => {

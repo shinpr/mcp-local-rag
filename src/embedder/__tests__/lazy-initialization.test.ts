@@ -94,15 +94,20 @@ describe('Embedder - Lazy Initialization', () => {
   }, 180000)
 
   // Test 5: Init failure surfaces transformers.js' own message as an EmbeddingError.
+  // Use an invalid DEVICE (a local, network-independent failure) rather than a
+  // nonexistent model: a missing model triggers a live network fetch whose error
+  // text varies by connectivity (HF-hub 404 with the path when online, "fetch
+  // failed" offline), which would make a message-content assertion flaky.
+  // Device validation fails locally with a deterministic message.
   it('should surface the underlying transformers.js message as an EmbeddingError on init failure', async () => {
-    const embedderWithInvalidPath = new Embedder({
+    const embedderWithBadDevice = new Embedder({
       ...testConfig,
-      modelPath: 'invalid/nonexistent-model',
+      device: 'definitely-not-a-real-device',
     })
 
-    const error = await embedderWithInvalidPath.embed('test').catch((e) => e as Error)
+    const error = await embedderWithBadDevice.embed('test').catch((e) => e as Error)
     expect(error).toBeInstanceOf(EmbeddingError)
-    expect((error as EmbeddingError).message).toMatch(/invalid\/nonexistent-model/)
+    expect((error as EmbeddingError).message).toMatch(/definitely-not-a-real-device/)
   }, 30000)
 
   // Test 6: Explicit initialize() should still work (backward compatibility)

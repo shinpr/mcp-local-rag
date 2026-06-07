@@ -35,8 +35,12 @@ export function parseQueryDocumentsInput(raw: unknown): QueryDocumentsInput {
   }
 
   if (limit !== undefined) {
-    if (typeof limit !== 'number' || !Number.isInteger(limit) || limit < 1) {
-      throw new McpError(ErrorCode.InvalidParams, 'limit must be a positive integer')
+    // Bound to 1-20 at the entry boundary — the same range VectorStore.search
+    // enforces and the CLI `--limit` accepts. Rejecting here returns a clean
+    // McpError(InvalidParams) instead of letting an out-of-range value reach
+    // search() and surface as a DatabaseError.
+    if (typeof limit !== 'number' || !Number.isInteger(limit) || limit < 1 || limit > 20) {
+      throw new McpError(ErrorCode.InvalidParams, 'limit must be an integer between 1 and 20')
     }
     return { query, limit }
   }

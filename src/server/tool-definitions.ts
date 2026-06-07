@@ -21,8 +21,10 @@ export const toolDefinitions: Tool[] = [
         },
         limit: {
           type: 'number',
+          minimum: 1,
+          maximum: 20,
           description:
-            'Maximum number of results to return (default: 10). Recommended: 5 for precision, 10 for balance, 20 for broad exploration.',
+            'Maximum number of results to return (default: 10, range: 1-20). Recommended: 5 for precision, 10 for balance, 20 for broad exploration.',
         },
       },
       required: ['query'],
