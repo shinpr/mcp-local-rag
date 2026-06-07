@@ -41,6 +41,7 @@ import {
   type RagContentBlock,
 } from './error-utils.js'
 import { toolDefinitions } from './tool-definitions.js'
+import { parseIngestDataInput, parseQueryDocumentsInput } from './tool-input.js'
 import type {
   DeleteFileInput,
   FileEntry,
@@ -216,16 +217,14 @@ export class RAGServer {
         switch (request.params.name) {
           case 'query_documents':
             return await this.handleQueryDocuments(
-              request.params.arguments as unknown as QueryDocumentsInput
+              parseQueryDocumentsInput(request.params.arguments)
             )
           case 'ingest_file':
             return await this.handleIngestFile(
               request.params.arguments as unknown as IngestFileInput
             )
           case 'ingest_data':
-            return await this.handleIngestData(
-              request.params.arguments as unknown as IngestDataInput
-            )
+            return await this.handleIngestData(parseIngestDataInput(request.params.arguments))
           case 'delete_file':
             return await this.handleDeleteFile(
               request.params.arguments as unknown as DeleteFileInput
