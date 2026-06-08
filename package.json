@@ -61,6 +61,7 @@
     "prepare": "husky"
   },
   "dependencies": {
+    "@azure/openai": "^2.0.0",
     "@huggingface/transformers": "^4.0.0",
     "@lancedb/lancedb": "^0.26.2",
     "@modelcontextprotocol/sdk": "^1.28.0",
@@ -68,6 +69,7 @@
     "jsdom": "^27.4.0",
     "mammoth": "^1.12.0",
     "mupdf": "^1.27.0",
+    "openai": "^6.42.0",
     "turndown": "7.2.2"
   },
   "devDependencies": {
@@ -75,10 +77,10 @@
     "@types/jsdom": "^27.0.0",
     "@types/node": "^25.3.5",
     "@types/turndown": "5.0.6",
+    "dpdm": "^4.0.1",
     "husky": "^9.1.7",
     "knip": "^6.1.0",
     "lint-staged": "^16.3.2",
-    "dpdm": "^4.0.1",
     "tsc-alias": "^1.8.16",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3",

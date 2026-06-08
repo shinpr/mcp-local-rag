@@ -192,3 +192,4 @@ export class Embedder {
     }
   }
 }
+export { AzureEmbedder, type AzureEmbedderConfig, AzureEmbeddingError } from './azure-embedder.js'
