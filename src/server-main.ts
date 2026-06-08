@@ -87,12 +87,23 @@ export function parseChunkMinLength(value: string | undefined): ParseResult<numb
 export async function startServer(): Promise<void> {
   try {
     // RAGServer configuration
+    const embeddingProvider =
+      process.env['EMBEDDING_PROVIDER']?.toLowerCase() === 'azure' ? 'azure' : 'local'
+
     const config: ConstructorParameters<typeof RAGServer>[0] = {
       dbPath: process.env['DB_PATH'] || './lancedb/',
       modelName: process.env['MODEL_NAME'] || 'Xenova/all-MiniLM-L6-v2',
       cacheDir: process.env['CACHE_DIR'] || './models/',
       baseDir: process.env['BASE_DIR'] || process.cwd(),
       maxFileSize: Number.parseInt(process.env['MAX_FILE_SIZE'] || '104857600', 10), // 100MB
+      embeddingProvider,
+      ...(process.env['AZURE_EMBEDDING_API_KEY'] && {
+        azureApiKey: process.env['AZURE_EMBEDDING_API_KEY'],
+      }),
+      ...(process.env['AZURE_EMBEDDING_ENDPOINT'] && {
+        azureEndpoint: process.env['AZURE_EMBEDDING_ENDPOINT'],
+      }),
+      azureDeployment: process.env['AZURE_EMBEDDING_DEPLOYMENT'] || 'text-embedding-3-small',
     }
 
     // Collect configuration warnings

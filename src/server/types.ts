@@ -29,6 +29,14 @@ export interface RAGServerConfig {
   chunkMinLength?: number
   /** Configuration validation warnings to surface to users via MCP annotations */
   configWarnings?: string[]
+  /** Embedding provider: 'local' (Xenova) or 'azure' (Azure OpenAI) */
+  embeddingProvider?: 'local' | 'azure'
+  /** Azure OpenAI API key (required when embeddingProvider is 'azure') */
+  azureApiKey?: string
+  /** Azure OpenAI endpoint (required when embeddingProvider is 'azure') */
+  azureEndpoint?: string
+  /** Azure OpenAI embedding deployment name (default: 'text-embedding-3-small') */
+  azureDeployment?: string
 }
 
 /**

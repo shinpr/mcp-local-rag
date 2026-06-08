@@ -13,7 +13,7 @@ import {
   McpError,
 } from '@modelcontextprotocol/sdk/types.js'
 import { DEFAULT_MIN_CHUNK_LENGTH, SemanticChunker } from '../chunker/index.js'
-import { Embedder } from '../embedder/index.js'
+import { AzureEmbedder, Embedder } from '../embedder/index.js'
 import { parseHtml } from '../parser/html-parser.js'
 import { DocumentParser, SUPPORTED_EXTENSIONS } from '../parser/index.js'
 import { extractMarkdownTitle, extractTxtTitle } from '../parser/title-extractor.js'
@@ -47,7 +47,7 @@ import type {
 export class RAGServer {
   private readonly server: Server
   private readonly vectorStore: VectorStore
-  private readonly embedder: Embedder
+  private readonly embedder: Embedder | AzureEmbedder
   private readonly chunker: SemanticChunker
   private readonly parser: DocumentParser
   private readonly dbPath: string
@@ -88,11 +88,26 @@ export class RAGServer {
       vectorStoreConfig.maxFiles = config.maxFiles
     }
     this.vectorStore = new VectorStore(vectorStoreConfig)
-    this.embedder = new Embedder({
-      modelPath: config.modelName,
-      batchSize: 16,
-      cacheDir: config.cacheDir,
-    })
+    if (config.embeddingProvider === 'azure') {
+      if (!config.azureApiKey || !config.azureEndpoint) {
+        throw new Error(
+          'AZURE_EMBEDDING_API_KEY and AZURE_EMBEDDING_ENDPOINT are required when EMBEDDING_PROVIDER=azure'
+        )
+      }
+      this.embedder = new AzureEmbedder({
+        apiKey: config.azureApiKey,
+        endpoint: config.azureEndpoint,
+        deployment: config.azureDeployment ?? 'text-embedding-3-small',
+      })
+      console.error('RAGServer: Using Azure OpenAI embedder (text-embedding-3-small)')
+    } else {
+      this.embedder = new Embedder({
+        modelPath: config.modelName,
+        batchSize: 16,
+        cacheDir: config.cacheDir,
+      })
+      console.error('RAGServer: Using local Xenova embedder')
+    }
     this.chunker = new SemanticChunker(
       config.chunkMinLength !== undefined ? { minChunkLength: config.chunkMinLength } : {}
     )
