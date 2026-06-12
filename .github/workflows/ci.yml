@@ -141,6 +141,9 @@ jobs:
 
     - name: Run WebGPU main path tests
       env:
+        # WebGPU benefits from lower-precision model weights; fp32 is kept as
+        # the default for normal CPU tests.
+        RAG_DTYPE: fp16
         # Direct Dawn to use Vulkan (rather than D3D12) on Windows, so
         # SwiftShader/Lavapipe can serve as the adapter.
         WGPU_BACKEND: vulkan
