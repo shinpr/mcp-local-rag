@@ -114,8 +114,10 @@ describe('AC-005: Error Handling (Basic)', () => {
   // AC interpretation: [Error handling] Error message returned when LanceDB connection fails
   // Validation: When LanceDB connection fails, DatabaseError is returned
   it('DatabaseError returned when LanceDB connection fails (e.g., invalid dbPath)', async () => {
-    // Attempt to initialize RAGServer with invalid dbPath
-    const invalidDbPath = '/invalid/path/that/does/not/exist'
+    // Nest dbPath under a file (ENOTDIR everywhere): a bogus POSIX path is creatable on Windows.
+    const dbBlocker = resolve(testDataDir, 'db-blocker')
+    writeFileSync(dbBlocker, 'x')
+    const invalidDbPath = resolve(dbBlocker, 'db')
     const invalidServer = new RAGServer(
       withTestDevice({
         dbPath: invalidDbPath,
