@@ -302,12 +302,9 @@ describe('handleIngestFile - Phase 0 Wrapper Side Effects (AC-008a)', () => {
     }
     expect(caught).toBe(induced)
 
-    // Assert: backup capture happened BEFORE delete.
-    // mock.invocationCallOrder is a monotonically increasing global counter.
-    const backupOrder = mocks.getChunksByFilePath.mock.invocationCallOrder[0]!
-    const deleteOrder = mocks.deleteChunks.mock.invocationCallOrder[0]!
+    // Backup captured from the target filePath. (backup-before-delete ordering is
+    // covered observably in ingest-rollback.test.ts, not via call-order here.)
     expect(mocks.getChunksByFilePath).toHaveBeenCalledWith(FIXTURE_FILE_PATH)
-    expect(backupOrder).toBeLessThan(deleteOrder)
 
     // Assert: deleteChunks called with the target filePath
     expect(mocks.deleteChunks).toHaveBeenCalledTimes(1)
@@ -327,13 +324,8 @@ describe('handleIngestFile - Phase 0 Wrapper Side Effects (AC-008a)', () => {
     expect(rollbackArg).toHaveLength(1)
     expect(rollbackArg[0]).toEqual(priorChunk)
 
-    // Assert: optimize was called once during the rollback path (after the
-    // successful rollback re-insert), but NOT on the success branch — verified
-    // by call count.
+    // optimize runs once on the rollback path, not on the success branch.
     expect(mocks.optimize).toHaveBeenCalledTimes(1)
-    const optimizeOrder = mocks.optimize.mock.invocationCallOrder[0]!
-    const rollbackInsertOrder = mocks.insertChunks.mock.invocationCallOrder[1]!
-    expect(optimizeOrder).toBeGreaterThan(rollbackInsertOrder)
   })
 
   // AC-008a (c): "handleIngestFile calls vectorStore.optimize() after a

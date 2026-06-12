@@ -40,7 +40,7 @@
     "url": "git+https://github.com/shinpr/mcp-local-rag.git"
   },
   "scripts": {
-    "build": "tsc && tsc-alias",
+    "build": "tsc",
     "start": "node dist/index.js",
     "dev": "tsx src/index.ts",
     "watch": "tsx watch src/index.ts",
@@ -84,11 +84,11 @@
     "husky": "^9.1.7",
     "knip": "^6.16.1",
     "lint-staged": "^17.0.7",
-    "tsc-alias": "^1.8.17",
     "tsx": "^4.22.4",
     "typescript": "^6.0.3",
     "vitest": "^4.1.8"
   },
+  "packageManager": "pnpm@11.6.0",
   "engines": {
     "node": ">=22"
   },

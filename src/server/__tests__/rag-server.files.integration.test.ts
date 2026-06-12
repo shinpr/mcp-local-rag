@@ -37,33 +37,6 @@ describe('AC-006: Additional Format Support (Phase 2)', () => {
     rmSync(localTestDataDir, { recursive: true, force: true })
   })
 
-  // AC interpretation: [Functional requirement] The .docx extension is routed to the DOCX parser
-  // Validation: DocumentParser.parseFile dispatches a .docx path to parseDocx and surfaces a FileOperationError when the content is not a valid DOCX
-  it('DocumentParser routes .docx to parseDocx and surfaces FileOperationError on invalid DOCX content', async () => {
-    const { DocumentParser } = await import('../../parser/index.js')
-    const parser = new DocumentParser({
-      baseDir: localTestDataDir,
-      maxFileSize: 100 * 1024 * 1024,
-    })
-
-    // Verify parseFile method recognizes .docx extension
-    const testTxtFile = resolve(localTestDataDir, 'test-for-docx.txt')
-    writeFileSync(testTxtFile, 'Test content for DOCX format check')
-
-    // Verify calling parseFile as .docx file calls parseDocx
-    try {
-      const fakeDocxFile = resolve(localTestDataDir, 'fake.docx')
-      writeFileSync(fakeDocxFile, 'Not a real DOCX file')
-      await parser.parseFile(fakeDocxFile)
-      // Fail if error does not occur
-      expect(false).toBe(true)
-    } catch (error) {
-      // Verify FileOperationError occurs (DOCX parse failure)
-      expect((error as Error).name).toBe('FileOperationError')
-      expect((error as Error).message).toContain('Failed to parse DOCX')
-    }
-  })
-
   // AC interpretation: [Functional requirement] Every supported format is routed to the correct parser
   // Validation: DocumentParser.parseFile extracts text for TXT/MD, dispatches DOCX to parseDocx (FileOperationError on invalid content), and rejects PDF as an unsupported parseFile format (PDF uses parsePdf directly)
   it('DocumentParser.parseFile dispatches each format (TXT/MD extracted, DOCX routed, PDF rejected as unsupported)', async () => {

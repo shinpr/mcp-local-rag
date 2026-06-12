@@ -568,11 +568,8 @@ describe('DocumentParser', () => {
       expect(result.title).toBeDefined()
     })
 
-    // Note: Y-coordinate inversion (pageHeight - line.y) and one-based pageNum (i + 1)
-    // are internal to parsePdf and not observable from its output. Under isolate: false,
-    // vi.mock for pdf-filter.js is ineffective (pdf-filter.test.ts imports the real module),
-    // so these cannot be tested via mock inspection either. They are implicitly covered
-    // by pdf-filter integration tests that receive correctly transformed page data.
+    // Y-coordinate inversion and one-based pageNum are internal to parsePdf and not
+    // observable from its output; covered by the pdf-filter tests instead.
 
     it('should skip non-text blocks (e.g., image blocks)', async () => {
       const filePath = join(testDir, 'test.pdf')

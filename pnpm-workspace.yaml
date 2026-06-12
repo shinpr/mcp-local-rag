@@ -1,5 +1,13 @@
+# Quarantine newly published versions for 24h; malware is usually detected and
+# pulled within hours, so the cooldown avoids installing a fresh compromised release.
+minimumReleaseAge: 1440
+
+# Only packages whose build scripts we actually need are allowed to run.
+# protobufjs is explicitly denied: its postinstall is a no-op for v7 (no
+# versionScheme), so running it buys nothing and only widens the install-time
+# attack surface. `false` (not removal) satisfies pnpm 11 strictDepBuilds.
 allowBuilds:
   esbuild: true
   onnxruntime-node: true
-  protobufjs: true
+  protobufjs: false
   sharp: true

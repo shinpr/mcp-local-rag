@@ -5,6 +5,7 @@ import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { withTestDevice } from '../../__tests__/test-device.js'
+import { DatabaseError } from '../../vectordb/types.js'
 import { RAGServer } from '../index.js'
 
 describe('AC-001: MCP Protocol Integration', () => {
@@ -113,8 +114,10 @@ describe('AC-005: Error Handling (Basic)', () => {
   // AC interpretation: [Error handling] Error message returned when LanceDB connection fails
   // Validation: When LanceDB connection fails, DatabaseError is returned
   it('DatabaseError returned when LanceDB connection fails (e.g., invalid dbPath)', async () => {
-    // Attempt to initialize RAGServer with invalid dbPath
-    const invalidDbPath = '/invalid/path/that/does/not/exist'
+    // Nest dbPath under a file (ENOTDIR everywhere): a bogus POSIX path is creatable on Windows.
+    const dbBlocker = resolve(testDataDir, 'db-blocker')
+    writeFileSync(dbBlocker, 'x')
+    const invalidDbPath = resolve(dbBlocker, 'db')
     const invalidServer = new RAGServer(
       withTestDevice({
         dbPath: invalidDbPath,
@@ -125,16 +128,14 @@ describe('AC-005: Error Handling (Basic)', () => {
       })
     )
 
-    // Verify error occurs during initialization or query execution
-    // LanceDB initialization may succeed with invalid path, but actual operations may fail
-    // Here we verify either initialization succeeds or error occurs
+    // The DB failure surfaces either at initialize() or at query time; both must be a DatabaseError.
     try {
       await invalidServer.initialize()
-      // If initialization succeeds, verify error on actual query
-      await expect(invalidServer.handleQueryDocuments({ query: 'test' })).rejects.toThrow()
+      await expect(invalidServer.handleQueryDocuments({ query: 'test' })).rejects.toBeInstanceOf(
+        DatabaseError
+      )
     } catch (error) {
-      // Error during initialization is also OK
-      expect(error).toBeDefined()
+      expect(error).toBeInstanceOf(DatabaseError)
     } finally {
       await invalidServer.close()
     }
