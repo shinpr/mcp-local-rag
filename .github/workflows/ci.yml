@@ -20,20 +20,19 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
     - name: Checkout code
-      uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
     - name: Setup Node.js
-      uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
       with:
         node-version-file: '.nvmrc'
 
     - name: Install pnpm
+      # Version is taken from the `packageManager` field in package.json.
       uses: pnpm/action-setup@02f6c237bd2518259fed6c71566509edfb3f2b74 # v4
-      with:
-        version: 10
 
     - name: Install dependencies
-      run: pnpm install
+      run: pnpm install --frozen-lockfile
 
     - name: Lint check
       run: pnpm run lint
@@ -44,9 +43,6 @@ jobs:
     - name: Type check
       run: pnpm run build
 
-    - name: Check production dependencies
-      run: npx report-missing-dependencies
-
   # Single owner of the external (HuggingFace) dependency. Downloads the model
   # files once and publishes them via the GitHub Actions cache, so the test
   # jobs below never touch the network — keeping flakiness to this one job.
@@ -55,16 +51,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - name: Checkout code
-      uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
     - name: Setup Node.js
-      uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
       with:
         node-version-file: '.nvmrc'
 
     - name: Restore model cache
       id: cache
-      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
       with:
         path: tmp/models
         key: hf-model-allMiniLM-${{ env.HF_MODEL_REVISION }}
@@ -81,7 +77,7 @@ jobs:
 
     - name: Save model cache
       if: steps.cache.outputs.cache-hit != 'true'
-      uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
       with:
         path: tmp/models
         key: hf-model-allMiniLM-${{ env.HF_MODEL_REVISION }}
@@ -102,24 +98,23 @@ jobs:
 
     steps:
     - name: Checkout code
-      uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
     - name: Setup Node.js
-      uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
       with:
         node-version-file: '.nvmrc'
 
     - name: Install pnpm
+      # Version is taken from the `packageManager` field in package.json.
       uses: pnpm/action-setup@02f6c237bd2518259fed6c71566509edfb3f2b74 # v4
-      with:
-        version: 10
 
     - name: Install dependencies
-      run: pnpm install
+      run: pnpm install --frozen-lockfile
 
     # Populated by prepare-models; restore-only, so tests never hit the network.
     - name: Restore model cache
-      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
       with:
         path: tmp/models
         key: hf-model-allMiniLM-${{ env.HF_MODEL_REVISION }}
@@ -141,20 +136,19 @@ jobs:
 
     steps:
     - name: Checkout code
-      uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
     - name: Setup Node.js
-      uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
       with:
         node-version-file: '.nvmrc'
 
     - name: Install pnpm
+      # Version is taken from the `packageManager` field in package.json.
       uses: pnpm/action-setup@02f6c237bd2518259fed6c71566509edfb3f2b74 # v4
-      with:
-        version: 10
 
     - name: Install dependencies
-      run: pnpm install
+      run: pnpm install --frozen-lockfile
 
     - name: Install Vulkan SDK and Software Rasterizer
       uses: jakoch/install-vulkan-sdk-action@3c53c378c9bfbb2ea122a1cc164a837d4004c871 # v1.5.2
@@ -174,7 +168,7 @@ jobs:
 
     # Populated by prepare-models; restore-only, so tests never hit the network.
     - name: Restore model cache
-      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
       with:
         path: tmp/models
         key: hf-model-allMiniLM-${{ env.HF_MODEL_REVISION }}
@@ -191,13 +185,47 @@ jobs:
         VK_ICD_FILENAMES: ${{ runner.os == 'Windows' && 'C:\SwiftShader\vk_swiftshader_icd.json' || '/usr/share/vulkan/icd.d/lvp_icd.json' }}
       run: pnpm run test:webgpu:main-path
 
+  # Install the packed tarball in isolation and load its full production import
+  # graph using only declared `dependencies`. Guards against a production module
+  # importing an undeclared/dev-only dependency (which would crash a consumer's
+  # `npx` install) and against packaging changes that break module resolution.
+  package-smoke:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+    - name: Setup Node.js
+      uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+      with:
+        node-version-file: '.nvmrc'
+
+    - name: Install pnpm
+      # Version is taken from the `packageManager` field in package.json.
+      uses: pnpm/action-setup@02f6c237bd2518259fed6c71566509edfb3f2b74 # v4
+
+    - name: Install dependencies
+      run: pnpm install --frozen-lockfile
+
+    - name: Build
+      run: pnpm run build
+
+    - name: Smoke-test the published package in isolation
+      run: |
+        pnpm pack --pack-destination "${RUNNER_TEMP}"
+        SMOKE_DIR="$(mktemp -d)"
+        cd "$SMOKE_DIR"
+        npm init -y >/dev/null
+        npm install "${RUNNER_TEMP}"/mcp-local-rag-*.tgz
+        node "${GITHUB_WORKSPACE}/scripts/smoke-published-package.mjs" "$SMOKE_DIR"
+
   # Stable aggregate check. The `main` ruleset requires a status named `ci`,
   # so this job keeps that name regardless of the test matrix dimensions.
   ci:
-    needs: [static-checks, prepare-models, test, webgpu-main-path]
+    needs: [static-checks, prepare-models, test, webgpu-main-path, package-smoke]
     if: always()
     runs-on: ubuntu-latest
     steps:
     - name: Verify the test matrix succeeded
-      if: needs.static-checks.result != 'success' || needs.prepare-models.result != 'success' || needs.test.result != 'success' || needs.webgpu-main-path.result != 'success'
+      if: needs.static-checks.result != 'success' || needs.prepare-models.result != 'success' || needs.test.result != 'success' || needs.webgpu-main-path.result != 'success' || needs.package-smoke.result != 'success'
       run: exit 1

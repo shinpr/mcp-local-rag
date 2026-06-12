@@ -5,10 +5,7 @@
     "module": "node16",
     "lib": ["ES2023"],
     "types": ["node"],
-    "paths": {
-      "src/*": ["./src/*"]
-    },
-    
+
     // Output configuration
     "outDir": "./dist",
     "rootDir": "./src",
