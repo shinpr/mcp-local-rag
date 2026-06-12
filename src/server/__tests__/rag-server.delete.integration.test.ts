@@ -4,6 +4,7 @@
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { withTestDevice } from '../../__tests__/test-device.js'
 import { RAGServer } from '../index.js'
 
 describe('AC-010: File Deletion', () => {
@@ -15,13 +16,15 @@ describe('AC-010: File Deletion', () => {
     mkdirSync(localTestDbPath, { recursive: true })
     mkdirSync(localTestDataDir, { recursive: true })
 
-    localRagServer = new RAGServer({
-      dbPath: localTestDbPath,
-      modelName: 'Xenova/all-MiniLM-L6-v2',
-      cacheDir: './tmp/models',
-      baseDir: localTestDataDir,
-      maxFileSize: 100 * 1024 * 1024,
-    })
+    localRagServer = new RAGServer(
+      withTestDevice({
+        dbPath: localTestDbPath,
+        modelName: 'Xenova/all-MiniLM-L6-v2',
+        cacheDir: './tmp/models',
+        baseDir: localTestDataDir,
+        maxFileSize: 100 * 1024 * 1024,
+      })
+    )
 
     await localRagServer.initialize()
   })

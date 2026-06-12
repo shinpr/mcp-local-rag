@@ -6,6 +6,7 @@ import { mkdir, readFile, rm } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { RAGServer } from '../../server/index.js'
+import { withTestDevice } from '../test-device.js'
 
 // ============================================
 // Test Configuration
@@ -34,7 +35,7 @@ describe('ingest_data Tool', () => {
   beforeAll(async () => {
     await mkdir(testDbPath, { recursive: true })
     await mkdir(testConfig.cacheDir, { recursive: true })
-    server = new RAGServer(testConfig)
+    server = new RAGServer(withTestDevice(testConfig))
     await server.initialize()
   }, 120000) // 2 minutes for model download
 

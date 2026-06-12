@@ -4,6 +4,7 @@
 import { mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { withTestDevice } from '../../__tests__/test-device.js'
 import { RAGServer } from '../index.js'
 
 describe('AC-006: Additional Format Support (Phase 2)', () => {
@@ -17,13 +18,15 @@ describe('AC-006: Additional Format Support (Phase 2)', () => {
     mkdirSync(localTestDataDir, { recursive: true })
     mkdirSync(localCacheDir, { recursive: true })
 
-    localRagServer = new RAGServer({
-      dbPath: localTestDbPath,
-      modelName: 'Xenova/all-MiniLM-L6-v2',
-      cacheDir: localCacheDir,
-      baseDir: localTestDataDir,
-      maxFileSize: 100 * 1024 * 1024,
-    })
+    localRagServer = new RAGServer(
+      withTestDevice({
+        dbPath: localTestDbPath,
+        modelName: 'Xenova/all-MiniLM-L6-v2',
+        cacheDir: localCacheDir,
+        baseDir: localTestDataDir,
+        maxFileSize: 100 * 1024 * 1024,
+      })
+    )
 
     await localRagServer.initialize()
   }, 60000)
@@ -117,13 +120,15 @@ describe('AC-007: File Management', () => {
     mkdirSync(localTestDataDir, { recursive: true })
     mkdirSync(localCacheDir, { recursive: true })
 
-    localRagServer = new RAGServer({
-      dbPath: localTestDbPath,
-      modelName: 'Xenova/all-MiniLM-L6-v2',
-      cacheDir: localCacheDir,
-      baseDir: localTestDataDir,
-      maxFileSize: 100 * 1024 * 1024,
-    })
+    localRagServer = new RAGServer(
+      withTestDevice({
+        dbPath: localTestDbPath,
+        modelName: 'Xenova/all-MiniLM-L6-v2',
+        cacheDir: localCacheDir,
+        baseDir: localTestDataDir,
+        maxFileSize: 100 * 1024 * 1024,
+      })
+    )
 
     await localRagServer.initialize()
 
@@ -253,13 +258,15 @@ describe('AC-007: File Management', () => {
       mkdirSync(resolve(excludeTestBase, 'docs'), { recursive: true })
       writeFileSync(resolve(excludeTestBase, 'docs', 'notes.txt'), 'Notes in docs subdirectory')
 
-      excludeServer = new RAGServer({
-        dbPath: excludeTestDb,
-        modelName: 'Xenova/all-MiniLM-L6-v2',
-        cacheDir: excludeTestCache,
-        baseDir: excludeTestBase,
-        maxFileSize: 100 * 1024 * 1024,
-      })
+      excludeServer = new RAGServer(
+        withTestDevice({
+          dbPath: excludeTestDb,
+          modelName: 'Xenova/all-MiniLM-L6-v2',
+          cacheDir: excludeTestCache,
+          baseDir: excludeTestBase,
+          maxFileSize: 100 * 1024 * 1024,
+        })
+      )
 
       await excludeServer.initialize()
     }, 120000)
@@ -321,13 +328,15 @@ describe('AC-007: File Management', () => {
 
       let siblingServer: RAGServer | null = null
       try {
-        siblingServer = new RAGServer({
-          dbPath: siblingDb,
-          modelName: 'Xenova/all-MiniLM-L6-v2',
-          cacheDir: siblingCache,
-          baseDir: siblingData,
-          maxFileSize: 100 * 1024 * 1024,
-        })
+        siblingServer = new RAGServer(
+          withTestDevice({
+            dbPath: siblingDb,
+            modelName: 'Xenova/all-MiniLM-L6-v2',
+            cacheDir: siblingCache,
+            baseDir: siblingData,
+            maxFileSize: 100 * 1024 * 1024,
+          })
+        )
 
         await siblingServer.initialize()
 
@@ -379,13 +388,15 @@ describe('AC-008: list_files multi-root contract', () => {
     writeFileSync(resolve(multiDbPath, 'db-internal.txt'), 'DB internal')
     writeFileSync(resolve(multiCacheDir, 'cache-internal.txt'), 'Cache internal')
 
-    multiServer = new RAGServer({
-      dbPath: multiDbPath,
-      modelName: 'Xenova/all-MiniLM-L6-v2',
-      cacheDir: multiCacheDir,
-      baseDirs: [rootA, rootB],
-      maxFileSize: 100 * 1024 * 1024,
-    })
+    multiServer = new RAGServer(
+      withTestDevice({
+        dbPath: multiDbPath,
+        modelName: 'Xenova/all-MiniLM-L6-v2',
+        cacheDir: multiCacheDir,
+        baseDirs: [rootA, rootB],
+        maxFileSize: 100 * 1024 * 1024,
+      })
+    )
 
     await multiServer.initialize()
   }, 60000)
@@ -523,13 +534,15 @@ describe('AC-008: list_files single-root regression (legacy shape preserved)', (
     mkdirSync(singleCache, { recursive: true })
     writeFileSync(resolve(singleData, 'only-file.txt'), 'single-root content')
 
-    singleServer = new RAGServer({
-      dbPath: singleDb,
-      modelName: 'Xenova/all-MiniLM-L6-v2',
-      cacheDir: singleCache,
-      baseDir: singleData,
-      maxFileSize: 100 * 1024 * 1024,
-    })
+    singleServer = new RAGServer(
+      withTestDevice({
+        dbPath: singleDb,
+        modelName: 'Xenova/all-MiniLM-L6-v2',
+        cacheDir: singleCache,
+        baseDir: singleData,
+        maxFileSize: 100 * 1024 * 1024,
+      })
+    )
 
     await singleServer.initialize()
   }, 60000)

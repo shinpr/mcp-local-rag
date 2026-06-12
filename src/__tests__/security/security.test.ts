@@ -9,6 +9,7 @@ import { resolve } from 'node:path'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DocumentParser, ValidationError } from '../../parser/index.js'
 import { RAGServer } from '../../server/index.js'
+import { withTestDevice } from '../test-device.js'
 
 // ============================================
 // Test Configuration
@@ -97,7 +98,7 @@ describe('RAG MCP Server Security Test', () => {
 
   beforeEach(async () => {
     // Initialize server before each test
-    server = new RAGServer(testConfig)
+    server = new RAGServer(withTestDevice(testConfig))
     await server.initialize()
 
     // Create test fixture directory and files
@@ -158,7 +159,7 @@ This approach provides accurate search results for natural language queries.`
       let server2: RAGServer | null = null
       try {
         // Second initialization (model already cached)
-        server2 = new RAGServer(testConfig)
+        server2 = new RAGServer(withTestDevice(testConfig))
         await server2.initialize()
 
         // Verify no requests to HuggingFace API

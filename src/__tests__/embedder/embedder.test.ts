@@ -5,6 +5,7 @@
 
 import { describe, expect, it } from 'vitest'
 import { Embedder, EmbeddingError } from '../../embedder/index.js'
+import { getTestDevice } from '../test-device.js'
 
 // embed()/embedBatch() resolve to numeric vectors; the `.catch` handlers below
 // capture the rejection, so the awaited value is typed `Error | <vector>`.
@@ -22,7 +23,7 @@ function makeEmbedder(device?: string): Embedder {
     modelPath: 'Xenova/all-MiniLM-L6-v2',
     batchSize: 16,
     cacheDir: './tmp/models',
-    ...(device !== undefined ? { device } : {}),
+    device: device ?? getTestDevice(),
   })
 }
 
@@ -48,7 +49,7 @@ describe('Embedder', () => {
     })
 
     it('early-rethrows EmbeddingError from embed() instead of re-wrapping with batch guidance', async () => {
-      const embedder = makeEmbedder('cpu')
+      const embedder = makeEmbedder()
 
       const err = asError(await embedder.embedBatch(['valid', '']).catch((e) => e))
       expect(err).toBeInstanceOf(EmbeddingError)
@@ -57,7 +58,7 @@ describe('Embedder', () => {
     })
 
     it('produces per-text vectors equivalent to embed() (true batching)', async () => {
-      const embedder = makeEmbedder('cpu')
+      const embedder = makeEmbedder()
       const texts = ['alpha text one', 'beta different two', 'gamma third sample']
 
       const batched = await embedder.embedBatch(texts)
@@ -98,7 +99,7 @@ describe('Embedder', () => {
 
   describe('dispose()', () => {
     it('is safe to call before any embed() invocation', async () => {
-      const embedder = makeEmbedder('cpu')
+      const embedder = makeEmbedder()
       await expect(embedder.dispose()).resolves.toBeUndefined()
     })
   })

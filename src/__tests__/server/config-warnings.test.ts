@@ -11,6 +11,7 @@ import {
   parseMaxDistance,
   parseMaxFiles,
 } from '../../server-main.js'
+import { withTestDevice } from '../test-device.js'
 
 // ============================================
 // Unit Tests: Parser Functions
@@ -206,12 +207,14 @@ describe('Config warning delivery via MCP annotations', () => {
 
     beforeAll(async () => {
       await mkdir(testDbPath, { recursive: true })
-      server = new RAGServer({
-        ...baseConfig,
-        configWarnings: [
-          'Invalid RAG_MAX_FILES value: "0". Expected positive integer (>= 1). Ignoring.',
-        ],
-      })
+      server = new RAGServer(
+        withTestDevice({
+          ...baseConfig,
+          configWarnings: [
+            'Invalid RAG_MAX_FILES value: "0". Expected positive integer (>= 1). Ignoring.',
+          ],
+        })
+      )
       await server.initialize()
     })
 
@@ -235,7 +238,7 @@ describe('Config warning delivery via MCP annotations', () => {
 
     beforeAll(async () => {
       await mkdir(testDbPath, { recursive: true })
-      server = new RAGServer(baseConfig)
+      server = new RAGServer(withTestDevice(baseConfig))
       await server.initialize()
     })
 
@@ -251,12 +254,14 @@ describe('Config warning delivery via MCP annotations', () => {
 
     beforeAll(async () => {
       await mkdir(testDbPath, { recursive: true })
-      server = new RAGServer({
-        ...baseConfig,
-        configWarnings: [
-          'Invalid RAG_MAX_DISTANCE value: "-1". Expected positive number. Ignoring.',
-        ],
-      })
+      server = new RAGServer(
+        withTestDevice({
+          ...baseConfig,
+          configWarnings: [
+            'Invalid RAG_MAX_DISTANCE value: "-1". Expected positive number. Ignoring.',
+          ],
+        })
+      )
       await server.initialize()
     })
 
@@ -288,13 +293,15 @@ describe('Config warning delivery via MCP annotations', () => {
 
     beforeAll(async () => {
       await mkdir(testDbPath, { recursive: true })
-      server = new RAGServer({
-        ...baseConfig,
-        configWarnings: [
-          'Invalid RAG_MAX_FILES value: "0". Expected positive integer (>= 1). Ignoring.',
-          'Invalid RAG_HYBRID_WEIGHT value: "2.0". Expected 0.0-1.0. Using default (0.6).',
-        ],
-      })
+      server = new RAGServer(
+        withTestDevice({
+          ...baseConfig,
+          configWarnings: [
+            'Invalid RAG_MAX_FILES value: "0". Expected positive integer (>= 1). Ignoring.',
+            'Invalid RAG_HYBRID_WEIGHT value: "2.0". Expected 0.0-1.0. Using default (0.6).',
+          ],
+        })
+      )
       await server.initialize()
     })
 

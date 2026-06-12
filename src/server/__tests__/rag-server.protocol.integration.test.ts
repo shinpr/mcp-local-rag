@@ -4,6 +4,7 @@
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { withTestDevice } from '../../__tests__/test-device.js'
 import { RAGServer } from '../index.js'
 
 describe('AC-001: MCP Protocol Integration', () => {
@@ -15,13 +16,15 @@ describe('AC-001: MCP Protocol Integration', () => {
     mkdirSync(testDbPath, { recursive: true })
     mkdirSync(testDataDir, { recursive: true })
 
-    ragServer = new RAGServer({
-      dbPath: testDbPath,
-      modelName: 'Xenova/all-MiniLM-L6-v2',
-      cacheDir: './tmp/models',
-      baseDir: testDataDir,
-      maxFileSize: 100 * 1024 * 1024,
-    })
+    ragServer = new RAGServer(
+      withTestDevice({
+        dbPath: testDbPath,
+        modelName: 'Xenova/all-MiniLM-L6-v2',
+        cacheDir: './tmp/models',
+        baseDir: testDataDir,
+        maxFileSize: 100 * 1024 * 1024,
+      })
+    )
 
     await ragServer.initialize()
   })
@@ -71,13 +74,15 @@ describe('AC-005: Error Handling (Basic)', () => {
     mkdirSync(testDbPath, { recursive: true })
     mkdirSync(testDataDir, { recursive: true })
 
-    ragServer = new RAGServer({
-      dbPath: testDbPath,
-      modelName: 'Xenova/all-MiniLM-L6-v2',
-      cacheDir: './tmp/models',
-      baseDir: testDataDir,
-      maxFileSize: 100 * 1024 * 1024,
-    })
+    ragServer = new RAGServer(
+      withTestDevice({
+        dbPath: testDbPath,
+        modelName: 'Xenova/all-MiniLM-L6-v2',
+        cacheDir: './tmp/models',
+        baseDir: testDataDir,
+        maxFileSize: 100 * 1024 * 1024,
+      })
+    )
 
     await ragServer.initialize()
   })
@@ -110,13 +115,15 @@ describe('AC-005: Error Handling (Basic)', () => {
   it('DatabaseError returned when LanceDB connection fails (e.g., invalid dbPath)', async () => {
     // Attempt to initialize RAGServer with invalid dbPath
     const invalidDbPath = '/invalid/path/that/does/not/exist'
-    const invalidServer = new RAGServer({
-      dbPath: invalidDbPath,
-      modelName: 'Xenova/all-MiniLM-L6-v2',
-      cacheDir: './tmp/models',
-      baseDir: testDataDir,
-      maxFileSize: 100 * 1024 * 1024,
-    })
+    const invalidServer = new RAGServer(
+      withTestDevice({
+        dbPath: invalidDbPath,
+        modelName: 'Xenova/all-MiniLM-L6-v2',
+        cacheDir: './tmp/models',
+        baseDir: testDataDir,
+        maxFileSize: 100 * 1024 * 1024,
+      })
+    )
 
     // Verify error occurs during initialization or query execution
     // LanceDB initialization may succeed with invalid path, but actual operations may fail

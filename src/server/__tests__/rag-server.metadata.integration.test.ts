@@ -5,6 +5,7 @@ import { existsSync, mkdirSync, rmSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { withTestDevice } from '../../__tests__/test-device.js'
 import { generateMetaJsonPath, generateRawDataPath } from '../../utils/raw-data-utils.js'
 import { RAGServer } from '../index.js'
 
@@ -17,13 +18,15 @@ describe('File Title Extraction Pipeline', () => {
     mkdirSync(localTestDbPath, { recursive: true })
     mkdirSync(localTestDataDir, { recursive: true })
 
-    localRagServer = new RAGServer({
-      dbPath: localTestDbPath,
-      modelName: 'Xenova/all-MiniLM-L6-v2',
-      cacheDir: './tmp/models',
-      baseDir: localTestDataDir,
-      maxFileSize: 100 * 1024 * 1024,
-    })
+    localRagServer = new RAGServer(
+      withTestDevice({
+        dbPath: localTestDbPath,
+        modelName: 'Xenova/all-MiniLM-L6-v2',
+        cacheDir: './tmp/models',
+        baseDir: localTestDataDir,
+        maxFileSize: 100 * 1024 * 1024,
+      })
+    )
 
     await localRagServer.initialize()
   })
@@ -89,13 +92,15 @@ describe('Meta JSON Sidecar Pipeline', () => {
     mkdirSync(localTestDbPath, { recursive: true })
     mkdirSync(localTestDataDir, { recursive: true })
 
-    localRagServer = new RAGServer({
-      dbPath: localTestDbPath,
-      modelName: 'Xenova/all-MiniLM-L6-v2',
-      cacheDir: './tmp/models',
-      baseDir: localTestDataDir,
-      maxFileSize: 100 * 1024 * 1024,
-    })
+    localRagServer = new RAGServer(
+      withTestDevice({
+        dbPath: localTestDbPath,
+        modelName: 'Xenova/all-MiniLM-L6-v2',
+        cacheDir: './tmp/models',
+        baseDir: localTestDataDir,
+        maxFileSize: 100 * 1024 * 1024,
+      })
+    )
 
     await localRagServer.initialize()
   })

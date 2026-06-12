@@ -19,6 +19,7 @@ import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { ErrorCode } from '@modelcontextprotocol/sdk/types.js'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
+import { withTestDevice } from '../../__tests__/test-device.js'
 import { looksLikeRawDataPath } from '../../utils/raw-data-utils.js'
 import type { VectorChunk, VectorStore } from '../../vectordb/index.js'
 import { RAGServer } from '../index.js'
@@ -31,6 +32,10 @@ import type { ReadChunkNeighborsInput, ReadChunkNeighborsResultItem } from '../t
  */
 function getVectorStore(server: RAGServer): VectorStore {
   return (server as unknown as { vectorStore: VectorStore }).vectorStore
+}
+
+function createTestRagServer(config: ConstructorParameters<typeof RAGServer>[0]): RAGServer {
+  return new RAGServer(withTestDevice(config))
 }
 
 /**
@@ -100,7 +105,7 @@ describe('read_chunk_neighbors integration', () => {
     beforeAll(async () => {
       mkdirSync(testDbPath, { recursive: true })
       mkdirSync(testDataDir, { recursive: true })
-      ragServer = new RAGServer({
+      ragServer = createTestRagServer({
         dbPath: testDbPath,
         modelName: 'Xenova/all-MiniLM-L6-v2',
         cacheDir: './tmp/models',
@@ -195,7 +200,7 @@ describe('read_chunk_neighbors integration', () => {
     beforeAll(async () => {
       mkdirSync(testDbPath, { recursive: true })
       mkdirSync(testDataDir, { recursive: true })
-      ragServer = new RAGServer({
+      ragServer = createTestRagServer({
         dbPath: testDbPath,
         modelName: 'Xenova/all-MiniLM-L6-v2',
         cacheDir: './tmp/models',
@@ -292,7 +297,7 @@ describe('read_chunk_neighbors integration', () => {
     beforeAll(async () => {
       mkdirSync(testDbPath, { recursive: true })
       mkdirSync(testDataDir, { recursive: true })
-      ragServer = new RAGServer({
+      ragServer = createTestRagServer({
         dbPath: testDbPath,
         modelName: 'Xenova/all-MiniLM-L6-v2',
         cacheDir: './tmp/models',
@@ -383,7 +388,7 @@ describe('read_chunk_neighbors integration', () => {
     beforeAll(async () => {
       mkdirSync(testDbPath, { recursive: true })
       mkdirSync(testDataDir, { recursive: true })
-      ragServer = new RAGServer({
+      ragServer = createTestRagServer({
         dbPath: testDbPath,
         modelName: 'Xenova/all-MiniLM-L6-v2',
         cacheDir: './tmp/models',
@@ -483,7 +488,7 @@ describe('read_chunk_neighbors integration', () => {
     beforeAll(async () => {
       mkdirSync(testDbPath, { recursive: true })
       mkdirSync(testDataDir, { recursive: true })
-      ragServer = new RAGServer({
+      ragServer = createTestRagServer({
         dbPath: testDbPath,
         modelName: 'Xenova/all-MiniLM-L6-v2',
         cacheDir: './tmp/models',
@@ -571,7 +576,7 @@ describe('read_chunk_neighbors integration', () => {
     beforeAll(async () => {
       mkdirSync(testDbPath, { recursive: true })
       mkdirSync(testDataDir, { recursive: true })
-      ragServer = new RAGServer({
+      ragServer = createTestRagServer({
         dbPath: testDbPath,
         modelName: 'Xenova/all-MiniLM-L6-v2',
         cacheDir: './tmp/models',
@@ -700,7 +705,7 @@ describe('read_chunk_neighbors integration', () => {
       // check succeeds. Content is irrelevant — we bypass ingest and write chunks
       // directly via vectorStore.insertChunks.
       writeFileSync(syntheticFilePath, 'placeholder')
-      ragServer = new RAGServer({
+      ragServer = createTestRagServer({
         dbPath: testDbPath,
         modelName: 'Xenova/all-MiniLM-L6-v2',
         cacheDir: './tmp/models',
@@ -809,7 +814,7 @@ describe('read_chunk_neighbors integration', () => {
     beforeAll(async () => {
       mkdirSync(testDbPath, { recursive: true })
       mkdirSync(testDataDir, { recursive: true })
-      ragServer = new RAGServer({
+      ragServer = createTestRagServer({
         dbPath: testDbPath,
         modelName: 'Xenova/all-MiniLM-L6-v2',
         cacheDir: './tmp/models',
@@ -880,7 +885,7 @@ describe('read_chunk_neighbors integration', () => {
     beforeAll(async () => {
       mkdirSync(testDbPath, { recursive: true })
       mkdirSync(testDataDir, { recursive: true })
-      ragServer = new RAGServer({
+      ragServer = createTestRagServer({
         dbPath: testDbPath,
         modelName: 'Xenova/all-MiniLM-L6-v2',
         cacheDir: './tmp/models',
@@ -949,7 +954,7 @@ describe('read_chunk_neighbors integration', () => {
     beforeAll(async () => {
       mkdirSync(testDbPath, { recursive: true })
       mkdirSync(testDataDir, { recursive: true })
-      ragServer = new RAGServer({
+      ragServer = createTestRagServer({
         dbPath: testDbPath,
         modelName: 'Xenova/all-MiniLM-L6-v2',
         cacheDir: './tmp/models',
@@ -1024,7 +1029,7 @@ describe('read_chunk_neighbors integration', () => {
     beforeAll(async () => {
       mkdirSync(testDbPath, { recursive: true })
       mkdirSync(testDataDir, { recursive: true })
-      ragServer = new RAGServer({
+      ragServer = createTestRagServer({
         dbPath: testDbPath,
         modelName: 'Xenova/all-MiniLM-L6-v2',
         cacheDir: './tmp/models',

@@ -15,6 +15,7 @@ import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js'
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
+import { withTestDevice } from '../../__tests__/test-device.js'
 import type { Embedder } from '../../embedder/index.js'
 import { EmbeddingError } from '../../embedder/index.js'
 import { BaseDirsConfigError } from '../../utils/base-dirs.js'
@@ -64,13 +65,15 @@ describe('Central dispatcher error mapping (AC-004/005/006/008)', () => {
   beforeAll(async () => {
     mkdirSync(testDbPath, { recursive: true })
     mkdirSync(testDataDir, { recursive: true })
-    server = new RAGServer({
-      dbPath: testDbPath,
-      modelName: 'Xenova/all-MiniLM-L6-v2',
-      cacheDir: './tmp/models',
-      baseDir: testDataDir,
-      maxFileSize: 100 * 1024 * 1024,
-    })
+    server = new RAGServer(
+      withTestDevice({
+        dbPath: testDbPath,
+        modelName: 'Xenova/all-MiniLM-L6-v2',
+        cacheDir: './tmp/models',
+        baseDir: testDataDir,
+        maxFileSize: 100 * 1024 * 1024,
+      })
+    )
     await server.initialize()
   })
 
@@ -282,13 +285,15 @@ describe('Handler identity preservation + local rollback (AC-004)', () => {
   beforeAll(async () => {
     mkdirSync(testDbPath, { recursive: true })
     mkdirSync(testDataDir, { recursive: true })
-    server = new RAGServer({
-      dbPath: testDbPath,
-      modelName: 'Xenova/all-MiniLM-L6-v2',
-      cacheDir: './tmp/models',
-      baseDir: testDataDir,
-      maxFileSize: 100 * 1024 * 1024,
-    })
+    server = new RAGServer(
+      withTestDevice({
+        dbPath: testDbPath,
+        modelName: 'Xenova/all-MiniLM-L6-v2',
+        cacheDir: './tmp/models',
+        baseDir: testDataDir,
+        maxFileSize: 100 * 1024 * 1024,
+      })
+    )
     await server.initialize()
   })
 
@@ -357,14 +362,16 @@ describe('Config-gate central mapping + status diagnostic block (AC-007)', () =>
     const configError = new BaseDirsConfigError(
       'BASE_DIRS must be a JSON array of non-empty path strings.'
     )
-    server = new RAGServer({
-      dbPath: testDbPath,
-      modelName: 'Xenova/all-MiniLM-L6-v2',
-      cacheDir: './tmp/models',
-      baseDirs: [],
-      maxFileSize: 100 * 1024 * 1024,
-      configError,
-    })
+    server = new RAGServer(
+      withTestDevice({
+        dbPath: testDbPath,
+        modelName: 'Xenova/all-MiniLM-L6-v2',
+        cacheDir: './tmp/models',
+        baseDirs: [],
+        maxFileSize: 100 * 1024 * 1024,
+        configError,
+      })
+    )
     await server.initialize()
   })
 

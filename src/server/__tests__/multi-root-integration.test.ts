@@ -31,6 +31,7 @@
 import { mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { withTestDevice } from '../../__tests__/test-device.js'
 import { resolveServerConfig } from '../../server-main.js'
 import { BaseDirsConfigError, displayPath, resolveBaseDirs } from '../../utils/base-dirs.js'
 import { RAGServer } from '../index.js'
@@ -92,16 +93,18 @@ async function buildServerFromResolver(opts: {
     warnings.push(result.error.message)
   }
 
-  const server = new RAGServer({
-    dbPath: opts.dbPath,
-    modelName: 'Xenova/all-MiniLM-L6-v2',
-    cacheDir: opts.cacheDir,
-    baseDirs,
-    rawBaseDirs,
-    maxFileSize: 100 * 1024 * 1024,
-    configWarnings: warnings,
-    ...(configError !== undefined ? { configError } : {}),
-  })
+  const server = new RAGServer(
+    withTestDevice({
+      dbPath: opts.dbPath,
+      modelName: 'Xenova/all-MiniLM-L6-v2',
+      cacheDir: opts.cacheDir,
+      baseDirs,
+      rawBaseDirs,
+      maxFileSize: 100 * 1024 * 1024,
+      configWarnings: warnings,
+      ...(configError !== undefined ? { configError } : {}),
+    })
+  )
 
   return { server, warnings, configError }
 }
@@ -141,13 +144,15 @@ describe('AC-008/AC-011: multi-root ingest -> list -> query -> delete workflow',
         'This sentence pads the document so it clears the minimum chunk filter for ingestion.'
     )
 
-    server = new RAGServer({
-      dbPath,
-      modelName: 'Xenova/all-MiniLM-L6-v2',
-      cacheDir,
-      baseDirs: [rootA, rootB],
-      maxFileSize: 100 * 1024 * 1024,
-    })
+    server = new RAGServer(
+      withTestDevice({
+        dbPath,
+        modelName: 'Xenova/all-MiniLM-L6-v2',
+        cacheDir,
+        baseDirs: [rootA, rootB],
+        maxFileSize: 100 * 1024 * 1024,
+      })
+    )
     await server.initialize()
 
     await server.handleIngestFile({ filePath: fileA })
@@ -242,14 +247,16 @@ describe('AC-009: ingest_data behavior unchanged in multi-root mode (warnings ad
     mkdirSync(dbPath, { recursive: true })
     mkdirSync(cacheDir, { recursive: true })
 
-    server = new RAGServer({
-      dbPath,
-      modelName: 'Xenova/all-MiniLM-L6-v2',
-      cacheDir,
-      baseDirs: [rootA, rootB],
-      maxFileSize: 100 * 1024 * 1024,
-      configWarnings: [PRECEDENCE_WARNING],
-    })
+    server = new RAGServer(
+      withTestDevice({
+        dbPath,
+        modelName: 'Xenova/all-MiniLM-L6-v2',
+        cacheDir,
+        baseDirs: [rootA, rootB],
+        maxFileSize: 100 * 1024 * 1024,
+        configWarnings: [PRECEDENCE_WARNING],
+      })
+    )
     await server.initialize()
   }, 60000)
 
@@ -499,13 +506,15 @@ describe('post-launch finding #10: list_files per-root error tolerance', () => {
     const { chmodSync } = await import('node:fs')
     chmodSync(rootA, 0o000)
 
-    const server = new RAGServer({
-      dbPath,
-      modelName: 'Xenova/all-MiniLM-L6-v2',
-      cacheDir,
-      baseDirs: [rootA, rootB],
-      maxFileSize: 100 * 1024 * 1024,
-    })
+    const server = new RAGServer(
+      withTestDevice({
+        dbPath,
+        modelName: 'Xenova/all-MiniLM-L6-v2',
+        cacheDir,
+        baseDirs: [rootA, rootB],
+        maxFileSize: 100 * 1024 * 1024,
+      })
+    )
     await server.initialize()
     try {
       const result = await server.handleListFiles()
@@ -572,7 +581,7 @@ describe('post-launch findings #3 + #4: server-main wiring rejects sensitive roo
       ...(opts.envBaseDir !== undefined ? { BASE_DIR: opts.envBaseDir } : {}),
     }
     const config = await resolveServerConfig(env, testBase)
-    const server = new RAGServer(config)
+    const server = new RAGServer(withTestDevice(config))
     return { server, config }
   }
 

@@ -4,17 +4,20 @@
 import { existsSync, readdirSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
+import { withTestDevice } from '../../__tests__/test-device.js'
 
 describe('AC-003: Vector Embedding Generation', () => {
   // AC interpretation: [Technical requirement] Text chunks are converted to 384-dimensional vectors
   // Validation: Generate embedding from text, 384-dimensional vector is returned
   it('Text chunk properly converted to 384-dimensional vector', async () => {
     const { Embedder } = await import('../../embedder/index.js')
-    const embedder = new Embedder({
-      modelPath: 'Xenova/all-MiniLM-L6-v2',
-      batchSize: 8,
-      cacheDir: './tmp/models',
-    })
+    const embedder = new Embedder(
+      withTestDevice({
+        modelPath: 'Xenova/all-MiniLM-L6-v2',
+        batchSize: 8,
+        cacheDir: './tmp/models',
+      })
+    )
 
     await embedder.initialize()
 
@@ -32,11 +35,13 @@ describe('AC-003: Vector Embedding Generation', () => {
   it('all-MiniLM-L6-v2 model automatically downloaded on first startup and cached in models/ directory', async () => {
     const cacheDir = './tmp/models'
     const { Embedder } = await import('../../embedder/index.js')
-    const embedder = new Embedder({
-      modelPath: 'Xenova/all-MiniLM-L6-v2',
-      batchSize: 8,
-      cacheDir,
-    })
+    const embedder = new Embedder(
+      withTestDevice({
+        modelPath: 'Xenova/all-MiniLM-L6-v2',
+        batchSize: 8,
+        cacheDir,
+      })
+    )
 
     // Model initialization (automatic download on first run)
     await embedder.initialize()
@@ -51,11 +56,13 @@ describe('AC-003: Vector Embedding Generation', () => {
   // Validation: Generate embeddings for multiple text chunks with batch size 8
   it('Generate embeddings for multiple text chunks (e.g., 16) with batch size 8', async () => {
     const { Embedder } = await import('../../embedder/index.js')
-    const embedder = new Embedder({
-      modelPath: 'Xenova/all-MiniLM-L6-v2',
-      batchSize: 8,
-      cacheDir: './tmp/models',
-    })
+    const embedder = new Embedder(
+      withTestDevice({
+        modelPath: 'Xenova/all-MiniLM-L6-v2',
+        batchSize: 8,
+        cacheDir: './tmp/models',
+      })
+    )
 
     await embedder.initialize()
 
@@ -80,11 +87,13 @@ describe('AC-003: Vector Embedding Generation', () => {
   // Validation: Empty string embedding generation fails fast with error
   it('Empty string embedding generation throws EmbeddingError (fail-fast)', async () => {
     const { Embedder, EmbeddingError } = await import('../../embedder/index.js')
-    const embedder = new Embedder({
-      modelPath: 'Xenova/all-MiniLM-L6-v2',
-      batchSize: 8,
-      cacheDir: './tmp/models',
-    })
+    const embedder = new Embedder(
+      withTestDevice({
+        modelPath: 'Xenova/all-MiniLM-L6-v2',
+        batchSize: 8,
+        cacheDir: './tmp/models',
+      })
+    )
 
     await embedder.initialize()
 
@@ -97,11 +106,13 @@ describe('AC-003: Vector Embedding Generation', () => {
   // Validation: Embedding generation for text over 1000 characters completes normally
   it('Embedding generation for text over 1000 characters completes normally', async () => {
     const { Embedder } = await import('../../embedder/index.js')
-    const embedder = new Embedder({
-      modelPath: 'Xenova/all-MiniLM-L6-v2',
-      batchSize: 8,
-      cacheDir: './tmp/models',
-    })
+    const embedder = new Embedder(
+      withTestDevice({
+        modelPath: 'Xenova/all-MiniLM-L6-v2',
+        batchSize: 8,
+        cacheDir: './tmp/models',
+      })
+    )
 
     await embedder.initialize()
 

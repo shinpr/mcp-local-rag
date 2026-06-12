@@ -54,6 +54,7 @@ import { buildChunksAndEmbeddings } from '../../ingest/compute.js'
 import { DocumentParser } from '../../parser/index.js'
 import { RAGServer } from '../../server/index.js'
 import { type VectorChunk, VectorStore } from '../../vectordb/index.js'
+import { withTestDevice } from '../test-device.js'
 
 // ============================================
 // Test Configuration
@@ -188,13 +189,15 @@ describe('VLM PDF Enrichment - Phase 0 Equivalence (AC-008)', () => {
     chunkerSpy = vi.spyOn(SemanticChunker.prototype, 'chunkText')
 
     // Real RAGServer (constructs real DocumentParser/SemanticChunker/Embedder/VectorStore)
-    server = new RAGServer({
-      dbPath: serverDbPath,
-      modelName: 'Xenova/all-MiniLM-L6-v2',
-      cacheDir,
-      baseDir,
-      maxFileSize: 10 * 1024 * 1024,
-    })
+    server = new RAGServer(
+      withTestDevice({
+        dbPath: serverDbPath,
+        modelName: 'Xenova/all-MiniLM-L6-v2',
+        cacheDir,
+        baseDir,
+        maxFileSize: 10 * 1024 * 1024,
+      })
+    )
     await server.initialize()
 
     // Real CLI-side components (independent VectorStore at a separate dbPath
@@ -204,11 +207,13 @@ describe('VLM PDF Enrichment - Phase 0 Equivalence (AC-008)', () => {
       maxFileSize: 10 * 1024 * 1024,
     })
     cliChunker = new SemanticChunker({})
-    cliEmbedder = new Embedder({
-      modelPath: 'Xenova/all-MiniLM-L6-v2',
-      batchSize: 16,
-      cacheDir,
-    })
+    cliEmbedder = new Embedder(
+      withTestDevice({
+        modelPath: 'Xenova/all-MiniLM-L6-v2',
+        batchSize: 16,
+        cacheDir,
+      })
+    )
     cliVectorStore = new VectorStore({
       dbPath: cliDbPath,
       tableName: 'chunks',

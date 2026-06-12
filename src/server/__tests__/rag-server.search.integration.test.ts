@@ -4,6 +4,7 @@
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { withTestDevice } from '../../__tests__/test-device.js'
 import { RAGServer } from '../index.js'
 
 describe('AC-004: Vector Search', () => {
@@ -16,13 +17,15 @@ describe('AC-004: Vector Search', () => {
     mkdirSync(localTestDbPath, { recursive: true })
     mkdirSync(localTestDataDir, { recursive: true })
 
-    localRagServer = new RAGServer({
-      dbPath: localTestDbPath,
-      modelName: 'Xenova/all-MiniLM-L6-v2',
-      cacheDir: './tmp/models',
-      baseDir: localTestDataDir,
-      maxFileSize: 100 * 1024 * 1024,
-    })
+    localRagServer = new RAGServer(
+      withTestDevice({
+        dbPath: localTestDbPath,
+        modelName: 'Xenova/all-MiniLM-L6-v2',
+        cacheDir: './tmp/models',
+        baseDir: localTestDataDir,
+        maxFileSize: 100 * 1024 * 1024,
+      })
+    )
 
     await localRagServer.initialize()
 
@@ -109,13 +112,15 @@ describe('AC-004: Vector Search', () => {
     const emptyDbPath = resolve('./tmp/test-lancedb-empty')
     mkdirSync(emptyDbPath, { recursive: true })
 
-    const emptyServer = new RAGServer({
-      dbPath: emptyDbPath,
-      modelName: 'Xenova/all-MiniLM-L6-v2',
-      cacheDir: './tmp/models',
-      baseDir: localTestDataDir,
-      maxFileSize: 100 * 1024 * 1024,
-    })
+    const emptyServer = new RAGServer(
+      withTestDevice({
+        dbPath: emptyDbPath,
+        modelName: 'Xenova/all-MiniLM-L6-v2',
+        cacheDir: './tmp/models',
+        baseDir: localTestDataDir,
+        maxFileSize: 100 * 1024 * 1024,
+      })
+    )
 
     try {
       await emptyServer.initialize()

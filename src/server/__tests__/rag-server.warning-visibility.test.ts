@@ -15,6 +15,7 @@
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { withTestDevice } from '../../__tests__/test-device.js'
 import { BaseDirsConfigError } from '../../utils/base-dirs.js'
 import { RAGServer } from '../index.js'
 
@@ -65,14 +66,16 @@ describe('root-dependent tools fail fast on configError; non-root-dependent stay
     const configError = new BaseDirsConfigError(
       'BASE_DIRS must be a JSON array of non-empty path strings.'
     )
-    return new RAGServer({
-      dbPath: testDbPath,
-      modelName: 'Xenova/all-MiniLM-L6-v2',
-      cacheDir: './tmp/models',
-      baseDir: testDataDir, // degraded-mode fallback root
-      maxFileSize: 100 * 1024 * 1024,
-      configError,
-    })
+    return new RAGServer(
+      withTestDevice({
+        dbPath: testDbPath,
+        modelName: 'Xenova/all-MiniLM-L6-v2',
+        cacheDir: './tmp/models',
+        baseDir: testDataDir, // degraded-mode fallback root
+        maxFileSize: 100 * 1024 * 1024,
+        configError,
+      })
+    )
   }
 
   // Fail-fast set: tools whose work requires `baseDirs` to be valid.
@@ -136,14 +139,16 @@ describe('P3-T3: status callable with configError and exposes diagnostic', () =>
     const configError = new BaseDirsConfigError(
       'BASE_DIRS must be a JSON array of non-empty path strings.'
     )
-    server = new RAGServer({
-      dbPath: testDbPath,
-      modelName: 'Xenova/all-MiniLM-L6-v2',
-      cacheDir: './tmp/models',
-      baseDir: testDataDir,
-      maxFileSize: 100 * 1024 * 1024,
-      configError,
-    })
+    server = new RAGServer(
+      withTestDevice({
+        dbPath: testDbPath,
+        modelName: 'Xenova/all-MiniLM-L6-v2',
+        cacheDir: './tmp/models',
+        baseDir: testDataDir,
+        maxFileSize: 100 * 1024 * 1024,
+        configError,
+      })
+    )
     await server.initialize()
   }, 60000)
 
@@ -257,14 +262,16 @@ describe('P3-T3: warnings appear in every tool response when warnings exist', ()
         'ingest_file produces at least one chunk for the assertion below.'
     )
 
-    server = new RAGServer({
-      dbPath: testDbPath,
-      modelName: 'Xenova/all-MiniLM-L6-v2',
-      cacheDir: './tmp/models',
-      baseDir: testDataDir,
-      maxFileSize: 100 * 1024 * 1024,
-      configWarnings: [PRECEDENCE_WARNING, NESTED_PRUNED_WARNING],
-    })
+    server = new RAGServer(
+      withTestDevice({
+        dbPath: testDbPath,
+        modelName: 'Xenova/all-MiniLM-L6-v2',
+        cacheDir: './tmp/models',
+        baseDir: testDataDir,
+        maxFileSize: 100 * 1024 * 1024,
+        configWarnings: [PRECEDENCE_WARNING, NESTED_PRUNED_WARNING],
+      })
+    )
 
     await server.initialize()
   }, 60000)
@@ -366,14 +373,16 @@ describe('P3-T3: no spurious blocks when warnings absent', () => {
       'A small sample document used to confirm that responses contain only the primary content block when no warnings are configured.'
     )
 
-    server = new RAGServer({
-      dbPath: testDbPath,
-      modelName: 'Xenova/all-MiniLM-L6-v2',
-      cacheDir: './tmp/models',
-      baseDir: testDataDir,
-      maxFileSize: 100 * 1024 * 1024,
-      // No configWarnings, no configError.
-    })
+    server = new RAGServer(
+      withTestDevice({
+        dbPath: testDbPath,
+        modelName: 'Xenova/all-MiniLM-L6-v2',
+        cacheDir: './tmp/models',
+        baseDir: testDataDir,
+        maxFileSize: 100 * 1024 * 1024,
+        // No configWarnings, no configError.
+      })
+    )
 
     await server.initialize()
   }, 60000)

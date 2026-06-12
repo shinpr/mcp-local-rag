@@ -5,6 +5,7 @@
 import { mkdir, rm } from 'node:fs/promises'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { RAGServer } from '../../server/index.js'
+import { withTestDevice } from '../test-device.js'
 
 // ============================================
 // Test Configuration
@@ -29,7 +30,7 @@ describe('HTML Workflow E2E', () => {
   beforeAll(async () => {
     await mkdir(testDbPath, { recursive: true })
     await mkdir(testConfig.cacheDir, { recursive: true })
-    server = new RAGServer(testConfig)
+    server = new RAGServer(withTestDevice(testConfig))
     await server.initialize()
   }, 120000) // 2 minutes for model download
 
