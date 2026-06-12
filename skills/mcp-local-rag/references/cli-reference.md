@@ -163,12 +163,4 @@ Out-of-range indices are filtered; only existing chunks within the document are 
 
 ## Config Matching
 
-When operating against an existing database, the embedding configuration must match the values used at ingest time, because vectors are only comparable within one embedding space. These settings define that space:
-
-| Setting | Env Var | Default | Effect on the embedding space |
-|---------|---------|---------|-------------------------------|
-| Embedding model | `MODEL_NAME` (CLI `--model-name`) | `Xenova/all-MiniLM-L6-v2` | A different model produces vectors in a different space |
-| Quantization | `RAG_DTYPE` | `fp32` | A different dtype (e.g. `fp16`, `q8`) produces numerically different vectors |
-| Execution device | `RAG_DEVICE` | `cpu` | A different device can produce minor numeric differences even at the same dtype |
-
-Keep these identical between ingest and query. After changing any of them, re-ingest so stored and query vectors share one space; mixing values silently degrades search quality.
+When operating against an existing database, use the same embedding model it was ingested with — `--model-name` (env `MODEL_NAME`). A different model produces vectors in a different space, silently degrading search quality; if you change it, re-ingest.
