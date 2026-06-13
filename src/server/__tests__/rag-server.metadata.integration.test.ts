@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, rmSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { withTestDevice } from '../../__tests__/test-device.js'
+import { testModelCacheDir, withTestDevice } from '../../__tests__/test-device.js'
 import { generateMetaJsonPath, generateRawDataPath } from '../../utils/raw-data-utils.js'
 import { RAGServer } from '../index.js'
 
@@ -22,7 +22,7 @@ describe('File Title Extraction Pipeline', () => {
       withTestDevice({
         dbPath: localTestDbPath,
         modelName: 'Xenova/all-MiniLM-L6-v2',
-        cacheDir: './tmp/models',
+        cacheDir: testModelCacheDir(),
         baseDir: localTestDataDir,
         maxFileSize: 100 * 1024 * 1024,
       })
@@ -96,7 +96,7 @@ describe('Meta JSON Sidecar Pipeline', () => {
       withTestDevice({
         dbPath: localTestDbPath,
         modelName: 'Xenova/all-MiniLM-L6-v2',
-        cacheDir: './tmp/models',
+        cacheDir: testModelCacheDir(),
         baseDir: localTestDataDir,
         maxFileSize: 100 * 1024 * 1024,
       })

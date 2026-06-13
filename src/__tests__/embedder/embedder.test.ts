@@ -5,7 +5,7 @@
 
 import { describe, expect, it } from 'vitest'
 import { Embedder, EmbeddingError } from '../../embedder/index.js'
-import { getTestDevice } from '../test-device.js'
+import { getTestDevice, testModelCacheDir } from '../test-device.js'
 
 // embed()/embedBatch() resolve to numeric vectors; the `.catch` handlers below
 // capture the rejection, so the awaited value is typed `Error | <vector>`.
@@ -22,7 +22,7 @@ function makeEmbedder(device?: string): Embedder {
   return new Embedder({
     modelPath: 'Xenova/all-MiniLM-L6-v2',
     batchSize: 16,
-    cacheDir: './tmp/models',
+    cacheDir: testModelCacheDir(),
     device: device ?? getTestDevice(),
   })
 }

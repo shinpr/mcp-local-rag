@@ -15,7 +15,7 @@
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { withTestDevice } from '../../__tests__/test-device.js'
+import { testModelCacheDir, withTestDevice } from '../../__tests__/test-device.js'
 import { BaseDirsConfigError } from '../../utils/base-dirs.js'
 import { RAGServer } from '../index.js'
 
@@ -70,7 +70,7 @@ describe('root-dependent tools fail fast on configError; non-root-dependent stay
       withTestDevice({
         dbPath: testDbPath,
         modelName: 'Xenova/all-MiniLM-L6-v2',
-        cacheDir: './tmp/models',
+        cacheDir: testModelCacheDir(),
         baseDir: testDataDir, // degraded-mode fallback root
         maxFileSize: 100 * 1024 * 1024,
         configError,
@@ -143,7 +143,7 @@ describe('P3-T3: status callable with configError and exposes diagnostic', () =>
       withTestDevice({
         dbPath: testDbPath,
         modelName: 'Xenova/all-MiniLM-L6-v2',
-        cacheDir: './tmp/models',
+        cacheDir: testModelCacheDir(),
         baseDir: testDataDir,
         maxFileSize: 100 * 1024 * 1024,
         configError,
@@ -266,7 +266,7 @@ describe('P3-T3: warnings appear in every tool response when warnings exist', ()
       withTestDevice({
         dbPath: testDbPath,
         modelName: 'Xenova/all-MiniLM-L6-v2',
-        cacheDir: './tmp/models',
+        cacheDir: testModelCacheDir(),
         baseDir: testDataDir,
         maxFileSize: 100 * 1024 * 1024,
         configWarnings: [PRECEDENCE_WARNING, NESTED_PRUNED_WARNING],
@@ -377,7 +377,7 @@ describe('P3-T3: no spurious blocks when warnings absent', () => {
       withTestDevice({
         dbPath: testDbPath,
         modelName: 'Xenova/all-MiniLM-L6-v2',
-        cacheDir: './tmp/models',
+        cacheDir: testModelCacheDir(),
         baseDir: testDataDir,
         maxFileSize: 100 * 1024 * 1024,
         // No configWarnings, no configError.

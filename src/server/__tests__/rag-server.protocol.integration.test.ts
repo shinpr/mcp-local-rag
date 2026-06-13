@@ -4,7 +4,7 @@
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { withTestDevice } from '../../__tests__/test-device.js'
+import { testModelCacheDir, withTestDevice } from '../../__tests__/test-device.js'
 import { DatabaseError } from '../../vectordb/types.js'
 import { RAGServer } from '../index.js'
 
@@ -21,7 +21,7 @@ describe('AC-001: MCP Protocol Integration', () => {
       withTestDevice({
         dbPath: testDbPath,
         modelName: 'Xenova/all-MiniLM-L6-v2',
-        cacheDir: './tmp/models',
+        cacheDir: testModelCacheDir(),
         baseDir: testDataDir,
         maxFileSize: 100 * 1024 * 1024,
       })
@@ -79,7 +79,7 @@ describe('AC-005: Error Handling (Basic)', () => {
       withTestDevice({
         dbPath: testDbPath,
         modelName: 'Xenova/all-MiniLM-L6-v2',
-        cacheDir: './tmp/models',
+        cacheDir: testModelCacheDir(),
         baseDir: testDataDir,
         maxFileSize: 100 * 1024 * 1024,
       })
@@ -122,7 +122,7 @@ describe('AC-005: Error Handling (Basic)', () => {
       withTestDevice({
         dbPath: invalidDbPath,
         modelName: 'Xenova/all-MiniLM-L6-v2',
-        cacheDir: './tmp/models',
+        cacheDir: testModelCacheDir(),
         baseDir: testDataDir,
         maxFileSize: 100 * 1024 * 1024,
       })

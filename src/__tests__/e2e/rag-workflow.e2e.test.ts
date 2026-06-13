@@ -7,7 +7,7 @@ import { copyFileSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { RAGServer } from '../../server/index.js'
-import { withTestDevice } from '../test-device.js'
+import { testModelCacheDir, withTestDevice } from '../test-device.js'
 
 // ============================================
 // E2E Test: Complete RAG Workflow
@@ -32,7 +32,7 @@ describe('RAG MCP Server E2E Test', () => {
         withTestDevice({
           dbPath: testDbPath,
           modelName: 'Xenova/all-MiniLM-L6-v2',
-          cacheDir: './tmp/models',
+          cacheDir: testModelCacheDir(),
           baseDir: testDataDir,
           maxFileSize: 100 * 1024 * 1024,
         })
@@ -101,7 +101,7 @@ describe('RAG MCP Server E2E Test', () => {
         withTestDevice({
           dbPath: testDbPath,
           modelName: 'Xenova/all-MiniLM-L6-v2',
-          cacheDir: './tmp/models',
+          cacheDir: testModelCacheDir(),
           baseDir: testDataDir,
           maxFileSize: 100 * 1024 * 1024,
         })
@@ -153,7 +153,7 @@ describe('RAG MCP Server E2E Test', () => {
         withTestDevice({
           dbPath: testDbPath,
           modelName: 'Xenova/all-MiniLM-L6-v2',
-          cacheDir: './tmp/models',
+          cacheDir: testModelCacheDir(),
           baseDir: testDataDir,
           maxFileSize: 100 * 1024 * 1024,
         })

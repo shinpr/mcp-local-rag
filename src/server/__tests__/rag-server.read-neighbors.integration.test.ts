@@ -19,7 +19,7 @@ import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { ErrorCode } from '@modelcontextprotocol/sdk/types.js'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
-import { withTestDevice } from '../../__tests__/test-device.js'
+import { testModelCacheDir, withTestDevice } from '../../__tests__/test-device.js'
 import { looksLikeRawDataPath } from '../../utils/raw-data-utils.js'
 import type { VectorChunk, VectorStore } from '../../vectordb/index.js'
 import { RAGServer } from '../index.js'
@@ -108,7 +108,7 @@ describe('read_chunk_neighbors integration', () => {
       ragServer = createTestRagServer({
         dbPath: testDbPath,
         modelName: 'Xenova/all-MiniLM-L6-v2',
-        cacheDir: './tmp/models',
+        cacheDir: testModelCacheDir(),
         baseDir: testDataDir,
         maxFileSize: 100 * 1024 * 1024,
       })
@@ -203,7 +203,7 @@ describe('read_chunk_neighbors integration', () => {
       ragServer = createTestRagServer({
         dbPath: testDbPath,
         modelName: 'Xenova/all-MiniLM-L6-v2',
-        cacheDir: './tmp/models',
+        cacheDir: testModelCacheDir(),
         baseDir: testDataDir,
         maxFileSize: 100 * 1024 * 1024,
       })
@@ -300,7 +300,7 @@ describe('read_chunk_neighbors integration', () => {
       ragServer = createTestRagServer({
         dbPath: testDbPath,
         modelName: 'Xenova/all-MiniLM-L6-v2',
-        cacheDir: './tmp/models',
+        cacheDir: testModelCacheDir(),
         baseDir: testDataDir,
         maxFileSize: 100 * 1024 * 1024,
       })
@@ -391,7 +391,7 @@ describe('read_chunk_neighbors integration', () => {
       ragServer = createTestRagServer({
         dbPath: testDbPath,
         modelName: 'Xenova/all-MiniLM-L6-v2',
-        cacheDir: './tmp/models',
+        cacheDir: testModelCacheDir(),
         baseDir: testDataDir,
         maxFileSize: 100 * 1024 * 1024,
       })
@@ -491,7 +491,7 @@ describe('read_chunk_neighbors integration', () => {
       ragServer = createTestRagServer({
         dbPath: testDbPath,
         modelName: 'Xenova/all-MiniLM-L6-v2',
-        cacheDir: './tmp/models',
+        cacheDir: testModelCacheDir(),
         baseDir: testDataDir,
         maxFileSize: 100 * 1024 * 1024,
       })
@@ -579,7 +579,7 @@ describe('read_chunk_neighbors integration', () => {
       ragServer = createTestRagServer({
         dbPath: testDbPath,
         modelName: 'Xenova/all-MiniLM-L6-v2',
-        cacheDir: './tmp/models',
+        cacheDir: testModelCacheDir(),
         baseDir: testDataDir,
         maxFileSize: 100 * 1024 * 1024,
       })
@@ -708,7 +708,7 @@ describe('read_chunk_neighbors integration', () => {
       ragServer = createTestRagServer({
         dbPath: testDbPath,
         modelName: 'Xenova/all-MiniLM-L6-v2',
-        cacheDir: './tmp/models',
+        cacheDir: testModelCacheDir(),
         baseDir: testDataDir,
         maxFileSize: 100 * 1024 * 1024,
       })
@@ -817,7 +817,7 @@ describe('read_chunk_neighbors integration', () => {
       ragServer = createTestRagServer({
         dbPath: testDbPath,
         modelName: 'Xenova/all-MiniLM-L6-v2',
-        cacheDir: './tmp/models',
+        cacheDir: testModelCacheDir(),
         baseDir: testDataDir,
         maxFileSize: 100 * 1024 * 1024,
       })
@@ -888,7 +888,7 @@ describe('read_chunk_neighbors integration', () => {
       ragServer = createTestRagServer({
         dbPath: testDbPath,
         modelName: 'Xenova/all-MiniLM-L6-v2',
-        cacheDir: './tmp/models',
+        cacheDir: testModelCacheDir(),
         baseDir: testDataDir,
         maxFileSize: 100 * 1024 * 1024,
       })
@@ -957,7 +957,7 @@ describe('read_chunk_neighbors integration', () => {
       ragServer = createTestRagServer({
         dbPath: testDbPath,
         modelName: 'Xenova/all-MiniLM-L6-v2',
-        cacheDir: './tmp/models',
+        cacheDir: testModelCacheDir(),
         baseDir: testDataDir,
         maxFileSize: 100 * 1024 * 1024,
       })
@@ -1032,7 +1032,7 @@ describe('read_chunk_neighbors integration', () => {
       ragServer = createTestRagServer({
         dbPath: testDbPath,
         modelName: 'Xenova/all-MiniLM-L6-v2',
-        cacheDir: './tmp/models',
+        cacheDir: testModelCacheDir(),
         baseDir: testDataDir,
         maxFileSize: 100 * 1024 * 1024,
       })

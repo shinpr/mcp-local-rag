@@ -4,7 +4,7 @@
 import { existsSync, readdirSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { withTestDevice } from '../../__tests__/test-device.js'
+import { testModelCacheDir, withTestDevice } from '../../__tests__/test-device.js'
 
 describe('AC-003: Vector Embedding Generation', () => {
   // AC interpretation: [Technical requirement] Text chunks are converted to 384-dimensional vectors
@@ -15,7 +15,7 @@ describe('AC-003: Vector Embedding Generation', () => {
       withTestDevice({
         modelPath: 'Xenova/all-MiniLM-L6-v2',
         batchSize: 8,
-        cacheDir: './tmp/models',
+        cacheDir: testModelCacheDir(),
       })
     )
 
@@ -60,7 +60,7 @@ describe('AC-003: Vector Embedding Generation', () => {
       withTestDevice({
         modelPath: 'Xenova/all-MiniLM-L6-v2',
         batchSize: 8,
-        cacheDir: './tmp/models',
+        cacheDir: testModelCacheDir(),
       })
     )
 
@@ -91,7 +91,7 @@ describe('AC-003: Vector Embedding Generation', () => {
       withTestDevice({
         modelPath: 'Xenova/all-MiniLM-L6-v2',
         batchSize: 8,
-        cacheDir: './tmp/models',
+        cacheDir: testModelCacheDir(),
       })
     )
 
@@ -110,7 +110,7 @@ describe('AC-003: Vector Embedding Generation', () => {
       withTestDevice({
         modelPath: 'Xenova/all-MiniLM-L6-v2',
         batchSize: 8,
-        cacheDir: './tmp/models',
+        cacheDir: testModelCacheDir(),
       })
     )
 

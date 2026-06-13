@@ -31,7 +31,7 @@
 import { mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { withTestDevice } from '../../__tests__/test-device.js'
+import { testModelCacheDir, withTestDevice } from '../../__tests__/test-device.js'
 import { resolveServerConfig } from '../../server-main.js'
 import { BaseDirsConfigError, displayPath, resolveBaseDirs } from '../../utils/base-dirs.js'
 import { RAGServer } from '../index.js'
@@ -117,7 +117,7 @@ describe('AC-008/AC-011: multi-root ingest -> list -> query -> delete workflow',
   const rootA = resolve(testBase, 'rootA')
   const rootB = resolve(testBase, 'rootB')
   const dbPath = resolve(testBase, 'lancedb')
-  const cacheDir = resolve(testBase, 'cache')
+  const cacheDir = testModelCacheDir()
 
   let server: RAGServer
   let fileA: string
@@ -232,7 +232,7 @@ describe('AC-009: ingest_data behavior unchanged in multi-root mode (warnings ad
   const rootA = resolve(testBase, 'rootA')
   const rootB = resolve(testBase, 'rootB')
   const dbPath = resolve(testBase, 'lancedb')
-  const cacheDir = resolve(testBase, 'cache')
+  const cacheDir = testModelCacheDir()
 
   let server: RAGServer
 
@@ -342,7 +342,7 @@ describe('AC-003/AC-013: real resolveBaseDirs warnings surface in MCP responses'
   const nestedChild = resolve(rootA, 'nested-child')
   const legacyBase = resolve(testBase, 'legacy-base-dir')
   const dbPath = resolve(testBase, 'lancedb')
-  const cacheDir = resolve(testBase, 'cache')
+  const cacheDir = testModelCacheDir()
 
   beforeAll(() => {
     mkdirSync(rootA, { recursive: true })
@@ -475,7 +475,7 @@ describe('post-launch finding #10: list_files per-root error tolerance', () => {
   const rootA = resolve(testBase, 'rootA')
   const rootB = resolve(testBase, 'rootB')
   const dbPath = resolve(testBase, 'lancedb')
-  const cacheDir = resolve(testBase, 'cache')
+  const cacheDir = testModelCacheDir()
 
   beforeAll(() => {
     mkdirSync(rootA, { recursive: true })
@@ -551,7 +551,7 @@ describe('post-launch finding #10: list_files per-root error tolerance', () => {
 describe('post-launch findings #3 + #4: server-main wiring rejects sensitive roots and never falls back to cwd', () => {
   const testBase = resolve('./tmp/test-server-main-policy')
   const dbPath = resolve(testBase, 'lancedb')
-  const cacheDir = resolve(testBase, 'cache')
+  const cacheDir = testModelCacheDir()
 
   beforeAll(() => {
     mkdirSync(dbPath, { recursive: true })
@@ -637,7 +637,7 @@ describe('post-launch findings #3 + #4: server-main wiring rejects sensitive roo
 describe('AC-010: invalid BASE_DIRS end-to-end (real resolveBaseDirs)', () => {
   const testBase = resolve('./tmp/test-multi-root-invalid')
   const dbPath = resolve(testBase, 'lancedb')
-  const cacheDir = resolve(testBase, 'cache')
+  const cacheDir = testModelCacheDir()
 
   beforeAll(() => {
     mkdirSync(dbPath, { recursive: true })

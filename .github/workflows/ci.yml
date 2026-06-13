@@ -151,7 +151,7 @@ jobs:
       run: pnpm install --frozen-lockfile
 
     - name: Install Vulkan SDK and Software Rasterizer
-      uses: jakoch/install-vulkan-sdk-action@3c53c378c9bfbb2ea122a1cc164a837d4004c871 # v1.5.2
+      uses: jakoch/install-vulkan-sdk-action@b394a1abed9cb019d8e637eeadac93d73e0853da # v1.5.5
       with:
         install_runtime: true
         install_swiftshader: ${{ runner.os == 'Windows' }}
@@ -211,6 +211,10 @@ jobs:
       run: pnpm run build
 
     - name: Smoke-test the published package in isolation
+      # The CPU native binary is bundled; skip onnxruntime-node's postinstall,
+      # which otherwise downloads CUDA EP binaries from NuGet (flaky on CI).
+      env:
+        ONNXRUNTIME_NODE_INSTALL: skip
       run: |
         pnpm pack --pack-destination "${RUNNER_TEMP}"
         SMOKE_DIR="$(mktemp -d)"

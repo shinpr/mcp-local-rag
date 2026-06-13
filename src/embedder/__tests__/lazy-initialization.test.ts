@@ -2,7 +2,7 @@
 // TDD Red phase: These tests should fail initially
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { getTestDevice } from '../../__tests__/test-device.js'
+import { getTestDevice, testModelCacheDir } from '../../__tests__/test-device.js'
 import type { EmbedderConfig } from '../index.js'
 import { Embedder, EmbeddingError } from '../index.js'
 
@@ -13,7 +13,7 @@ describe('Embedder - Lazy Initialization', () => {
     testConfig = {
       modelPath: 'Xenova/all-MiniLM-L6-v2',
       batchSize: 8,
-      cacheDir: './tmp/models',
+      cacheDir: testModelCacheDir(),
       device: getTestDevice(),
     }
   })
