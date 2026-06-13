@@ -35,7 +35,7 @@
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
-import { withTestDevice } from '../../__tests__/test-device.js'
+import { testModelCacheDir, withTestDevice } from '../../__tests__/test-device.js'
 
 // ============================================
 // Mocks (hoisted so the doMock factories can reference them)
@@ -159,7 +159,7 @@ describe('AC-009: dtype×PDF protocol regression (mock-based, no real model/Hub/
       withTestDevice({
         dbPath: testDbPath,
         modelName: modelPath,
-        cacheDir: './tmp/models',
+        cacheDir: testModelCacheDir(),
         baseDir: testDataDir,
         maxFileSize: 100 * 1024 * 1024,
         // Explicit dtype gates the enrichment path (TD-5): only an explicitly-set

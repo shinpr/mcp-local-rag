@@ -9,7 +9,7 @@ import { resolve } from 'node:path'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DocumentParser, ValidationError } from '../../parser/index.js'
 import { RAGServer } from '../../server/index.js'
-import { withTestDevice } from '../test-device.js'
+import { testModelCacheDir, withTestDevice } from '../test-device.js'
 
 // ============================================
 // Test Configuration
@@ -18,7 +18,7 @@ import { withTestDevice } from '../test-device.js'
 const testConfig = {
   dbPath: './tmp/test-security-db',
   modelName: 'Xenova/all-MiniLM-L6-v2',
-  cacheDir: './tmp/models',
+  cacheDir: testModelCacheDir(),
   baseDir: resolve('./'), // Project root (accessible to both tests/fixtures and tmp)
   maxFileSize: 100 * 1024 * 1024, // 100MB
 }

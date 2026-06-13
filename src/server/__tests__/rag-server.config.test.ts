@@ -11,6 +11,7 @@
 import { mkdirSync, rmSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { testModelCacheDir } from '../../__tests__/test-device.js'
 import { BaseDirsConfigError } from '../../utils/base-dirs.js'
 import { RAGServer } from '../index.js'
 
@@ -34,7 +35,7 @@ describe('RAGServerConfig degraded-mode construction guards (P3-T1)', () => {
         new RAGServer({
           dbPath: testDbPath,
           modelName: 'Xenova/all-MiniLM-L6-v2',
-          cacheDir: './tmp/models',
+          cacheDir: testModelCacheDir(),
           baseDirs: [],
           maxFileSize: 100 * 1024 * 1024,
         })
@@ -50,7 +51,7 @@ describe('RAGServerConfig degraded-mode construction guards (P3-T1)', () => {
     const server = new RAGServer({
       dbPath: testDbPath,
       modelName: 'Xenova/all-MiniLM-L6-v2',
-      cacheDir: './tmp/models',
+      cacheDir: testModelCacheDir(),
       baseDirs: [],
       maxFileSize: 100 * 1024 * 1024,
       configError,

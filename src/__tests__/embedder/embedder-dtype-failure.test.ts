@@ -18,6 +18,7 @@
 // imported dynamically afterwards.
 
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
+import { testModelCacheDir } from '../test-device.js'
 
 const mocks = vi.hoisted(() => {
   return {
@@ -47,7 +48,7 @@ function makeEmbedder(dtype?: string) {
   return new Embedder({
     modelPath: MODEL_PATH,
     batchSize: 16,
-    cacheDir: './tmp/models',
+    cacheDir: testModelCacheDir(),
     ...(dtype !== undefined ? { dtype } : {}),
   })
 }

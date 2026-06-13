@@ -15,7 +15,7 @@ import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js'
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
-import { withTestDevice } from '../../__tests__/test-device.js'
+import { testModelCacheDir, withTestDevice } from '../../__tests__/test-device.js'
 import type { Embedder } from '../../embedder/index.js'
 import { EmbeddingError } from '../../embedder/index.js'
 import { BaseDirsConfigError } from '../../utils/base-dirs.js'
@@ -69,7 +69,7 @@ describe('Central dispatcher error mapping (AC-004/005/006/008)', () => {
       withTestDevice({
         dbPath: testDbPath,
         modelName: 'Xenova/all-MiniLM-L6-v2',
-        cacheDir: './tmp/models',
+        cacheDir: testModelCacheDir(),
         baseDir: testDataDir,
         maxFileSize: 100 * 1024 * 1024,
       })
@@ -289,7 +289,7 @@ describe('Handler identity preservation + local rollback (AC-004)', () => {
       withTestDevice({
         dbPath: testDbPath,
         modelName: 'Xenova/all-MiniLM-L6-v2',
-        cacheDir: './tmp/models',
+        cacheDir: testModelCacheDir(),
         baseDir: testDataDir,
         maxFileSize: 100 * 1024 * 1024,
       })
@@ -366,7 +366,7 @@ describe('Config-gate central mapping + status diagnostic block (AC-007)', () =>
       withTestDevice({
         dbPath: testDbPath,
         modelName: 'Xenova/all-MiniLM-L6-v2',
-        cacheDir: './tmp/models',
+        cacheDir: testModelCacheDir(),
         baseDirs: [],
         maxFileSize: 100 * 1024 * 1024,
         configError,

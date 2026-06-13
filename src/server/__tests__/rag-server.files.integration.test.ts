@@ -4,7 +4,7 @@
 import { mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { withTestDevice } from '../../__tests__/test-device.js'
+import { testModelCacheDir, withTestDevice } from '../../__tests__/test-device.js'
 import { RAGServer } from '../index.js'
 
 describe('AC-006: Additional Format Support (Phase 2)', () => {
@@ -22,7 +22,7 @@ describe('AC-006: Additional Format Support (Phase 2)', () => {
       withTestDevice({
         dbPath: localTestDbPath,
         modelName: 'Xenova/all-MiniLM-L6-v2',
-        cacheDir: localCacheDir,
+        cacheDir: testModelCacheDir(localCacheDir),
         baseDir: localTestDataDir,
         maxFileSize: 100 * 1024 * 1024,
       })
@@ -97,7 +97,7 @@ describe('AC-007: File Management', () => {
       withTestDevice({
         dbPath: localTestDbPath,
         modelName: 'Xenova/all-MiniLM-L6-v2',
-        cacheDir: localCacheDir,
+        cacheDir: testModelCacheDir(localCacheDir),
         baseDir: localTestDataDir,
         maxFileSize: 100 * 1024 * 1024,
       })
@@ -235,7 +235,7 @@ describe('AC-007: File Management', () => {
         withTestDevice({
           dbPath: excludeTestDb,
           modelName: 'Xenova/all-MiniLM-L6-v2',
-          cacheDir: excludeTestCache,
+          cacheDir: testModelCacheDir(excludeTestCache),
           baseDir: excludeTestBase,
           maxFileSize: 100 * 1024 * 1024,
         })
@@ -305,7 +305,7 @@ describe('AC-007: File Management', () => {
           withTestDevice({
             dbPath: siblingDb,
             modelName: 'Xenova/all-MiniLM-L6-v2',
-            cacheDir: siblingCache,
+            cacheDir: testModelCacheDir(siblingCache),
             baseDir: siblingData,
             maxFileSize: 100 * 1024 * 1024,
           })
@@ -365,7 +365,7 @@ describe('AC-008: list_files multi-root contract', () => {
       withTestDevice({
         dbPath: multiDbPath,
         modelName: 'Xenova/all-MiniLM-L6-v2',
-        cacheDir: multiCacheDir,
+        cacheDir: testModelCacheDir(multiCacheDir),
         baseDirs: [rootA, rootB],
         maxFileSize: 100 * 1024 * 1024,
       })
@@ -511,7 +511,7 @@ describe('AC-008: list_files single-root regression (legacy shape preserved)', (
       withTestDevice({
         dbPath: singleDb,
         modelName: 'Xenova/all-MiniLM-L6-v2',
-        cacheDir: singleCache,
+        cacheDir: testModelCacheDir(singleCache),
         baseDir: singleData,
         maxFileSize: 100 * 1024 * 1024,
       })
