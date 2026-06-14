@@ -1,6 +1,6 @@
 // RAGServer implementation with MCP tools
 
-import { readFile, unlink } from 'node:fs/promises'
+import { access, readFile, unlink } from 'node:fs/promises'
 import { resolve, sep } from 'node:path'
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
@@ -46,6 +46,7 @@ import { toolDefinitions } from './tool-definitions.js'
 import { parseIngestDataInput, parseQueryDocumentsInput } from './tool-input.js'
 import type {
   DeleteFileInput,
+  DeleteFileResult,
   FileEntry,
   IngestDataInput,
   IngestFileInput,
@@ -217,6 +218,15 @@ export class RAGServer {
    */
   private withWarnings(content: RagContentBlock[]): RagContentBlock[] {
     return appendConfigWarnings(content, this.configWarnings)
+  }
+
+  private async pathExists(path: string): Promise<boolean> {
+    try {
+      await access(path)
+      return true
+    } catch {
+      return false
+    }
   }
 
   /**
@@ -775,11 +785,16 @@ export class RAGServer {
     }
 
     // Delete chunks from vector database
-    await this.vectorStore.deleteChunks(targetPath)
-    await this.vectorStore.optimize()
+    const removedChunks = await this.vectorStore.deleteChunks(targetPath)
+
+    let rawDataExisted = false
+    let metaExisted = false
 
     // Also delete physical raw-data file if applicable.
     if (isPathInRawDataDirLexical(targetPath, this.dbPath)) {
+      rawDataExisted = await this.pathExists(targetPath)
+      metaExisted = await this.pathExists(generateMetaJsonPath(targetPath))
+
       try {
         await unlink(targetPath)
         console.error(`Deleted raw-data file: ${targetPath}`)
@@ -794,10 +809,13 @@ export class RAGServer {
       }
     }
 
-    // Return success message
-    const result = {
+    await this.vectorStore.optimize()
+
+    const result: DeleteFileResult = {
       filePath: targetPath,
       deleted: true,
+      removedChunks,
+      existed: removedChunks > 0 || rawDataExisted || metaExisted,
       timestamp: new Date().toISOString(),
     }
 

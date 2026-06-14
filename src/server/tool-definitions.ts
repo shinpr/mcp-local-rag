@@ -92,7 +92,7 @@ export const toolDefinitions: Tool[] = [
   {
     name: 'delete_file',
     description:
-      'Delete a previously ingested file or data from the vector database. Use filePath for files ingested via ingest_file, or source for data ingested via ingest_data. Either filePath or source must be provided.',
+      'Delete a previously ingested file or data from the vector database. Use filePath for files ingested via ingest_file, or source for data ingested via ingest_data. Either filePath or source must be provided. Returns deleted (operation succeeded), removedChunks, and existed (whether anything was actually present).',
     inputSchema: {
       type: 'object',
       properties: {

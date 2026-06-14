@@ -111,7 +111,7 @@ describe('CLI delete', () => {
     stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
     // Default: VectorStore methods succeed
     mocks.initialize.mockResolvedValue(undefined)
-    mocks.deleteChunks.mockResolvedValue(undefined)
+    mocks.deleteChunks.mockResolvedValue(0)
     mocks.optimize.mockResolvedValue(undefined)
     mocks.unlink.mockResolvedValue(undefined)
   })
@@ -196,6 +196,8 @@ describe('CLI delete', () => {
     const parsed = JSON.parse(writtenData)
     expect(parsed.filePath).toBe(resolve('/path/to/file.md'))
     expect(parsed.deleted).toBe(true)
+    expect(parsed.removedChunks).toBe(0)
+    expect(parsed.existed).toBe(false)
     expect(parsed.timestamp).toBeDefined()
   })
 
@@ -221,6 +223,8 @@ describe('CLI delete', () => {
     const writtenData = stdoutSpy.mock.calls[0]![0] as string
     const parsed = JSON.parse(writtenData)
     expect(parsed.deleted).toBe(true)
+    expect(parsed.removedChunks).toBe(0)
+    expect(parsed.existed).toBe(false)
     expect(parsed.filePath).toContain('raw-data')
   })
 
@@ -263,7 +267,7 @@ describe('CLI delete', () => {
   // --------------------------------------------
   it('should exit with code 0 when target does not exist (idempotent)', async () => {
     // deleteChunks is a no-op for non-existent paths (no error)
-    mocks.deleteChunks.mockResolvedValue(undefined)
+    mocks.deleteChunks.mockResolvedValue(0)
     // unlink fails with ENOENT for non-existent files
     const enoentError = Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
     mocks.unlink.mockRejectedValue(enoentError)
@@ -279,10 +283,12 @@ describe('CLI delete', () => {
     const writtenData = stdoutSpy.mock.calls[0]![0] as string
     const parsed = JSON.parse(writtenData)
     expect(parsed.deleted).toBe(true)
+    expect(parsed.removedChunks).toBe(0)
+    expect(parsed.existed).toBe(false)
   })
 
   it('attempts .meta.json cleanup even when the .md file is already missing', async () => {
-    mocks.deleteChunks.mockResolvedValue(undefined)
+    mocks.deleteChunks.mockResolvedValue(0)
     const enoentError = Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
     mocks.unlink.mockRejectedValue(enoentError)
 

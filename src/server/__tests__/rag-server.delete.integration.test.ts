@@ -92,9 +92,23 @@ describe('AC-010: File Deletion', () => {
   it('Deleting non-existent file completes without error (idempotent)', async () => {
     const nonExistentFile = resolve(localTestDataDir, 'non-existent.txt')
 
-    await expect(
-      localRagServer.handleDeleteFile({ filePath: nonExistentFile })
-    ).resolves.toBeDefined()
+    const result = await localRagServer.handleDeleteFile({ filePath: nonExistentFile })
+    const parsed = JSON.parse(result.content[0].text)
+    expect(parsed.deleted).toBe(true)
+    expect(parsed.removedChunks).toBe(0)
+    expect(parsed.existed).toBe(false)
+  })
+
+  it('Deleting ingested file reports removedChunks and existed', async () => {
+    const testFile = resolve(localTestDataDir, 'test-delete-report.txt')
+    writeFileSync(testFile, 'Report delete outcome. '.repeat(50))
+    await localRagServer.handleIngestFile({ filePath: testFile })
+
+    const result = await localRagServer.handleDeleteFile({ filePath: testFile })
+    const parsed = JSON.parse(result.content[0].text)
+    expect(parsed.deleted).toBe(true)
+    expect(parsed.removedChunks).toBeGreaterThan(0)
+    expect(parsed.existed).toBe(true)
   })
 
   // AC interpretation: [Security] Relative path deletion is rejected (S-002)

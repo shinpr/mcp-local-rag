@@ -80,24 +80,56 @@ export class VectorStore {
   }
 
   /**
-   * Delete all chunks for specified file path
+   * Count stored chunks for a single file path.
+   *
+   * Lazy-table null returns 0 (mirrors deleteChunks).
    *
    * @param filePath - File path (absolute)
    */
-  async deleteChunks(filePath: string): Promise<void> {
+  async countChunksForFile(filePath: string): Promise<number> {
     if (!this.table) {
-      // If table doesn't exist, no deletion targets, return normally
-      console.error('VectorStore: Skipping deletion as table does not exist')
-      return
+      return 0
     }
 
     try {
+      const escapedFilePath = filePath.replace(/'/g, "''")
+      const raw = await this.table
+        .query()
+        .where(`\`filePath\` = '${escapedFilePath}'`)
+        .select(['filePath'])
+        .toArray()
+      return raw.length
+    } catch (error) {
+      throw new DatabaseError(`Failed to count chunks for file: ${filePath}`, error as Error)
+    }
+  }
+
+  /**
+   * Delete all chunks for specified file path
+   *
+   * @param filePath - File path (absolute)
+   * @returns Number of chunks removed (0 when nothing matched)
+   */
+  async deleteChunks(filePath: string): Promise<number> {
+    if (!this.table) {
+      // If table doesn't exist, no deletion targets, return normally
+      console.error('VectorStore: Skipping deletion as table does not exist')
+      return 0
+    }
+
+    try {
+      const removedChunks = await this.countChunksForFile(filePath)
+      if (removedChunks === 0) {
+        return 0
+      }
+
       // Use LanceDB delete API to remove records matching filePath.
       // Escape single quotes to prevent SQL injection.
       // Note: Field names are case-sensitive, use backticks for camelCase fields.
       const escapedFilePath = filePath.replace(/'/g, "''")
       await this.table.delete(`\`filePath\` = '${escapedFilePath}'`)
-      console.error(`VectorStore: Deleted chunks for file "${filePath}"`)
+      console.error(`VectorStore: Deleted ${removedChunks} chunks for file "${filePath}"`)
+      return removedChunks
     } catch (error) {
       // LanceDB's delete is a no-op (resolves normally) when no rows match the
       // predicate, so reaching this catch means a genuine failure — a malformed
