@@ -92,7 +92,8 @@ describe('VectorStore', () => {
         createTestChunk('drop body two', '/docs/drop.txt', 1),
       ])
 
-      await store.deleteChunks('/docs/drop.txt')
+      const removed = await store.deleteChunks('/docs/drop.txt')
+      expect(removed).toBe(2)
 
       const paths = (await store.listFiles()).map((f) => f.filePath)
       expect(paths).toContain('/docs/keep.txt')
@@ -104,14 +105,32 @@ describe('VectorStore', () => {
       await store.initialize()
       await store.insertChunks([createTestChunk('only body', '/docs/keep.txt', 0)])
 
-      await expect(store.deleteChunks('/docs/never-ingested.txt')).resolves.toBeUndefined()
+      await expect(store.deleteChunks('/docs/never-ingested.txt')).resolves.toBe(0)
       expect((await store.listFiles()).map((f) => f.filePath)).toEqual(['/docs/keep.txt'])
     })
 
-    it('returns normally when the table does not exist yet', async () => {
+    it('returns 0 when the table does not exist yet', async () => {
       const store = new VectorStore({ dbPath: testDbPath, tableName: 'chunks' })
       await store.initialize()
-      await expect(store.deleteChunks('/docs/anything.txt')).resolves.toBeUndefined()
+      await expect(store.deleteChunks('/docs/anything.txt')).resolves.toBe(0)
+    })
+
+    it('countChunksForFile returns the number of stored chunks', async () => {
+      const store = new VectorStore({ dbPath: testDbPath, tableName: 'chunks' })
+      await store.initialize()
+      await store.insertChunks([
+        createTestChunk('one', '/docs/count.txt', 0),
+        createTestChunk('two', '/docs/count.txt', 1),
+      ])
+
+      await expect(store.countChunksForFile('/docs/count.txt')).resolves.toBe(2)
+      await expect(store.countChunksForFile('/docs/missing.txt')).resolves.toBe(0)
+    })
+
+    it('countChunksForFile returns 0 on an empty table', async () => {
+      const store = new VectorStore({ dbPath: testDbPath, tableName: 'chunks' })
+      await store.initialize()
+      await expect(store.countChunksForFile('/docs/anything.txt')).resolves.toBe(0)
     })
 
     it('escapes single quotes in the file path (SQL-injection-safe)', async () => {

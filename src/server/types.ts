@@ -140,6 +140,22 @@ export interface DeleteFileInput {
 }
 
 /**
+ * delete_file tool output
+ */
+export interface DeleteFileResult {
+  /** Resolved file path used for the delete operation */
+  filePath: string
+  /** True when the delete operation completed (idempotent; not "something was removed") */
+  deleted: true
+  /** Number of vector chunks removed from the database */
+  removedChunks: number
+  /** True when ingested chunks and/or raw-data artifacts existed before delete */
+  existed: boolean
+  /** Timestamp */
+  timestamp: string
+}
+
+/**
  * ingest_file tool output
  */
 export interface IngestResult {
