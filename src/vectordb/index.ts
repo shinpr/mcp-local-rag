@@ -312,7 +312,34 @@ export class VectorStore {
     }
 
     const cleanupThreshold = new Date(Date.now() - FTS_CLEANUP_THRESHOLD_MS)
-    await this.table.optimize({ cleanupOlderThan: cleanupThreshold })
+    try {
+      await this.table.optimize({ cleanupOlderThan: cleanupThreshold })
+    } catch (error) {
+      // lance-index Rust panics (e.g. inverted index out-of-bounds in
+      // lance-index-7.0.0) surface as GenericFailure. Recover by dropping
+      // the corrupted FTS index and rebuilding from scratch.
+      if ((error as { code?: string }).code === 'GenericFailure') {
+        console.error(
+          'VectorStore: FTS optimize panicked (lance-index bug) — dropping and rebuilding FTS index'
+        )
+        this.ftsEnabled = false
+        try {
+          const indices = await this.table.listIndices()
+          for (const idx of indices.filter((i: { indexType: string }) => i.indexType === 'FTS')) {
+            await this.table.dropIndex(idx.name)
+            console.error(`VectorStore: Dropped corrupted FTS index "${idx.name}"`)
+          }
+          await this.ensureFtsIndex()
+        } catch (rebuildError) {
+          console.error(
+            'VectorStore: FTS index rebuild failed — falling back to vector-only search',
+            rebuildError
+          )
+        }
+      } else {
+        throw new DatabaseError('Failed to optimize', error as Error)
+      }
+    }
   }
 
   /**
