@@ -21,6 +21,7 @@ services:
 
   # Backend API server
   # Builds DATABASE_URL from DB_* env vars in code — no hardcoded URL needed here.
+  # Container paths and bind address are set below so .env can stay tuned for local dev.
   api:
     build:
       context: .
@@ -28,6 +29,11 @@ services:
     container_name: mcp-rag-api
     restart: unless-stopped
     env_file: .env
+    environment:
+      API_HOST: 0.0.0.0
+      DB_PATH: /app/lancedb
+      CACHE_DIR: /app/models
+      UPLOAD_DIR: /app/uploads
     volumes:
       - lancedb_data:/app/lancedb
       - model_cache:/app/models

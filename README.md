@@ -4,7 +4,7 @@
 
 # MCP Local RAG
 
-[![GitHub stars](https://img.shields.io/github/stars/shinpr/mcp-local-rag?style=social)](https://github.com/shinpr/mcp-local-rag)
+[![GitHub stars](https://img.shields.io/github/stars/pradeepgudipati/mcp-local-rag-web?style=social)](https://github.com/pradeepgudipati/mcp-local-rag-web)
 [![npm version](https://img.shields.io/npm/v/mcp-local-rag.svg)](https://www.npmjs.com/package/mcp-local-rag)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![TypeScript](https://img.shields.io/badge/TypeScript-6.0-blue.svg?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
@@ -214,8 +214,8 @@ npx mcp-local-rag --help
 ### From Source
 
 ```bash
-git clone https://github.com/shinpr/mcp-local-rag.git
-cd mcp-local-rag
+git clone https://github.com/pradeepgudipati/mcp-local-rag-web.git
+cd mcp-local-rag-web
 pnpm install
 pnpm build
 ```
@@ -753,30 +753,101 @@ Results display the filename, chunk index, a **percentage match** score, the con
 
 ## Docker Deployment
 
-Run the full stack (PostgreSQL + API + Web UI) with Docker Compose:
+Run the API and Web UI with Docker Compose. PostgreSQL is optional — use the bundled container (`--profile local-db`) or point at an existing database.
 
-### Quick Start
+### External database (mini-pc)
+
+Use this when PostgreSQL already runs on your LAN (for example at `192.168.50.105:5432`). **Do not** pass `--profile local-db`.
+
+```bash
+# On the mini-pc
+git clone https://github.com/pradeepgudipati/mcp-local-rag-web.git
+cd mcp-local-rag-web
+
+cp .env.example .env
+# Edit .env — set DB_HOST to your Postgres host (not localhost or postgres)
+
+docker compose up -d --build
+```
+
+**Required `.env` values for external Postgres:**
+
+| Variable | Example | Notes |
+|----------|---------|-------|
+| `DB_HOST` | `192.168.50.105` | LAN IP or hostname of Postgres — **not** `localhost` or `postgres` |
+| `DB_PORT` | `5432` | Postgres port |
+| `DB_USER` | `mcp_local_rag_user` | Must exist on the external server |
+| `DB_PASSWORD` | *(your password)* | Must match the external user |
+| `DB_NAME` | `mcp_local_rag_db` | Database must exist on the external server |
+| `JWT_SECRET` | *(random string)* | Required for auth |
+| `API_PORT` | `3939` | Host port mapped to the API container |
+| `WEB_PORT` | `80` | Host port mapped to the Web UI |
+
+`API_HOST`, `DB_PATH`, `CACHE_DIR`, and `UPLOAD_DIR` are overridden inside the API container by `docker-compose.yml` — you do not need to change them for Docker.
+
+**Verify connectivity** (optional, from the mini-pc after `docker compose up`):
+
+```bash
+# API health (does not require DB to be up first — check logs if this fails)
+curl -s http://localhost:3939/health
+
+# Direct Postgres check from the API image (uses postgres.js, same as the app)
+docker compose run --rm api node -e "
+const postgres = require('postgres');
+const sql = postgres({
+  host: process.env.DB_HOST,
+  port: Number(process.env.DB_PORT),
+  username: process.env.DB_USER,
+  password: process.env.DB_PASSWORD,
+  database: process.env.DB_NAME,
+});
+sql\`SELECT 1 AS ok\`.then((r) => { console.log('DB OK', r); return sql.end(); })
+  .catch((e) => { console.error(e.message); process.exit(1); });
+"
+```
+
+The API container reaches LAN IPs over the default bridge network; no `extra_hosts` or `network_mode: host` is required when `DB_HOST` is a routable address like `192.168.50.105`.
+
+**Ports exposed on the mini-pc:**
+
+| Service | Container | Host port | URL |
+|---------|-----------|-----------|-----|
+| Web UI | `mcp-rag-web` | `80` (or `WEB_PORT`) | `http://<mini-pc-ip>/` |
+| API | `mcp-rag-api` | `3939` (or `API_PORT`) | `http://<mini-pc-ip>:3939/` |
+
+The Web UI proxies `/api/*` to the API container via Docker's internal network.
+
+```bash
+# Logs and health
+docker compose ps
+docker compose logs -f api
+curl -s http://localhost:3939/health
+```
+
+### Quick Start (bundled PostgreSQL)
 
 ```bash
 # Clone the repository
-git clone https://github.com/shinpr/mcp-local-rag.git
-cd mcp-local-rag
+git clone https://github.com/pradeepgudipati/mcp-local-rag-web.git
+cd mcp-local-rag-web
 
 # Create .env file
 cp .env.example .env
-# Edit .env with your settings (especially DB_PASSWORD and JWT_SECRET)
+# Edit .env — set DB_HOST=postgres for the bundled container
 
-# Start all services
-docker compose up -d
+# Start all services (API + Web UI + local PostgreSQL)
+docker compose --profile local-db up -d --build
 ```
 
-This starts three containers:
+With `--profile local-db`, this starts three containers:
 
 | Service | Container | Port | Description |
 |---------|-----------|------|-------------|
-| PostgreSQL | `mcp-rag-postgres` | 5432 | Metadata database |
+| PostgreSQL | `mcp-rag-postgres` | 5432 | Metadata database (`local-db` profile) |
 | API Server | `mcp-rag-api` | 3939 | REST API backend |
 | Web UI | `mcp-rag-web` | 80 | React frontend (nginx) |
+
+Without `--profile local-db`, only **API** and **Web UI** start (two containers).
 
 Access the Web UI at `http://localhost` and the API at `http://localhost:3939`.
 
@@ -785,11 +856,12 @@ Access the Web UI at `http://localhost` and the API at `http://localhost:3939`.
 Create a `.env` file in the project root:
 
 ```bash
-# Database
+# Database — use postgres with --profile local-db, or a LAN IP for external Postgres
+DB_HOST=postgres
+DB_PORT=5432
 DB_USER=mcp_local_rag_user
 DB_PASSWORD=your_secure_password_here
 DB_NAME=mcp_local_rag_db
-DB_PORT=5432
 
 # API Server
 API_PORT=3939
@@ -916,7 +988,7 @@ The REST API and Web UI require PostgreSQL 16+. The database schema is auto-migr
 
 **Option 1: Docker (recommended)**
 ```bash
-docker compose up -d postgres
+docker compose --profile local-db up -d postgres
 ```
 
 **Option 2: Local PostgreSQL**
@@ -1129,8 +1201,8 @@ This script ingests a sample document into a temp database, queries it, and vali
 ### Building from Source
 
 ```bash
-git clone https://github.com/shinpr/mcp-local-rag.git
-cd mcp-local-rag
+git clone https://github.com/pradeepgudipati/mcp-local-rag-web.git
+cd mcp-local-rag-web
 pnpm install
 ```
 
@@ -1168,7 +1240,7 @@ pnpm run check:all     # Full quality check
 ### Project Structure
 
 ```
-mcp-local-rag/
+mcp-local-rag-web/
 ├── src/
 │   ├── index.ts           # Entry point (routes to CLI or MCP server)
 │   ├── cli-main.ts        # CLI subcommand dispatcher
@@ -1268,7 +1340,7 @@ When invalid, root-dependent operations fail with a clear error rather than sile
 
 ### PostgreSQL connection refused
 
-Ensure PostgreSQL is running and accessible. Check `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, and `DB_NAME` are correct. With Docker, ensure the postgres container is healthy before the API starts.
+Ensure PostgreSQL is running and accessible. Check `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, and `DB_NAME` are correct. With `--profile local-db`, set `DB_HOST=postgres` and ensure the postgres container is healthy. With an external database, set `DB_HOST` to the LAN IP (not `localhost`) and confirm the mini-pc can reach that host on port 5432 (firewall / `pg_hba.conf`).
 
 ### API returns 401 Unauthorized
 
@@ -1326,5 +1398,7 @@ MIT License. Free for personal and commercial use.
 - [Building a Local RAG for Agentic Coding](https://www.norsica.jp/blog/local-rag-agentic-coding) — Technical deep-dive into the semantic chunking and hybrid search design.
 
 ## Acknowledgments
+
+Forked from [shinpr/mcp-local-rag](https://github.com/shinpr/mcp-local-rag) — the upstream MCP/CLI RAG server this project extends with a REST API and Web UI.
 
 Built with [Model Context Protocol](https://modelcontextprotocol.io/) by Anthropic, [LanceDB](https://lancedb.com/), [Transformers.js](https://huggingface.co/docs/transformers.js), [Fastify](https://fastify.dev/), and [Drizzle ORM](https://orm.drizzle.team/).

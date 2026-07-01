@@ -10,8 +10,8 @@ Contributions welcome! This guide covers what you need to get started.
 ## Setup
 
 ```bash
-git clone https://github.com/shinpr/mcp-local-rag.git
-cd mcp-local-rag
+git clone https://github.com/pradeepgudipati/mcp-local-rag-web.git
+cd mcp-local-rag-web
 pnpm install
 ```
 
