@@ -1,5 +1,3 @@
-import { existsSync, mkdirSync, rmSync } from 'node:fs'
-import { resolve } from 'node:path'
 import { eq } from 'drizzle-orm'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { resolveApiConfig } from '../config.js'

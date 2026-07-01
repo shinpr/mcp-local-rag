@@ -51,7 +51,6 @@ export async function repairRelativeFilePaths(config: ApiConfig): Promise<number
   }
 
   if (repaired > 0) {
-    // biome-ignore lint/suspicious/noConsole: startup repair log
     console.log(`Repaired ${repaired} stale file path(s) in database`)
   }
 

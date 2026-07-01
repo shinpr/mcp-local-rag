@@ -171,7 +171,6 @@ async function seedDefaultAdmin(config: ApiConfig): Promise<void> {
       username: defaultAdminUsername,
       passwordHash,
     })
-    // biome-ignore lint/suspicious/noConsole: startup seeding log
     console.log(`Seeded default admin user: ${defaultAdminEmail}`)
   } catch (error) {
     if (!isUniqueViolation(error)) throw error

@@ -55,7 +55,6 @@ export async function recoverProjectIndexing(
   const result = { jobsFailed: runningJobs.length, filesReset: stuckFiles.length }
 
   if (result.jobsFailed > 0 || result.filesReset > 0) {
-    // biome-ignore lint/suspicious/noConsole: recovery log
     console.log(
       `Recovered project ${projectId} indexing: ${result.jobsFailed} job(s) failed, ${result.filesReset} file(s) reset to pending`
     )
@@ -102,7 +101,6 @@ export async function recoverStuckIndexing(config: ApiConfig): Promise<RecoveryR
   const result = { jobsFailed: runningJobs.length, filesReset: stuckFiles.length }
 
   if (result.jobsFailed > 0 || result.filesReset > 0) {
-    // biome-ignore lint/suspicious/noConsole: startup recovery log
     console.log(
       `Recovered stuck indexing: ${result.jobsFailed} job(s) failed, ${result.filesReset} file(s) reset to pending`
     )
