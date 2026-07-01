@@ -57,8 +57,15 @@ export interface AppShell {
  * Fastify shell with plugins and all routes — safe to listen before embedder init.
  * Business routes return 503 until finalizeApp marks the API ready.
  */
+function uploadLimitMb(config: ApiConfig): number {
+  return Math.round(config.maxUploadSizeBytes / (1024 * 1024))
+}
+
 export async function createAppShell(config: ApiConfig): Promise<AppShell> {
-  const app = Fastify({ logger: createLoggerConfig() })
+  const app = Fastify({
+    logger: createLoggerConfig(),
+    bodyLimit: config.maxUploadSizeBytes,
+  })
   const services = createRagServices()
 
   await app.register(fastifyJwt, {
@@ -67,8 +74,23 @@ export async function createAppShell(config: ApiConfig): Promise<AppShell> {
   })
   await app.register(fastifyMultipart, {
     limits: {
-      fileSize: 100 * 1024 * 1024, // 100MB max upload
+      fileSize: config.maxUploadSizeBytes,
     },
+  })
+
+  const limitMb = uploadLimitMb(config)
+  app.setErrorHandler((error: Error & { code?: string; statusCode?: number }, _request, reply) => {
+    if (error.code === 'FST_REQ_FILE_TOO_LARGE' || error.code === 'FST_ERR_CTP_BODY_TOO_LARGE') {
+      return reply.code(413).send({
+        error: 'Payload Too Large',
+        message: `File exceeds the ${limitMb} MB upload limit. Increase MAX_UPLOAD_SIZE_MB in .env (current limit: ${limitMb} MB).`,
+      })
+    }
+    const statusCode = error.statusCode ?? 500
+    return reply.code(statusCode).send({
+      error: error.name ?? 'Internal Server Error',
+      message: error.message,
+    })
   })
 
   app.addHook('onRequest', blockUntilReady)

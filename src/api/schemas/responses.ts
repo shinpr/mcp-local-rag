@@ -66,6 +66,7 @@ export interface SearchResponse {
   projectName: string
   query: string
   results: SearchResultItem[]
+  warning?: string
 }
 
 export interface HealthResponse {

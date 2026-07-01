@@ -63,7 +63,7 @@ export const searchSchema: FastifySchema = {
     properties: {
       projectName: { type: 'string', minLength: 1 },
       query: { type: 'string', minLength: 1 },
-      limit: { type: 'integer', minimum: 1, maximum: 100, default: 10 },
+      limit: { type: 'integer', minimum: 1, maximum: 20, default: 10 },
     },
     additionalProperties: false,
   },

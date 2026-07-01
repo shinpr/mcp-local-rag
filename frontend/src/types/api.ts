@@ -79,6 +79,8 @@ export interface SearchResponse {
   projectName: string
   query: string
   results: SearchResultItem[]
+  /** Present when metadata shows indexed chunks but LanceDB returned no hits */
+  warning?: string
 }
 
 export interface HealthResponse {

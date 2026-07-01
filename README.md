@@ -816,6 +816,109 @@ sql\`SELECT 1 AS ok\`.then((r) => { console.log('DB OK', r); return sql.end(); }
 
 The API container reaches LAN IPs over the default bridge network; no `extra_hosts` or `network_mode: host` is required when `DB_HOST` is a routable address like `192.168.50.105`.
 
+### Remote LanceDB (Ubuntu server)
+
+PostgreSQL is a **client/server** database — you point `DB_HOST` at a remote IP and connect over the network. **LanceDB is file-based**: vectors live as files on disk. There is no `LANCEDB_HOST` port to open. To share one vector store between your Ubuntu server and your laptop, pick one of the patterns below.
+
+| Approach | Best for | How it works |
+|----------|----------|--------------|
+| **Server-hosted (recommended)** | Production / mini-pc always on | LanceDB files stay on the server; API in Docker reads them via `LANCEDB_HOST_PATH` |
+| **SSHFS mount** | Local dev with same vectors as server | Mount the server directory locally; set `DB_PATH` to the mount (closest analog to remote Postgres) |
+| **API-only on server** | Web UI + search from browser only | No local LanceDB; use `http://<server>:3939` — vectors never leave the server |
+| LanceDB Cloud (`db://…`) | Managed SaaS | Paid hosted LanceDB — not required for a home LAN |
+| S3 / MinIO (`s3://…`) | Cloud-scale object storage | Supported by LanceDB OSS but adds object-store setup; overkill for a single Ubuntu box |
+| NFS | Shared folder | Possible but **not recommended** — concurrent writers can corrupt LanceDB |
+
+**Important:** Postgres metadata and LanceDB vectors must refer to the **same** deployment. If Postgres is remote but LanceDB is a different local `./lancedb/`, search will find metadata in Postgres but return no vectors (or stale ones).
+
+#### 1. Ubuntu server setup (one-time)
+
+On the server (`192.168.50.105` or your mini-pc):
+
+```bash
+git clone https://github.com/pradeepgudipati/mcp-local-rag-web.git
+cd mcp-local-rag-web
+
+# Create /var/lib/mcp-local-rag/lancedb with correct ownership
+./scripts/setup-lancedb-ubuntu.sh
+
+cp .env.example .env
+# Edit .env:
+#   DB_HOST=<postgres-host>          # same as today (can be this machine or another LAN host)
+#   LANCEDB_HOST_PATH=/var/lib/mcp-local-rag/lancedb
+#   JWT_SECRET=<random>
+
+docker compose up -d --build
+```
+
+`docker-compose.yml` bind-mounts `LANCEDB_HOST_PATH` → `/app/lancedb` inside the API container. Uploads are stored under `…/lancedb/uploads/` on the host (same layout as local dev).
+
+Verify after first ingest:
+
+```bash
+ls -la /var/lib/mcp-local-rag/lancedb/
+curl -s http://localhost:3939/health
+```
+
+#### 2. Local dev — SSHFS mount (Postgres-style)
+
+When you want `pnpm dev:api` or the MCP/CLI on your laptop to use the **same** vectors as the server:
+
+**Prerequisites (laptop):**
+
+```bash
+# macOS
+brew install macfuse sshfs
+
+# Ubuntu / Debian
+sudo apt install sshfs
+```
+
+**Mount** (reads `LANCEDB_*` / `DB_HOST` from `.env`):
+
+```bash
+# In .env on your laptop:
+# LANCEDB_REMOTE_HOST=192.168.50.105   # or reuse DB_HOST
+# LANCEDB_REMOTE_USER=your_ssh_user
+# LANCEDB_REMOTE_PATH=/var/lib/mcp-local-rag/lancedb
+# LANCEDB_LOCAL_MOUNT=./lancedb-remote
+# DB_PATH=./lancedb-remote/
+# UPLOAD_DIR=./lancedb-remote/uploads/
+
+pnpm lancedb:mount
+# or: ./scripts/lancedb-mount.sh
+```
+
+Start local API as usual (`pnpm dev:api`). Postgres still uses `DB_HOST=192.168.50.105`; vectors go through the SSHFS mount.
+
+**Unmount when done:**
+
+```bash
+pnpm lancedb:umount
+```
+
+**Limitations vs Postgres:**
+
+- **Single writer** — do not run the API on the server **and** locally against the same LanceDB at the same time. Stop `docker compose` on the server before local dev with SSHFS, or use server-hosted API only.
+- **Latency** — vector search over SSHFS is slower than local disk; fine for dev, not ideal for heavy ingest.
+- **SSH access required** — the server user needs read/write on `LANCEDB_REMOTE_PATH` (setup script sets ownership).
+- **No connection string** — you mount a directory, not open a TCP port.
+
+#### 3. Local dev — server API only (no mount)
+
+If you only need the Web UI or REST API, run everything on the server and open `http://192.168.50.105/` in a browser. No `DB_PATH` changes on your laptop.
+
+#### Environment reference
+
+| Variable | Where | Example | Purpose |
+|----------|-------|---------|---------|
+| `LANCEDB_HOST_PATH` | Server `.env` | `/var/lib/mcp-local-rag/lancedb` | Host path bind-mounted into Docker API |
+| `LANCEDB_REMOTE_HOST` | Laptop `.env` | `192.168.50.105` | SSH target (defaults to `DB_HOST`) |
+| `LANCEDB_REMOTE_USER` | Laptop `.env` | `ubuntu` | SSH user |
+| `LANCEDB_REMOTE_PATH` | Laptop `.env` | `/var/lib/mcp-local-rag/lancedb` | Remote LanceDB directory |
+| `LANCEDB_LOCAL_MOUNT` | Laptop `.env` | `./lancedb-remote` | Local SSHFS mount point |
+| `DB_PATH` | Both | `./lancedb-remote/` (laptop) or overridden in container | LanceDB directory for the running process |
+
 **Ports exposed on the mini-pc:**
 
 | Service | Container | Host port | URL |
@@ -883,16 +986,15 @@ MODEL_NAME=Xenova/all-MiniLM-L6-v2
 RAG_DEVICE=cpu
 ```
 
-### Docker Volumes
+### Docker Volumes and bind mounts
 
-The compose file creates four persistent volumes:
+| Storage | Mechanism | Purpose |
+|---------|-----------|---------|
+| `postgres_data` | Named volume (`--profile local-db` only) | Bundled PostgreSQL data |
+| `LANCEDB_HOST_PATH` (default `./lancedb`) | Host bind mount | LanceDB vectors + uploads on the host |
+| `MODEL_CACHE_HOST_PATH` (default `./models`) | Host bind mount | Downloaded embedding models |
 
-| Volume | Purpose |
-|--------|---------|
-| `postgres_data` | PostgreSQL database files |
-| `lancedb_data` | LanceDB vector database |
-| `model_cache` | Downloaded embedding models |
-| `upload_data` | Uploaded document files |
+On an Ubuntu server, set `LANCEDB_HOST_PATH=/var/lib/mcp-local-rag/lancedb` in `.env` after running `./scripts/setup-lancedb-ubuntu.sh`.
 
 ### Fast rebuilds
 
@@ -987,6 +1089,11 @@ The MCP server is configured by environment variables only — pass them through
 | `DB_PASSWORD` | — | PostgreSQL password |
 | `DB_NAME` | `mcp_local_rag_db` | PostgreSQL database name |
 | `UPLOAD_DIR` | `<DB_PATH>/uploads/` | File upload storage directory |
+| `MAX_UPLOAD_SIZE_MB` | `50` | Max web upload size in megabytes (API body/multipart + Docker nginx proxy; range 1–500) |
+| `LANCEDB_HOST_PATH` | `./lancedb` | Host path for Docker bind mount (server: e.g. `/var/lib/mcp-local-rag/lancedb`) |
+| `LANCEDB_REMOTE_HOST` | — | SSH host for `scripts/lancedb-mount.sh` (defaults to `DB_HOST`) |
+| `LANCEDB_REMOTE_PATH` | `/var/lib/mcp-local-rag/lancedb` | Remote LanceDB directory on the server |
+| `LANCEDB_LOCAL_MOUNT` | `./lancedb-remote` | Local SSHFS mount point |
 
 **Model choice tips:**
 - Multilingual docs → e.g., `onnx-community/embeddinggemma-300m-ONNX` (100+ languages)
@@ -1065,9 +1172,11 @@ Or use a single URL:
 DATABASE_URL=postgresql://user:password@localhost:5432/mcp_local_rag_db
 ```
 
-#### LanceDB (Automatic)
+#### LanceDB (file-based, local or remote mount)
 
-The vector database (LanceDB) is file-based and requires no setup. It is created automatically at `DB_PATH` (default: `./lancedb/`) on first use.
+The vector database (LanceDB) is file-based — there is no separate server process. It is created automatically at `DB_PATH` (default: `./lancedb/`) on first use.
+
+For a shared store between an Ubuntu server and your laptop, see [Remote LanceDB (Ubuntu server)](#remote-lancedb-ubuntu-server) in the Docker section.
 
 ### Client-Specific Setup
 
@@ -1362,9 +1471,11 @@ Documents must be ingested first. Run `"List all ingested files"` to verify.
 
 Check internet connection. If behind a proxy, configure network settings. The model can also be [downloaded manually](https://huggingface.co/Xenova/all-MiniLM-L6-v2).
 
-### "File too large"
+### "File too large" / HTTP 413 on upload
 
-Default limit is 100MB. Split large files or increase `MAX_FILE_SIZE`.
+Web uploads are limited by `MAX_UPLOAD_SIZE_MB` (default **50 MB**). This applies to the Fastify API (`bodyLimit` and multipart `fileSize`) and the Docker nginx proxy (`client_max_body_size`). Increase it in `.env`, then restart the API and rebuild/restart the `web` container if using Docker Compose.
+
+For MCP/CLI ingestion (not web upload), the separate `MAX_FILE_SIZE` env var applies (default 100 MB).
 
 ### Slow queries
 

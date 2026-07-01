@@ -85,9 +85,13 @@ class ApiClient {
       try {
         error = await response.json()
       } catch {
+        const limitHint =
+          response.status === 413
+            ? 'File exceeds the upload size limit. Increase MAX_UPLOAD_SIZE_MB in the server .env file.'
+            : `HTTP ${response.status}: ${response.statusText}`
         error = {
-          error: 'Network Error',
-          message: `HTTP ${response.status}: ${response.statusText}`,
+          error: response.status === 413 ? 'Payload Too Large' : 'Network Error',
+          message: limitHint,
         }
       }
       throw new ApiClientError(error.message, response.status, error)

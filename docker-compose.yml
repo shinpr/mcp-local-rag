@@ -45,11 +45,16 @@ services:
       API_HOST: 0.0.0.0
       DB_PATH: /app/lancedb
       CACHE_DIR: /app/models
-      UPLOAD_DIR: /app/uploads
+      # Match local dev layout (DB_PATH/uploads) so host bind-mounts work
+      UPLOAD_DIR: /app/lancedb/uploads
+      MAX_UPLOAD_SIZE_MB: ${MAX_UPLOAD_SIZE_MB:-50}
     volumes:
-      - lancedb_data:/app/lancedb
-      - model_cache:/app/models
-      - upload_data:/app/uploads
+      # LanceDB + uploads live on the host filesystem (file-based DB, not a network service).
+      # Local dev: ./lancedb (default). Ubuntu server: set LANCEDB_HOST_PATH in .env, e.g.
+      #   LANCEDB_HOST_PATH=/var/lib/mcp-local-rag/lancedb
+      # Run scripts/setup-lancedb-ubuntu.sh on the server to create that directory.
+      - ${LANCEDB_HOST_PATH:-./lancedb}:/app/lancedb
+      - ${MODEL_CACHE_HOST_PATH:-./models}:/app/models
     ports:
       - "${API_PORT}:3939"
     healthcheck:
@@ -71,6 +76,9 @@ services:
     image: mcp-rag-web:latest
     container_name: mcp-rag-web
     restart: unless-stopped
+    env_file: .env
+    environment:
+      MAX_UPLOAD_SIZE_MB: ${MAX_UPLOAD_SIZE_MB:-50}
     depends_on:
       api:
         condition: service_started
@@ -81,12 +89,6 @@ services:
 
 volumes:
   postgres_data:
-    driver: local
-  lancedb_data:
-    driver: local
-  model_cache:
-    driver: local
-  upload_data:
     driver: local
 
 networks:

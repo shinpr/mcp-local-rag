@@ -2,6 +2,7 @@
 
 import { randomBytes } from 'node:crypto'
 import { join, resolve } from 'node:path'
+import { DEFAULT_MAX_UPLOAD_SIZE_MB, MAX_UPLOAD_SIZE_MB_LIMIT } from '../utils/limits.js'
 
 export interface ApiConfig {
   /** HTTP server port */
@@ -24,6 +25,8 @@ export interface ApiConfig {
   cacheDir: string
   /** Compute device */
   device: string
+  /** Maximum upload body size in bytes (Fastify + multipart) */
+  maxUploadSizeBytes: number
   /** Default admin user — seeded on first startup if all three are set */
   defaultAdminEmail?: string
   defaultAdminUsername?: string
@@ -48,6 +51,28 @@ function resolveDatabaseUrl(env: NodeJS.ProcessEnv): string {
   return `postgresql://${user}:${password}@${host}:${port}/${database}`
 }
 
+/** Local path or cloud URI (s3://, gs://, db://) — only filesystem paths are resolved. */
+function resolveLanceDbPath(raw: string): string {
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(raw)) {
+    return raw
+  }
+  return resolve(raw)
+}
+
+/**
+ * Resolve web upload size limit from `MAX_UPLOAD_SIZE_MB` (default 50 MB).
+ */
+export function resolveMaxUploadSizeBytes(env: NodeJS.ProcessEnv): number {
+  const raw = env['MAX_UPLOAD_SIZE_MB'] ?? String(DEFAULT_MAX_UPLOAD_SIZE_MB)
+  const mb = Number.parseInt(raw, 10)
+  if (!Number.isFinite(mb) || mb < 1 || mb > MAX_UPLOAD_SIZE_MB_LIMIT) {
+    throw new Error(
+      `MAX_UPLOAD_SIZE_MB must be between 1 and ${MAX_UPLOAD_SIZE_MB_LIMIT} (got ${raw})`
+    )
+  }
+  return mb * 1024 * 1024
+}
+
 /**
  * Resolve API configuration from environment variables.
  * Called once at server startup.
@@ -57,13 +82,14 @@ export function resolveApiConfig(env: NodeJS.ProcessEnv): ApiConfig {
   const host = env['API_HOST'] ?? '127.0.0.1'
   const jwtSecret = env['JWT_SECRET'] ?? randomBytes(32).toString('hex')
   const jwtExpiresIn = env['JWT_EXPIRES_IN'] ?? '7d'
-  const lanceDbPath = env['DB_PATH'] ?? './lancedb/'
-  const dbDir = resolve(lanceDbPath)
+  const lanceDbPath = resolveLanceDbPath(env['DB_PATH'] ?? './lancedb/')
+  const dbDir = lanceDbPath.includes('://') ? lanceDbPath : resolve(lanceDbPath)
   const databaseUrl = resolveDatabaseUrl(env)
   const uploadDir = resolve(env['UPLOAD_DIR'] ?? join(dbDir, 'uploads'))
   const modelName = env['MODEL_NAME'] ?? 'Xenova/all-MiniLM-L6-v2'
   const cacheDir = env['CACHE_DIR'] ?? './models/'
   const device = env['RAG_DEVICE']?.trim() || 'cpu'
+  const maxUploadSizeBytes = resolveMaxUploadSizeBytes(env)
 
   const defaultAdminEmail = env['DEFAULT_ADMIN_EMAIL']?.trim() || undefined
   const defaultAdminUsername = env['DEFAULT_ADMIN_USERNAME']?.trim() || undefined
@@ -80,6 +106,7 @@ export function resolveApiConfig(env: NodeJS.ProcessEnv): ApiConfig {
     modelName,
     cacheDir,
     device,
+    maxUploadSizeBytes,
     ...(defaultAdminEmail && { defaultAdminEmail }),
     ...(defaultAdminUsername && { defaultAdminUsername }),
     ...(defaultAdminPassword && { defaultAdminPassword }),

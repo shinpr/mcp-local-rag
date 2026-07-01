@@ -4,8 +4,8 @@ server {
     root /usr/share/nginx/html;
     index index.html;
 
-    # Allow large file uploads through the API proxy (local/non-Docker: edit this value)
-    client_max_body_size 50m;
+    # Allow large file uploads through the API proxy (set via MAX_UPLOAD_SIZE_MB)
+    client_max_body_size ${MAX_UPLOAD_SIZE_MB}m;
 
     # Gzip compression
     gzip on;
@@ -22,7 +22,7 @@ server {
 
     # Proxy API requests to backend
     location /api/ {
-        client_max_body_size 50m;
+        client_max_body_size ${MAX_UPLOAD_SIZE_MB}m;
         proxy_pass http://api:3939/;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;

@@ -28,6 +28,7 @@ Environment variables:
   DB_PASSWORD       PostgreSQL password
   DB_NAME           PostgreSQL database name (default: mcp_local_rag_db)
   UPLOAD_DIR        File upload storage directory (default: <DB_PATH>/uploads/)
+  MAX_UPLOAD_SIZE_MB  Max web upload size in MB (default: 50)
   DB_PATH           LanceDB database path (default: ./lancedb/)
   MODEL_NAME        Embedding model (default: Xenova/all-MiniLM-L6-v2)
   CACHE_DIR         Model cache directory (default: ./models/)
@@ -49,6 +50,9 @@ export async function runServe(args: string[], _globalOptions: GlobalOptions = {
   console.error(`  LanceDB path: ${config.lanceDbPath}`)
   console.error(`  Database URL: ${config.databaseUrl.replace(/:[^:@]+@/, ':***@')}`)
   console.error(`  Upload dir:   ${config.uploadDir}`)
+  console.error(
+    `  Upload limit: ${Math.round(config.maxUploadSizeBytes / (1024 * 1024))} MB (MAX_UPLOAD_SIZE_MB)`
+  )
 
   const { app, services } = await createAppShell(config)
 

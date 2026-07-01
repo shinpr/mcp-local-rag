@@ -1,7 +1,7 @@
 // File upload and management routes
 
 import { randomUUID } from 'node:crypto'
-import { createReadStream, mkdirSync } from 'node:fs'
+import { createReadStream, existsSync, mkdirSync } from 'node:fs'
 import { unlink, writeFile } from 'node:fs/promises'
 import { extname, join, resolve } from 'node:path'
 import { and, eq } from 'drizzle-orm'
@@ -13,6 +13,7 @@ import { type JwtPayload, requireAuth } from '../middleware/auth.js'
 import type { RagServices } from '../rag-services.js'
 import { getVectorStore } from '../rag-services.js'
 import {
+  deleteStoredFileChunks,
   readMultipartFile,
   resolveStoredFilePath,
   sanitizeFilename,
@@ -187,17 +188,23 @@ export function registerFileRoutes(
     }
 
     const safeName = sanitizeFilename(file.originalFilename)
+    const storedPath = resolveStoredFilePath(file.filePath, config.uploadDir, {
+      projectId: file.projectId,
+      storedFilename: file.storedFilename,
+    })
+
+    if (!existsSync(storedPath)) {
+      return reply.code(404).send({
+        error: 'Not Found',
+        message:
+          'Original file is not on this server. Re-upload the file, or mount UPLOAD_DIR from the machine where it was stored.',
+      })
+    }
+
     return reply
       .header('Content-Disposition', `attachment; filename="${safeName}"`)
       .type(`application/octet-stream`)
-      .send(
-        createReadStream(
-          resolveStoredFilePath(file.filePath, config.uploadDir, {
-            projectId: file.projectId,
-            storedFilename: file.storedFilename,
-          })
-        )
-      )
+      .send(createReadStream(storedPath))
   })
 
   // POST /files/:id/replace — replace document content, clear vectors, reset to pending
@@ -245,11 +252,13 @@ export function registerFileRoutes(
     })
 
     if (project) {
-      try {
-        await getVectorStore(services).deleteChunks(storedPath, project.name)
-      } catch {
-        // Best-effort vector cleanup before replacing content
-      }
+      await deleteStoredFileChunks(
+        getVectorStore(services),
+        file.filePath,
+        config.uploadDir,
+        { projectId: file.projectId, storedFilename: file.storedFilename },
+        project.name
+      )
     }
 
     try {
@@ -317,11 +326,13 @@ export function registerFileRoutes(
     })
 
     if (project) {
-      try {
-        await getVectorStore(services).deleteChunks(storedPath, project.name)
-      } catch {
-        // Vector cleanup is best-effort
-      }
+      await deleteStoredFileChunks(
+        getVectorStore(services),
+        file.filePath,
+        config.uploadDir,
+        { projectId: file.projectId, storedFilename: file.storedFilename },
+        project.name
+      )
     }
 
     try {

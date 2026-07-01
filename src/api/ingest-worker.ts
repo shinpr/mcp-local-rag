@@ -6,13 +6,14 @@ import type { Embedder } from '../embedder/index.js'
 import { buildChunksAndEmbeddings, buildVectorChunks } from '../ingest/compute.js'
 import { DocumentParser } from '../parser/index.js'
 import { computeContentHash } from '../utils/file-hash.js'
-import { DEFAULT_MAX_FILE_SIZE } from '../utils/limits.js'
 import type { VectorStore } from '../vectordb/index.js'
 import type { ApiConfig } from './config.js'
 import { resolveStoredFilePath } from './upload-utils.js'
 
 interface IngestFileParams {
   filePath: string
+  projectId: number
+  storedFilename: string
   projectName: string
   vectorStore: VectorStore
   embedder: Embedder
@@ -26,8 +27,19 @@ interface IngestFileParams {
  * Reuses the same pipeline as CLI `ingestSingleFile` and RAGServer `handleIngestFile`.
  */
 export async function ingestFile(params: IngestFileParams): Promise<number> {
-  const { filePath: storedPath, projectName, vectorStore, embedder, config } = params
-  const filePath = resolveStoredFilePath(storedPath, config.uploadDir)
+  const {
+    filePath: storedPath,
+    projectId,
+    storedFilename,
+    projectName,
+    vectorStore,
+    embedder,
+    config,
+  } = params
+  const filePath = resolveStoredFilePath(storedPath, config.uploadDir, {
+    projectId,
+    storedFilename,
+  })
 
   // Compute file content hash
   const fileHash = await computeContentHash(filePath)
@@ -35,7 +47,7 @@ export async function ingestFile(params: IngestFileParams): Promise<number> {
   // Parse document — PDF uses parsePdf (needs embedder), others use parseFile
   const parser = new DocumentParser({
     baseDirs: [config.uploadDir],
-    maxFileSize: DEFAULT_MAX_FILE_SIZE,
+    maxFileSize: config.maxUploadSizeBytes,
   })
 
   const isPdf = extname(filePath).toLowerCase() === '.pdf'

@@ -12,6 +12,7 @@ export default function SearchPage() {
   const [results, setResults] = useState<SearchResultItem[]>([])
   const [isSearching, setIsSearching] = useState(false)
   const [hasSearched, setHasSearched] = useState(false)
+  const [searchWarning, setSearchWarning] = useState<string | null>(null)
 
   useEffect(() => {
     const fetchProjects = async () => {
@@ -34,15 +35,18 @@ export default function SearchPage() {
 
     setIsSearching(true)
     setHasSearched(true)
+    setSearchWarning(null)
 
     try {
       const response = await searchProject(selectedProject, query, limit)
       setResults(response.results)
+      setSearchWarning(response.warning ?? null)
     } catch (error) {
       toast.error(
         error instanceof Error ? error.message : 'Search failed',
       )
       setResults([])
+      setSearchWarning(null)
     } finally {
       setIsSearching(false)
     }
@@ -103,7 +107,7 @@ export default function SearchPage() {
               value={limit}
               onChange={(e) => setLimit(Number(e.target.value))}
               min={1}
-              max={100}
+              max={20}
               className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent"
             />
           </div>
@@ -134,9 +138,15 @@ export default function SearchPage() {
               <h3 className="text-lg font-semibold text-white mb-2">
                 No results found
               </h3>
-              <p className="text-sm text-gray-400">
-                Try a different query or project
-              </p>
+              {searchWarning ? (
+                <p className="text-sm text-amber-400 max-w-xl mx-auto">
+                  {searchWarning}
+                </p>
+              ) : (
+                <p className="text-sm text-gray-400">
+                  Try a different query or project
+                </p>
+              )}
             </div>
           ) : (
             <div className="divide-y divide-gray-800">

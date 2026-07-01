@@ -10,6 +10,7 @@ import { type JwtPayload, requireAuth } from '../middleware/auth.js'
 import type { RagServices } from '../rag-services.js'
 import { getVectorStore } from '../rag-services.js'
 import { createProjectSchema } from '../schemas/requests.js'
+import { resolveStoredFilePath } from '../upload-utils.js'
 
 export function registerProjectRoutes(
   app: FastifyInstance,
@@ -160,13 +161,22 @@ export function registerProjectRoutes(
 
     // Delete uploaded files from disk
     const projectFiles = await db
-      .select({ filePath: uploadedFiles.filePath })
+      .select({
+        filePath: uploadedFiles.filePath,
+        projectId: uploadedFiles.projectId,
+        storedFilename: uploadedFiles.storedFilename,
+      })
       .from(uploadedFiles)
       .where(eq(uploadedFiles.projectId, projectId))
 
     for (const file of projectFiles) {
       try {
-        await unlink(file.filePath)
+        await unlink(
+          resolveStoredFilePath(file.filePath, config.uploadDir, {
+            projectId: file.projectId,
+            storedFilename: file.storedFilename,
+          })
+        )
       } catch {
         // File may already be deleted
       }

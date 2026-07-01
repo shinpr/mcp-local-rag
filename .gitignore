@@ -22,6 +22,7 @@ dist/
 coverage
 test-output.json
 lancedb/
+lancedb-remote/
 models/
 
 # IDE and editor specific files

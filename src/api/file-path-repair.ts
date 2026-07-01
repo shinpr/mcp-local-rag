@@ -1,4 +1,4 @@
-// Repair uploaded_files rows that store cwd-relative paths instead of absolute paths
+// Repair uploaded_files rows with stale or relative file_path values
 
 import { eq } from 'drizzle-orm'
 import type { ApiConfig } from './config.js'
@@ -6,8 +6,11 @@ import { getDb } from './db/index.js'
 import { uploadedFiles } from './db/schema.js'
 import { resolveStoredFilePath } from './upload-utils.js'
 
+const PATH_REPAIR_ERROR_PATTERN =
+  /configured base directory|File path must be absolute|File not found|No configured base directory/i
+
 /**
- * Update legacy relative file_path values to absolute paths.
+ * Normalize file_path to the canonical path on this machine.
  * Returns the number of rows repaired.
  */
 export async function repairRelativeFilePaths(config: ApiConfig): Promise<number> {
@@ -19,6 +22,7 @@ export async function repairRelativeFilePaths(config: ApiConfig): Promise<number
       projectId: uploadedFiles.projectId,
       storedFilename: uploadedFiles.storedFilename,
       indexingStatus: uploadedFiles.indexingStatus,
+      errorMessage: uploadedFiles.errorMessage,
     })
     .from(uploadedFiles)
 
@@ -35,7 +39,9 @@ export async function repairRelativeFilePaths(config: ApiConfig): Promise<number
       .update(uploadedFiles)
       .set({
         filePath: resolved,
-        ...(file.indexingStatus === 'failed'
+        ...(file.indexingStatus === 'failed' &&
+        file.errorMessage &&
+        PATH_REPAIR_ERROR_PATTERN.test(file.errorMessage)
           ? { indexingStatus: 'pending' as const, errorMessage: null }
           : {}),
       })
@@ -46,7 +52,7 @@ export async function repairRelativeFilePaths(config: ApiConfig): Promise<number
 
   if (repaired > 0) {
     // biome-ignore lint/suspicious/noConsole: startup repair log
-    console.log(`Repaired ${repaired} relative file path(s) in database`)
+    console.log(`Repaired ${repaired} stale file path(s) in database`)
   }
 
   return repaired

@@ -19,3 +19,14 @@ export const DEFAULT_MAX_FILE_SIZE = 104_857_600
  * (500 MB). Values above this are rejected by `validateMaxFileSize`.
  */
 export const MAX_FILE_SIZE_LIMIT = 524_288_000
+
+/**
+ * Default maximum web upload size, in megabytes. Used when `MAX_UPLOAD_SIZE_MB`
+ * is not set. Applied to Fastify body/multipart limits and nginx proxy.
+ */
+export const DEFAULT_MAX_UPLOAD_SIZE_MB = 50
+
+/**
+ * Hard upper bound (inclusive) for `MAX_UPLOAD_SIZE_MB`.
+ */
+export const MAX_UPLOAD_SIZE_MB_LIMIT = 500

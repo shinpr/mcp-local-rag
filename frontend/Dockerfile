@@ -18,9 +18,11 @@ RUN --mount=type=cache,id=pnpm-store-web,target=/pnpm/store \
     pnpm install --frozen-lockfile --filter ./frontend... --ignore-scripts && \
     pnpm rebuild esbuild
 
-# Nginx config (rarely changes — keep separate from frontend source)
+# Nginx config template (rendered at container start from MAX_UPLOAD_SIZE_MB)
 FROM base AS nginx-config
-COPY frontend/nginx.conf /etc/nginx/conf.d/default.conf
+COPY frontend/nginx.conf.template /etc/nginx/templates/default.conf.template
+COPY frontend/docker-entrypoint.sh /docker-entrypoint.sh
+RUN chmod +x /docker-entrypoint.sh
 
 # Build frontend
 FROM deps AS build
@@ -33,9 +35,12 @@ RUN pnpm --filter ./frontend build
 # Production image - serve with nginx
 FROM nginx:alpine AS production
 
-COPY --from=nginx-config /etc/nginx/conf.d/default.conf /etc/nginx/conf.d/default.conf
+RUN apk add --no-cache gettext
+
+COPY --from=nginx-config /etc/nginx/templates/default.conf.template /etc/nginx/templates/default.conf.template
+COPY --from=nginx-config /docker-entrypoint.sh /docker-entrypoint.sh
 COPY --from=build /app/frontend/dist /usr/share/nginx/html
 
 EXPOSE 80
 
-CMD ["nginx", "-g", "daemon off;"]
+ENTRYPOINT ["/docker-entrypoint.sh"]

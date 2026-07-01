@@ -90,7 +90,9 @@ export function registerIngestRoutes(
             storedFilename: file.storedFilename,
           })
           const chunkCount = await ingestFile({
-            filePath: absolutePath,
+            filePath: file.filePath,
+            projectId: file.projectId,
+            storedFilename: file.storedFilename,
             projectName,
             vectorStore: getVectorStore(services),
             embedder: getEmbedder(services),
