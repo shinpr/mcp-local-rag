@@ -36,8 +36,8 @@ RUN mkdir -p /app/lancedb /app/models /app/uploads
 # Expose API port
 EXPOSE 3939
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+# Health check (embedder + first-run model download can take several minutes on slow CPUs)
+HEALTHCHECK --interval=10s --timeout=5s --start-period=180s --retries=12 \
   CMD node -e "fetch('http://localhost:3939/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
 
 CMD ["node", "dist/cli-main.js", "serve"]
