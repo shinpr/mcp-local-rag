@@ -771,6 +771,8 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
+> **Tip:** Set `DOCKER_BUILDKIT=1` (and optionally `COMPOSE_BAKE=true`) before building for faster repeat builds. See [Fast rebuilds](#fast-rebuilds).
+
 > **First start can take several minutes.** The API binds port 3939 immediately (`/health/live`), then loads the embedding model and runs DB migration. On a slow CPU, the first run also downloads the model into the `model_cache` volume. Use `/health` (not `/health/live`) to confirm full readiness. Watch progress with `docker compose logs -f api` — look for `API server ready at http://0.0.0.0:3939`.
 
 **Required `.env` values for external Postgres:**
@@ -891,6 +893,51 @@ The compose file creates four persistent volumes:
 | `lancedb_data` | LanceDB vector database |
 | `model_cache` | Downloaded embedding models |
 | `upload_data` | Uploaded document files |
+
+### Fast rebuilds
+
+Docker builds are optimized for **repeat dev iteration**. Enable BuildKit before building:
+
+```bash
+export DOCKER_BUILDKIT=1
+export COMPOSE_BAKE=true   # optional: Compose bake backend (parallel builds, better caching)
+docker compose build
+```
+
+**Do not use `--no-cache` for normal development** — it forces a full reinstall and re-export of every layer (~2+ minutes on a mini-pc). Only use `--no-cache` when debugging a stale layer or after changing base images.
+
+#### What stays cached vs what rebuilds
+
+| Change | `api` rebuilds | `web` rebuilds |
+|--------|----------------|----------------|
+| `src/` only | TypeScript compile + small `dist` layer | **cached** (skip with `docker compose build api`) |
+| `frontend/src/` only | **cached** (skip with `docker compose build web`) | Vite build + nginx assets |
+| `pnpm-lock.yaml` or `package.json` | deps + prod-deps layers | deps layer |
+| `skills/` only | skills layer only | **cached** |
+| `frontend/nginx.conf` | **cached** | nginx config layer only |
+
+The API image uses a **separate prod-deps stage** so the large `node_modules` layer is **not** invalidated when you change backend source — only the small `dist/` layer is re-exported.
+
+pnpm downloads are accelerated with **BuildKit cache mounts** (`/pnpm/store`), so even lockfile changes reuse previously downloaded packages.
+
+#### Rebuild only what changed
+
+```bash
+# Backend code change only (~10–25s on a mini-pc with warm cache)
+docker compose build api
+
+# Frontend code change only
+docker compose build web
+
+# Both services (second build should show CACHED for unchanged layers)
+docker compose build
+```
+
+#### Verify cache is working
+
+Run `docker compose build` twice in a row. The second run should show `CACHED` on deps/prod-deps/nginx stages and complete in well under 30 seconds when nothing changed.
+
+**Clean build** (first time or after `docker builder prune`): still downloads deps and exports prod `node_modules` once (~60–90s for API export on slow disks). Subsequent code-only rebuilds should be much faster.
 
 ### Stopping and Cleaning Up
 
@@ -1359,9 +1406,22 @@ docker compose logs api           # crash: stack trace; slow start: embedder/mod
 docker compose config | grep -A6 healthcheck   # confirm /health/live after pulling latest
 ```
 
+**Stale-image diagnostics** (exit code 0 in &lt;1s usually means the container ran `node dist/cli-main.js serve`, which exits immediately — that file is a library, not an entry point):
+
+```bash
+docker inspect mcp-rag-api --format '{{.Config.Cmd}}'
+docker inspect mcp-rag-api --format '{{.Config.Entrypoint}}'
+docker inspect mcp-rag-api --format '{{index .Config.Labels "org.opencontainers.image.revision"}}'
+docker compose run --rm --no-deps --entrypoint node api -e "console.log('ok')"
+docker compose run --rm --no-deps --entrypoint sh api -c "head -5 dist/index.js"
+git show HEAD:Dockerfile | grep -E 'CMD|ENTRYPOINT'
+```
+
+Expected after this fix: `Cmd` is `[node dist/index.js serve]`, `Entrypoint` includes `docker-api-entrypoint.sh`, and logs show `[mcp-rag-api] starting with argv: node dist/index.js serve` then `[mcp-rag-api] serve module loaded`.
+
 | Symptom | Likely cause | What to do |
 |---------|--------------|------------|
-| Fails in **&lt;10s**, logs show no `[mcp-rag-api] serve module loaded` | Stale image or wrong entrypoint | `git pull` then `docker compose up -d --build --force-recreate` |
+| Fails in **&lt;10s**, logs show no `[mcp-rag-api] serve module loaded` | Stale image or wrong entrypoint (`cli-main.js` instead of `index.js`) | Force fresh image — see mini-pc rebuild below; `docker-compose.yml` now sets `command` explicitly |
 | Logs show `Starting API server...` then **Postgres / ECONNREFUSED** | `DB_HOST` wrong from inside container | Use LAN IP (e.g. `192.168.50.105`), not `localhost` — test below |
 | Container stays **starting** for several minutes | First-run model download + embedder load | Normal on slow CPUs — wait for `API server ready at http://0.0.0.0:3939` |
 | `compose up` fails but API container is running | Old compose with `service_healthy` on web | Pull latest — web now uses `service_started` so the UI starts while API warms up |
@@ -1390,16 +1450,22 @@ sql\`SELECT 1 AS ok\`.then((r) => { console.log('DB OK', r); return sql.end(); }
 "
 ```
 
-**Mini-pc rebuild after pulling fixes:**
+**Mini-pc rebuild after pulling fixes** (force a fresh API image — do not skip `docker rmi`):
 
 ```bash
 cd mcp-local-rag-web
 git pull
+export DOCKER_BUILDKIT=1
+export GIT_REVISION=$(git rev-parse HEAD)
 docker compose down
-docker compose build --no-cache api
+docker rmi mcp-rag-api:latest mcp-local-rag-web-api 2>/dev/null || true
+docker compose build api
 docker compose up -d
+docker inspect mcp-rag-api --format '{{.Config.Cmd}}'
 docker compose logs -f api
 ```
+
+Expected `Cmd`: `[node dist/index.js serve]`. First logs should include `[mcp-rag-api] starting with argv:` and `[mcp-rag-api] serve module loaded`.
 
 ### API returns 401 Unauthorized
 

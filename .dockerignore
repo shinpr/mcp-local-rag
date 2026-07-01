@@ -1,24 +1,32 @@
-# Dependencies
+# Dependencies (installed inside the image)
 node_modules
 frontend/node_modules
+
+.pnpm-store
 
 # Build output
 dist
 frontend/dist
 
-# Data directories
+# Data directories (mounted as volumes at runtime)
 lancedb
 models
 uploads
 
-# Environment and config
+# Environment and secrets
 .env
 .env.*
 !.env.example
 
+# Git
+.git
+.gitignore
+.gitattributes
+
 # IDE and editor
 .vscode
 .idea
+.cursor
 *.swp
 *.swo
 *~
@@ -27,21 +35,36 @@ uploads
 .DS_Store
 Thumbs.db
 
-# Git
-.git
-.gitignore
-
 # Documentation
 *.md
 LICENSE
 
-# Test files
+# Test files and coverage
 **/__tests__
 **/*.test.ts
 **/*.spec.ts
 coverage
 
-# Docker
+# Docker (not needed in build context)
 docker-compose*.yml
 Dockerfile*
 .dockerignore
+
+# CI / git hooks (not needed for image build)
+.github
+.husky
+
+# Dev tooling configs (not used in Docker build)
+biome.json
+vitest.config.mjs
+tsconfig.test.json
+knip.json
+.lintstagedrc
+lint-staged.config.*
+
+# Local dev scripts (entrypoint is copied by the API Dockerfile)
+scripts/*
+!scripts/docker-api-entrypoint.sh
+
+# MCP registry metadata
+server.json
