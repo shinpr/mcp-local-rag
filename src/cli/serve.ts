@@ -2,10 +2,12 @@
 
 import 'dotenv/config'
 import { resolveApiConfig } from '../api/config.js'
-import { buildApp } from '../api/server.js'
+import { createAppShell, finalizeApp } from '../api/server.js'
 import { Embedder } from '../embedder/index.js'
 import { VectorStore } from '../vectordb/index.js'
 import type { GlobalOptions } from './options.js'
+
+console.error(`[mcp-rag-api] serve module loaded (pid=${process.pid})`)
 
 const HELP_TEXT = `Usage: mcp-local-rag serve [options]
 
@@ -33,6 +35,8 @@ Environment variables:
 `
 
 export async function runServe(args: string[], _globalOptions: GlobalOptions = {}): Promise<void> {
+  console.error(`[mcp-rag-api] runServe() entered (pid=${process.pid})`)
+
   // Handle --help
   if (args.includes('-h') || args.includes('--help')) {
     console.error(HELP_TEXT)
@@ -46,29 +50,35 @@ export async function runServe(args: string[], _globalOptions: GlobalOptions = {
   console.error(`  Database URL: ${config.databaseUrl.replace(/:[^:@]+@/, ':***@')}`)
   console.error(`  Upload dir:   ${config.uploadDir}`)
 
-  // Initialize shared RAG components
-  const vectorStore = new VectorStore({
-    dbPath: config.lanceDbPath,
-    tableName: 'chunks',
-  })
-  await vectorStore.initialize()
-
-  const embedder = new Embedder({
-    modelPath: config.modelName,
-    batchSize: 16,
-    cacheDir: config.cacheDir,
-    device: config.device,
-  })
-  await embedder.initialize()
-
-  // Build and start Fastify (async — runs PostgreSQL migration)
-  const app = await buildApp(config, vectorStore, embedder)
+  const app = await createAppShell(config)
 
   try {
     await app.listen({ port: config.port, host: config.host })
-    console.error(`API server listening on http://${config.host}:${config.port}`)
+    console.error(`Liveness endpoint ready at http://${config.host}:${config.port}/health/live`)
   } catch (error) {
-    console.error('Failed to start API server:', error)
+    console.error('Failed to bind HTTP server:', error)
+    process.exit(1)
+  }
+
+  try {
+    const vectorStore = new VectorStore({
+      dbPath: config.lanceDbPath,
+      tableName: 'chunks',
+    })
+    await vectorStore.initialize()
+
+    const embedder = new Embedder({
+      modelPath: config.modelName,
+      batchSize: 16,
+      cacheDir: config.cacheDir,
+      device: config.device,
+    })
+    await embedder.initialize()
+
+    await finalizeApp(app, config, vectorStore, embedder)
+    console.error(`API server ready at http://${config.host}:${config.port}`)
+  } catch (error) {
+    console.error('API startup failed:', error)
     process.exit(1)
   }
 }

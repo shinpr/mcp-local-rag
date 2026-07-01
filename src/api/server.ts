@@ -16,56 +16,78 @@ import { recoverStuckIndexing } from './ingest-recovery.js'
 import { registerAuthRoutes } from './routes/auth.js'
 import { registerCursorRoutes } from './routes/cursor.js'
 import { registerFileRoutes } from './routes/files.js'
-import { registerHealthRoutes } from './routes/health.js'
+import { registerHealthRoutes, registerLivenessRoute } from './routes/health.js'
 import { registerIngestRoutes } from './routes/ingest.js'
 import { registerProjectRoutes } from './routes/projects.js'
 import { registerSearchRoutes } from './routes/search.js'
 import { registerSkillRoutes } from './routes/skill.js'
 
-/**
- * Build and configure a Fastify application instance.
- *
- * Shared components (VectorStore, Embedder) are passed in — the HTTP server
- * reuses the same core RAG components as MCP and CLI, with zero duplication.
- */
-export async function buildApp(config: ApiConfig, vectorStore: VectorStore, embedder: Embedder) {
-  // Run PostgreSQL migration first
-  await migrateDb(config.databaseUrl)
-
-  // Repair legacy relative file paths before handling requests
-  await repairRelativeFilePaths(config)
-
-  // Reset files/jobs stuck in running/indexing after a crash or restart
-  await recoverStuckIndexing(config)
-
-  // Seed default admin user if configured
-  await seedDefaultAdmin(config)
-
-  const app = Fastify({
-    logger: {
-      level: 'info',
-      transport: {
-        target: 'pino-pretty',
-        options: { translateTime: 'HH:MM:ss Z', ignore: 'pid,hostname' },
-      },
+function createLoggerConfig() {
+  return {
+    level: 'info' as const,
+    transport: {
+      target: 'pino-pretty',
+      options: { translateTime: 'HH:MM:ss Z', ignore: 'pid,hostname' },
     },
-  })
+  }
+}
 
-  // Plugins
-  app.register(fastifyJwt, {
+function logMigrationFailure(config: ApiConfig, error: unknown): void {
+  console.error('PostgreSQL migration failed — cannot connect or run schema setup.')
+  console.error(`  Database: ${config.databaseUrl.replace(/:[^:@]+@/, ':***@')}`)
+  console.error(
+    '  From Docker, DB_HOST must be a LAN IP reachable from the container (not localhost).'
+  )
+  if (error instanceof Error) {
+    console.error(`  Error: ${error.message}`)
+  } else {
+    console.error('  Error:', error)
+  }
+}
+
+/**
+ * Fastify shell with plugins and liveness route — safe to listen before embedder/DB init.
+ */
+export async function createAppShell(config: ApiConfig) {
+  const app = Fastify({ logger: createLoggerConfig() })
+
+  await app.register(fastifyJwt, {
     secret: config.jwtSecret,
     sign: { expiresIn: config.jwtExpiresIn },
   })
-  app.register(fastifyMultipart, {
+  await app.register(fastifyMultipart, {
     limits: {
       fileSize: 100 * 1024 * 1024, // 100MB max upload
     },
   })
 
-  // Initialize PostgreSQL DB (triggers singleton creation)
+  registerLivenessRoute(app)
+
+  return app
+}
+
+/**
+ * Finish startup on an already-listening app: migrate DB, seed, register API routes.
+ */
+export async function finalizeApp(
+  app: Awaited<ReturnType<typeof createAppShell>>,
+  config: ApiConfig,
+  vectorStore: VectorStore,
+  embedder: Embedder
+) {
+  try {
+    await migrateDb(config.databaseUrl)
+  } catch (error) {
+    logMigrationFailure(config, error)
+    throw error
+  }
+
+  await repairRelativeFilePaths(config)
+  await recoverStuckIndexing(config)
+  await seedDefaultAdmin(config)
+
   getDb(config.databaseUrl)
 
-  // Routes
   registerAuthRoutes(app, config)
   registerProjectRoutes(app, config, vectorStore)
   registerFileRoutes(app, config, vectorStore)
@@ -74,7 +96,17 @@ export async function buildApp(config: ApiConfig, vectorStore: VectorStore, embe
   registerCursorRoutes(app)
   registerSkillRoutes(app, config)
   registerHealthRoutes(app)
+}
 
+/**
+ * Build and configure a Fastify application instance.
+ *
+ * Shared components (VectorStore, Embedder) are passed in — the HTTP server
+ * reuses the same core RAG components as MCP and CLI, with zero duplication.
+ */
+export async function buildApp(config: ApiConfig, vectorStore: VectorStore, embedder: Embedder) {
+  const app = await createAppShell(config)
+  await finalizeApp(app, config, vectorStore, embedder)
   return app
 }
 

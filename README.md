@@ -452,7 +452,8 @@ The API server starts on `http://127.0.0.1:3939` by default. On first start, it 
 | `POST` | `/files/:id/reindex` | JWT | Re-index a single file |
 | `GET` | `/jobs/:id` | JWT | Check index job status |
 | `POST` | `/search` | JWT | Search project documents |
-| `GET` | `/health` | No | Server health check |
+| `GET` | `/health/live` | No | Liveness probe (process up, before embedder ready) |
+| `GET` | `/health` | No | Readiness check (full startup complete) |
 
 ### Example: Register and Search
 
@@ -770,7 +771,7 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
-> **First start can take several minutes.** The API loads the embedding model before it listens on port 3939. On a slow CPU, the first run also downloads the model into the `model_cache` volume. Docker waits up to **180s** before counting health-check failures, then allows **12** more retries at **10s** intervals (~5 minutes total). Watch progress with `docker compose logs -f api` — look for `API server listening on http://0.0.0.0:3939`.
+> **First start can take several minutes.** The API binds port 3939 immediately (`/health/live`), then loads the embedding model and runs DB migration. On a slow CPU, the first run also downloads the model into the `model_cache` volume. Use `/health` (not `/health/live`) to confirm full readiness. Watch progress with `docker compose logs -f api` — look for `API server ready at http://0.0.0.0:3939`.
 
 **Required `.env` values for external Postgres:**
 
@@ -790,7 +791,10 @@ docker compose up -d --build
 **Verify connectivity** (optional, from the mini-pc after `docker compose up`):
 
 ```bash
-# API health (does not require DB to be up first — check logs if this fails)
+# Liveness (responds as soon as the process binds the port)
+curl -s http://localhost:3939/health/live
+
+# Readiness (only after embedder + DB migration complete — check logs if this fails)
 curl -s http://localhost:3939/health
 
 # Direct Postgres check from the API image (uses postgres.js, same as the app)
@@ -1346,14 +1350,56 @@ Ensure PostgreSQL is running and accessible. Check `DB_HOST`, `DB_PORT`, `DB_USE
 
 ### Docker: `mcp-rag-api` unhealthy / dependency failed to start
 
-The API does not expose `/health` until LanceDB, the embedder, and PostgreSQL migration all finish. On a slow CPU the first start also downloads the embedding model (~90 MB) into the `model_cache` volume.
+**Diagnose first** — failure in a few seconds usually means the API process crashed or exited, not a slow health check:
 
 ```bash
-docker compose logs -f api   # watch for "API server listening on http://0.0.0.0:3939"
-docker compose ps            # api should show "healthy" after startup completes
+docker compose ps -a              # "Exit 0" or rapid restarts = startup crash or bad config
+docker logs mcp-rag-api --tail 100   # use docker logs if compose logs shows nothing
+docker compose logs api           # crash: stack trace; slow start: embedder/model messages
+docker compose config | grep -A6 healthcheck   # confirm /health/live after pulling latest
 ```
 
-If the container exits instead of staying unhealthy, check DB connectivity (wrong `DB_HOST`, firewall, or credentials). If it stays `starting` for several minutes on first run, that is normal — wait for the model download to finish.
+| Symptom | Likely cause | What to do |
+|---------|--------------|------------|
+| Fails in **&lt;10s**, logs show no `[mcp-rag-api] serve module loaded` | Stale image or wrong entrypoint | `git pull` then `docker compose up -d --build --force-recreate` |
+| Logs show `Starting API server...` then **Postgres / ECONNREFUSED** | `DB_HOST` wrong from inside container | Use LAN IP (e.g. `192.168.50.105`), not `localhost` — test below |
+| Container stays **starting** for several minutes | First-run model download + embedder load | Normal on slow CPUs — wait for `API server ready at http://0.0.0.0:3939` |
+| `compose up` fails but API container is running | Old compose with `service_healthy` on web | Pull latest — web now uses `service_started` so the UI starts while API warms up |
+
+Docker liveness uses **`/health/live`** (responds as soon as the process binds port 3939). **`/health`** is readiness — LanceDB, embedder, and PostgreSQL migration must finish first. On a slow CPU the first start also downloads the embedding model (~90 MB) into the `model_cache` volume. The health check uses **Node `fetch`** inside the container (no `curl` required).
+
+```bash
+docker compose logs -f api   # watch for "API server ready at http://0.0.0.0:3939"
+docker compose ps            # api should show "healthy" once /health/live responds
+```
+
+**Test DB reachability from the API image** (same network as `docker compose up`):
+
+```bash
+docker compose run --rm api node -e "
+const postgres = require('postgres');
+const sql = postgres({
+  host: process.env.DB_HOST,
+  port: Number(process.env.DB_PORT),
+  username: process.env.DB_USER,
+  password: process.env.DB_PASSWORD,
+  database: process.env.DB_NAME,
+});
+sql\`SELECT 1 AS ok\`.then((r) => { console.log('DB OK', r); return sql.end(); })
+  .catch((e) => { console.error(e.message); process.exit(1); });
+"
+```
+
+**Mini-pc rebuild after pulling fixes:**
+
+```bash
+cd mcp-local-rag-web
+git pull
+docker compose down
+docker compose build --no-cache api
+docker compose up -d
+docker compose logs -f api
+```
 
 ### API returns 401 Unauthorized
 

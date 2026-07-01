@@ -41,7 +41,7 @@ services:
     ports:
       - "${API_PORT}:3939"
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://localhost:3939/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3939/health/live').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
       interval: 10s
       timeout: 5s
       start_period: 180s
@@ -58,7 +58,7 @@ services:
     restart: unless-stopped
     depends_on:
       api:
-        condition: service_healthy
+        condition: service_started
     ports:
       - "${WEB_PORT:-80}:80"
     networks:
