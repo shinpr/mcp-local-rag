@@ -41,7 +41,8 @@ export function registerIngestRoutes(
       }
 
       // Get files to index
-      let filesToIndex: Awaited<ReturnType<typeof db.select>> = []
+      type FileRow = typeof uploadedFiles.$inferSelect
+      let filesToIndex: FileRow[] = []
       if (fileIds && fileIds.length > 0) {
         const allProjectFiles = await db
           .select()
