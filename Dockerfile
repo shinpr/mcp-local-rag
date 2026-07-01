@@ -10,7 +10,7 @@ WORKDIR /app
 FROM base AS deps
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY frontend/package.json ./frontend/
-RUN pnpm install --frozen-lockfile --filter '!frontend'
+RUN pnpm install --frozen-lockfile --filter '!./frontend'
 
 # Build backend
 FROM deps AS build

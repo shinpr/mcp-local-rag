@@ -6,15 +6,16 @@ RUN corepack enable && corepack prepare pnpm@11.9.0 --activate
 
 WORKDIR /app
 
-# Install dependencies
+# Install dependencies (workspace install so pnpm-workspace.yaml allowBuilds applies)
 FROM base AS deps
-COPY frontend/package.json frontend/pnpm-lock.yaml* ./
-RUN pnpm install --frozen-lockfile 2>/dev/null || npm install
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY frontend/package.json ./frontend/
+RUN pnpm install --frozen-lockfile --filter ./frontend...
 
 # Build frontend
 FROM deps AS build
-COPY frontend/ ./
-RUN pnpm build
+COPY frontend/ ./frontend/
+RUN pnpm --filter ./frontend build
 
 # Production image - serve with nginx
 FROM nginx:alpine AS production
@@ -23,7 +24,7 @@ FROM nginx:alpine AS production
 COPY frontend/nginx.conf /etc/nginx/conf.d/default.conf
 
 # Copy built assets
-COPY --from=build /app/dist /usr/share/nginx/html
+COPY --from=build /app/frontend/dist /usr/share/nginx/html
 
 # Expose port
 EXPOSE 80
