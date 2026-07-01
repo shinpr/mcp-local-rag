@@ -2,12 +2,12 @@
 
 import { extname } from 'node:path'
 import { SemanticChunker } from '../chunker/index.js'
-import type { Embedder } from '../embedder/index.js'
 import { buildChunksAndEmbeddings, buildVectorChunks } from '../ingest/compute.js'
 import { DocumentParser } from '../parser/index.js'
 import { computeContentHash } from '../utils/file-hash.js'
 import type { VectorStore } from '../vectordb/index.js'
 import type { ApiConfig } from './config.js'
+import type { EmbeddingClient } from './embedding/types.js'
 import { resolveStoredFilePath } from './upload-utils.js'
 
 interface IngestFileParams {
@@ -16,7 +16,7 @@ interface IngestFileParams {
   storedFilename: string
   projectName: string
   vectorStore: VectorStore
-  embedder: Embedder
+  embedder: EmbeddingClient
   config: ApiConfig
 }
 

@@ -14,3 +14,8 @@ if (!existsSync(huskyBin)) {
 }
 
 execSync('husky', { stdio: 'inherit' })
+
+const ensureHuskyZsh = join(process.cwd(), 'scripts', 'ensure-husky-zsh.mjs')
+if (existsSync(ensureHuskyZsh)) {
+  execSync(`node ${ensureHuskyZsh}`, { stdio: 'inherit' })
+}

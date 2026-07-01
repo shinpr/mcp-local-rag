@@ -9,7 +9,7 @@ import { recoverProjectIndexing } from '../ingest-recovery.js'
 import { ingestFile } from '../ingest-worker.js'
 import { type JwtPayload, requireAuth } from '../middleware/auth.js'
 import type { RagServices } from '../rag-services.js'
-import { getEmbedder, getVectorStore } from '../rag-services.js'
+import { getEmbeddingClientForUser, getVectorStore } from '../rag-services.js'
 import { emptyBodySchema, indexProjectSchema, reindexProjectSchema } from '../schemas/requests.js'
 import { resolveStoredFilePath } from '../upload-utils.js'
 
@@ -70,13 +70,19 @@ export function registerIngestRoutes(
     })
   }
 
-  const runIngestionJob = (jobId: number, projectName: string, filesToIndex: FileRow[]): void => {
+  const runIngestionJob = (
+    jobId: number,
+    projectName: string,
+    filesToIndex: FileRow[],
+    userId: number
+  ): void => {
     const totalFiles = filesToIndex.length
 
     ;(async () => {
       let succeeded = 0
       let attempted = 0
       let totalChunks = 0
+      const embedder = await getEmbeddingClientForUser(services, userId)
 
       for (const file of filesToIndex) {
         await db
@@ -95,7 +101,7 @@ export function registerIngestRoutes(
             storedFilename: file.storedFilename,
             projectName,
             vectorStore: getVectorStore(services),
-            embedder: getEmbedder(services),
+            embedder,
             config,
           })
 
@@ -162,7 +168,7 @@ export function registerIngestRoutes(
       throw new Error('Failed to create index job')
     }
 
-    runIngestionJob(job.id, projectName, filesToIndex)
+    runIngestionJob(job.id, projectName, filesToIndex, userId)
 
     return {
       jobId: job.id,

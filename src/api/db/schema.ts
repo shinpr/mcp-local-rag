@@ -86,3 +86,23 @@ export const indexJobs = pgTable('index_jobs', {
   startedAt: timestamp('started_at', { withTimezone: true }),
   finishedAt: timestamp('finished_at', { withTimezone: true }),
 })
+
+// ============================================
+// User Settings (embedding provider config)
+// ============================================
+
+export const userSettings = pgTable(
+  'user_settings',
+  {
+    id: serial('id').primaryKey(),
+    userId: integer('user_id')
+      .notNull()
+      .references(() => users.id),
+    embeddingProvider: text('embedding_provider').notNull().default('local'),
+    apiBaseUrl: text('api_base_url'),
+    apiKeyEncrypted: text('api_key_encrypted'),
+    modelName: text('model_name'),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [uniqueIndex('user_settings_user_id_idx').on(table.userId)]
+)

@@ -8,7 +8,7 @@ import { getDb } from '../db/index.js'
 import { projects, uploadedFiles } from '../db/schema.js'
 import { type JwtPayload, requireAuth } from '../middleware/auth.js'
 import type { RagServices } from '../rag-services.js'
-import { getEmbedder, getVectorStore } from '../rag-services.js'
+import { getEmbeddingClientForUser, getVectorStore } from '../rag-services.js'
 import { searchSchema } from '../schemas/requests.js'
 
 const MAX_SEARCH_LIMIT = 20
@@ -44,8 +44,8 @@ export function registerSearchRoutes(
 
       const effectiveLimit = Math.min(limit ?? 10, MAX_SEARCH_LIMIT)
 
-      // Convert query text to embedding vector
-      const queryVector = await getEmbedder(services).embed(query)
+      const embedder = await getEmbeddingClientForUser(services, userId)
+      const queryVector = await embedder.embed(query)
 
       const results = await getVectorStore(services).search(queryVector, {
         queryText: query,

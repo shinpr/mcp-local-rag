@@ -84,6 +84,19 @@ export async function migrateDb(databaseUrl: string): Promise<void> {
         started_at TIMESTAMPTZ,
         finished_at TIMESTAMPTZ
       );
+
+      CREATE TABLE IF NOT EXISTS user_settings (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL REFERENCES users(id),
+        embedding_provider TEXT NOT NULL DEFAULT 'local',
+        api_base_url TEXT,
+        api_key_encrypted TEXT,
+        model_name TEXT,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+
+      CREATE UNIQUE INDEX IF NOT EXISTS user_settings_user_id_idx
+        ON user_settings(user_id);
     `)
   } finally {
     await client.end()

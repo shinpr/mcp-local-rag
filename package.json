@@ -69,6 +69,7 @@
     "test:safe": "pnpm test && pnpm run cleanup:processes",
     "lancedb:mount": "bash ./scripts/lancedb-mount.sh",
     "lancedb:umount": "bash ./scripts/lancedb-umount.sh",
+    "precommit": "node scripts/precommit.mjs",
     "prepare": "node scripts/prepare.mjs"
   },
   "dependencies": {
@@ -111,8 +112,7 @@
   },
   "lint-staged": {
     "src/**/*.{ts,tsx}": [
-      "biome check --write --no-errors-on-unmatched",
-      "biome format --write --no-errors-on-unmatched"
+      "biome check --write --no-errors-on-unmatched"
     ]
   },
   "mcpName": "io.github.shinpr/mcp-local-rag"

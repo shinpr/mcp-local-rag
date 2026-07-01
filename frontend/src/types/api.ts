@@ -93,3 +93,33 @@ export interface ApiError {
   error: string
   message: string
 }
+
+export type EmbeddingProvider =
+  | 'local'
+  | 'lm_studio'
+  | 'nvidia_nim'
+  | 'openai'
+  | 'openai_compatible'
+
+export interface DefaultEmbeddingInfo {
+  provider: EmbeddingProvider
+  modelName: string
+  dimensions: number
+  description: string
+  equivalentProviderOptions: Array<{
+    provider: EmbeddingProvider
+    modelName: string
+    note: string
+  }>
+}
+
+export interface SettingsResponse {
+  embeddingProvider: EmbeddingProvider
+  apiBaseUrl: string | null
+  modelName: string
+  apiKeySet: boolean
+  apiKeyMasked: string | null
+  matchesDefaultEmbedding: boolean
+  updatedAt: string | null
+  defaultEmbedding: DefaultEmbeddingInfo
+}

@@ -365,6 +365,45 @@ describe('Stage 2 — API integration', () => {
   })
 
   // ============================================
+  // Settings
+  // ============================================
+
+  describe('Settings', () => {
+    it('returns default embedding settings for a new user', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/settings',
+        headers: { authorization: `Bearer ${authToken}` },
+      })
+      expect(response.statusCode).toBe(200)
+      const body = response.json()
+      expect(body.embeddingProvider).toBe('local')
+      expect(body.modelName).toBe('Xenova/all-MiniLM-L6-v2')
+      expect(body.matchesDefaultEmbedding).toBe(true)
+      expect(body.defaultEmbedding.provider).toBe('local')
+      expect(body.apiKeySet).toBe(false)
+    })
+
+    it('updates embedding provider settings', async () => {
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/settings',
+        headers: { authorization: `Bearer ${authToken}` },
+        payload: {
+          embeddingProvider: 'lm_studio',
+          apiBaseUrl: 'http://localhost:1234/v1',
+          modelName: 'sentence-transformers/all-MiniLM-L6-v2',
+        },
+      })
+      expect(response.statusCode).toBe(200)
+      const body = response.json()
+      expect(body.embeddingProvider).toBe('lm_studio')
+      expect(body.apiBaseUrl).toBe('http://localhost:1234/v1')
+      expect(body.matchesDefaultEmbedding).toBe(true)
+    })
+  })
+
+  // ============================================
   // Delete project
   // ============================================
 

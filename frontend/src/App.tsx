@@ -11,6 +11,7 @@ import SearchPage from './pages/SearchPage'
 import McpSetupPage from './pages/McpSetupPage'
 import SkillSetupPage from './pages/SkillSetupPage'
 import AgentsSetupPage from './pages/AgentsSetupPage'
+import SettingsPage from './pages/SettingsPage'
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { isAuthenticated, isLoading } = useAuth()
@@ -82,6 +83,7 @@ export default function App() {
           <Route path="projects/:id" element={<ProjectDetailPage />} />
           <Route path="projects/:id/upload" element={<UploadPage />} />
           <Route path="search" element={<SearchPage />} />
+          <Route path="settings" element={<SettingsPage />} />
           <Route path="setup/mcp" element={<McpSetupPage />} />
           <Route path="setup/skill" element={<SkillSetupPage />} />
           <Route path="setup/agents" element={<AgentsSetupPage />} />

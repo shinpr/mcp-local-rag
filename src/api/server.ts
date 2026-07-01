@@ -11,6 +11,7 @@ import type { VectorStore } from '../vectordb/index.js'
 import type { ApiConfig } from './config.js'
 import { getDb, migrateDb } from './db/index.js'
 import { users } from './db/schema.js'
+import { EmbeddingService } from './embedding/embedding-service.js'
 import { repairRelativeFilePaths } from './file-path-repair.js'
 import { recoverStuckIndexing } from './ingest-recovery.js'
 import { blockUntilReady } from './middleware/ready.js'
@@ -23,6 +24,7 @@ import { registerHealthRoutes } from './routes/health.js'
 import { registerIngestRoutes } from './routes/ingest.js'
 import { registerProjectRoutes } from './routes/projects.js'
 import { registerSearchRoutes } from './routes/search.js'
+import { registerSettingsRoutes } from './routes/settings.js'
 import { registerSkillRoutes } from './routes/skill.js'
 
 function createLoggerConfig() {
@@ -101,6 +103,7 @@ export async function createAppShell(config: ApiConfig): Promise<AppShell> {
   registerFileRoutes(app, config, services)
   registerIngestRoutes(app, config, services)
   registerSearchRoutes(app, config, services)
+  registerSettingsRoutes(app, config, services)
   registerCursorRoutes(app)
   registerSkillRoutes(app, config)
 
@@ -132,6 +135,7 @@ export async function finalizeApp(
 
   services.vectorStore = vectorStore
   services.embedder = embedder
+  services.embeddingService = new EmbeddingService(config, embedder)
   markApiReady()
 }
 

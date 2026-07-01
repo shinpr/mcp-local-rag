@@ -6,6 +6,7 @@ const navItems = [
   { to: '/dashboard', label: 'Dashboard', icon: '📊' },
   { to: '/projects', label: 'Projects', icon: '📁' },
   { to: '/search', label: 'Search', icon: '🔍' },
+  { to: '/settings', label: 'Settings', icon: '🔧' },
   { to: '/setup/mcp', label: 'MCP Setup', icon: '⚙️' },
   { to: '/setup/skill', label: 'Skill Setup', icon: '📝' },
   { to: '/setup/agents', label: 'AGENTS.md', icon: '🤖' },

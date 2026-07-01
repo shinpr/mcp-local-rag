@@ -99,3 +99,24 @@ export const emptyBodySchema: FastifySchema = {
     additionalProperties: false,
   },
 }
+
+// ============================================
+// Settings
+// ============================================
+
+export const updateSettingsSchema: FastifySchema = {
+  body: {
+    type: 'object',
+    required: ['embeddingProvider'],
+    properties: {
+      embeddingProvider: {
+        type: 'string',
+        enum: ['local', 'lm_studio', 'nvidia_nim', 'openai', 'openai_compatible'],
+      },
+      apiBaseUrl: { type: ['string', 'null'], maxLength: 2048 },
+      apiKey: { type: ['string', 'null'], maxLength: 4096 },
+      modelName: { type: ['string', 'null'], maxLength: 256 },
+    },
+    additionalProperties: false,
+  },
+}
