@@ -1,3 +1,7 @@
+# Enable BuildKit for cache mounts and faster layer export:
+#   export DOCKER_BUILDKIT=1 COMPOSE_BAKE=true
+# Optional: persist buildx cache across machines (see README "Fast rebuilds").
+
 services:
   # PostgreSQL database for metadata storage
   # Only used when DB_HOST=localhost. Start with: docker compose --profile local-db up
@@ -26,8 +30,16 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      cache_from:
+        - mcp-rag-api:latest
+      args:
+        GIT_REVISION: ${GIT_REVISION:-unknown}
+    image: mcp-rag-api:latest
+    pull_policy: build
     container_name: mcp-rag-api
     restart: unless-stopped
+    # Override image CMD so a stale cached layer cannot resurrect dist/cli-main.js serve
+    command: ["node", "dist/index.js", "serve"]
     env_file: .env
     environment:
       API_HOST: 0.0.0.0
@@ -54,6 +66,9 @@ services:
     build:
       context: .
       dockerfile: frontend/Dockerfile
+      cache_from:
+        - mcp-rag-web:latest
+    image: mcp-rag-web:latest
     container_name: mcp-rag-web
     restart: unless-stopped
     depends_on:
