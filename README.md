@@ -109,6 +109,37 @@ mcp-local-rag provides two interfaces: an **MCP server** for AI coding tools and
 
 The MCP server provides 7 tools: `ingest_file`, `ingest_data`, `query_documents`, `read_chunk_neighbors`, `list_files`, `delete_file`, `status`.
 
+#### Project Namespaces
+
+Documents can be organized into project namespaces. Add `projectName` to `ingest_file`/`ingest_data` to index under a project. Legacy `query_documents` returns only the default project; use `search_project_docs` for project-scoped search.
+
+**5 new project-scoped tools:**
+
+| Tool | Purpose |
+|------|---------|
+| `search_project_docs` | Search within a specific project (requires `project_name`) |
+| `list_projects` | List all indexed projects with document/chunk counts |
+| `get_project_brief` | Get project overview from indexed docs |
+| `requirement_lookup` | Look up a specific requirement within a project |
+| `planning_context` | Gather structured context for planning a task |
+
+**Via MCP:**
+```
+"Ingest /Users/me/docs/seg-spec.pdf under project SEG"
+"Search project SEG for copper integration requirements"
+"List all projects"
+```
+
+**Via CLI:**
+```bash
+npx mcp-local-rag ingest ./docs/SEG --project SEG
+npx mcp-local-rag ingest ./docs/MVA --project MVA
+```
+
+**Configuration:**
+- `DEFAULT_PROJECT` env var (default: `"default"`) — the project name used when none is specified
+- Project names must start with a letter and contain only letters, digits, hyphens, underscores (1-64 chars)
+
 #### Ingesting Documents
 
 ```
@@ -656,14 +687,195 @@ src/
   index.ts      # Entry point
   server/       # MCP tool handlers
   cli/          # CLI subcommands (ingest, query, list, delete, read-neighbors, etc.)
+  api/          # Fastify HTTP API (auth, projects, files, search)
   parser/       # PDF, DOCX, TXT, MD parsing
   chunker/      # Text splitting
   embedder/     # Transformers.js embeddings
   vectordb/     # LanceDB operations
   __tests__/    # Test suites
+frontend/       # React web UI (Vite + TypeScript + Tailwind)
+  src/
+    api/        # API client functions
+    components/ # Reusable UI components
+    pages/      # Page components
+    hooks/      # Custom React hooks
+docs/
+  ARCHITECTURE_CURRENT.md  # Detailed architecture documentation
 ```
 
 </details>
+
+### Stage 0 Verification
+
+Verify the ingest and query pipeline works end-to-end:
+
+```bash
+node scripts/verify-stage0.mjs
+```
+
+This script ingests a sample document into a temp database, queries it, and validates results. Exit 0 = pass.
+
+## HTTP API (Stage 2)
+
+In addition to MCP and CLI, the server exposes a REST API for managing projects, files, and search.
+
+### Starting the API Server
+
+```bash
+mcp-local-rag serve
+```
+
+Or with custom port:
+
+```bash
+API_PORT=8080 mcp-local-rag serve
+```
+
+## Web UI (Stage 3)
+
+A modern web interface for managing your RAG system, built with React, TypeScript, and Tailwind CSS.
+
+### Features
+
+- **Authentication** — Register and login with JWT-based auth
+- **Dashboard** — Overview of projects, server status, and quick actions
+- **Project Management** — Create, view, and delete projects
+- **File Upload** — Drag-and-drop file upload with progress tracking
+- **Document Indexing** — Trigger indexing and monitor job status
+- **Search** — Search across indexed documents with relevance scoring
+- **MCP Setup** — Generate MCP server configuration for Cursor
+- **Skill Setup** — Generate RAG skill files for AI assistants
+- **AGENTS.md Setup** — Generate AGENTS.md blocks for project context
+
+### Running the Full Stack
+
+**Quick start (both API and UI):**
+
+```bash
+pnpm install
+pnpm run dev:full
+```
+
+This starts:
+- API server on `http://127.0.0.1:3939`
+- Web UI on `http://localhost:5173`
+
+**Run separately:**
+
+```bash
+# Terminal 1: API server
+pnpm run dev:api
+
+# Terminal 2: Web UI
+pnpm run dev:ui
+```
+
+### UI Structure
+
+```
+frontend/
+├── src/
+│   ├── api/          # API client functions
+│   ├── components/   # Reusable UI components
+│   ├── hooks/        # Custom React hooks (auth context)
+│   ├── pages/        # Page components
+│   ├── types/        # TypeScript type definitions
+│   └── utils/        # Utility functions
+├── index.html
+├── package.json
+├── vite.config.ts    # Vite config with API proxy
+└── tailwind.config.js
+```
+
+### Key Pages
+
+| Page | Route | Description |
+|------|-------|-------------|
+| Login | `/login` | User authentication |
+| Register | `/register` | Create new account |
+| Dashboard | `/dashboard` | Overview and quick actions |
+| Projects | `/projects` | List and manage projects |
+| Project Detail | `/projects/:id` | View files, trigger indexing |
+| Upload | `/projects/:id/upload` | Upload documents |
+| Search | `/search` | Search indexed documents |
+| MCP Setup | `/setup/mcp` | Generate MCP configuration |
+| Skill Setup | `/setup/skill` | Generate RAG skill files |
+| AGENTS.md | `/setup/agents` | Generate AGENTS.md blocks |
+
+### Development
+
+```bash
+# Install frontend dependencies
+cd frontend && pnpm install
+
+# Run frontend tests
+pnpm run test:ui
+
+# Build for production
+cd frontend && pnpm build
+```
+
+### API Endpoints
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| `POST` | `/auth/register` | No | Register a new user |
+| `POST` | `/auth/login` | No | Login and get JWT token |
+| `GET` | `/auth/me` | JWT | Get current user info |
+| `POST` | `/projects` | JWT | Create a project |
+| `GET` | `/projects` | JWT | List user's projects |
+| `GET` | `/projects/:id` | JWT | Get project details with stats |
+| `DELETE` | `/projects/:id` | JWT | Delete project and all its data |
+| `POST` | `/projects/:id/files/upload` | JWT | Upload a file to a project |
+| `GET` | `/projects/:id/files` | JWT | List files in a project |
+| `DELETE` | `/files/:id` | JWT | Delete a file |
+| `POST` | `/projects/:id/index` | JWT | Trigger file indexing (background) |
+| `POST` | `/projects/:id/reindex` | JWT | Reset and re-index all files |
+| `POST` | `/files/:id/reindex` | JWT | Re-index a single file |
+| `GET` | `/jobs/:id` | JWT | Check index job status |
+| `POST` | `/search` | JWT | Search project documents |
+| `GET` | `/health` | No | Server health check |
+
+### Example: Register and Search
+
+```bash
+# Register
+TOKEN=$(curl -s -X POST http://localhost:3939/auth/register \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"user@example.com","username":"dev","password":"password123"}' \
+  | jq -r .token)
+
+# Create project
+curl -s -X POST http://localhost:3939/projects \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"my-project","description":"My docs"}'
+
+# Upload and index a file
+curl -s -X POST http://localhost:3939/projects/1/files/upload \
+  -H "Authorization: Bearer $TOKEN" \
+  -F "file=@./README.md"
+
+curl -s -X POST http://localhost:3939/projects/1/index \
+  -H "Authorization: Bearer $TOKEN"
+
+# Search
+curl -s -X POST http://localhost:3939/search \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"projectName":"my-project","query":"semantic search"}'
+```
+
+### API Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `API_PORT` | `3939` | HTTP server port |
+| `API_HOST` | `127.0.0.1` | HTTP server bind address |
+| `JWT_SECRET` | (random) | JWT signing secret |
+| `JWT_EXPIRES_IN` | `7d` | JWT token expiry |
+| `SQLITE_DB_PATH` | `<DB_PATH>/api.db` | SQLite database path |
+| `UPLOAD_DIR` | `<DB_PATH>/uploads/` | File upload storage directory |
 
 ## Contributing
 

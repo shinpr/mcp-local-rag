@@ -1,0 +1,43 @@
+# Backend API server Dockerfile
+FROM node:22-slim AS base
+
+# Install pnpm
+RUN corepack enable && corepack prepare pnpm@11.9.0 --activate
+
+WORKDIR /app
+
+# Install dependencies
+FROM base AS deps
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY frontend/package.json ./frontend/
+RUN pnpm install --frozen-lockfile --filter '!frontend'
+
+# Build backend
+FROM deps AS build
+COPY tsconfig.json ./
+COPY src/ ./src/
+RUN pnpm build
+
+# Production image
+FROM node:22-slim AS production
+
+RUN corepack enable && corepack prepare pnpm@11.9.0 --activate
+
+WORKDIR /app
+
+# Copy built output and dependencies
+COPY --from=build /app/dist ./dist
+COPY --from=build /app/package.json ./
+COPY --from=build /app/node_modules ./node_modules
+
+# Create data directories
+RUN mkdir -p /app/lancedb /app/models /app/uploads
+
+# Expose API port
+EXPOSE 3939
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD node -e "fetch('http://localhost:3939/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
+
+CMD ["node", "dist/cli-main.js", "serve"]

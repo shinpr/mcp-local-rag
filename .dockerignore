@@ -1,0 +1,47 @@
+# Dependencies
+node_modules
+frontend/node_modules
+
+# Build output
+dist
+frontend/dist
+
+# Data directories
+lancedb
+models
+uploads
+
+# Environment and config
+.env
+.env.*
+!.env.example
+
+# IDE and editor
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Git
+.git
+.gitignore
+
+# Documentation
+*.md
+LICENSE
+
+# Test files
+**/__tests__
+**/*.test.ts
+**/*.spec.ts
+coverage
+
+# Docker
+docker-compose*.yml
+Dockerfile*
+.dockerignore

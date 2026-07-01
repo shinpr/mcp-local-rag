@@ -1,0 +1,86 @@
+services:
+  # PostgreSQL database for metadata storage
+  postgres:
+    image: postgres:16-alpine
+    container_name: mcp-rag-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_USER:-mcp_local_rag_user}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-mcp_local_rag_password}
+      POSTGRES_DB: ${DB_NAME:-mcp_local_rag_db}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-mcp_local_rag_user} -d ${DB_NAME:-mcp_local_rag_db}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - mcp-rag-network
+
+  # Backend API server
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: mcp-rag-api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      API_PORT: 3939
+      API_HOST: "0.0.0.0"
+      DATABASE_URL: postgresql://${DB_USER:-mcp_local_rag_user}:${DB_PASSWORD:-mcp_local_rag_password}@postgres:5432/${DB_NAME:-mcp_local_rag_db}
+      DB_PATH: /app/lancedb
+      MODEL_NAME: ${MODEL_NAME:-Xenova/all-MiniLM-L6-v2}
+      CACHE_DIR: /app/models
+      UPLOAD_DIR: /app/uploads
+      RAG_DEVICE: ${RAG_DEVICE:-cpu}
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+    volumes:
+      - lancedb_data:/app/lancedb
+      - model_cache:/app/models
+      - upload_data:/app/uploads
+    ports:
+      - "${API_PORT:-3939}:3939"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3939/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+    networks:
+      - mcp-rag-network
+
+  # Frontend web UI
+  web:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    container_name: mcp-rag-web
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "${WEB_PORT:-80}:80"
+    networks:
+      - mcp-rag-network
+
+volumes:
+  postgres_data:
+    driver: local
+  lancedb_data:
+    driver: local
+  model_cache:
+    driver: local
+  upload_data:
+    driver: local
+
+networks:
+  mcp-rag-network:
+    driver: bridge
