@@ -67,7 +67,7 @@
     "check:all": "pnpm run check && pnpm run lint && pnpm run format:check && pnpm run check:unused && pnpm run check:deps && pnpm run build && pnpm run type-check:test && pnpm run test",
     "cleanup:processes": "bash ./scripts/cleanup-test-processes.sh",
     "test:safe": "pnpm test && pnpm run cleanup:processes",
-    "prepare": "husky"
+    "prepare": "node scripts/prepare.mjs"
   },
   "dependencies": {
     "@fastify/jwt": "^10.1.0",
