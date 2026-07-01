@@ -199,6 +199,12 @@ export async function resolveServerConfig(
   if (configWarnings.length > 0) config.configWarnings = configWarnings
   if (configError !== undefined) config.configError = configError
 
+  // Default project name: DEFAULT_PROJECT env or "default"
+  const defaultProject = env['DEFAULT_PROJECT']?.trim()
+  if (defaultProject && defaultProject.length > 0) {
+    config.defaultProject = defaultProject
+  }
+
   return config
 }
 

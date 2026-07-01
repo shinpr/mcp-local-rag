@@ -39,7 +39,7 @@ export const toolDefinitions: Tool[] = [
   {
     name: 'ingest_file',
     description:
-      'Ingest a document file (PDF, DOCX, TXT, MD) into the vector database. Path must be absolute; re-ingesting the same path replaces its existing data. Returns { filePath, chunkCount, timestamp, fileTitle }.',
+      'Ingest a document file (PDF, DOCX, TXT, MD) into the vector database. Path must be absolute; re-ingesting the same path replaces its existing data. Returns { filePath, chunkCount, timestamp, fileTitle, projectName }.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -59,6 +59,11 @@ export const toolDefinitions: Tool[] = [
           description:
             'VLM profile when visual is true (default "fast"). "quality" is more accurate on figures with in-image text but much heavier and slower. Ignored when visual is false.',
         },
+        projectName: {
+          type: 'string',
+          description:
+            'Project name namespace for indexing (default: DEFAULT_PROJECT env or "default"). Must start with a letter, contain only letters/digits/hyphens/underscores.',
+        },
       },
       required: ['filePath'],
     },
@@ -66,7 +71,7 @@ export const toolDefinitions: Tool[] = [
   {
     name: 'ingest_data',
     description:
-      'Ingest in-memory content as a string (use ingest_file for files on disk). The source identifier enables re-ingestion to update existing content. Returns { filePath, chunkCount, timestamp, fileTitle }.',
+      'Ingest in-memory content as a string (use ingest_file for files on disk). The source identifier enables re-ingestion to update existing content. Returns { filePath, chunkCount, timestamp, fileTitle, projectName }.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -90,6 +95,11 @@ export const toolDefinitions: Tool[] = [
             },
           },
           required: ['source', 'format'],
+        },
+        projectName: {
+          type: 'string',
+          description:
+            'Project name namespace for indexing (default: DEFAULT_PROJECT env or "default"). Must start with a letter, contain only letters/digits/hyphens/underscores.',
         },
       },
       required: ['content', 'metadata'],
@@ -158,6 +168,96 @@ export const toolDefinitions: Tool[] = [
         },
       },
       required: ['chunkIndex'],
+    },
+  },
+  {
+    name: 'search_project_docs',
+    description:
+      'Search documents within a specific project namespace. Returns project-scoped results sorted by relevance, each with filePath, chunkIndex, text, fileTitle, score, and projectName.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        project_name: {
+          type: 'string',
+          description: 'Project name to search within (required).',
+        },
+        query: {
+          type: 'string',
+          description: 'Search query.',
+        },
+        limit: {
+          type: 'number',
+          minimum: 1,
+          maximum: 20,
+          description: 'Max results (default 10, range 1-20).',
+        },
+      },
+      required: ['project_name', 'query'],
+    },
+  },
+  {
+    name: 'list_projects',
+    description:
+      'List all indexed projects with document and chunk counts. Returns array of { projectName, documentCount, chunkCount }.',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'get_project_brief',
+    description:
+      'Get a project overview by searching for broad context (architecture, requirements, summary). Returns top matching chunks with source filenames.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        project_name: {
+          type: 'string',
+          description: 'Project name (required).',
+        },
+      },
+      required: ['project_name'],
+    },
+  },
+  {
+    name: 'requirement_lookup',
+    description:
+      'Look up a specific requirement within a project. Returns the most relevant chunks matching the requirement text, emphasizing exact term matches.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        project_name: {
+          type: 'string',
+          description: 'Project name (required).',
+        },
+        requirement: {
+          type: 'string',
+          description: 'Requirement text to search for (required).',
+        },
+        limit: {
+          type: 'number',
+          minimum: 1,
+          maximum: 20,
+          description: 'Max results (default 8).',
+        },
+      },
+      required: ['project_name', 'requirement'],
+    },
+  },
+  {
+    name: 'planning_context',
+    description:
+      'Get structured planning context for a task within a project. Searches for project overview and task-relevant requirements. Returns structured markdown with sources — does not invent requirements.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        project_name: {
+          type: 'string',
+          description: 'Project name (required).',
+        },
+        task: {
+          type: 'string',
+          description: 'Task description to gather context for (required).',
+        },
+      },
+      required: ['project_name', 'task'],
     },
   },
 ]

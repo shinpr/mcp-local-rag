@@ -63,6 +63,8 @@ export interface SearchOptions {
    * = no prefilter (backward compatible).
    */
   scope?: string[]
+  /** Project name filter. When set, restricts results to chunks with matching projectName. */
+  projectName?: string
 }
 
 /**
@@ -97,6 +99,10 @@ export interface VectorChunk {
   fileTitle: string | null
   /** Ingestion timestamp (ISO 8601 format) */
   timestamp: string
+  /** Project name namespace (e.g. "SEG", "MVA"). Defaults to "default". */
+  projectName: string
+  /** SHA-256 hex digest of the source file/content. Null for pre-migration rows. */
+  fileHash: string | null
 }
 
 /**
@@ -115,6 +121,8 @@ export interface SearchResult {
   metadata: DocumentMetadata
   /** Document title extracted from file content (display-only, not used for scoring) */
   fileTitle: string | null
+  /** Project name namespace */
+  projectName: string
 }
 
 /**
@@ -132,6 +140,8 @@ export interface ChunkRow {
   text: string
   /** Document title extracted from file content (display-only, not used for scoring) */
   fileTitle: string | null
+  /** Project name namespace */
+  projectName: string
 }
 
 /**
@@ -144,6 +154,8 @@ export interface LanceDBRawResult {
   metadata: DocumentMetadata
   /** Document title (optional - existing rows lack this field before migration) */
   fileTitle?: string | null
+  /** Project name (optional - existing rows lack this field before migration) */
+  projectName?: string
   _distance?: number
   _score?: number
 }
@@ -201,6 +213,7 @@ export function toSearchResult(raw: unknown): SearchResult {
     score: raw._distance ?? raw._score ?? 0,
     metadata: raw.metadata,
     fileTitle: raw.fileTitle || null,
+    projectName: raw.projectName || 'default',
   }
 }
 
@@ -217,6 +230,8 @@ export function toVectorChunk(raw: unknown): VectorChunk {
   }
   const obj = raw as Record<string, unknown>
   const { id, filePath, chunkIndex, text, vector, metadata, fileTitle, timestamp } = obj
+  const projectName = obj['projectName']
+  const fileHash = obj['fileHash']
   if (
     typeof id !== 'string' ||
     typeof filePath !== 'string' ||
@@ -241,6 +256,9 @@ export function toVectorChunk(raw: unknown): VectorChunk {
     metadata,
     fileTitle: typeof fileTitle === 'string' && fileTitle.length > 0 ? fileTitle : null,
     timestamp,
+    projectName:
+      typeof projectName === 'string' && projectName.length > 0 ? projectName : 'default',
+    fileHash: typeof fileHash === 'string' && fileHash.length > 0 ? fileHash : null,
   }
 }
 
@@ -271,11 +289,15 @@ export function toChunkRow(raw: unknown): ChunkRow {
   const rawFileTitle = obj['fileTitle']
   const fileTitle =
     typeof rawFileTitle === 'string' && rawFileTitle.length > 0 ? rawFileTitle : null
+  const rawProjectName = obj['projectName']
+  const projectName =
+    typeof rawProjectName === 'string' && rawProjectName.length > 0 ? rawProjectName : 'default'
   return {
     filePath: obj['filePath'],
     chunkIndex: obj['chunkIndex'],
     text: obj['text'],
     fileTitle,
+    projectName,
   }
 }
 

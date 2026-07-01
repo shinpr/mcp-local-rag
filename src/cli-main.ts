@@ -6,6 +6,7 @@ import { runList } from './cli/list.js'
 import type { GlobalOptions } from './cli/options.js'
 import { runQuery } from './cli/query.js'
 import { runReadNeighbors } from './cli/read-neighbors.js'
+import { runServe } from './cli/serve.js'
 import { runStatus } from './cli/status.js'
 
 export const SUBCOMMANDS = [
@@ -16,6 +17,7 @@ export const SUBCOMMANDS = [
   'status',
   'delete',
   'read-neighbors',
+  'serve',
 ] as const
 
 export type Subcommand = (typeof SUBCOMMANDS)[number]
@@ -68,6 +70,10 @@ export async function handleCli(
 
     case 'read-neighbors':
       await runReadNeighbors(args, globalOptions)
+      break
+
+    case 'serve':
+      await runServe(args, globalOptions)
       break
   }
 }

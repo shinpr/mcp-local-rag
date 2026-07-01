@@ -1,3 +1,6 @@
+packages:
+  - frontend
+
 # Quarantine newly published versions for 24h; malware is usually detected and
 # pulled within hours, so the cooldown avoids installing a fresh compromised release.
 minimumReleaseAge: 1440
@@ -7,6 +10,7 @@ minimumReleaseAge: 1440
 # versionScheme), so running it buys nothing and only widens the install-time
 # attack surface. `false` (not removal) satisfies pnpm 11 strictDepBuilds.
 allowBuilds:
+  better-sqlite3: true
   esbuild: true
   onnxruntime-node: true
   protobufjs: false

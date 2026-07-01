@@ -82,12 +82,13 @@ export class VectorStore {
   }
 
   /**
-   * Delete all chunks for specified file path
+   * Delete all chunks for specified file path, optionally scoped to a project.
    *
    * @param filePath - File path (absolute)
+   * @param projectName - Optional project name to scope deletion
    * @returns Number of chunks removed (0 when nothing matched)
    */
-  async deleteChunks(filePath: string): Promise<number> {
+  async deleteChunks(filePath: string, projectName?: string): Promise<number> {
     if (!this.table) {
       // If table doesn't exist, no deletion targets, return normally
       console.error('VectorStore: Skipping deletion as table does not exist')
@@ -99,11 +100,18 @@ export class VectorStore {
       // Escape single quotes to prevent SQL injection.
       // Note: Field names are case-sensitive, use backticks for camelCase fields.
       const escapedFilePath = filePath.replace(/'/g, "''")
+      let predicate = `\`filePath\` = '${escapedFilePath}'`
+      if (projectName) {
+        const escapedProject = projectName.replace(/'/g, "''")
+        predicate += ` AND \`projectName\` = '${escapedProject}'`
+      }
       // delete() reports the authoritative removed count (numDeletedRows) from
       // the same operation, so the total stays correct under concurrent deletes
       // and we avoid a second pre-count query that materializes matching rows.
-      const { numDeletedRows } = await this.table.delete(`\`filePath\` = '${escapedFilePath}'`)
-      console.error(`VectorStore: Deleted ${numDeletedRows} chunks for file "${filePath}"`)
+      const { numDeletedRows } = await this.table.delete(predicate)
+      console.error(
+        `VectorStore: Deleted ${numDeletedRows} chunks for file "${filePath}"${projectName ? ` in project "${projectName}"` : ''}`
+      )
       return numDeletedRows
     } catch (error) {
       // LanceDB's delete is a no-op (resolves normally) when no rows match the
@@ -173,15 +181,21 @@ export class VectorStore {
    * Lazy-table null returns `[]`. LanceDB errors are wrapped as DatabaseError.
    *
    * @param filePath - File path (absolute)
+   * @param projectName - Optional project name to scope the lookup
    */
-  async getChunksByFilePath(filePath: string): Promise<VectorChunk[]> {
+  async getChunksByFilePath(filePath: string, projectName?: string): Promise<VectorChunk[]> {
     if (!this.table) {
       return []
     }
     try {
       // Escape single quotes to prevent SQL injection (mirrors deleteChunks)
       const escapedFilePath = filePath.replace(/'/g, "''")
-      const raw = await this.table.query().where(`\`filePath\` = '${escapedFilePath}'`).toArray()
+      let predicate = `\`filePath\` = '${escapedFilePath}'`
+      if (projectName) {
+        const escapedProject = projectName.replace(/'/g, "''")
+        predicate += ` AND \`projectName\` = '${escapedProject}'`
+      }
+      const raw = await this.table.query().where(predicate).toArray()
       return raw.map((row) => toVectorChunk(row))
     } catch (error) {
       throw new DatabaseError(`Failed to read chunks for file: ${filePath}`, error as Error)
@@ -206,14 +220,16 @@ export class VectorStore {
         }
         // LanceDB's createTable API accepts data as Record<string, unknown>[]
         // Note: LanceDB cannot infer Arrow type from null values, so we must
-        // ensure fileTitle has a non-null sample value for schema inference.
-        // Empty string is used as a placeholder; toSearchResult() normalizes
-        // '' back to null on read for consistency with the migration path.
+        // ensure fileTitle/fileHash have non-null sample values for schema inference.
+        // Empty string is used as a placeholder; mappers normalize '' back to null
+        // on read for consistency with the migration path.
         const records = chunks.map((chunk) => {
           const record = chunk as unknown as Record<string, unknown>
           return {
             ...record,
             fileTitle: record['fileTitle'] ?? '',
+            projectName: record['projectName'] ?? 'default',
+            fileHash: record['fileHash'] ?? '',
           }
         })
         this.table = await this.db.createTable(this.config.tableName, records)
@@ -290,11 +306,21 @@ export class VectorStore {
     }
 
     const schema = await this.table.schema()
-    const hasFileTitle = schema.fields.some((f: { name: string }) => f.name === 'fileTitle')
+    const fieldNames = new Set(schema.fields.map((f: { name: string }) => f.name))
 
-    if (!hasFileTitle) {
+    if (!fieldNames.has('fileTitle')) {
       await this.table.addColumns([{ name: 'fileTitle', valueSql: 'cast(NULL as string)' }])
       console.error('VectorStore: Migrated schema - added fileTitle column')
+    }
+
+    if (!fieldNames.has('projectName')) {
+      await this.table.addColumns([{ name: 'projectName', valueSql: "'default'" }])
+      console.error('VectorStore: Migrated schema - added projectName column')
+    }
+
+    if (!fieldNames.has('fileHash')) {
+      await this.table.addColumns([{ name: 'fileHash', valueSql: 'cast(NULL as string)' }])
+      console.error('VectorStore: Migrated schema - added fileHash column')
     }
   }
 
@@ -329,7 +355,7 @@ export class VectorStore {
    * @returns Array of search results (sorted by distance ascending, filtered by quality settings)
    */
   async search(queryVector: number[], options: SearchOptions = {}): Promise<SearchResult[]> {
-    const { queryText, limit = 10, scope } = options
+    const { queryText, limit = 10, scope, projectName } = options
     if (!this.table) {
       console.error('VectorStore: Returning empty results as table does not exist')
       return []
@@ -344,11 +370,18 @@ export class VectorStore {
       const candidateLimit = limit * HYBRID_SEARCH_CANDIDATE_MULTIPLIER
       let query = this.table.vectorSearch(queryVector).distanceType('dot').limit(candidateLimit)
 
-      // Scope prefilter: restrict to chunks under the given path prefixes
-      // (exact-or-descendant) before ranking. Applied only when scope is
-      // present so scope-absent behavior is byte-for-byte unchanged.
+      // Build WHERE predicates: scope (path prefix) and/or project filter.
+      // Combined with AND so both constraints apply.
+      const predicates: string[] = []
       if (scope && scope.length > 0) {
-        query = query.where(this.buildScopePredicate(scope))
+        predicates.push(this.buildScopePredicate(scope))
+      }
+      if (projectName) {
+        const escaped = projectName.replace(/'/g, "''")
+        predicates.push(`\`projectName\` = '${escaped}'`)
+      }
+      if (predicates.length > 0) {
+        query = query.where(predicates.join(' AND '))
       }
 
       // Apply distance threshold at query level
@@ -583,6 +616,70 @@ export class VectorStore {
       }
     } catch (error) {
       throw new DatabaseError('Failed to get status', error as Error)
+    }
+  }
+
+  /**
+   * List all distinct project names with chunk and document counts.
+   *
+   * @returns Array of { projectName, documentCount, chunkCount }
+   */
+  async listProjects(): Promise<
+    { projectName: string; documentCount: number; chunkCount: number }[]
+  > {
+    if (!this.table) {
+      return []
+    }
+
+    try {
+      const records = await this.table.query().select(['filePath', 'projectName']).toArray()
+      const projectMap = new Map<string, { filePaths: Set<string>; chunkCount: number }>()
+
+      for (const record of records) {
+        const filePath = record.filePath
+        const projectName =
+          typeof record.projectName === 'string' && record.projectName.length > 0
+            ? record.projectName
+            : 'default'
+        if (typeof filePath !== 'string') continue
+
+        let entry = projectMap.get(projectName)
+        if (!entry) {
+          entry = { filePaths: new Set(), chunkCount: 0 }
+          projectMap.set(projectName, entry)
+        }
+        entry.filePaths.add(filePath)
+        entry.chunkCount += 1
+      }
+
+      return Array.from(projectMap.entries()).map(([projectName, info]) => ({
+        projectName,
+        documentCount: info.filePaths.size,
+        chunkCount: info.chunkCount,
+      }))
+    } catch (error) {
+      throw new DatabaseError('Failed to list projects', error as Error)
+    }
+  }
+
+  /**
+   * Delete all chunks for a project.
+   *
+   * @param projectName - Project name to delete
+   * @returns Number of chunks removed
+   */
+  async deleteProject(projectName: string): Promise<number> {
+    if (!this.table) {
+      return 0
+    }
+
+    try {
+      const escaped = projectName.replace(/'/g, "''")
+      const { numDeletedRows } = await this.table.delete(`\`projectName\` = '${escaped}'`)
+      console.error(`VectorStore: Deleted ${numDeletedRows} chunks for project "${projectName}"`)
+      return numDeletedRows
+    } catch (error) {
+      throw new DatabaseError(`Failed to delete project: ${projectName}`, error as Error)
     }
   }
 
