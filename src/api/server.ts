@@ -13,10 +13,13 @@ import { getDb, migrateDb } from './db/index.js'
 import { users } from './db/schema.js'
 import { repairRelativeFilePaths } from './file-path-repair.js'
 import { recoverStuckIndexing } from './ingest-recovery.js'
+import { blockUntilReady } from './middleware/ready.js'
+import { createRagServices, type RagServices } from './rag-services.js'
+import { markApiReady } from './readiness.js'
 import { registerAuthRoutes } from './routes/auth.js'
 import { registerCursorRoutes } from './routes/cursor.js'
 import { registerFileRoutes } from './routes/files.js'
-import { registerHealthRoutes, registerLivenessRoute } from './routes/health.js'
+import { registerHealthRoutes } from './routes/health.js'
 import { registerIngestRoutes } from './routes/ingest.js'
 import { registerProjectRoutes } from './routes/projects.js'
 import { registerSearchRoutes } from './routes/search.js'
@@ -45,11 +48,18 @@ function logMigrationFailure(config: ApiConfig, error: unknown): void {
   }
 }
 
+export interface AppShell {
+  app: ReturnType<typeof Fastify>
+  services: RagServices
+}
+
 /**
- * Fastify shell with plugins and liveness route — safe to listen before embedder/DB init.
+ * Fastify shell with plugins and all routes — safe to listen before embedder init.
+ * Business routes return 503 until finalizeApp marks the API ready.
  */
-export async function createAppShell(config: ApiConfig) {
+export async function createAppShell(config: ApiConfig): Promise<AppShell> {
   const app = Fastify({ logger: createLoggerConfig() })
+  const services = createRagServices()
 
   await app.register(fastifyJwt, {
     secret: config.jwtSecret,
@@ -61,17 +71,27 @@ export async function createAppShell(config: ApiConfig) {
     },
   })
 
-  registerLivenessRoute(app)
+  app.addHook('onRequest', blockUntilReady)
 
-  return app
+  registerHealthRoutes(app)
+  registerAuthRoutes(app, config)
+  registerProjectRoutes(app, config, services)
+  registerFileRoutes(app, config, services)
+  registerIngestRoutes(app, config, services)
+  registerSearchRoutes(app, config, services)
+  registerCursorRoutes(app)
+  registerSkillRoutes(app, config)
+
+  return { app, services }
 }
 
 /**
- * Finish startup on an already-listening app: migrate DB, seed, register API routes.
+ * Finish startup on an already-listening app: migrate DB, seed, wire RAG services.
  */
 export async function finalizeApp(
-  app: Awaited<ReturnType<typeof createAppShell>>,
+  _app: AppShell['app'],
   config: ApiConfig,
+  services: RagServices,
   vectorStore: VectorStore,
   embedder: Embedder
 ) {
@@ -88,14 +108,9 @@ export async function finalizeApp(
 
   getDb(config.databaseUrl)
 
-  registerAuthRoutes(app, config)
-  registerProjectRoutes(app, config, vectorStore)
-  registerFileRoutes(app, config, vectorStore)
-  registerIngestRoutes(app, config, vectorStore, embedder)
-  registerSearchRoutes(app, config, vectorStore, embedder)
-  registerCursorRoutes(app)
-  registerSkillRoutes(app, config)
-  registerHealthRoutes(app)
+  services.vectorStore = vectorStore
+  services.embedder = embedder
+  markApiReady()
 }
 
 /**
@@ -105,8 +120,8 @@ export async function finalizeApp(
  * reuses the same core RAG components as MCP and CLI, with zero duplication.
  */
 export async function buildApp(config: ApiConfig, vectorStore: VectorStore, embedder: Embedder) {
-  const app = await createAppShell(config)
-  await finalizeApp(app, config, vectorStore, embedder)
+  const { app, services } = await createAppShell(config)
+  await finalizeApp(app, config, services, vectorStore, embedder)
   return app
 }
 

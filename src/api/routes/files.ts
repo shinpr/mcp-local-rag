@@ -6,11 +6,12 @@ import { unlink, writeFile } from 'node:fs/promises'
 import { extname, join, resolve } from 'node:path'
 import { and, eq } from 'drizzle-orm'
 import type { FastifyInstance } from 'fastify'
-import type { VectorStore } from '../../vectordb/index.js'
 import type { ApiConfig } from '../config.js'
 import { getDb } from '../db/index.js'
 import { projects, uploadedFiles } from '../db/schema.js'
 import { type JwtPayload, requireAuth } from '../middleware/auth.js'
+import type { RagServices } from '../rag-services.js'
+import { getVectorStore } from '../rag-services.js'
 import {
   readMultipartFile,
   resolveStoredFilePath,
@@ -54,7 +55,7 @@ function fileResponse(
 export function registerFileRoutes(
   app: FastifyInstance,
   config: ApiConfig,
-  vectorStore: VectorStore
+  services: RagServices
 ): void {
   const db = getDb(config.databaseUrl)
 
@@ -245,7 +246,7 @@ export function registerFileRoutes(
 
     if (project) {
       try {
-        await vectorStore.deleteChunks(storedPath, project.name)
+        await getVectorStore(services).deleteChunks(storedPath, project.name)
       } catch {
         // Best-effort vector cleanup before replacing content
       }
@@ -317,7 +318,7 @@ export function registerFileRoutes(
 
     if (project) {
       try {
-        await vectorStore.deleteChunks(storedPath, project.name)
+        await getVectorStore(services).deleteChunks(storedPath, project.name)
       } catch {
         // Vector cleanup is best-effort
       }

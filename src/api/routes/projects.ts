@@ -3,17 +3,18 @@
 import { unlink } from 'node:fs/promises'
 import { and, count, eq } from 'drizzle-orm'
 import type { FastifyInstance } from 'fastify'
-import type { VectorStore } from '../../vectordb/index.js'
 import type { ApiConfig } from '../config.js'
 import { getDb } from '../db/index.js'
 import { projects, uploadedFiles } from '../db/schema.js'
 import { type JwtPayload, requireAuth } from '../middleware/auth.js'
+import type { RagServices } from '../rag-services.js'
+import { getVectorStore } from '../rag-services.js'
 import { createProjectSchema } from '../schemas/requests.js'
 
 export function registerProjectRoutes(
   app: FastifyInstance,
   config: ApiConfig,
-  vectorStore: VectorStore
+  services: RagServices
 ): void {
   const db = getDb(config.databaseUrl)
 
@@ -152,7 +153,7 @@ export function registerProjectRoutes(
 
     // Delete LanceDB chunks for this project
     try {
-      await vectorStore.deleteProject(project.name)
+      await getVectorStore(services).deleteProject(project.name)
     } catch {
       // LanceDB delete is best-effort; project may have no chunks
     }

@@ -2,17 +2,16 @@
 
 import { basename } from 'node:path'
 import type { FastifyInstance } from 'fastify'
-import type { Embedder } from '../../embedder/index.js'
-import type { VectorStore } from '../../vectordb/index.js'
 import type { ApiConfig } from '../config.js'
 import { requireAuth } from '../middleware/auth.js'
+import type { RagServices } from '../rag-services.js'
+import { getEmbedder, getVectorStore } from '../rag-services.js'
 import { searchSchema } from '../schemas/requests.js'
 
 export function registerSearchRoutes(
   app: FastifyInstance,
   _config: ApiConfig,
-  vectorStore: VectorStore,
-  embedder: Embedder
+  services: RagServices
 ): void {
   // POST /search
   app.post('/search', { preHandler: [requireAuth], schema: searchSchema }, async (request) => {
@@ -23,9 +22,9 @@ export function registerSearchRoutes(
     }
 
     // Convert query text to embedding vector
-    const queryVector = await embedder.embed(query)
+    const queryVector = await getEmbedder(services).embed(query)
 
-    const results = await vectorStore.search(queryVector, {
+    const results = await getVectorStore(services).search(queryVector, {
       queryText: query,
       limit: limit ?? 10,
       projectName,

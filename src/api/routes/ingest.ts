@@ -2,14 +2,14 @@
 
 import { and, eq, inArray } from 'drizzle-orm'
 import type { FastifyInstance } from 'fastify'
-import type { Embedder } from '../../embedder/index.js'
-import type { VectorStore } from '../../vectordb/index.js'
 import type { ApiConfig } from '../config.js'
 import { getDb } from '../db/index.js'
 import { indexJobs, projects, uploadedFiles } from '../db/schema.js'
 import { recoverProjectIndexing } from '../ingest-recovery.js'
 import { ingestFile } from '../ingest-worker.js'
 import { type JwtPayload, requireAuth } from '../middleware/auth.js'
+import type { RagServices } from '../rag-services.js'
+import { getEmbedder, getVectorStore } from '../rag-services.js'
 import { emptyBodySchema, indexProjectSchema, reindexProjectSchema } from '../schemas/requests.js'
 import { resolveStoredFilePath } from '../upload-utils.js'
 
@@ -30,8 +30,7 @@ interface IndexJobResult {
 export function registerIngestRoutes(
   app: FastifyInstance,
   config: ApiConfig,
-  vectorStore: VectorStore,
-  embedder: Embedder
+  services: RagServices
 ): void {
   const db = getDb(config.databaseUrl)
 
@@ -93,8 +92,8 @@ export function registerIngestRoutes(
           const chunkCount = await ingestFile({
             filePath: absolutePath,
             projectName,
-            vectorStore,
-            embedder,
+            vectorStore: getVectorStore(services),
+            embedder: getEmbedder(services),
             config,
           })
 

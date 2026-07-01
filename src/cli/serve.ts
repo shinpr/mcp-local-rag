@@ -50,7 +50,7 @@ export async function runServe(args: string[], _globalOptions: GlobalOptions = {
   console.error(`  Database URL: ${config.databaseUrl.replace(/:[^:@]+@/, ':***@')}`)
   console.error(`  Upload dir:   ${config.uploadDir}`)
 
-  const app = await createAppShell(config)
+  const { app, services } = await createAppShell(config)
 
   try {
     await app.listen({ port: config.port, host: config.host })
@@ -75,7 +75,7 @@ export async function runServe(args: string[], _globalOptions: GlobalOptions = {
     })
     await embedder.initialize()
 
-    await finalizeApp(app, config, vectorStore, embedder)
+    await finalizeApp(app, config, services, vectorStore, embedder)
     console.error(`API server ready at http://${config.host}:${config.port}`)
   } catch (error) {
     console.error('API startup failed:', error)
