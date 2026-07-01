@@ -10,7 +10,9 @@ import { prepareVisualPdfChunks } from '../ingest/visual.js'
 import { DocumentParser } from '../parser/index.js'
 import type { QualityProfile } from '../pdf-visual/types.js'
 import type { BaseDirsConfig, BaseDirsConfigWarning } from '../utils/base-dirs.js'
+import { computeFileHash } from '../utils/file-hash.js'
 import { DEFAULT_MAX_FILE_SIZE } from '../utils/limits.js'
+import { normalizeProjectName } from '../utils/project-name.js'
 import type { VectorStore } from '../vectordb/index.js'
 import {
   createEmbedder,
@@ -66,6 +68,8 @@ interface IngestCliOptions {
    * of silently coercing for non-PDF files). Defaults to `'fast'`.
    */
   visualQuality?: QualityProfile | undefined
+  /** Project name namespace for indexing (default: DEFAULT_PROJECT env or "default") */
+  project?: string | undefined
 }
 
 interface ParsedArgs {
@@ -92,6 +96,7 @@ Ingest a single file or all supported files under a directory.
 
 Options:
   --base-dir <path>          Base directory for documents (repeatable: pass once per root; default: BASE_DIRS/BASE_DIR env or cwd)
+  --project <name>           Project name namespace (default: DEFAULT_PROJECT env or "default")
   --max-file-size <n>        Max file size in bytes (default: ${INGEST_DEFAULTS.maxFileSize})
   --chunk-min-length <n>     Minimum chunk length in characters (default: 50, range: 1-10000)
   --visual                   Enable VLM captioning for PDF figure pages (PDFs only; no effect on other types)
@@ -174,6 +179,11 @@ export function parseArgs(args: string[]): ParsedArgs {
           process.exit(1)
         }
         options.visualQuality = value
+        i += 2
+        break
+      }
+      case '--project': {
+        options.project = requireFlagValue(args, i, '--project')
         i += 2
         break
       }
@@ -322,7 +332,9 @@ export async function ingestSingleFile(
   chunker: SemanticChunker,
   embedder: Embedder,
   vectorStore: VectorStore,
-  options?: IngestSingleFileOptions
+  options?: IngestSingleFileOptions,
+  projectName?: string,
+  fileHash?: string | null
 ): Promise<number> {
   // Parse file
   const isPdf = filePath.toLowerCase().endsWith('.pdf')
@@ -362,6 +374,8 @@ export async function ingestSingleFile(
       embeddings,
       fileSize: visualResult.text.length,
       fileTitle: title,
+      projectName: projectName ?? 'default',
+      fileHash: fileHash ?? null,
     })
     await vectorStore.insertChunks(vectorChunks)
     return vectorChunks.length
@@ -392,6 +406,8 @@ export async function ingestSingleFile(
     embeddings,
     fileSize: text.length,
     fileTitle: title,
+    projectName: projectName ?? 'default',
+    fileHash: fileHash ?? null,
   })
 
   // Insert chunks
@@ -460,6 +476,9 @@ export async function runIngest(args: string[], globalOptions: GlobalOptions = {
 
   console.error(`Found ${files.length} file(s) to ingest.`)
 
+  // Resolve project name: CLI --project > DEFAULT_PROJECT env > "default"
+  const projectName = normalizeProjectName(options.project ?? process.env['DEFAULT_PROJECT'])
+
   // Initialize components (single instances reused across all files).
   // The parser receives the full multi-root config. The directory-scan loop
   // (`collectFiles`) iterates every effective root in `config.baseDirs.baseDirs`
@@ -503,13 +522,22 @@ export async function runIngest(args: string[], globalOptions: GlobalOptions = {
               device: resolveDevice(process.env['RAG_DEVICE']),
             }
           : { visual: false }
+        // Compute file hash for duplicate detection
+        let fileHash: string | null = null
+        try {
+          fileHash = await computeFileHash(filePath)
+        } catch {
+          // Non-fatal: proceed without hash if file can't be read at this point
+        }
         const chunkCount = await ingestSingleFile(
           filePath,
           parser,
           chunker,
           embedder,
           vectorStore,
-          ingestOptions
+          ingestOptions,
+          projectName,
+          fileHash
         )
         if (chunkCount === 0) {
           // 0 chunks is a skip/warning, not a failure

@@ -10,8 +10,42 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-6.0-blue.svg?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![MCP Registry](https://img.shields.io/badge/MCP-Registry-green.svg)](https://registry.modelcontextprotocol.io/)
 
-Local RAG for developers via MCP or CLI.
+Local RAG for developers via MCP, CLI, REST API, or Web UI.
 Semantic search with keyword boost for exact technical terms — fully private, zero setup.
+
+---
+
+## Table of Contents
+
+- [Features](#features)
+- [Architecture Overview](#architecture-overview)
+- [System Requirements](#system-requirements)
+- [Quick Start](#quick-start)
+- [Installation](#installation)
+  - [npm (Recommended)](#npm-recommended)
+  - [From Source](#from-source)
+  - [Docker](#docker)
+- [Configuration](#configuration)
+  - [Environment Variables](#environment-variables)
+  - [Document Roots](#document-roots-base_dir-and-base_dirs)
+  - [Database Setup](#database-setup)
+- [Usage](#usage)
+  - [MCP Server](#using-with-mcp)
+  - [CLI](#using-as-cli)
+  - [REST API](#rest-api)
+  - [Web UI](#web-ui)
+- [Testing Vector Search](#testing-vector-search)
+- [Docker Deployment](#docker-deployment)
+- [Search Tuning](#search-tuning)
+- [How It Works](#how-it-works)
+- [Agent Skills](#agent-skills)
+- [Client-Specific Setup](#client-specific-setup)
+- [Testing](#testing)
+- [Development](#development)
+- [Contributing](#contributing)
+- [License](#license)
+
+---
 
 ## Features
 
@@ -29,7 +63,85 @@ Semantic search with keyword boost for exact technical terms — fully private, 
 
 - **Zero-friction setup**
   One `npx` command. No Docker, no Python, no servers to manage.
-  Use via MCP, CLI, or both. Optional [Agent Skills](#agent-skills) help AI assistants form better queries and interpret results.
+  Use via MCP, CLI, REST API, Web UI, or all four. Optional [Agent Skills](#agent-skills) help AI assistants form better queries and interpret results.
+
+- **Project namespaces**
+  Organize documents into projects for multi-tenant search. Five project-scoped MCP tools for structured workflows.
+
+- **Modern web UI**
+  React-based dashboard for managing projects, uploading files, triggering indexing, and searching documents—all from your browser.
+
+---
+
+## Architecture Overview
+
+MCP Local RAG provides **four interfaces** to the same underlying RAG engine:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                      MCP Local RAG                          │
+│                                                             │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐   │
+│  │   MCP    │  │   CLI    │  │ REST API │  │  Web UI  │   │
+│  │  Server  │  │          │  │ (Fastify)│  │  (React) │   │
+│  └────┬─────┘  └────┬─────┘  └────┬─────┘  └────┬─────┘   │
+│       │              │              │              │         │
+│       └──────────────┴──────────────┴──────────────┘        │
+│                          │                                   │
+│              ┌───────────┴───────────┐                       │
+│              │     RAG Engine        │                       │
+│              │  ┌───────┐ ┌───────┐  │                       │
+│              │  │Parser │ │Chunker│  │                       │
+│              │  └───┬───┘ └───┬───┘  │                       │
+│              │      └────┬────┘      │                       │
+│              │     ┌─────┴─────┐     │                       │
+│              │     │ Embedder  │     │                       │
+│              │     │(Transformers.js)│                       │
+│              │     └─────┬─────┘     │                       │
+│              │     ┌─────┴─────┐     │                       │
+│              │     │ VectorDB  │     │                       │
+│              │     │ (LanceDB) │     │                       │
+│              │     └───────────┘     │                       │
+│              └───────────────────────┘                       │
+│                          │                                   │
+│              ┌───────────┴───────────┐                       │
+│              │   PostgreSQL (API)    │                       │
+│              │   Metadata & Auth     │                       │
+│              └───────────────────────┘                       │
+└─────────────────────────────────────────────────────────────┘
+```
+
+| Interface | Protocol | Use Case |
+|-----------|----------|----------|
+| **MCP Server** | stdio | AI coding tools (Cursor, Claude Code, Codex) |
+| **CLI** | stdin/stdout | Scripts, automation, terminal workflows |
+| **REST API** | HTTP/JSON | Custom integrations, programmatic access |
+| **Web UI** | Browser | Visual project management, file upload, search |
+
+**Storage layers:**
+- **LanceDB** (file-based vector database) — stores document chunks and embeddings. No server process required.
+- **PostgreSQL** (relational database) — stores API metadata: users, projects, uploaded files, and index jobs. Required only for the REST API and Web UI.
+
+---
+
+## System Requirements
+
+| Requirement | Minimum | Recommended |
+|-------------|---------|-------------|
+| **Node.js** | v22.0.0 | v22 LTS or later |
+| **pnpm** | v11.9.0 | latest |
+| **RAM** | 2 GB | 4 GB+ (for large document ingestion) |
+| **Disk** | 1 GB free | 5 GB+ (models + vector DB) |
+| **PostgreSQL** | 16.x | 16.x (only needed for API/Web UI) |
+| **OS** | macOS, Linux, Windows | macOS or Linux |
+
+**Notes:**
+- The MCP server and CLI work without PostgreSQL — only LanceDB (file-based) is needed.
+- The REST API and Web UI require PostgreSQL for user accounts, projects, and file metadata.
+- The embedding model (~90 MB) downloads automatically on first use.
+- Visual mode (optional) requires an additional 250 MB – 2.9 GB for the VLM model.
+
+---
 
 ## Quick Start
 
@@ -87,6 +199,33 @@ npx mcp-local-rag query "authentication API"
 
 That's it. No Docker, no Python, no server setup.
 
+---
+
+## Installation
+
+### npm (Recommended)
+
+```bash
+npm install -g mcp-local-rag
+# or use directly with npx (no install needed)
+npx mcp-local-rag --help
+```
+
+### From Source
+
+```bash
+git clone https://github.com/shinpr/mcp-local-rag.git
+cd mcp-local-rag
+pnpm install
+pnpm build
+```
+
+### Docker
+
+See [Docker Deployment](#docker-deployment) for full containerized setup with PostgreSQL, API server, and Web UI.
+
+---
+
 ## Why This Exists
 
 You want AI to search your documents—technical specs, research papers, internal docs. But most solutions send your files to external APIs.
@@ -101,13 +240,53 @@ You want AI to search your documents—technical specs, research papers, interna
 
 **Agent reality.** In practice, many AI environments mainly use tool calling. CLI support and Agent Skills make the same workflows available even without full MCP integration.
 
+---
+
 ## Usage
 
-mcp-local-rag provides two interfaces: an **MCP server** for AI coding tools and a **CLI** for direct use from the terminal.
+mcp-local-rag provides four interfaces: an **MCP server** for AI coding tools, a **CLI** for terminal use, a **REST API** for programmatic access, and a **Web UI** for visual management.
 
 ### Using with MCP
 
-The MCP server provides 7 tools: `ingest_file`, `ingest_data`, `query_documents`, `read_chunk_neighbors`, `list_files`, `delete_file`, `status`.
+The MCP server provides 12 tools: `ingest_file`, `ingest_data`, `query_documents`, `read_chunk_neighbors`, `list_files`, `delete_file`, `status`, `search_project_docs`, `list_projects`, `get_project_brief`, `requirement_lookup`, `planning_context`.
+
+#### MCP Tools Reference
+
+| Tool | Purpose |
+|------|---------|
+| `ingest_file` | Ingest a document file (PDF, DOCX, TXT, MD) into the vector database |
+| `ingest_data` | Ingest in-memory content (text, HTML, or Markdown) |
+| `query_documents` | Search ingested documents with hybrid keyword + semantic matching |
+| `read_chunk_neighbors` | Read chunks before/after a result for more context |
+| `list_files` | List supported files and their ingestion status |
+| `delete_file` | Delete a previously ingested file or data |
+| `status` | Get index status (document count, chunk count, memory usage) |
+| `search_project_docs` | Search within a specific project namespace |
+| `list_projects` | List all indexed projects with document/chunk counts |
+| `get_project_brief` | Get project overview from indexed docs |
+| `requirement_lookup` | Look up a specific requirement within a project |
+| `planning_context` | Gather structured context for planning a task |
+
+#### Project Namespaces
+
+Documents can be organized into project namespaces. Add `projectName` to `ingest_file`/`ingest_data` to index under a project. Legacy `query_documents` returns only the default project; use `search_project_docs` for project-scoped search.
+
+**Via MCP:**
+```
+"Ingest /Users/me/docs/seg-spec.pdf under project SEG"
+"Search project SEG for copper integration requirements"
+"List all projects"
+```
+
+**Via CLI:**
+```bash
+npx mcp-local-rag ingest ./docs/SEG --project SEG
+npx mcp-local-rag ingest ./docs/MVA --project MVA
+```
+
+**Configuration:**
+- `DEFAULT_PROJECT` env var (default: `"default"`) — the project name used when none is specified
+- Project names must start with a letter and contain only letters, digits, hyphens, underscores (1-64 chars)
 
 #### Ingesting Documents
 
@@ -226,155 +405,434 @@ npx mcp-local-rag list                          # Show ingestion status
 npx mcp-local-rag status                        # Database stats
 npx mcp-local-rag delete ./docs/old.pdf         # Remove content
 npx mcp-local-rag delete --source "https://..."  # Remove by source URL
+npx mcp-local-rag serve                         # Start REST API server
 ```
 
 `query`, `read-neighbors`, `list`, `status`, and `delete` output JSON to stdout for piping (e.g., `| jq`). `ingest` outputs progress to stderr. Global options (`--db-path`, `--cache-dir`, `--model-name`) go before the subcommand. Run `npx mcp-local-rag --help` for details.
 
 > ⚠️ The CLI does **not** read your MCP client config (`mcp.json`, `config.toml`, etc.). Configure the CLI via flags or environment variables as shown below.
 
-#### Configuration
+---
 
-**CLI flags** — global options go before the subcommand, subcommand options go after:
+## REST API
+
+In addition to MCP and CLI, the server exposes a REST API built with [Fastify](https://fastify.dev/) for managing projects, files, and search. The API requires PostgreSQL for metadata storage.
+
+### Starting the API Server
 
 ```bash
-npx mcp-local-rag --db-path ./my-db query "auth" --base-dir ./docs
+# Via CLI
+npx mcp-local-rag serve
+
+# Or with custom port
+API_PORT=8080 npx mcp-local-rag serve
+
+# Via pnpm (development)
+pnpm run dev:api
 ```
 
-The `--base-dir` flag is repeatable on `ingest` and `list`; pass it once per root:
+The API server starts on `http://127.0.0.1:3939` by default. On first start, it automatically runs database migrations to create the required PostgreSQL tables.
+
+### API Endpoints
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| `POST` | `/auth/register` | No | Register a new user |
+| `POST` | `/auth/login` | No | Login and get JWT token |
+| `GET` | `/auth/me` | JWT | Get current user info |
+| `POST` | `/projects` | JWT | Create a project |
+| `GET` | `/projects` | JWT | List user's projects |
+| `GET` | `/projects/:id` | JWT | Get project details with stats |
+| `DELETE` | `/projects/:id` | JWT | Delete project and all its data |
+| `POST` | `/projects/:id/files/upload` | JWT | Upload a file to a project |
+| `GET` | `/projects/:id/files` | JWT | List files in a project |
+| `DELETE` | `/files/:id` | JWT | Delete a file |
+| `POST` | `/projects/:id/index` | JWT | Trigger file indexing (background) |
+| `POST` | `/projects/:id/reindex` | JWT | Reset and re-index all files |
+| `POST` | `/files/:id/reindex` | JWT | Re-index a single file |
+| `GET` | `/jobs/:id` | JWT | Check index job status |
+| `POST` | `/search` | JWT | Search project documents |
+| `GET` | `/health` | No | Server health check |
+
+### Example: Register and Search
 
 ```bash
-npx mcp-local-rag ingest --base-dir ./docs --base-dir ./specs ./docs/readme.md
-npx mcp-local-rag list --base-dir ./docs --base-dir ./specs
+# Register
+TOKEN=$(curl -s -X POST http://localhost:3939/auth/register \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"user@example.com","username":"dev","password":"password123"}' \
+  | jq -r .token)
+
+# Create project
+curl -s -X POST http://localhost:3939/projects \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"my-project","description":"My docs"}'
+
+# Upload and index a file
+curl -s -X POST http://localhost:3939/projects/1/files/upload \
+  -H "Authorization: Bearer $TOKEN" \
+  -F "file=@./README.md"
+
+curl -s -X POST http://localhost:3939/projects/1/index \
+  -H "Authorization: Bearer $TOKEN"
+
+# Search
+curl -s -X POST http://localhost:3939/search \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"projectName":"my-project","query":"semantic search"}'
 ```
 
-The positional path to `ingest` must sit inside one of the configured roots. When at least one `--base-dir` is supplied, CLI roots replace any env-var roots (no merge).
+---
 
-**Environment variables** — set in your shell:
+## Web UI
+
+A modern web interface for managing your RAG system, built with React 19, TypeScript, Vite, and Tailwind CSS.
+
+### Features
+
+- **Authentication** — Register and login with JWT-based auth
+- **Dashboard** — Overview of projects, server status, and quick actions
+- **Project Management** — Create, view, and delete projects
+- **File Upload** — Drag-and-drop file upload with per-file and batch progress, automatic retry on transient errors, and idempotent re-upload (duplicate content is skipped)
+- **Document Indexing** — Trigger indexing and monitor job status
+- **Search** — Search across indexed documents with relevance scoring
+- **MCP Setup** — Generate MCP server configuration for Cursor
+- **Skill Setup** — Generate RAG skill files for AI assistants
+- **AGENTS.md Setup** — Generate AGENTS.md blocks for project context
+
+### Key Pages
+
+| Page | Route | Description |
+|------|-------|-------------|
+| Login | `/login` | User authentication |
+| Register | `/register` | Create new account |
+| Dashboard | `/dashboard` | Overview and quick actions |
+| Projects | `/projects` | List and manage projects |
+| Project Detail | `/projects/:id` | View files, trigger indexing |
+| Upload | `/projects/:id/upload` | Upload documents |
+| Search | `/search` | Search indexed documents |
+| MCP Setup | `/setup/mcp` | Generate MCP configuration |
+| Skill Setup | `/setup/skill` | Generate RAG skill files |
+| AGENTS.md | `/setup/agents` | Generate AGENTS.md blocks |
+
+### Updating Documents (Delete → Re-upload → Re-index)
+
+When you need to replace a document with a newer version:
+
+1. **Delete the old file** — On the project detail page, delete the file. This removes the stored copy from disk, the database record, and all indexed vector chunks for that file.
+2. **Re-upload** — Upload the new version via the Upload page. Original filenames are preserved in metadata; files are stored on disk under `UPLOAD_DIR`.
+3. **Re-index** — Click **Start indexing** on the project detail page to chunk, embed, and index the new upload.
+
+**Re-uploading without deleting:** Uploading a file with identical content (same SHA-256 hash) is treated as already uploaded — the UI skips it and continues with remaining files. This makes batch retries safe after partial uploads.
+
+**Partial upload retries:** If some files fail due to transient network errors, the upload UI retries automatically (up to 3 times) and continues with the rest. Successfully uploaded files are skipped on retry; only failed files need another attempt.
+
+### Running the Full Stack
+
+**Quick start (both API and UI):**
 
 ```bash
-export DB_PATH=./my-db
-export BASE_DIR=./docs
-npx mcp-local-rag query "auth"
+pnpm install
+pnpm run dev:full
 ```
 
-For multiple roots, use `BASE_DIRS` (JSON array of non-empty path strings):
+This starts the API first and waits for `/health` to pass (embedder load can take ~30s), then starts the Web UI — avoiding proxy `ECONNREFUSED` errors on startup.
+- API server on `http://127.0.0.1:3939`
+- Web UI on `http://localhost:5173` (after API is healthy)
+
+Override the wait target with `API_PORT` (from `.env`) or `DEV_API_WAIT_TIMEOUT_MS` (default `180000`).
+
+**Run separately:**
 
 ```bash
-export BASE_DIRS='["/Users/me/Documents/work","/Users/me/Projects/specs"]'
+# Terminal 1: API server
+pnpm run dev:api
+
+# Terminal 2: Web UI
+pnpm run dev:ui
+```
+
+### UI Project Structure
+
+```
+frontend/
+├── src/
+│   ├── api/          # API client functions
+│   ├── components/   # Reusable UI components
+│   ├── hooks/        # Custom React hooks (auth context)
+│   ├── pages/        # Page components
+│   ├── types/        # TypeScript type definitions
+│   └── utils/        # Utility functions
+├── index.html
+├── package.json
+├── vite.config.ts    # Vite config with API proxy
+└── tailwind.config.js
+```
+
+---
+
+## Testing Vector Search
+
+Once documents are ingested under a project namespace, you can verify the vector storage similarity search through every interface: MCP, CLI, REST API, and Web UI. This section walks through each path with practical examples.
+
+### Prerequisites
+
+Documents must be **ingested first** before searching. Ingest files under a project namespace so results are scoped:
+
+```bash
+# CLI — ingest a folder under project SEG
+npx mcp-local-rag ingest ./docs/SEG --project SEG
+
+# MCP — ask your AI assistant
+"Ingest /Users/me/docs/seg-spec.pdf under project SEG"
+```
+
+Verify ingestion completed:
+
+```bash
 npx mcp-local-rag list
+# or via MCP: "List all projects"
 ```
 
-**Sharing config between MCP and CLI** — if your MCP client inherits shell environment variables, you can set them in your shell profile (e.g., `~/.zshrc`) so both use the same values. Otherwise, set them explicitly in your MCP config as well.
+### Via MCP
+
+Two tools support search — `query_documents` (default project) and `search_project_docs` (any project).
+
+**`search_project_docs`** — project-scoped search (recommended for multi-project setups):
+
+```
+"Search project SEG for copper integration requirements"
+"Find all references to voltage thresholds in project MVA"
+```
+
+Parameters:
+- `project_name` (required) — project to search within
+- `query` (required) — natural language search query
+- `limit` — max results (1–20, default 10)
+
+**`query_documents`** — default project search:
+
+```
+"What does the API documentation say about authentication?"
+"Find information about rate limiting"
+```
+
+Parameters:
+- `query` (required) — search query
+- `limit` — max results (1–20, default 10)
+- `scope` — absolute path prefix(es) to restrict results
+
+Both tools return JSON arrays with `filePath`, `chunkIndex`, `text`, `score`, and `fileTitle` for each result.
+
+### Via CLI
+
+The CLI `query` command searches the default project:
 
 ```bash
-export BASE_DIR=/path/to/your/documents
-export DB_PATH=/path/to/lancedb
+# Basic search
+npx mcp-local-rag query "copper integration requirements"
+
+# Limit results
+npx mcp-local-rag query "voltage thresholds" --limit 5
+
+# Restrict to a path prefix
+npx mcp-local-rag query "authentication" --scope /Users/me/docs/api
+
+# Multiple scopes
+npx mcp-local-rag query "error handling" --scope /Users/me/docs/api --scope /Users/me/docs/guide
 ```
 
-Configuration is resolved in this order:
+Results are output as JSON to stdout, making them easy to pipe:
 
-1. CLI flags (highest priority)
-2. Environment variables
-3. Defaults
+```bash
+npx mcp-local-rag query "copper specs" | jq '.[0].text'
+```
 
-For the full list of CLI flags, environment variables, and defaults, see [Configuration](#configuration).
+> **Note:** The CLI searches the default project only. For project-scoped search, use the MCP `search_project_docs` tool or the REST API.
 
-For CLI-only setups (no MCP server), install [Agent Skills](#agent-skills) so your AI assistant can form better queries and interpret results consistently.
+### Via REST API
 
-> ⚠️ **CLI `--model-name` must match the MCP server's `MODEL_NAME` env var.** Using a different embedding model against an existing database produces incompatible vectors, silently degrading search quality.
+The `POST /search` endpoint accepts a JSON body with `projectName`, `query`, and optional `limit`.
 
-## Search Tuning
+**Step 1 — Authenticate:**
 
-Adjust these for your use case:
+```bash
+TOKEN=$(curl -s -X POST http://localhost:3939/auth/register \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"user@example.com","username":"dev","password":"password123"}' \
+  | jq -r .token)
+```
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `RAG_HYBRID_WEIGHT` | `0.6` | Keyword boost factor. 0 = semantic only, higher = stronger keyword boost. |
-| `RAG_GROUPING` | (not set) | `similar` for top group only, `related` for top 2 groups. |
-| `RAG_MAX_DISTANCE` | (not set) | Filter out low-relevance results (e.g., `0.5`). |
-| `RAG_MAX_FILES` | (not set) | Limit results to top N files (e.g., `1` for single best file). |
+**Step 2 — Search:**
 
-### Code-focused tuning
+```bash
+# Search project SEG for copper integration requirements
+curl -s -X POST http://localhost:3939/search \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"projectName":"SEG","query":"copper integration requirements"}' | jq
 
-For codebases and API specs, increase keyword boost so exact identifiers (`useEffect`, `ERR_*`, class names) dominate ranking:
+# With a result limit
+curl -s -X POST http://localhost:3939/search \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"projectName":"MVA","query":"voltage thresholds","limit":5}' | jq
+```
+
+**Response format:**
 
 ```json
-"env": {
-  "RAG_HYBRID_WEIGHT": "0.7",
-  "RAG_GROUPING": "similar"
+{
+  "projectName": "SEG",
+  "query": "copper integration requirements",
+  "results": [
+    {
+      "content": "The copper integration module supports...",
+      "source": "/Users/me/docs/seg-spec.pdf",
+      "filename": "seg-spec.pdf",
+      "chunkIndex": 12,
+      "score": 0.847
+    }
+  ]
 }
 ```
 
-- `0.7` — balanced semantic + keyword
-- `1.0` — aggressive; exact matches strongly rerank results
+Each result includes the text `content`, source file path, `filename`, `chunkIndex`, and a relevance `score` (0–1, higher is better).
 
-Keyword boost is applied *after* semantic filtering, so it improves precision without surfacing unrelated matches.
+### Via Web UI
 
-## How It Works
+1. Start the full stack: `pnpm run dev:full`
+2. Open `http://localhost:5173` and log in
+3. Navigate to **Search** (`/search`)
+4. Select a **project** from the dropdown
+5. Enter your query (e.g., "copper integration requirements")
+6. Adjust the **limit** (default 10, max 100 for the UI)
+7. Click **Search**
 
-**TL;DR:**
-- Documents are chunked by semantic similarity, not fixed character counts
-- Each chunk is embedded locally using Transformers.js
-- Search uses semantic similarity with keyword boost for exact matches
-- Results are filtered based on relevance gaps, not raw scores
+Results display the filename, chunk index, a **percentage match** score, the content text, and the source file path.
 
-### Details
+### Understanding Results
 
-When you ingest a document, the parser extracts text based on file type (PDF via `mupdf`, DOCX via `mammoth`, text files directly).
+| Field | Meaning |
+|-------|---------|
+| `score` (MCP/CLI/API) | Relevance score — **0 = best match**, higher = worse. This is a distance metric, not a percentage. |
+| `score` (Web UI) | Displayed as `(score * 100).toFixed(1)` with a `% match` label. Higher is better in the UI display. |
+| `chunkIndex` | Zero-based position of the chunk within the source document. Use with `read_chunk_neighbors` to expand context. |
+| `fileTitle` | Extracted document title (from PDF metadata, Markdown heading, etc.) — may be `null`. |
 
-The semantic chunker splits text into sentences, then groups them using embedding similarity. It finds natural topic boundaries where the meaning shifts—keeping related content together instead of cutting at arbitrary character limits. This produces chunks that are coherent units of meaning, typically 500-1000 characters. Markdown code blocks are kept intact—never split mid-block—preserving copy-pastable code in search results.
+**Relevance thresholds:**
+- Scores below `0.3` (distance) are typically strong matches
+- Scores above `0.6` may be loosely related — review before relying on them
+- The `RAG_MAX_DISTANCE` env var can filter out low-relevance results automatically
 
-Each chunk goes through a Transformers.js embedding model (default: `all-MiniLM-L6-v2`, configurable via `MODEL_NAME`), converting text into vectors. Vectors are stored in LanceDB, a file-based vector database requiring no server process.
+### Tuning Search
 
-When you search:
-1. Your query becomes a vector using the same model
-2. Semantic (vector) search finds the most relevant chunks
-3. Quality filters apply (distance threshold, grouping)
-4. Keyword matches boost rankings for exact term matching
+**Result count:**
+- MCP: `limit` parameter (1–20, default 10). Lower favors precision, higher recall.
+- CLI: `--limit <n>` flag
+- REST API: `"limit": N` in the request body
+- Web UI: Limit input field (1–100)
 
-The keyword boost ensures exact terms like `useEffect` or error codes rank higher when they match.
+**Project filtering:**
+- All interfaces support project scoping — results are restricted to documents ingested under that project namespace
+- Use `list_projects` (MCP), the projects page (Web UI), or `GET /projects` (API) to see available projects
 
-## Agent Skills
+**Path scoping (MCP and CLI only):**
+- The `scope` parameter/flag restricts results to specific file path prefixes
+- Useful for narrowing search to a subdirectory within a project
 
-[Agent Skills](https://agentskills.io/) provide optimized prompts that help AI assistants use RAG tools more effectively. Install skills for better query formulation, result interpretation, and ingestion workflows:
+**Getting better results:**
+- Use specific terms over generic ones — "copper integration voltage threshold" beats "specs"
+- The keyword boost ensures exact terms like class names, error codes, and identifiers rank higher
+- Increase `RAG_HYBRID_WEIGHT` (default `0.6`) for stronger keyword matching — see [Search Tuning](#search-tuning)
+- Use `read_chunk_neighbors` (MCP) or `read-neighbors` (CLI) to expand a result with surrounding context
+
+---
+
+## Docker Deployment
+
+Run the full stack (PostgreSQL + API + Web UI) with Docker Compose:
+
+### Quick Start
 
 ```bash
-# Claude Code (project-level)
-npx mcp-local-rag skills install --claude-code
+# Clone the repository
+git clone https://github.com/shinpr/mcp-local-rag.git
+cd mcp-local-rag
 
-# Claude Code (user-level)
-npx mcp-local-rag skills install --claude-code --global
+# Create .env file
+cp .env.example .env
+# Edit .env with your settings (especially DB_PASSWORD and JWT_SECRET)
 
-# Codex
-npx mcp-local-rag skills install --codex
+# Start all services
+docker compose up -d
 ```
 
-Skills include:
-- **Query optimization**: Better search query formulation
-- **Result interpretation**: Score thresholds and filtering guidelines
-- **HTML ingestion**: Format selection and source naming
+This starts three containers:
 
-### Ensuring Skill Activation
+| Service | Container | Port | Description |
+|---------|-----------|------|-------------|
+| PostgreSQL | `mcp-rag-postgres` | 5432 | Metadata database |
+| API Server | `mcp-rag-api` | 3939 | REST API backend |
+| Web UI | `mcp-rag-web` | 80 | React frontend (nginx) |
 
-Skills are loaded automatically in most cases—AI assistants scan skill metadata and load relevant instructions when needed. For consistent behavior:
+Access the Web UI at `http://localhost` and the API at `http://localhost:3939`.
 
-**Option 1: Explicit request (natural language)**
-Before RAG operations, request in natural language:
-- "Use the mcp-local-rag skill for this search"
-- "Apply RAG best practices from skills"
+### Docker Environment Variables
 
-**Option 2: Add to agent instruction file**
-Add to your `AGENTS.md`, `CLAUDE.md`, or other agent instruction file:
+Create a `.env` file in the project root:
+
+```bash
+# Database
+DB_USER=mcp_local_rag_user
+DB_PASSWORD=your_secure_password_here
+DB_NAME=mcp_local_rag_db
+DB_PORT=5432
+
+# API Server
+API_PORT=3939
+JWT_SECRET=your_jwt_secret_here
+
+# Frontend
+WEB_PORT=80
+
+# RAG Configuration
+MODEL_NAME=Xenova/all-MiniLM-L6-v2
+RAG_DEVICE=cpu
 ```
-When using query_documents, ingest_file, or ingest_data tools,
-apply the mcp-local-rag skill for better query formulation and result interpretation.
+
+### Docker Volumes
+
+The compose file creates four persistent volumes:
+
+| Volume | Purpose |
+|--------|---------|
+| `postgres_data` | PostgreSQL database files |
+| `lancedb_data` | LanceDB vector database |
+| `model_cache` | Downloaded embedding models |
+| `upload_data` | Uploaded document files |
+
+### Stopping and Cleaning Up
+
+```bash
+# Stop services
+docker compose down
+
+# Stop and remove volumes (destroys all data)
+docker compose down -v
 ```
+
+---
 
 ## Configuration
 
-### Environment Variables and CLI Flags
+### Environment Variables
 
 The MCP server is configured by environment variables only — pass them through your MCP client's `env` block. The CLI accepts the same env vars plus equivalent flags (priority: CLI flag > env > default). CLI flags are not accepted on the bare `mcp-local-rag` (MCP server) launch.
+
+#### RAG Engine Variables
 
 | Environment Variable | CLI Flag | Default | Description |
 |---------------------|----------|---------|-------------|
@@ -385,8 +843,25 @@ The MCP server is configured by environment variables only — pass them through
 | `MODEL_NAME` | `--model-name` | `Xenova/all-MiniLM-L6-v2` | HuggingFace model ID ([available models](https://huggingface.co/models?library=transformers.js&pipeline_tag=feature-extraction)) |
 | `MAX_FILE_SIZE` | `--max-file-size` | `104857600` (100MB) | Maximum file size in bytes |
 | `CHUNK_MIN_LENGTH` | `--chunk-min-length` | `50` | Minimum chunk length in characters (1–10000) |
+| `DEFAULT_PROJECT` | — | `default` | Default project name when none specified |
 | `RAG_DEVICE` | — | `cpu` | Execution device. Passed straight to ONNX Runtime. See the [Transformers.js device source code](https://github.com/huggingface/transformers.js/blob/main/packages/transformers/src/utils/devices.js) for the live list of supported backend names. If initialization fails, the server throws an error. |
 | `RAG_DTYPE` | — | `fp32` | Embedding quantization dtype. Opt-in and passed straight through; accepts any dtype the chosen model provides (`fp32`, `fp16`, `q8`, `int8`, …). If the model lacks the requested variant, the server throws an error naming the dtypes it does provide. Changing `RAG_DEVICE`/`RAG_DTYPE` changes the embedding space — re-ingest existing data. |
+
+#### API Server Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `API_PORT` | `3939` | HTTP server port |
+| `API_HOST` | `127.0.0.1` | HTTP server bind address |
+| `JWT_SECRET` | (random) | JWT signing secret |
+| `JWT_EXPIRES_IN` | `7d` | JWT token expiry |
+| `DATABASE_URL` | — | Full PostgreSQL connection URL (overrides `DB_*` vars) |
+| `DB_HOST` | `localhost` | PostgreSQL host |
+| `DB_PORT` | `5432` | PostgreSQL port |
+| `DB_USER` | `postgres` | PostgreSQL user |
+| `DB_PASSWORD` | — | PostgreSQL password |
+| `DB_NAME` | `mcp_local_rag_db` | PostgreSQL database name |
+| `UPLOAD_DIR` | `<DB_PATH>/uploads/` | File upload storage directory |
 
 **Model choice tips:**
 - Multilingual docs → e.g., `onnx-community/embeddinggemma-300m-ONNX` (100+ languages)
@@ -433,50 +908,41 @@ Unset `BASE_DIR` (or remove `BASE_DIRS`) to silence the warning.
 
 **Invalid `BASE_DIRS`** — when `BASE_DIRS` is not a valid JSON array of non-empty strings (malformed JSON, empty array, non-string elements, ...), root-dependent MCP tools return a structured error and CLI subcommands exit non-zero. There is **no silent fallback** to `BASE_DIR` or `cwd`. The MCP `status` tool remains callable so you can diagnose the config error through your MCP client.
 
-**MCP client examples** — multi-root setup:
+### Database Setup
 
-Cursor (`~/.cursor/mcp.json`):
-```json
-{
-  "mcpServers": {
-    "local-rag": {
-      "command": "npx",
-      "args": ["-y", "mcp-local-rag"],
-      "env": {
-        "BASE_DIRS": "[\"/Users/me/Documents/work\",\"/Users/me/Projects/specs\"]"
-      }
-    }
-  }
-}
-```
+#### PostgreSQL (Required for API/Web UI)
 
-Codex (`~/.codex/config.toml`):
-```toml
-[mcp_servers.local-rag]
-command = "npx"
-args = ["-y", "mcp-local-rag"]
+The REST API and Web UI require PostgreSQL 16+. The database schema is auto-migrated on first API startup — no manual migration steps needed.
 
-[mcp_servers.local-rag.env]
-BASE_DIRS = "[\"/Users/me/Documents/work\",\"/Users/me/Projects/specs\"]"
-```
-
-Claude Code:
+**Option 1: Docker (recommended)**
 ```bash
-claude mcp add local-rag --scope user \
-  --env BASE_DIRS='["/Users/me/Documents/work","/Users/me/Projects/specs"]' \
-  -- npx -y mcp-local-rag
+docker compose up -d postgres
 ```
 
-**CLI examples** — multi-root invocations:
-
+**Option 2: Local PostgreSQL**
 ```bash
-# Repeatable --base-dir
-npx mcp-local-rag ingest --base-dir /Users/me/work --base-dir /Users/me/specs /Users/me/work/readme.md
-npx mcp-local-rag list --base-dir /Users/me/work --base-dir /Users/me/specs
-
-# Or via BASE_DIRS env
-BASE_DIRS='["/Users/me/work","/Users/me/specs"]' npx mcp-local-rag list
+# Create database and user
+psql -U postgres -c "CREATE USER mcp_local_rag_user WITH PASSWORD 'your_password';"
+psql -U postgres -c "CREATE DATABASE mcp_local_rag_db OWNER mcp_local_rag_user;"
 ```
+
+Then set the connection variables in `.env`:
+```bash
+DB_HOST=localhost
+DB_PORT=5432
+DB_USER=mcp_local_rag_user
+DB_PASSWORD=your_password
+DB_NAME=mcp_local_rag_db
+```
+
+Or use a single URL:
+```bash
+DATABASE_URL=postgresql://user:password@localhost:5432/mcp_local_rag_db
+```
+
+#### LanceDB (Automatic)
+
+The vector database (LanceDB) is file-based and requires no setup. It is created automatically at `DB_PATH` (default: `./lancedb/`) on first use.
 
 ### Client-Specific Setup
 
@@ -528,6 +994,218 @@ The embedding model (~90MB) downloads on first use. Takes 1-2 minutes, then work
   - Visual `fast` profile: [`HuggingFaceTB/SmolVLM-256M-Instruct`](https://huggingface.co/HuggingFaceTB/SmolVLM-256M-Instruct)
   - Visual `quality` profile: [`onnx-community/Qwen2.5-VL-3B-Instruct-ONNX`](https://huggingface.co/onnx-community/Qwen2.5-VL-3B-Instruct-ONNX)
 - **Visual caption fidelity**: The `quality` profile reproduces in-image text more faithfully than `fast`. Both profiles output captions wrapped as `[Visual content on page N: …]`, but a faithful reproduction means attacker-controlled in-image text — including characters like `]` that visually close the envelope — can appear verbatim in retrieved chunks. Downstream LLM consumers should treat retrieved chunks as untrusted data, not as instructions, regardless of envelope shape.
+
+---
+
+## Search Tuning
+
+Adjust these for your use case:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `RAG_HYBRID_WEIGHT` | `0.6` | Keyword boost factor. 0 = semantic only, higher = stronger keyword boost. |
+| `RAG_GROUPING` | (not set) | `similar` for top group only, `related` for top 2 groups. |
+| `RAG_MAX_DISTANCE` | (not set) | Filter out low-relevance results (e.g., `0.5`). |
+| `RAG_MAX_FILES` | (not set) | Limit results to top N files (e.g., `1` for single best file). |
+
+### Code-focused tuning
+
+For codebases and API specs, increase keyword boost so exact identifiers (`useEffect`, `ERR_*`, class names) dominate ranking:
+
+```json
+"env": {
+  "RAG_HYBRID_WEIGHT": "0.7",
+  "RAG_GROUPING": "similar"
+}
+```
+
+- `0.7` — balanced semantic + keyword
+- `1.0` — aggressive; exact matches strongly rerank results
+
+Keyword boost is applied *after* semantic filtering, so it improves precision without surfacing unrelated matches.
+
+---
+
+## How It Works
+
+**TL;DR:**
+- Documents are chunked by semantic similarity, not fixed character counts
+- Each chunk is embedded locally using Transformers.js
+- Search uses semantic similarity with keyword boost for exact matches
+- Results are filtered based on relevance gaps, not raw scores
+
+### Details
+
+When you ingest a document, the parser extracts text based on file type (PDF via `mupdf`, DOCX via `mammoth`, text files directly).
+
+The semantic chunker splits text into sentences, then groups them using embedding similarity. It finds natural topic boundaries where the meaning shifts—keeping related content together instead of cutting at arbitrary character limits. This produces chunks that are coherent units of meaning, typically 500-1000 characters. Markdown code blocks are kept intact—never split mid-block—preserving copy-pastable code in search results.
+
+Each chunk goes through a Transformers.js embedding model (default: `all-MiniLM-L6-v2`, configurable via `MODEL_NAME`), converting text into vectors. Vectors are stored in LanceDB, a file-based vector database requiring no server process.
+
+When you search:
+1. Your query becomes a vector using the same model
+2. Semantic (vector) search finds the most relevant chunks
+3. Quality filters apply (distance threshold, grouping)
+4. Keyword matches boost rankings for exact term matching
+
+The keyword boost ensures exact terms like `useEffect` or error codes rank higher when they match.
+
+---
+
+## Agent Skills
+
+[Agent Skills](https://agentskills.io/) provide optimized prompts that help AI assistants use RAG tools more effectively. Install skills for better query formulation, result interpretation, and ingestion workflows:
+
+```bash
+# Claude Code (project-level)
+npx mcp-local-rag skills install --claude-code
+
+# Claude Code (user-level)
+npx mcp-local-rag skills install --claude-code --global
+
+# Codex
+npx mcp-local-rag skills install --codex
+```
+
+Skills include:
+- **Query optimization**: Better search query formulation
+- **Result interpretation**: Score thresholds and filtering guidelines
+- **HTML ingestion**: Format selection and source naming
+
+### Ensuring Skill Activation
+
+Skills are loaded automatically in most cases—AI assistants scan skill metadata and load relevant instructions when needed. For consistent behavior:
+
+**Option 1: Explicit request (natural language)**
+Before RAG operations, request in natural language:
+- "Use the mcp-local-rag skill for this search"
+- "Apply RAG best practices from skills"
+
+**Option 2: Add to agent instruction file**
+Add to your `AGENTS.md`, `CLAUDE.md`, or other agent instruction file:
+```
+When using query_documents, ingest_file, or ingest_data tools,
+apply the mcp-local-rag skill for better query formulation and result interpretation.
+```
+
+---
+
+## Testing
+
+```bash
+# Run all tests
+pnpm test
+
+# Run tests in watch mode
+pnpm run test:watch
+
+# Run with WebGPU acceleration
+pnpm run test:webgpu
+
+# Run end-to-end visual ingest tests
+pnpm run test:e2e
+
+# Run frontend tests
+pnpm run test:ui
+
+# Run full quality check (lint + format + type-check + tests)
+pnpm run check:all
+```
+
+### Stage 0 Verification
+
+Verify the ingest and query pipeline works end-to-end:
+
+```bash
+node scripts/verify-stage0.mjs
+```
+
+This script ingests a sample document into a temp database, queries it, and validates results. Exit 0 = pass.
+
+---
+
+## Development
+
+### Building from Source
+
+```bash
+git clone https://github.com/shinpr/mcp-local-rag.git
+cd mcp-local-rag
+pnpm install
+```
+
+### Development Scripts
+
+```bash
+# Start MCP server in dev mode (with hot reload)
+pnpm run dev
+
+# Start API server
+pnpm run dev:api
+
+# Start Web UI (Vite dev server)
+pnpm run dev:ui
+
+# Start API, wait for /health, then start UI
+pnpm run dev:full
+
+# Build for production
+pnpm run build
+
+# TypeScript type checking
+pnpm run type-check
+```
+
+### Code Quality
+
+```bash
+pnpm run type-check    # TypeScript check
+pnpm run check:fix     # Lint and format
+pnpm run check:deps    # Circular dependency check
+pnpm run check:all     # Full quality check
+```
+
+### Project Structure
+
+```
+mcp-local-rag/
+├── src/
+│   ├── index.ts           # Entry point (routes to CLI or MCP server)
+│   ├── cli-main.ts        # CLI subcommand dispatcher
+│   ├── server-main.ts     # MCP server startup
+│   ├── server/            # MCP tool handlers and definitions
+│   ├── cli/               # CLI subcommands (ingest, query, list, delete, serve, etc.)
+│   ├── api/               # Fastify HTTP API
+│   │   ├── routes/        # Route handlers (auth, projects, files, search, health)
+│   │   ├── db/            # Drizzle ORM schema and PostgreSQL connection
+│   │   ├── middleware/    # Auth middleware (JWT)
+│   │   ├── config.ts      # API configuration from env vars
+│   │   └── server.ts      # Fastify app builder
+│   ├── parser/            # PDF, DOCX, TXT, MD parsing
+│   ├── chunker/           # Semantic text splitting
+│   ├── embedder/          # Transformers.js embeddings
+│   └── vectordb/          # LanceDB operations
+├── frontend/              # React web UI
+│   ├── src/
+│   │   ├── api/           # API client functions
+│   │   ├── components/    # Reusable UI components
+│   │   ├── pages/         # Page components (Dashboard, Projects, Search, etc.)
+│   │   ├── hooks/         # Custom React hooks
+│   │   ├── types/         # TypeScript type definitions
+│   │   └── utils/         # Utility functions
+│   ├── Dockerfile         # Frontend production image (nginx)
+│   ├── nginx.conf         # nginx config with API proxy
+│   ├── vite.config.ts     # Vite config with API proxy
+│   └── package.json
+├── scripts/               # Build and verification scripts
+├── skills/                # Agent skill files
+├── Dockerfile             # Backend API production image
+├── docker-compose.yml     # Full stack Docker Compose
+├── pnpm-workspace.yaml    # pnpm workspace config (frontend is a workspace member)
+└── package.json
+```
+
+---
 
 <details>
 <summary><strong>Performance</strong></summary>
@@ -588,6 +1266,14 @@ When invalid, root-dependent operations fail with a clear error rather than sile
 2. Restart client completely (Cmd+Q on Mac for Cursor)
 3. Test directly: `npx mcp-local-rag` should run without errors
 
+### PostgreSQL connection refused
+
+Ensure PostgreSQL is running and accessible. Check `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, and `DB_NAME` are correct. With Docker, ensure the postgres container is healthy before the API starts.
+
+### API returns 401 Unauthorized
+
+JWT tokens expire after `JWT_EXPIRES_IN` (default: 7 days). Login again to get a fresh token.
+
 </details>
 
 <details>
@@ -615,55 +1301,17 @@ Opt-in via `RAG_DEVICE`. Devices are passed straight to ONNX Runtime. GPU suppor
 Opt-in via `RAG_DTYPE` (default `fp32`); accepted values are in the env-var table above. A recognized dtype the model lacks errors and lists the available ones; an unrecognized value (a typo) silently falls back to `fp32`. Changing `RAG_DEVICE`/`RAG_DTYPE` changes the embedding space — delete `DB_PATH` and re-ingest.
 
 **Multi-user support?**
-No. Designed for single-user, local access. Multi-user would require authentication/access control.
+Yes, via the REST API and Web UI. Each user has their own projects and files. The MCP server and CLI remain single-user.
 
 **How to backup?**
-Copy `DB_PATH` directory (default: `./lancedb/`).
+Copy `DB_PATH` directory (default: `./lancedb/`) for vector data. For API metadata, dump the PostgreSQL database.
+
+**Do I need PostgreSQL for the MCP server/CLI?**
+No. PostgreSQL is only required for the REST API and Web UI. The MCP server and CLI use LanceDB (file-based) exclusively.
 
 </details>
 
-<details>
-<summary><strong>Development</strong></summary>
-
-### Building from Source
-
-```bash
-git clone https://github.com/shinpr/mcp-local-rag.git
-cd mcp-local-rag
-pnpm install
-```
-
-### Testing
-
-```bash
-pnpm test              # Run all tests
-pnpm run test:watch    # Watch mode
-```
-
-### Code Quality
-
-```bash
-pnpm run type-check    # TypeScript check
-pnpm run check:fix     # Lint and format
-pnpm run check:deps    # Circular dependency check
-pnpm run check:all     # Full quality check
-```
-
-### Project Structure
-
-```
-src/
-  index.ts      # Entry point
-  server/       # MCP tool handlers
-  cli/          # CLI subcommands (ingest, query, list, delete, read-neighbors, etc.)
-  parser/       # PDF, DOCX, TXT, MD parsing
-  chunker/      # Text splitting
-  embedder/     # Transformers.js embeddings
-  vectordb/     # LanceDB operations
-  __tests__/    # Test suites
-```
-
-</details>
+---
 
 ## Contributing
 
@@ -679,4 +1327,4 @@ MIT License. Free for personal and commercial use.
 
 ## Acknowledgments
 
-Built with [Model Context Protocol](https://modelcontextprotocol.io/) by Anthropic, [LanceDB](https://lancedb.com/), and [Transformers.js](https://huggingface.co/docs/transformers.js).
+Built with [Model Context Protocol](https://modelcontextprotocol.io/) by Anthropic, [LanceDB](https://lancedb.com/), [Transformers.js](https://huggingface.co/docs/transformers.js), [Fastify](https://fastify.dev/), and [Drizzle ORM](https://orm.drizzle.team/).

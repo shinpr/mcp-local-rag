@@ -53,6 +53,7 @@ import { Embedder } from '../../embedder/index.js'
 import { buildChunksAndEmbeddings } from '../../ingest/compute.js'
 import { DocumentParser } from '../../parser/index.js'
 import { RAGServer } from '../../server/index.js'
+import { computeContentHash } from '../../utils/file-hash.js'
 import { type VectorChunk, VectorStore } from '../../vectordb/index.js'
 import { withTestDevice } from '../test-device.js'
 
@@ -133,6 +134,7 @@ async function cliInlineIngest(
 
   await vectorStore.deleteChunks(filePath)
 
+  const fileHash = computeContentHash(text)
   const timestamp = new Date().toISOString()
   const vectorChunks: VectorChunk[] = chunks.map((chunk, index) => {
     const embedding = embeddings[index]
@@ -152,6 +154,8 @@ async function cliInlineIngest(
       },
       fileTitle: title,
       timestamp,
+      projectName: 'default',
+      fileHash,
     }
   })
 

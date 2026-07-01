@@ -1,0 +1,73 @@
+services:
+  # PostgreSQL database for metadata storage
+  # Only used when DB_HOST=localhost. Start with: docker compose --profile local-db up
+  postgres:
+    profiles: ["local-db"]
+    image: postgres:16-alpine
+    container_name: mcp-rag-postgres
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "${DB_PORT}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - mcp-rag-network
+
+  # Backend API server
+  # Builds DATABASE_URL from DB_* env vars in code — no hardcoded URL needed here.
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: mcp-rag-api
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - lancedb_data:/app/lancedb
+      - model_cache:/app/models
+      - upload_data:/app/uploads
+    ports:
+      - "${API_PORT}:3939"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3939/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+    networks:
+      - mcp-rag-network
+
+  # Frontend web UI
+  web:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    container_name: mcp-rag-web
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "${WEB_PORT:-80}:80"
+    networks:
+      - mcp-rag-network
+
+volumes:
+  postgres_data:
+    driver: local
+  lancedb_data:
+    driver: local
+  model_cache:
+    driver: local
+  upload_data:
+    driver: local
+
+networks:
+  mcp-rag-network:
+    driver: bridge

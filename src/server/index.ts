@@ -18,6 +18,8 @@ import { parseHtml } from '../parser/html-parser.js'
 import { DocumentParser } from '../parser/index.js'
 import { extractMarkdownTitle, extractTxtTitle } from '../parser/title-extractor.js'
 import type { BaseDirsConfigError } from '../utils/base-dirs.js'
+import { computeContentHash } from '../utils/file-hash.js'
+import { normalizeProjectName } from '../utils/project-name.js'
 import {
   type ContentFormat,
   checkRawDataArtifacts,
@@ -50,15 +52,20 @@ import type {
   DeleteFileInput,
   DeleteFileResult,
   FileEntry,
+  GetProjectBriefInput,
   IngestDataInput,
   IngestFileInput,
   IngestResult,
   ListFilesResult,
+  PlanningContextInput,
+  ProjectListItem,
   QueryDocumentsInput,
   QueryResult,
   RAGServerConfig,
   ReadChunkNeighborsInput,
   ReadChunkNeighborsResultItem,
+  RequirementLookupInput,
+  SearchProjectDocsInput,
   SourceEntry,
 } from './types.js'
 
@@ -81,6 +88,11 @@ const TOOL_ERROR_CONTEXT: Record<string, ToMcpErrorContext> = {
   query_documents: {},
   list_files: {},
   status: {},
+  search_project_docs: {},
+  list_projects: {},
+  get_project_brief: {},
+  requirement_lookup: {},
+  planning_context: {},
 }
 
 /** RAG server compliant with MCP Protocol */
@@ -122,6 +134,7 @@ export class RAGServer {
   private readonly configError: BaseDirsConfigError | null
   private readonly minChunkLength: number
   private readonly device: string | undefined
+  private readonly defaultProject: string
 
   constructor(config: RAGServerConfig) {
     this.dbPath = config.dbPath
@@ -140,6 +153,7 @@ export class RAGServer {
     this.configError = config.configError ?? null
     this.minChunkLength = config.chunkMinLength ?? DEFAULT_MIN_CHUNK_LENGTH
     this.device = config.device
+    this.defaultProject = config.defaultProject ?? 'default'
     this.excludePaths = [`${resolve(this.dbPath)}${sep}`, `${resolve(this.cacheDir)}${sep}`]
     this.server = new Server(
       { name: 'rag-mcp-server', version: '1.0.0' },
@@ -262,6 +276,24 @@ export class RAGServer {
               return await this.handleReadChunkNeighbors(
                 request.params.arguments as unknown as ReadChunkNeighborsInput
               )
+            case 'search_project_docs':
+              return await this.handleSearchProjectDocs(
+                request.params.arguments as unknown as SearchProjectDocsInput
+              )
+            case 'list_projects':
+              return await this.handleListProjects()
+            case 'get_project_brief':
+              return await this.handleGetProjectBrief(
+                request.params.arguments as unknown as GetProjectBriefInput
+              )
+            case 'requirement_lookup':
+              return await this.handleRequirementLookup(
+                request.params.arguments as unknown as RequirementLookupInput
+              )
+            case 'planning_context':
+              return await this.handlePlanningContext(
+                request.params.arguments as unknown as PlanningContextInput
+              )
             case 'list_files':
               return await this.handleListFiles()
             case 'status':
@@ -305,6 +337,7 @@ export class RAGServer {
     const searchResults = await this.vectorStore.search(queryVector, {
       queryText: args.query,
       limit: args.limit ?? 10,
+      projectName: this.defaultProject,
       ...(args.scope !== undefined
         ? { scope: Array.isArray(args.scope) ? args.scope : [args.scope] }
         : {}),
@@ -380,6 +413,9 @@ export class RAGServer {
       }
       visualQuality = visualQualityArg
     }
+
+    // Resolve project name
+    const projectName = normalizeProjectName(args.projectName, this.defaultProject)
 
     let backup: VectorChunk[] | null = null
 
@@ -463,14 +499,17 @@ export class RAGServer {
     // before deleting; if the read fails it propagates here — leaving the
     // existing data untouched — rather than proceeding into the delete with
     // an empty/partial backup.
-    backup = await this.vectorStore.getChunksByFilePath(args.filePath)
+    backup = await this.vectorStore.getChunksByFilePath(args.filePath, projectName)
     if (backup.length > 0) {
       console.error(`Backup created: ${backup.length} chunks for ${args.filePath}`)
     }
 
-    // Delete existing data
-    await this.vectorStore.deleteChunks(args.filePath)
-    console.error(`Deleted existing chunks for: ${args.filePath}`)
+    // Delete existing data (scoped to project)
+    await this.vectorStore.deleteChunks(args.filePath, projectName)
+    console.error(`Deleted existing chunks for: ${args.filePath} [project: ${projectName}]`)
+
+    // Compute file hash for duplicate detection
+    const fileHash = computeContentHash(text)
 
     // Create vector chunks
     const vectorChunks = buildVectorChunks({
@@ -479,6 +518,8 @@ export class RAGServer {
       embeddings,
       fileSize: text.length,
       fileTitle: title || null,
+      projectName,
+      fileHash,
     })
 
     // Insert vectors (transaction processing)
@@ -518,6 +559,7 @@ export class RAGServer {
       chunkCount: chunks.length,
       timestamp: new Date().toISOString(),
       fileTitle: title || null,
+      projectName,
     }
 
     return {
@@ -600,7 +642,9 @@ export class RAGServer {
 
     // Call existing ingest_file internally with rollback on failure
     try {
-      return await this.handleIngestFile({ filePath: rawDataPath })
+      const ingestArgs: IngestFileInput = { filePath: rawDataPath }
+      if (args.projectName) ingestArgs.projectName = args.projectName
+      return await this.handleIngestFile(ingestArgs)
     } catch (ingestError) {
       // Rollback: delete the raw-data file and .meta.json if ingest fails
       try {
@@ -933,6 +977,221 @@ export class RAGServer {
           text: JSON.stringify(items, null, 2),
         },
       ]),
+    }
+  }
+
+  // ============================================
+  // Project-Scoped Tool Handlers
+  // ============================================
+
+  /**
+   * search_project_docs tool handler
+   * Project-scoped search — always requires a project name.
+   */
+  async handleSearchProjectDocs(
+    args: SearchProjectDocsInput
+  ): Promise<{ content: RagContentBlock[] }> {
+    if (
+      !args.project_name ||
+      typeof args.project_name !== 'string' ||
+      args.project_name.trim().length === 0
+    ) {
+      throw new McpError(
+        ErrorCode.InvalidParams,
+        'project_name is required and must be a non-empty string'
+      )
+    }
+    if (!args.query || typeof args.query !== 'string' || args.query.trim().length === 0) {
+      throw new McpError(
+        ErrorCode.InvalidParams,
+        'query is required and must be a non-empty string'
+      )
+    }
+
+    const projectName = normalizeProjectName(args.project_name)
+    const limit = args.limit ?? 10
+    const queryVector = await this.embedder.embed(args.query)
+
+    const searchResults = await this.vectorStore.search(queryVector, {
+      queryText: args.query,
+      limit,
+      projectName,
+    })
+
+    const results = searchResults.map((result) => ({
+      filePath: result.filePath,
+      chunkIndex: result.chunkIndex,
+      text: result.text,
+      score: result.score,
+      fileTitle: result.fileTitle ?? null,
+      projectName: result.projectName,
+    }))
+
+    return {
+      content: this.withWarnings([{ type: 'text', text: JSON.stringify(results, null, 2) }]),
+    }
+  }
+
+  /**
+   * list_projects tool handler
+   * Returns all indexed projects with document and chunk counts.
+   */
+  async handleListProjects(): Promise<{ content: RagContentBlock[] }> {
+    const projects: ProjectListItem[] = await this.vectorStore.listProjects()
+    return {
+      content: this.withWarnings([{ type: 'text', text: JSON.stringify(projects, null, 2) }]),
+    }
+  }
+
+  /**
+   * get_project_brief tool handler
+   * Searches for broad context (overview, architecture, requirements) within a project.
+   */
+  async handleGetProjectBrief(args: GetProjectBriefInput): Promise<{ content: RagContentBlock[] }> {
+    if (
+      !args.project_name ||
+      typeof args.project_name !== 'string' ||
+      args.project_name.trim().length === 0
+    ) {
+      throw new McpError(ErrorCode.InvalidParams, 'project_name is required')
+    }
+
+    const projectName = normalizeProjectName(args.project_name)
+    const queryVector = await this.embedder.embed(
+      'project overview architecture requirements summary'
+    )
+
+    const searchResults = await this.vectorStore.search(queryVector, {
+      queryText: 'project overview architecture requirements summary',
+      limit: 10,
+      projectName,
+    })
+
+    const brief = {
+      projectName,
+      documents: searchResults.map((r) => ({
+        source: r.metadata.fileName,
+        filePath: r.filePath,
+        chunkIndex: r.chunkIndex,
+        text: r.text,
+        score: r.score,
+      })),
+    }
+
+    return {
+      content: this.withWarnings([{ type: 'text', text: JSON.stringify(brief, null, 2) }]),
+    }
+  }
+
+  /**
+   * requirement_lookup tool handler
+   * Searches for a specific requirement within a project.
+   */
+  async handleRequirementLookup(
+    args: RequirementLookupInput
+  ): Promise<{ content: RagContentBlock[] }> {
+    if (
+      !args.project_name ||
+      typeof args.project_name !== 'string' ||
+      args.project_name.trim().length === 0
+    ) {
+      throw new McpError(ErrorCode.InvalidParams, 'project_name is required')
+    }
+    if (
+      !args.requirement ||
+      typeof args.requirement !== 'string' ||
+      args.requirement.trim().length === 0
+    ) {
+      throw new McpError(
+        ErrorCode.InvalidParams,
+        'requirement is required and must be a non-empty string'
+      )
+    }
+
+    const projectName = normalizeProjectName(args.project_name)
+    const limit = args.limit ?? 8
+    const queryVector = await this.embedder.embed(args.requirement)
+
+    const searchResults = await this.vectorStore.search(queryVector, {
+      queryText: args.requirement,
+      limit,
+      projectName,
+    })
+
+    const results = {
+      projectName,
+      requirement: args.requirement,
+      matches: searchResults.map((r) => ({
+        source: r.metadata.fileName,
+        filePath: r.filePath,
+        chunkIndex: r.chunkIndex,
+        text: r.text,
+        score: r.score,
+      })),
+    }
+
+    return {
+      content: this.withWarnings([{ type: 'text', text: JSON.stringify(results, null, 2) }]),
+    }
+  }
+
+  /**
+   * planning_context tool handler
+   * Gathers structured context for planning by searching for project overview and task-relevant docs.
+   */
+  async handlePlanningContext(args: PlanningContextInput): Promise<{ content: RagContentBlock[] }> {
+    if (
+      !args.project_name ||
+      typeof args.project_name !== 'string' ||
+      args.project_name.trim().length === 0
+    ) {
+      throw new McpError(ErrorCode.InvalidParams, 'project_name is required')
+    }
+    if (!args.task || typeof args.task !== 'string' || args.task.trim().length === 0) {
+      throw new McpError(ErrorCode.InvalidParams, 'task is required and must be a non-empty string')
+    }
+
+    const projectName = normalizeProjectName(args.project_name)
+
+    // Search for project overview
+    const briefVector = await this.embedder.embed('project overview architecture')
+    const briefResults = await this.vectorStore.search(briefVector, {
+      queryText: 'project overview architecture',
+      limit: 5,
+      projectName,
+    })
+
+    // Search for task-relevant context
+    const taskVector = await this.embedder.embed(args.task)
+    const taskResults = await this.vectorStore.search(taskVector, {
+      queryText: args.task,
+      limit: 8,
+      projectName,
+    })
+
+    const context = {
+      projectName,
+      task: args.task,
+      projectOverview: briefResults.map((r) => ({
+        source: r.metadata.fileName,
+        text: r.text,
+        score: r.score,
+      })),
+      taskContext: taskResults.map((r) => ({
+        source: r.metadata.fileName,
+        filePath: r.filePath,
+        chunkIndex: r.chunkIndex,
+        text: r.text,
+        score: r.score,
+      })),
+      instructions:
+        'Do not invent requirements. Separate confirmed requirements from assumptions. ' +
+        'Cite source filenames where available. Flag missing, stale, or conflicting documentation. ' +
+        'Include risks, open questions, and acceptance criteria for implementation plans.',
+    }
+
+    return {
+      content: this.withWarnings([{ type: 'text', text: JSON.stringify(context, null, 2) }]),
     }
   }
 

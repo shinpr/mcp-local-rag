@@ -155,6 +155,7 @@ Commands:
   list                   List files and ingestion status
   status                 Show database status
   delete <path>          Delete ingested content
+  serve                  Start the HTTP API server
   skills install         Install Claude Code / Codex skills`
 
 // ============================================

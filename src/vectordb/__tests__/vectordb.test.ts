@@ -44,6 +44,8 @@ describe('VectorStore', () => {
       },
       fileTitle: null,
       timestamp: new Date().toISOString(),
+      projectName: 'default',
+      fileHash: null,
     }
   }
 
@@ -1207,6 +1209,8 @@ describe('VectorStore', () => {
             },
             fileTitle: 'New Document Title',
             timestamp: new Date().toISOString(),
+            projectName: 'default',
+            fileHash: null,
           }
           await newStore.insertChunks([newChunk])
 
@@ -1320,7 +1324,13 @@ describe('VectorStore', () => {
         for (const row of result) {
           expect(row).not.toHaveProperty('score')
           expect(row).not.toHaveProperty('metadata')
-          expect(Object.keys(row).sort()).toEqual(['chunkIndex', 'filePath', 'fileTitle', 'text'])
+          expect(Object.keys(row).sort()).toEqual([
+            'chunkIndex',
+            'filePath',
+            'fileTitle',
+            'projectName',
+            'text',
+          ])
         }
       })
     })
@@ -1434,7 +1444,13 @@ describe('VectorStore', () => {
         expect(row).not.toHaveProperty('score')
         expect(row).not.toHaveProperty('metadata')
         // The only keys on a ChunkRow are the four Design Doc fields
-        expect(Object.keys(row!).sort()).toEqual(['chunkIndex', 'filePath', 'fileTitle', 'text'])
+        expect(Object.keys(row!).sort()).toEqual([
+          'chunkIndex',
+          'filePath',
+          'fileTitle',
+          'projectName',
+          'text',
+        ])
       })
     })
   })

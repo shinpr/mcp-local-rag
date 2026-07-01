@@ -304,11 +304,11 @@ describe('handleIngestFile - Phase 0 Wrapper Side Effects (AC-008a)', () => {
 
     // Backup captured from the target filePath. (backup-before-delete ordering is
     // covered observably in ingest-rollback.test.ts, not via call-order here.)
-    expect(mocks.getChunksByFilePath).toHaveBeenCalledWith(FIXTURE_FILE_PATH)
+    expect(mocks.getChunksByFilePath).toHaveBeenCalledWith(FIXTURE_FILE_PATH, 'default')
 
     // Assert: deleteChunks called with the target filePath
     expect(mocks.deleteChunks).toHaveBeenCalledTimes(1)
-    expect(mocks.deleteChunks).toHaveBeenCalledWith(FIXTURE_FILE_PATH)
+    expect(mocks.deleteChunks).toHaveBeenCalledWith(FIXTURE_FILE_PATH, 'default')
 
     // Assert: insertChunks called exactly twice — first failed, second is rollback
     expect(mocks.insertChunks).toHaveBeenCalledTimes(2)

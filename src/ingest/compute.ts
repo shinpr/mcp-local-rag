@@ -93,8 +93,10 @@ export function buildVectorChunks(params: {
   embeddings: number[][]
   fileSize: number
   fileTitle: string | null
+  projectName: string
+  fileHash: string | null
 }): VectorChunk[] {
-  const { filePath, chunks, embeddings, fileSize, fileTitle } = params
+  const { filePath, chunks, embeddings, fileSize, fileTitle, projectName, fileHash } = params
   const timestamp = new Date().toISOString()
   return chunks.map((chunk, index) => {
     const embedding = embeddings[index]
@@ -114,6 +116,8 @@ export function buildVectorChunks(params: {
       },
       fileTitle,
       timestamp,
+      projectName,
+      fileHash,
     }
   })
 }

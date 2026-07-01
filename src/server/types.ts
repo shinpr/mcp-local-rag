@@ -50,6 +50,8 @@ interface RAGServerConfigBase {
    * semantics.
    */
   configError?: BaseDirsConfigError
+  /** Default project name for legacy query_documents (default: "default") */
+  defaultProject?: string
 }
 
 /**
@@ -108,6 +110,8 @@ export interface IngestFileInput {
    * not propagate past `handleIngestFile`.
    */
   visualQuality?: 'fast' | 'quality' | ''
+  /** Project name namespace (default: DEFAULT_PROJECT env or "default") */
+  projectName?: string
 }
 
 /**
@@ -128,6 +132,8 @@ export interface IngestDataInput {
   content: string
   /** Content metadata */
   metadata: IngestDataMetadata
+  /** Project name namespace (default: DEFAULT_PROJECT env or "default") */
+  projectName?: string
 }
 
 /**
@@ -169,6 +175,8 @@ export interface IngestResult {
   timestamp: string
   /** Document title extracted from file content (display-only, not used for scoring) */
   fileTitle: string | null
+  /** Project name namespace */
+  projectName: string
 }
 
 /**
@@ -275,4 +283,55 @@ export interface ReadChunkNeighborsResultItem {
   source?: string
   /** Document title extracted from file content (display-only, not used for scoring) */
   fileTitle: string | null
+}
+
+/**
+ * search_project_docs tool input
+ */
+export interface SearchProjectDocsInput {
+  /** Project name (required) */
+  project_name: string
+  /** Natural language query */
+  query: string
+  /** Number of results to retrieve (default 10) */
+  limit?: number
+}
+
+/**
+ * list_projects tool output item
+ */
+export interface ProjectListItem {
+  projectName: string
+  documentCount: number
+  chunkCount: number
+}
+
+/**
+ * get_project_brief tool input
+ */
+export interface GetProjectBriefInput {
+  /** Project name (required) */
+  project_name: string
+}
+
+/**
+ * requirement_lookup tool input
+ */
+export interface RequirementLookupInput {
+  /** Project name (required) */
+  project_name: string
+  /** Requirement text to search for (required) */
+  requirement: string
+  /** Number of results (default 8) */
+  limit?: number
+}
+
+/**
+ * planning_context tool input
+ */
+export interface PlanningContextInput {
+  /** Project name (required) */
+  project_name: string
+  /** Task description (required) */
+  task: string
 }

@@ -109,6 +109,13 @@
           "isRequired": false,
           "format": "string",
           "isSecret": false
+        },
+        {
+          "name": "DEFAULT_PROJECT",
+          "description": "Default project name for ingest and search operations (defaults to 'default'). Used when projectName is not specified in tool calls or CLI --project flag.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
         }
       ],
       "features": {
@@ -121,7 +128,12 @@
             "read_chunk_neighbors",
             "list_files",
             "delete_file",
-            "status"
+            "status",
+            "search_project_docs",
+            "list_projects",
+            "get_project_brief",
+            "requirement_lookup",
+            "planning_context"
           ]
         },
         "prompts": {

@@ -222,7 +222,12 @@ describe('handleQueryDocuments → VectorStore.search() options boundary', () =>
     expect(searchSpy).toHaveBeenCalledTimes(1)
     const [vector, options] = searchSpy.mock.calls[0] as [number[], SearchOptions]
     expect(vector).toEqual(queryVector)
-    expect(options).toEqual({ queryText: 'typescript', limit: 7, scope: ['/docs', '/src'] })
+    expect(options).toEqual({
+      queryText: 'typescript',
+      limit: 7,
+      projectName: 'default',
+      scope: ['/docs', '/src'],
+    })
   })
 
   it('passes scope: undefined when scope is absent', async () => {
