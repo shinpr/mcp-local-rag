@@ -1454,15 +1454,16 @@ sql\`SELECT 1 AS ok\`.then((r) => { console.log('DB OK', r); return sql.end(); }
 
 ```bash
 cd mcp-local-rag-web
-git pull
+git checkout main
+git pull origin main
 export DOCKER_BUILDKIT=1
 export GIT_REVISION=$(git rev-parse HEAD)
 docker compose down
-docker rmi mcp-rag-api:latest mcp-local-rag-web-api 2>/dev/null || true
+docker rmi mcp-local-rag-web-api mcp-rag-api:latest 2>/dev/null || true
 docker compose build api
 docker compose up -d
 docker inspect mcp-rag-api --format '{{.Config.Cmd}}'
-docker compose logs -f api
+docker compose logs api --tail 30
 ```
 
 Expected `Cmd`: `[node dist/index.js serve]`. First logs should include `[mcp-rag-api] starting with argv:` and `[mcp-rag-api] serve module loaded`.
