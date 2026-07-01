@@ -95,6 +95,14 @@ describe('Stage 2 — API integration', () => {
     })
   })
 
+  describe('GET /health/live', () => {
+    it('returns alive status', async () => {
+      const response = await app.inject({ method: 'GET', url: '/health/live' })
+      expect(response.statusCode).toBe(200)
+      expect(response.json().status).toBe('alive')
+    })
+  })
+
   // ============================================
   // Auth
   // ============================================
