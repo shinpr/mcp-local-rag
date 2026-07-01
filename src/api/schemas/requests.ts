@@ -73,16 +73,29 @@ export const searchSchema: FastifySchema = {
 // Ingest
 // ============================================
 
+const fileIdsBodySchema = {
+  type: 'object',
+  properties: {
+    fileIds: {
+      type: 'array',
+      items: { type: 'integer', minimum: 1 },
+      maxItems: 100,
+    },
+  },
+  additionalProperties: false,
+} as const
+
 export const indexProjectSchema: FastifySchema = {
+  body: fileIdsBodySchema,
+}
+
+export const reindexProjectSchema: FastifySchema = {
+  body: fileIdsBodySchema,
+}
+
+export const emptyBodySchema: FastifySchema = {
   body: {
     type: 'object',
-    properties: {
-      fileIds: {
-        type: 'array',
-        items: { type: 'integer', minimum: 1 },
-        maxItems: 100,
-      },
-    },
     additionalProperties: false,
   },
 }

@@ -166,6 +166,12 @@ describe('Stage 2 — API integration', () => {
       expect(body.username).toBe('testuser')
     })
 
+    it('returns empty defaults when admin env vars are not configured', async () => {
+      const response = await app.inject({ method: 'GET', url: '/auth/defaults' })
+      expect(response.statusCode).toBe(200)
+      expect(response.json()).toEqual({})
+    })
+
     it('rejects requests without token', async () => {
       const response = await app.inject({ method: 'GET', url: '/auth/me' })
       expect(response.statusCode).toBe(401)
@@ -265,7 +271,47 @@ describe('Stage 2 — API integration', () => {
       const body = response.json()
       expect(body.originalFilename).toBe('test.txt')
       expect(body.indexingStatus).toBe('pending')
+      expect(body.duplicate).toBe(false)
       fileId = body.id
+    })
+
+    it('returns existing file for duplicate content instead of failing', async () => {
+      const fileContent = Buffer.from('Test file content for upload')
+      const response = await app.inject({
+        method: 'POST',
+        url: `/projects/${projectId}/files/upload`,
+        headers: {
+          authorization: `Bearer ${authToken}`,
+          'content-type': 'multipart/form-data; boundary=test-boundary',
+        },
+        payload: Buffer.from(
+          `--test-boundary\r\nContent-Disposition: form-data; name="file"; filename="duplicate.txt"\r\nContent-Type: text/plain\r\n\r\n${fileContent.toString()}\r\n--test-boundary--\r\n`
+        ),
+      })
+      expect(response.statusCode).toBe(200)
+      const body = response.json()
+      expect(body.duplicate).toBe(true)
+      expect(body.id).toBe(fileId)
+    })
+
+    it('returns existing file idempotently when content is duplicate', async () => {
+      const fileContent = Buffer.from('Test file content for upload')
+      const response = await app.inject({
+        method: 'POST',
+        url: `/projects/${projectId}/files/upload`,
+        headers: {
+          authorization: `Bearer ${authToken}`,
+          'content-type': 'multipart/form-data; boundary=test-boundary',
+        },
+        payload: Buffer.from(
+          `--test-boundary\r\nContent-Disposition: form-data; name="file"; filename="test-copy.txt"\r\nContent-Type: text/plain\r\n\r\n${fileContent.toString()}\r\n--test-boundary--\r\n`
+        ),
+      })
+      expect(response.statusCode).toBe(200)
+      const body = response.json()
+      expect(body.duplicate).toBe(true)
+      expect(body.id).toBe(fileId)
+      expect(body.originalFilename).toBe('test.txt')
     })
 
     it('lists files in a project', async () => {

@@ -3,7 +3,7 @@ import clsx from 'clsx'
 type Status = 'pending' | 'indexing' | 'indexed' | 'failed' | 'running' | 'completed'
 
 interface StatusBadgeProps {
-  status: string
+  status: Status | string
   className?: string
 }
 

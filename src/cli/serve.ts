@@ -1,5 +1,6 @@
 // CLI `serve` subcommand — starts the Fastify HTTP server
 
+import 'dotenv/config'
 import { resolveApiConfig } from '../api/config.js'
 import { buildApp } from '../api/server.js'
 import { Embedder } from '../embedder/index.js'

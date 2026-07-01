@@ -49,14 +49,14 @@ class ApiClient {
   async post<T>(endpoint: string, data?: unknown): Promise<T> {
     return this.request<T>(endpoint, {
       method: 'POST',
-      body: data ? JSON.stringify(data) : undefined,
+      body: JSON.stringify(data ?? {}),
     })
   }
 
   async put<T>(endpoint: string, data?: unknown): Promise<T> {
     return this.request<T>(endpoint, {
       method: 'PUT',
-      body: data ? JSON.stringify(data) : undefined,
+      body: JSON.stringify(data ?? {}),
     })
   }
 
@@ -94,6 +94,42 @@ class ApiClient {
     }
 
     return response.json()
+  }
+
+  async download(endpoint: string, filename: string): Promise<void> {
+    const token = this.getToken()
+    const headers: HeadersInit = {}
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`
+    }
+
+    const response = await fetch(`${API_BASE}${endpoint}`, {
+      method: 'GET',
+      headers,
+    })
+
+    if (!response.ok) {
+      let error: ApiError
+      try {
+        error = await response.json()
+      } catch {
+        error = {
+          error: 'Network Error',
+          message: `HTTP ${response.status}: ${response.statusText}`,
+        }
+      }
+      throw new ApiClientError(error.message, response.status, error)
+    }
+
+    const blob = await response.blob()
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = filename
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    URL.revokeObjectURL(url)
   }
 }
 

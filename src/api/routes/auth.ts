@@ -14,6 +14,24 @@ const SALT_ROUNDS = 10
 export function registerAuthRoutes(app: FastifyInstance, config: ApiConfig): void {
   const db = getDb(config.databaseUrl)
 
+  // GET /auth/defaults — dev-only login prefill (never exposes credentials in production)
+  app.get('/auth/defaults', async () => {
+    if (process.env['NODE_ENV'] === 'production') {
+      return {}
+    }
+
+    const { defaultAdminEmail, defaultAdminUsername, defaultAdminPassword } = config
+    if (!defaultAdminEmail || !defaultAdminUsername || !defaultAdminPassword) {
+      return {}
+    }
+
+    return {
+      email: defaultAdminEmail,
+      username: defaultAdminUsername,
+      password: defaultAdminPassword,
+    }
+  })
+
   // POST /auth/register
   app.post('/auth/register', { schema: registerSchema }, async (request, reply) => {
     const { email, username, password } = request.body as {

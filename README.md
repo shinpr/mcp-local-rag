@@ -34,6 +34,7 @@ Semantic search with keyword boost for exact technical terms — fully private, 
   - [CLI](#using-as-cli)
   - [REST API](#rest-api)
   - [Web UI](#web-ui)
+- [Testing Vector Search](#testing-vector-search)
 - [Docker Deployment](#docker-deployment)
 - [Search Tuning](#search-tuning)
 - [How It Works](#how-it-works)
@@ -494,7 +495,7 @@ A modern web interface for managing your RAG system, built with React 19, TypeSc
 - **Authentication** — Register and login with JWT-based auth
 - **Dashboard** — Overview of projects, server status, and quick actions
 - **Project Management** — Create, view, and delete projects
-- **File Upload** — Drag-and-drop file upload with progress tracking
+- **File Upload** — Drag-and-drop file upload with per-file and batch progress, automatic retry on transient errors, and idempotent re-upload (duplicate content is skipped)
 - **Document Indexing** — Trigger indexing and monitor job status
 - **Search** — Search across indexed documents with relevance scoring
 - **MCP Setup** — Generate MCP server configuration for Cursor
@@ -516,6 +517,18 @@ A modern web interface for managing your RAG system, built with React 19, TypeSc
 | Skill Setup | `/setup/skill` | Generate RAG skill files |
 | AGENTS.md | `/setup/agents` | Generate AGENTS.md blocks |
 
+### Updating Documents (Delete → Re-upload → Re-index)
+
+When you need to replace a document with a newer version:
+
+1. **Delete the old file** — On the project detail page, delete the file. This removes the stored copy from disk, the database record, and all indexed vector chunks for that file.
+2. **Re-upload** — Upload the new version via the Upload page. Original filenames are preserved in metadata; files are stored on disk under `UPLOAD_DIR`.
+3. **Re-index** — Click **Start indexing** on the project detail page to chunk, embed, and index the new upload.
+
+**Re-uploading without deleting:** Uploading a file with identical content (same SHA-256 hash) is treated as already uploaded — the UI skips it and continues with remaining files. This makes batch retries safe after partial uploads.
+
+**Partial upload retries:** If some files fail due to transient network errors, the upload UI retries automatically (up to 3 times) and continues with the rest. Successfully uploaded files are skipped on retry; only failed files need another attempt.
+
 ### Running the Full Stack
 
 **Quick start (both API and UI):**
@@ -525,9 +538,11 @@ pnpm install
 pnpm run dev:full
 ```
 
-This starts:
+This starts the API first and waits for `/health` to pass (embedder load can take ~30s), then starts the Web UI — avoiding proxy `ECONNREFUSED` errors on startup.
 - API server on `http://127.0.0.1:3939`
-- Web UI on `http://localhost:5173`
+- Web UI on `http://localhost:5173` (after API is healthy)
+
+Override the wait target with `API_PORT` (from `.env`) or `DEV_API_WAIT_TIMEOUT_MS` (default `180000`).
 
 **Run separately:**
 
@@ -555,6 +570,184 @@ frontend/
 ├── vite.config.ts    # Vite config with API proxy
 └── tailwind.config.js
 ```
+
+---
+
+## Testing Vector Search
+
+Once documents are ingested under a project namespace, you can verify the vector storage similarity search through every interface: MCP, CLI, REST API, and Web UI. This section walks through each path with practical examples.
+
+### Prerequisites
+
+Documents must be **ingested first** before searching. Ingest files under a project namespace so results are scoped:
+
+```bash
+# CLI — ingest a folder under project SEG
+npx mcp-local-rag ingest ./docs/SEG --project SEG
+
+# MCP — ask your AI assistant
+"Ingest /Users/me/docs/seg-spec.pdf under project SEG"
+```
+
+Verify ingestion completed:
+
+```bash
+npx mcp-local-rag list
+# or via MCP: "List all projects"
+```
+
+### Via MCP
+
+Two tools support search — `query_documents` (default project) and `search_project_docs` (any project).
+
+**`search_project_docs`** — project-scoped search (recommended for multi-project setups):
+
+```
+"Search project SEG for copper integration requirements"
+"Find all references to voltage thresholds in project MVA"
+```
+
+Parameters:
+- `project_name` (required) — project to search within
+- `query` (required) — natural language search query
+- `limit` — max results (1–20, default 10)
+
+**`query_documents`** — default project search:
+
+```
+"What does the API documentation say about authentication?"
+"Find information about rate limiting"
+```
+
+Parameters:
+- `query` (required) — search query
+- `limit` — max results (1–20, default 10)
+- `scope` — absolute path prefix(es) to restrict results
+
+Both tools return JSON arrays with `filePath`, `chunkIndex`, `text`, `score`, and `fileTitle` for each result.
+
+### Via CLI
+
+The CLI `query` command searches the default project:
+
+```bash
+# Basic search
+npx mcp-local-rag query "copper integration requirements"
+
+# Limit results
+npx mcp-local-rag query "voltage thresholds" --limit 5
+
+# Restrict to a path prefix
+npx mcp-local-rag query "authentication" --scope /Users/me/docs/api
+
+# Multiple scopes
+npx mcp-local-rag query "error handling" --scope /Users/me/docs/api --scope /Users/me/docs/guide
+```
+
+Results are output as JSON to stdout, making them easy to pipe:
+
+```bash
+npx mcp-local-rag query "copper specs" | jq '.[0].text'
+```
+
+> **Note:** The CLI searches the default project only. For project-scoped search, use the MCP `search_project_docs` tool or the REST API.
+
+### Via REST API
+
+The `POST /search` endpoint accepts a JSON body with `projectName`, `query`, and optional `limit`.
+
+**Step 1 — Authenticate:**
+
+```bash
+TOKEN=$(curl -s -X POST http://localhost:3939/auth/register \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"user@example.com","username":"dev","password":"password123"}' \
+  | jq -r .token)
+```
+
+**Step 2 — Search:**
+
+```bash
+# Search project SEG for copper integration requirements
+curl -s -X POST http://localhost:3939/search \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"projectName":"SEG","query":"copper integration requirements"}' | jq
+
+# With a result limit
+curl -s -X POST http://localhost:3939/search \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"projectName":"MVA","query":"voltage thresholds","limit":5}' | jq
+```
+
+**Response format:**
+
+```json
+{
+  "projectName": "SEG",
+  "query": "copper integration requirements",
+  "results": [
+    {
+      "content": "The copper integration module supports...",
+      "source": "/Users/me/docs/seg-spec.pdf",
+      "filename": "seg-spec.pdf",
+      "chunkIndex": 12,
+      "score": 0.847
+    }
+  ]
+}
+```
+
+Each result includes the text `content`, source file path, `filename`, `chunkIndex`, and a relevance `score` (0–1, higher is better).
+
+### Via Web UI
+
+1. Start the full stack: `pnpm run dev:full`
+2. Open `http://localhost:5173` and log in
+3. Navigate to **Search** (`/search`)
+4. Select a **project** from the dropdown
+5. Enter your query (e.g., "copper integration requirements")
+6. Adjust the **limit** (default 10, max 100 for the UI)
+7. Click **Search**
+
+Results display the filename, chunk index, a **percentage match** score, the content text, and the source file path.
+
+### Understanding Results
+
+| Field | Meaning |
+|-------|---------|
+| `score` (MCP/CLI/API) | Relevance score — **0 = best match**, higher = worse. This is a distance metric, not a percentage. |
+| `score` (Web UI) | Displayed as `(score * 100).toFixed(1)` with a `% match` label. Higher is better in the UI display. |
+| `chunkIndex` | Zero-based position of the chunk within the source document. Use with `read_chunk_neighbors` to expand context. |
+| `fileTitle` | Extracted document title (from PDF metadata, Markdown heading, etc.) — may be `null`. |
+
+**Relevance thresholds:**
+- Scores below `0.3` (distance) are typically strong matches
+- Scores above `0.6` may be loosely related — review before relying on them
+- The `RAG_MAX_DISTANCE` env var can filter out low-relevance results automatically
+
+### Tuning Search
+
+**Result count:**
+- MCP: `limit` parameter (1–20, default 10). Lower favors precision, higher recall.
+- CLI: `--limit <n>` flag
+- REST API: `"limit": N` in the request body
+- Web UI: Limit input field (1–100)
+
+**Project filtering:**
+- All interfaces support project scoping — results are restricted to documents ingested under that project namespace
+- Use `list_projects` (MCP), the projects page (Web UI), or `GET /projects` (API) to see available projects
+
+**Path scoping (MCP and CLI only):**
+- The `scope` parameter/flag restricts results to specific file path prefixes
+- Useful for narrowing search to a subdirectory within a project
+
+**Getting better results:**
+- Use specific terms over generic ones — "copper integration voltage threshold" beats "specs"
+- The keyword boost ensures exact terms like class names, error codes, and identifiers rank higher
+- Increase `RAG_HYBRID_WEIGHT` (default `0.6`) for stronger keyword matching — see [Search Tuning](#search-tuning)
+- Use `read_chunk_neighbors` (MCP) or `read-neighbors` (CLI) to expand a result with surrounding context
 
 ---
 
@@ -953,7 +1146,7 @@ pnpm run dev:api
 # Start Web UI (Vite dev server)
 pnpm run dev:ui
 
-# Start both API and UI concurrently
+# Start API, wait for /health, then start UI
 pnpm run dev:full
 
 # Build for production

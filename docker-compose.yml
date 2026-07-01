@@ -1,19 +1,18 @@
 services:
   # PostgreSQL database for metadata storage
+  # Only used when DB_HOST=localhost. Start with: docker compose --profile local-db up
   postgres:
+    profiles: ["local-db"]
     image: postgres:16-alpine
     container_name: mcp-rag-postgres
     restart: unless-stopped
-    environment:
-      POSTGRES_USER: ${DB_USER:-mcp_local_rag_user}
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-mcp_local_rag_password}
-      POSTGRES_DB: ${DB_NAME:-mcp_local_rag_db}
+    env_file: .env
     volumes:
       - postgres_data:/var/lib/postgresql/data
     ports:
-      - "${DB_PORT:-5432}:5432"
+      - "${DB_PORT}:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-mcp_local_rag_user} -d ${DB_NAME:-mcp_local_rag_db}"]
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -21,32 +20,20 @@ services:
       - mcp-rag-network
 
   # Backend API server
+  # Builds DATABASE_URL from DB_* env vars in code — no hardcoded URL needed here.
   api:
     build:
       context: .
       dockerfile: Dockerfile
     container_name: mcp-rag-api
     restart: unless-stopped
-    depends_on:
-      postgres:
-        condition: service_healthy
-    environment:
-      NODE_ENV: production
-      API_PORT: 3939
-      API_HOST: "0.0.0.0"
-      DATABASE_URL: postgresql://${DB_USER:-mcp_local_rag_user}:${DB_PASSWORD:-mcp_local_rag_password}@postgres:5432/${DB_NAME:-mcp_local_rag_db}
-      DB_PATH: /app/lancedb
-      MODEL_NAME: ${MODEL_NAME:-Xenova/all-MiniLM-L6-v2}
-      CACHE_DIR: /app/models
-      UPLOAD_DIR: /app/uploads
-      RAG_DEVICE: ${RAG_DEVICE:-cpu}
-      JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+    env_file: .env
     volumes:
       - lancedb_data:/app/lancedb
       - model_cache:/app/models
       - upload_data:/app/uploads
     ports:
-      - "${API_PORT:-3939}:3939"
+      - "${API_PORT}:3939"
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://localhost:3939/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
       interval: 30s

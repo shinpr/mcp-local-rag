@@ -1,6 +1,8 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
+import { getAuthDefaults } from '../api/auth'
 import { useAuth } from '../hooks/useAuth'
+import { waitForApiReady } from '../utils/waitForApi'
 import toast from 'react-hot-toast'
 
 export default function LoginPage() {
@@ -9,6 +11,28 @@ export default function LoginPage() {
   const [isLoading, setIsLoading] = useState(false)
   const { login } = useAuth()
   const navigate = useNavigate()
+
+  useEffect(() => {
+    let cancelled = false
+
+    void (async () => {
+      const ready = await waitForApiReady()
+      if (cancelled || !ready) return
+
+      try {
+        const defaults = await getAuthDefaults()
+        if (cancelled) return
+        if (defaults.email) setEmail(defaults.email)
+        if (defaults.password) setPassword(defaults.password)
+      } catch {
+        // Ignore — defaults are optional and absent in production
+      }
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()

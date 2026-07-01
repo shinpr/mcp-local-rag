@@ -24,6 +24,10 @@ export interface ApiConfig {
   cacheDir: string
   /** Compute device */
   device: string
+  /** Default admin user — seeded on first startup if all three are set */
+  defaultAdminEmail?: string
+  defaultAdminUsername?: string
+  defaultAdminPassword?: string
 }
 
 /**
@@ -56,10 +60,14 @@ export function resolveApiConfig(env: NodeJS.ProcessEnv): ApiConfig {
   const lanceDbPath = env['DB_PATH'] ?? './lancedb/'
   const dbDir = resolve(lanceDbPath)
   const databaseUrl = resolveDatabaseUrl(env)
-  const uploadDir = env['UPLOAD_DIR'] ?? join(dbDir, 'uploads')
+  const uploadDir = resolve(env['UPLOAD_DIR'] ?? join(dbDir, 'uploads'))
   const modelName = env['MODEL_NAME'] ?? 'Xenova/all-MiniLM-L6-v2'
   const cacheDir = env['CACHE_DIR'] ?? './models/'
   const device = env['RAG_DEVICE']?.trim() || 'cpu'
+
+  const defaultAdminEmail = env['DEFAULT_ADMIN_EMAIL']?.trim() || undefined
+  const defaultAdminUsername = env['DEFAULT_ADMIN_USERNAME']?.trim() || undefined
+  const defaultAdminPassword = env['DEFAULT_ADMIN_PASSWORD']?.trim() || undefined
 
   return {
     port,
@@ -72,5 +80,8 @@ export function resolveApiConfig(env: NodeJS.ProcessEnv): ApiConfig {
     modelName,
     cacheDir,
     device,
+    ...(defaultAdminEmail && { defaultAdminEmail }),
+    ...(defaultAdminUsername && { defaultAdminUsername }),
+    ...(defaultAdminPassword && { defaultAdminPassword }),
   }
 }

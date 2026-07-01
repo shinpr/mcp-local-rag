@@ -1,7 +1,6 @@
 // Background file ingestion worker — reuses core RAGServer/CLI logic
 
 import { extname } from 'node:path'
-
 import { SemanticChunker } from '../chunker/index.js'
 import type { Embedder } from '../embedder/index.js'
 import { buildChunksAndEmbeddings, buildVectorChunks } from '../ingest/compute.js'
@@ -10,6 +9,7 @@ import { computeContentHash } from '../utils/file-hash.js'
 import { DEFAULT_MAX_FILE_SIZE } from '../utils/limits.js'
 import type { VectorStore } from '../vectordb/index.js'
 import type { ApiConfig } from './config.js'
+import { resolveStoredFilePath } from './upload-utils.js'
 
 interface IngestFileParams {
   filePath: string
@@ -26,7 +26,8 @@ interface IngestFileParams {
  * Reuses the same pipeline as CLI `ingestSingleFile` and RAGServer `handleIngestFile`.
  */
 export async function ingestFile(params: IngestFileParams): Promise<number> {
-  const { filePath, projectName, vectorStore, embedder, config } = params
+  const { filePath: storedPath, projectName, vectorStore, embedder, config } = params
+  const filePath = resolveStoredFilePath(storedPath, config.uploadDir)
 
   // Compute file content hash
   const fileHash = await computeContentHash(filePath)

@@ -1,5 +1,5 @@
 import { apiClient } from './client'
-import type { AuthResponse, UserResponse } from '../types/api'
+import type { AuthDefaultsResponse, AuthResponse, UserResponse } from '../types/api'
 
 export async function register(
   email: string,
@@ -22,4 +22,8 @@ export async function login(
 
 export async function getMe(): Promise<UserResponse> {
   return apiClient.get<UserResponse>('/auth/me')
+}
+
+export async function getAuthDefaults(): Promise<AuthDefaultsResponse> {
+  return apiClient.get<AuthDefaultsResponse>('/auth/defaults')
 }
