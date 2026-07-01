@@ -538,7 +538,7 @@ pnpm install
 pnpm run dev:full
 ```
 
-This starts the API first and waits for `/health` to pass (embedder load can take ~30s), then starts the Web UI — avoiding proxy `ECONNREFUSED` errors on startup.
+This starts the API first and waits for `/health` to pass (embedder load can take 30s–3min depending on CPU and whether the model is cached), then starts the Web UI — avoiding proxy `ECONNREFUSED` errors on startup.
 - API server on `http://127.0.0.1:3939`
 - Web UI on `http://localhost:5173` (after API is healthy)
 
@@ -769,6 +769,8 @@ cp .env.example .env
 
 docker compose up -d --build
 ```
+
+> **First start can take several minutes.** The API loads the embedding model before it listens on port 3939. On a slow CPU, the first run also downloads the model into the `model_cache` volume. Docker waits up to **180s** before counting health-check failures, then allows **12** more retries at **10s** intervals (~5 minutes total). Watch progress with `docker compose logs -f api` — look for `API server listening on http://0.0.0.0:3939`.
 
 **Required `.env` values for external Postgres:**
 
@@ -1341,6 +1343,17 @@ When invalid, root-dependent operations fail with a clear error rather than sile
 ### PostgreSQL connection refused
 
 Ensure PostgreSQL is running and accessible. Check `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, and `DB_NAME` are correct. With `--profile local-db`, set `DB_HOST=postgres` and ensure the postgres container is healthy. With an external database, set `DB_HOST` to the LAN IP (not `localhost`) and confirm the mini-pc can reach that host on port 5432 (firewall / `pg_hba.conf`).
+
+### Docker: `mcp-rag-api` unhealthy / dependency failed to start
+
+The API does not expose `/health` until LanceDB, the embedder, and PostgreSQL migration all finish. On a slow CPU the first start also downloads the embedding model (~90 MB) into the `model_cache` volume.
+
+```bash
+docker compose logs -f api   # watch for "API server listening on http://0.0.0.0:3939"
+docker compose ps            # api should show "healthy" after startup completes
+```
+
+If the container exits instead of staying unhealthy, check DB connectivity (wrong `DB_HOST`, firewall, or credentials). If it stays `starting` for several minutes on first run, that is normal — wait for the model download to finish.
 
 ### API returns 401 Unauthorized
 
