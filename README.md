@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/shinpr-mcp-local-rag-badge.png)](https://mseep.ai/app/shinpr-mcp-local-rag)
+
 <p align="center">
   <img src="assets/banner.jpg" alt="MCP Local RAG — Search below the surface." width="600" />
 </p>
