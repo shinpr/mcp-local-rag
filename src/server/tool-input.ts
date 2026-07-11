@@ -10,7 +10,14 @@
 
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js'
 import type { ContentFormat } from '../utils/raw-data-utils.js'
-import type { IngestDataInput, ListFilesInput, QueryDocumentsInput } from './types.js'
+import type {
+  DeleteFileInput,
+  IngestDataInput,
+  IngestFileInput,
+  ListFilesInput,
+  QueryDocumentsInput,
+  ReadChunkNeighborsInput,
+} from './types.js'
 
 const CONTENT_FORMATS: readonly ContentFormat[] = ['text', 'html', 'markdown']
 
@@ -125,4 +132,79 @@ export function parseIngestDataInput(raw: unknown): IngestDataInput {
   }
 
   return { content, metadata: { source, format: format as ContentFormat } }
+}
+
+export function parseIngestFileInput(raw: unknown): IngestFileInput {
+  const { filePath, visual, visualQuality } = asRecord(raw, 'ingest_file')
+  if (typeof filePath !== 'string' || filePath.trim().length === 0) {
+    throw new McpError(ErrorCode.InvalidParams, 'filePath must be a non-empty string')
+  }
+  if (visual !== undefined && typeof visual !== 'boolean') {
+    throw new McpError(ErrorCode.InvalidParams, "'visual' must be a boolean if provided")
+  }
+  if (
+    visualQuality !== undefined &&
+    visualQuality !== '' &&
+    visualQuality !== 'fast' &&
+    visualQuality !== 'quality'
+  ) {
+    throw new McpError(
+      ErrorCode.InvalidParams,
+      "'visualQuality' must be 'fast' or 'quality' if provided"
+    )
+  }
+
+  return {
+    filePath,
+    ...(visual !== undefined ? { visual } : {}),
+    ...(visualQuality === 'fast' || visualQuality === 'quality' ? { visualQuality } : {}),
+  }
+}
+
+function nonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0
+}
+
+export function parseDeleteFileInput(raw: unknown): DeleteFileInput {
+  const { filePath, source } = asRecord(raw, 'delete_file')
+  const hasFilePath = nonEmptyString(filePath)
+  const hasSource = nonEmptyString(source)
+  if (hasFilePath === hasSource) {
+    throw new McpError(
+      ErrorCode.InvalidParams,
+      hasFilePath
+        ? 'Provide either filePath or source, not both'
+        : 'Either filePath or source must be provided'
+    )
+  }
+  return hasFilePath ? { filePath } : { source: source as string }
+}
+
+export function parseReadChunkNeighborsInput(raw: unknown): ReadChunkNeighborsInput {
+  const { filePath, source, chunkIndex, before, after } = asRecord(raw, 'read_chunk_neighbors')
+  if (!Number.isInteger(chunkIndex) || (chunkIndex as number) < 0) {
+    throw new McpError(ErrorCode.InvalidParams, 'chunkIndex must be a non-negative integer')
+  }
+  for (const [label, value] of [
+    ['before', before],
+    ['after', after],
+  ] as const) {
+    if (value !== undefined && (!Number.isInteger(value) || (value as number) < 0)) {
+      throw new McpError(ErrorCode.InvalidParams, `${label} must be a non-negative integer`)
+    }
+    if (typeof value === 'number' && value > 50) {
+      throw new McpError(
+        ErrorCode.InvalidParams,
+        `${label} must be between 0 and 50 (got ${value})`
+      )
+    }
+  }
+
+  const ref = parseDeleteFileInput({ filePath, source })
+  return {
+    ...ref,
+    chunkIndex: chunkIndex as number,
+    ...(before !== undefined ? { before: before as number } : {}),
+    ...(after !== undefined ? { after: after as number } : {}),
+  }
 }

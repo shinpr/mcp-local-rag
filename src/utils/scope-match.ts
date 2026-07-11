@@ -10,12 +10,10 @@
 
 import { isAbsolute, sep as PATH_SEP } from 'node:path'
 
-// Derive the boundary separator from the prefix, mirroring `buildPrefixPredicate`:
-// a `\`-style prefix uses `\`, a `/`-style prefix uses `/`, otherwise the
-// platform separator. (Caveat inherited from the SQL side: on posix, `\` is a
-// legal filename char, so a `/`-path containing `\` mis-derives the separator.)
+// A slash identifies slash-style paths even when a legal filename segment
+// contains a backslash. Pure backslash-style paths retain Windows support.
 function deriveSeparator(prefix: string): string {
-  return prefix.includes('\\') ? '\\' : prefix.includes('/') ? '/' : PATH_SEP
+  return prefix.includes('/') ? '/' : prefix.includes('\\') ? '\\' : PATH_SEP
 }
 
 // Strip trailing separators so `/a/b`, `/a/b/`, `/a/b//` normalize alike. A
@@ -32,6 +30,21 @@ function stripTrailingSeparators(prefix: string, separator: string): string {
   return prefix.slice(0, end)
 }
 
+export interface NormalizedScopePrefix {
+  exact: string
+  descendant: string
+}
+
+/** Normalize one scope prefix for both in-memory and LanceDB matching. */
+export function normalizeScopePrefix(prefix: string): NormalizedScopePrefix {
+  const separator = deriveSeparator(prefix)
+  const exact = stripTrailingSeparators(prefix, separator)
+  return {
+    exact,
+    descendant: exact.endsWith(separator) ? exact : exact + separator,
+  }
+}
+
 /**
  * True when `path` equals `prefix` or is a descendant of it, using a separator
  * boundary so `/foo/bar` does not match `/foo/barista`. The separator is derived
@@ -40,10 +53,8 @@ function stripTrailingSeparators(prefix: string, separator: string): string {
  * the SQL contract in `buildPrefixPredicate`.
  */
 export function isUnderOrEqual(path: string, prefix: string): boolean {
-  const separator = deriveSeparator(prefix)
-  const normalized = stripTrailingSeparators(prefix, separator)
-  const descendant = normalized.endsWith(separator) ? normalized : normalized + separator
-  return path === normalized || path.startsWith(descendant)
+  const { exact, descendant } = normalizeScopePrefix(prefix)
+  return path === exact || path.startsWith(descendant)
 }
 
 /**

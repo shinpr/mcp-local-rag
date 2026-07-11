@@ -30,6 +30,7 @@ const entry = (filePath: string) => ({
   entry: { filePath, chunkCount: 3, timestamp: '2026-07-09T00:00:00.000Z' },
   key: `key:${filePath}`,
 })
+const dbPath = realFilePath('db')
 
 describe('classifyIngestedSources', () => {
   it('keeps only entries whose key is absent from matchedKeys (base filter)', () => {
@@ -37,7 +38,7 @@ describe('classifyIngestedSources', () => {
     const orphan = entry(realFilePath('base', 'b.txt'))
     const matchedKeys = new Set<string>([matched.key])
 
-    const result = classifyIngestedSources([matched, orphan], matchedKeys)
+    const result = classifyIngestedSources([matched, orphan], matchedKeys, dbPath)
 
     expect(result).toEqual([
       {
@@ -52,7 +53,7 @@ describe('classifyIngestedSources', () => {
     const raw = entry(rawDataPath('https://example.com/doc'))
     const real = entry(realFilePath('base', 'orphan.txt'))
 
-    const result = classifyIngestedSources([raw, real], new Set())
+    const result = classifyIngestedSources([raw, real], new Set(), dbPath)
 
     expect(result).toEqual([
       { source: 'https://example.com/doc', chunkCount: 3, timestamp: '2026-07-09T00:00:00.000Z' },
@@ -70,7 +71,7 @@ describe('classifyIngestedSources', () => {
     // filesystem path under it yet must still be emitted.
     const scope = [realFilePath('base', 'in-scope')]
 
-    const result = classifyIngestedSources([raw], new Set(), scope)
+    const result = classifyIngestedSources([raw], new Set(), dbPath, scope)
 
     expect(result).toEqual([
       { source: 'clipboard://2026-07-09', chunkCount: 3, timestamp: '2026-07-09T00:00:00.000Z' },
@@ -81,7 +82,7 @@ describe('classifyIngestedSources', () => {
     const underScope = entry(realFilePath('base', 'in-scope', 'orphan.txt'))
     const scope = [realFilePath('base', 'in-scope')]
 
-    const result = classifyIngestedSources([underScope], new Set(), scope)
+    const result = classifyIngestedSources([underScope], new Set(), dbPath, scope)
 
     expect(result).toEqual([
       {
@@ -96,7 +97,7 @@ describe('classifyIngestedSources', () => {
     const outsideScope = entry(realFilePath('base', 'other', 'orphan.txt'))
     const scope = [realFilePath('base', 'in-scope')]
 
-    const result = classifyIngestedSources([outsideScope], new Set(), scope)
+    const result = classifyIngestedSources([outsideScope], new Set(), dbPath, scope)
 
     expect(result).toEqual([])
   })
@@ -107,7 +108,12 @@ describe('classifyIngestedSources', () => {
     const outsideScope = entry(realFilePath('base', 'nope', 'drop.txt'))
     const scope = [realFilePath('base', 'in-scope')]
 
-    const result = classifyIngestedSources([raw, underScope, outsideScope], new Set(), scope)
+    const result = classifyIngestedSources(
+      [raw, underScope, outsideScope],
+      new Set(),
+      dbPath,
+      scope
+    )
 
     expect(result).toEqual([
       { source: 'https://example.com/keep', chunkCount: 3, timestamp: '2026-07-09T00:00:00.000Z' },
@@ -122,11 +128,23 @@ describe('classifyIngestedSources', () => {
   it('empty scope array is treated as scope-absent (no extra filtering)', () => {
     const real = entry(realFilePath('base', 'orphan.txt'))
 
-    const result = classifyIngestedSources([real], new Set(), [])
+    const result = classifyIngestedSources([real], new Set(), dbPath, [])
 
     expect(result).toEqual([
       {
         filePath: realFilePath('base', 'orphan.txt'),
+        chunkCount: 3,
+        timestamp: '2026-07-09T00:00:00.000Z',
+      },
+    ])
+  })
+
+  it('does not classify a normal file merely because its directory is named raw-data', () => {
+    const normal = entry(realFilePath('base', 'raw-data', 'plain.md'))
+
+    expect(classifyIngestedSources([normal], new Set(), dbPath)).toEqual([
+      {
+        filePath: normal.entry.filePath,
         chunkCount: 3,
         timestamp: '2026-07-09T00:00:00.000Z',
       },

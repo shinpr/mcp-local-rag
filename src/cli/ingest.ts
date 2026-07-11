@@ -376,7 +376,7 @@ export async function ingestSingleFile(
   }
 
   // Chunk text + generate embeddings via the shared computation layer.
-  const { chunks, embeddings } = await buildChunksAndEmbeddings(text, title, chunker, embedder)
+  const { chunks, embeddings } = await buildChunksAndEmbeddings(text, chunker, embedder)
   if (chunks.length === 0) {
     console.error(`  Warning: 0 chunks generated (file may be empty or too short)`)
     return 0
@@ -448,10 +448,8 @@ export async function runIngest(args: string[], globalOptions: GlobalOptions = {
     console.error(warning.message)
   }
 
-  // Collect files: when `targetPath` is a directory, the scan iterates every
-  // effective root in `config.baseDirs.baseDirs`; the positional directory
-  // only triggers directory mode and is no longer the scan target.
-  // Single-file mode is unchanged. See `collectFiles` for the full rationale.
+  // Directory mode scans only the positional directory; configured roots are
+  // the containment boundary used by collectFiles and DocumentParser.
   const files = await collectFiles(targetPath, config.baseDirs.baseDirs, excludePaths)
   if (files.length === 0) {
     console.error('No supported files found.')

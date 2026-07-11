@@ -134,7 +134,7 @@ export async function prepareVisualPdfChunks(
     // emitted as dedicated chunks below so the semantic chunker cannot split
     // their internal Summary / Keywords structure on sentence-boundary
     // vocabulary shifts.
-    const { chunks, embeddings } = await buildChunksAndEmbeddings(text, null, chunker, embedder)
+    const { chunks, embeddings } = await buildChunksAndEmbeddings(text, chunker, embedder)
 
     const titleResult = extractPdfTitle(
       metadataTitle,

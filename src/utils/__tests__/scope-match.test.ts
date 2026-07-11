@@ -50,6 +50,11 @@ describe('isUnderOrEqual', () => {
     expect(isUnderOrEqual('/', '/')).toBe(true)
   })
 
+  it('treats a backslash inside a slash-style POSIX name as a normal character', () => {
+    expect(isUnderOrEqual('/docs/a\\b/file.md', '/docs/a\\b')).toBe(true)
+    expect(isUnderOrEqual('/docs/a\\bc/file.md', '/docs/a\\b')).toBe(false)
+  })
+
   describe('cross-platform (backslash-style prefix)', () => {
     it('should match a descendant under a backslash prefix', () => {
       expect(isUnderOrEqual('C:\\a\\b\\x.md', 'C:\\a\\b')).toBe(true)

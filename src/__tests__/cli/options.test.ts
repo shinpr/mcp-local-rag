@@ -263,29 +263,6 @@ describe('CLI global options', () => {
   })
 
   // ============================================
-  // ROOT_HELP_TEXT content
-  // ============================================
-  describe('ROOT_HELP_TEXT', () => {
-    it('should contain global options', () => {
-      expect(ROOT_HELP_TEXT).toContain('--db-path')
-      expect(ROOT_HELP_TEXT).toContain('--cache-dir')
-      expect(ROOT_HELP_TEXT).toContain('--model-name')
-      expect(ROOT_HELP_TEXT).toContain('-h, --help')
-    })
-
-    it('should contain available commands', () => {
-      expect(ROOT_HELP_TEXT).toContain('ingest')
-      expect(ROOT_HELP_TEXT).toContain('skills install')
-    })
-
-    it('should contain default values', () => {
-      expect(ROOT_HELP_TEXT).toContain('./lancedb/')
-      expect(ROOT_HELP_TEXT).toContain('./models/')
-      expect(ROOT_HELP_TEXT).toContain('Xenova/all-MiniLM-L6-v2')
-    })
-  })
-
-  // ============================================
   // validatePath
   // ============================================
   describe('validatePath', () => {

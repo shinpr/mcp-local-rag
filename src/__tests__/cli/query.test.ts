@@ -38,11 +38,11 @@ const cliCommonFactory = () => ({
 })
 
 // NOTE: the mock factory below mirrors the NEW raw-data-utils contract.
-// `looksLikeRawDataPath` is the display-only heuristic CLI query uses; the
+// Managed raw-data detection is based on the configured database path; the
 // boundary check `isPathInRawDataDir` is exported for parity but unused by
 // the query subcommand (no path traversal surface).
 const rawDataUtilsFactory = () => ({
-  looksLikeRawDataPath: vi
+  isManagedRawDataPath: vi
     .fn()
     .mockImplementation((filePath: string) => filePath.includes('/raw-data/')),
   isPathInRawDataDir: vi.fn().mockResolvedValue(false),

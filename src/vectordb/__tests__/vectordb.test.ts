@@ -1623,6 +1623,18 @@ describe('VectorStore', () => {
       })
     })
 
+    it('treats backslash as a legal character inside a slash-style scope', async () => {
+      await withTempDb('scope-posix-backslash-name', async (store) => {
+        await store.insertChunks([
+          createTestChunk('inside', '/docs/a\\b/in.md', 0, createNormalizedVector(1)),
+          createTestChunk('boundary', '/docs/a\\bc/out.md', 0, createNormalizedVector(2)),
+        ])
+
+        const paths = await scopedFilePaths(store, ['/docs/a\\b'])
+        expect(paths).toEqual(['/docs/a\\b/in.md'])
+      })
+    })
+
     it('matches everything under a backslash root scope (C:\\) without doubling', async () => {
       await withTempDb('scope-backslash-root', async (store) => {
         await store.insertChunks([

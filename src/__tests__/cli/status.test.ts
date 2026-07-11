@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => {
     // VectorStore instance methods
     initialize: vi.fn(),
     getStatus: vi.fn(),
+    close: vi.fn(),
   }
 })
 
@@ -23,6 +24,7 @@ const cliCommonFactory = () => ({
   createVectorStore: vi.fn().mockImplementation(() => ({
     initialize: mocks.initialize,
     getStatus: mocks.getStatus,
+    close: mocks.close,
   })),
   // Catch-block renderer; faithful shim preserves the `Error: <message>`
   // stderr behavior the tests assert.
@@ -86,6 +88,7 @@ describe('CLI status', () => {
       })
     // Spy on process.stdout.write to capture JSON output
     stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
+    mocks.close.mockResolvedValue(undefined)
   })
 
   afterEach(() => {
@@ -177,8 +180,8 @@ describe('CLI status', () => {
 
     const { output, error } = await captureStderr(() => runStatus([]))
 
-    expect(error).toBeInstanceOf(Error)
-    expect((error as Error).message).toBe('process.exit(1)')
+    expect(error).toBeUndefined()
+    expect(process.exitCode).toBe(1)
 
     const joined = output.join('\n')
     expect(joined).toContain('DB connection failed')
@@ -189,8 +192,8 @@ describe('CLI status', () => {
 
     const { output, error } = await captureStderr(() => runStatus([]))
 
-    expect(error).toBeInstanceOf(Error)
-    expect((error as Error).message).toBe('process.exit(1)')
+    expect(error).toBeUndefined()
+    expect(process.exitCode).toBe(1)
 
     const joined = output.join('\n')
     expect(joined).toContain('Init failed')

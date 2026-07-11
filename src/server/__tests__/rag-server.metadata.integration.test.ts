@@ -139,11 +139,7 @@ describe('Meta JSON Sidecar Pipeline', () => {
     expect(ingestData.chunkCount).toBeGreaterThan(0)
 
     // Derive the raw-data .md path and .meta.json path
-    const rawDataPath = generateRawDataPath(
-      localTestDbPath,
-      'https://example.com/meta-json-test',
-      'markdown'
-    )
+    const rawDataPath = generateRawDataPath(localTestDbPath, 'https://example.com/meta-json-test')
     const metaJsonPath = generateMetaJsonPath(rawDataPath)
 
     // Verify .meta.json exists and has correct content (read raw file, not via loadMetaJson)
@@ -175,8 +171,7 @@ describe('Meta JSON Sidecar Pipeline', () => {
     // Verify .meta.json (read raw file, not via loadMetaJson)
     const rawDataPath = generateRawDataPath(
       localTestDbPath,
-      'https://example.com/markdown-meta-test',
-      'markdown'
+      'https://example.com/markdown-meta-test'
     )
     const metaJsonPath = generateMetaJsonPath(rawDataPath)
     const metaRaw = JSON.parse(await readFile(metaJsonPath, 'utf-8'))
@@ -203,11 +198,7 @@ describe('Meta JSON Sidecar Pipeline', () => {
     })
 
     // Verify .meta.json (read raw file, not via loadMetaJson)
-    const rawDataPath = generateRawDataPath(
-      localTestDbPath,
-      'https://example.com/text-meta-test',
-      'markdown'
-    )
+    const rawDataPath = generateRawDataPath(localTestDbPath, 'https://example.com/text-meta-test')
     const metaJsonPath = generateMetaJsonPath(rawDataPath)
     const metaRaw = JSON.parse(await readFile(metaJsonPath, 'utf-8'))
     expect(metaRaw.title).toBe('My Text Document Title')
@@ -250,8 +241,7 @@ describe('Meta JSON Sidecar Pipeline', () => {
     // Find results from this specific source
     const rawDataPath = generateRawDataPath(
       localTestDbPath,
-      'https://example.com/duplication-check',
-      'markdown'
+      'https://example.com/duplication-check'
     )
     const relevantResults = results.filter((r: { filePath: string }) => r.filePath === rawDataPath)
     expect(relevantResults.length).toBeGreaterThan(0)
@@ -294,11 +284,7 @@ describe('Meta JSON Sidecar Pipeline', () => {
     })
 
     // Verify files exist before deletion
-    const rawDataPath = generateRawDataPath(
-      localTestDbPath,
-      'https://example.com/delete-meta-test',
-      'markdown'
-    )
+    const rawDataPath = generateRawDataPath(localTestDbPath, 'https://example.com/delete-meta-test')
     const metaJsonPath = generateMetaJsonPath(rawDataPath)
 
     expect(existsSync(rawDataPath)).toBe(true)

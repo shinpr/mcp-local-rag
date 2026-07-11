@@ -8,7 +8,7 @@
 // content ingested via `ingest_data` (raw-data paths) plus orphaned DB entries
 // for real files not currently on disk under a scanned root.
 
-import { extractSourceFromPath, looksLikeRawDataPath } from './raw-data-utils.js'
+import { extractSourceFromPath, isManagedRawDataPath } from './raw-data-utils.js'
 import { matchesAnyScope } from './scope-match.js'
 
 /**
@@ -37,7 +37,7 @@ export type ClassifiedSource =
  * `matchedKeys`.
  *
  * When `scope` is present (non-empty): raw-data entries
- * (`looksLikeRawDataPath`) have no filesystem path under a base directory, so
+ * Managed raw-data entries have no filesystem path under a base directory, so
  * they are always emitted regardless of scope; real-file entries are kept only
  * when their stored `filePath` is under scope (`matchesAnyScope`) — a real-file
  * entry outside scope is dropped so it appears in neither `files[]` (already
@@ -51,6 +51,7 @@ export type ClassifiedSource =
 export function classifyIngestedSources(
   ingestedKeyed: readonly KeyedIngestedEntry[],
   matchedKeys: ReadonlySet<string>,
+  dbPath: string,
   scope?: string[]
 ): ClassifiedSource[] {
   const scopePrefixes = scope && scope.length > 0 ? scope : undefined
@@ -60,10 +61,13 @@ export function classifyIngestedSources(
     .filter(({ entry }) => {
       if (!scopePrefixes) return true
       // Raw-data sources are exempt from scope; real-file entries respect it.
-      return looksLikeRawDataPath(entry.filePath) || matchesAnyScope(entry.filePath, scopePrefixes)
+      return (
+        isManagedRawDataPath(entry.filePath, dbPath) ||
+        matchesAnyScope(entry.filePath, scopePrefixes)
+      )
     })
     .map(({ entry }) => {
-      if (looksLikeRawDataPath(entry.filePath)) {
+      if (isManagedRawDataPath(entry.filePath, dbPath)) {
         const source = extractSourceFromPath(entry.filePath)
         if (source) return { source, chunkCount: entry.chunkCount, timestamp: entry.timestamp }
       }

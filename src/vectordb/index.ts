@@ -1,7 +1,7 @@
 // VectorStore implementation with LanceDB integration
 
-import { sep as PATH_SEP } from 'node:path'
 import { type Connection, connect, Index, type Table } from '@lancedb/lancedb'
+import { normalizeScopePrefix } from '../utils/scope-match.js'
 import { applyFileFilter, applyGrouping, applyKeywordBoost } from './search-filters.js'
 import {
   type ChunkRow,
@@ -435,28 +435,10 @@ export class VectorStore {
 
   /** Build the exact-or-descendant predicate for a single prefix. */
   private buildPrefixPredicate(prefix: string): string {
-    // Caveat: on posix `\` is a legal filename char, so a `/`-path containing `\` mis-derives the separator.
-    const sep = prefix.includes('\\') ? '\\' : prefix.includes('/') ? '/' : PATH_SEP
-    const normalized = this.stripTrailingSeparators(prefix, sep)
-    const descendant = normalized.endsWith(sep) ? normalized : normalized + sep
-    const exactTerm = `\`filePath\` = '${this.escapeQuotes(normalized)}'`
+    const { exact, descendant } = normalizeScopePrefix(prefix)
+    const exactTerm = `\`filePath\` = '${this.escapeQuotes(exact)}'`
     const descendantTerm = `\`filePath\` LIKE '${this.escapeLike(descendant)}%' ESCAPE '\\'`
     return `(${exactTerm} OR ${descendantTerm})`
-  }
-
-  /**
-   * Strip trailing separators. A posix root `/` (only separators) is kept as a
-   * single `/` so its descendant term becomes `/%` instead of an empty prefix.
-   */
-  private stripTrailingSeparators(prefix: string, sep: string): string {
-    let end = prefix.length
-    while (end > 0 && prefix[end - 1] === sep) {
-      end--
-    }
-    if (end === 0) {
-      return sep
-    }
-    return prefix.slice(0, end)
   }
 
   /** Escape single quotes for a SQL string literal (mirrors deleteChunks). */

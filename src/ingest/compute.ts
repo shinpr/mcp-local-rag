@@ -30,7 +30,6 @@ import type { VectorChunk } from '../vectordb/index.js'
 export interface BuildChunksAndEmbeddingsResult {
   chunks: TextChunk[]
   embeddings: number[][]
-  title: string | null
 }
 
 /**
@@ -55,7 +54,6 @@ export interface BuildChunksAndEmbeddingsResult {
  */
 export async function buildChunksAndEmbeddings(
   text: string,
-  title: string | null,
   chunker: SemanticChunker,
   embedder: EmbedderInterface
 ): Promise<BuildChunksAndEmbeddingsResult> {
@@ -65,10 +63,10 @@ export async function buildChunksAndEmbeddings(
   // cold cache) BEFORE checking for the empty-array short-circuit, so an
   // empty file would otherwise pay the model-load cost for no work.
   if (chunks.length === 0) {
-    return { chunks: [], embeddings: [], title }
+    return { chunks: [], embeddings: [] }
   }
   const embeddings = await embedder.embedBatch(chunks.map((chunk) => chunk.text))
-  return { chunks, embeddings, title }
+  return { chunks, embeddings }
 }
 
 /**

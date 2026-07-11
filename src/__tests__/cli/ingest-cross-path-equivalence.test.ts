@@ -126,7 +126,7 @@ async function cliInlineIngest(
     title = result.title || null
   }
 
-  const { chunks, embeddings } = await buildChunksAndEmbeddings(text, title, chunker, embedder)
+  const { chunks, embeddings } = await buildChunksAndEmbeddings(text, chunker, embedder)
   if (chunks.length === 0) {
     return 0
   }

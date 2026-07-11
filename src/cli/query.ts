@@ -1,6 +1,6 @@
 // CLI query subcommand — search ingested documents
 
-import { extractSourceFromPath, looksLikeRawDataPath } from '../utils/raw-data-utils.js'
+import { extractSourceFromPath, isManagedRawDataPath } from '../utils/raw-data-utils.js'
 import { createEmbedder, createVectorStore, formatCliError } from './common.js'
 import type { GlobalOptions } from './options.js'
 import { requireFlagValue, resolveGlobalConfig } from './options.js'
@@ -201,7 +201,7 @@ export async function runQuery(args: string[], globalOptions: GlobalOptions = {}
         fileTitle: result.fileTitle ?? null,
       }
 
-      if (looksLikeRawDataPath(result.filePath)) {
+      if (isManagedRawDataPath(result.filePath, globalConfig.dbPath)) {
         const source = extractSourceFromPath(result.filePath)
         if (source) {
           output.source = source
