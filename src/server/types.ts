@@ -110,12 +110,10 @@ export interface IngestFileInput {
   visual?: boolean
   /**
    * Visual-quality profile when `visual` is true. Some MCP clients send the
-   * empty string for unspecified optional parameters, so the boundary
-   * handler also accepts `""` and normalizes it to `'fast'`. The internal
-   * `QualityProfile` type stays narrow (`'fast' | 'quality'`); `""` does
-   * not propagate past `handleIngestFile`.
+   * empty string for unspecified optional parameters; the transport decoder
+   * normalizes it before this type reaches the handler.
    */
-  visualQuality?: 'fast' | 'quality' | ''
+  visualQuality?: 'fast' | 'quality'
 }
 
 /**
@@ -142,12 +140,9 @@ export interface IngestDataInput {
  * delete_file tool input
  * Either filePath or source must be provided
  */
-export interface DeleteFileInput {
-  /** File path (for files ingested via ingest_file) */
-  filePath?: string
-  /** Source identifier (for data ingested via ingest_data) */
-  source?: string
-}
+export type DeleteFileInput =
+  | { filePath: string; source?: never }
+  | { source: string; filePath?: never }
 
 /**
  * delete_file tool output
@@ -250,11 +245,7 @@ export interface QueryResult {
  * read_chunk_neighbors tool input.
  * Exactly one of filePath / source must be provided (XOR).
  */
-export interface ReadChunkNeighborsInput {
-  /** File path (for files ingested via ingest_file). Absolute path required. */
-  filePath?: string
-  /** Source identifier (for data ingested via ingest_data). */
-  source?: string
+export type ReadChunkNeighborsInput = DeleteFileInput & {
   /** Target chunk index (zero-based, required, non-negative integer). */
   chunkIndex: number
   /** Number of chunks before the target to include (default 2, non-negative integer). */

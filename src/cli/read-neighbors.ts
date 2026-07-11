@@ -4,7 +4,7 @@ import { resolve } from 'node:path'
 import {
   extractSourceFromPath,
   generateRawDataPath,
-  looksLikeRawDataPath,
+  isManagedRawDataPath,
 } from '../utils/raw-data-utils.js'
 import { createVectorStore, formatCliError } from './common.js'
 import type { GlobalOptions } from './options.js'
@@ -202,7 +202,7 @@ export async function runReadNeighbors(
     let targetPath: string
     if (parsed.source !== undefined) {
       // Generate raw-data path from source identifier.
-      targetPath = generateRawDataPath(globalConfig.dbPath, parsed.source, 'markdown')
+      targetPath = generateRawDataPath(globalConfig.dbPath, parsed.source)
     } else {
       // DB key is the resolve()'d ingest path, so look up by resolve() (never
       // realpath); validate below (mirrors runDelete; realpath stays there).
@@ -214,44 +214,42 @@ export async function runReadNeighbors(
       }
     }
 
-    // Create and initialize VectorStore (no embedder needed for index-only read).
     const vectorStore = createVectorStore(globalConfig)
-    await vectorStore.initialize()
+    try {
+      await vectorStore.initialize()
 
-    // Range composition (handler-side clamp; primitive stays feature-agnostic).
-    const minIdx = Math.max(0, chunkIndex - before)
-    const maxIdx = chunkIndex + after
+      const minIdx = Math.max(0, chunkIndex - before)
+      const maxIdx = chunkIndex + after
+      const rows = await vectorStore.getChunksByRange(targetPath, minIdx, maxIdx)
 
-    // Primitive call.
-    const rows = await vectorStore.getChunksByRange(targetPath, minIdx, maxIdx)
+      const isRaw = isManagedRawDataPath(targetPath, globalConfig.dbPath)
+      const sourceForAll = isRaw ? extractSourceFromPath(targetPath) : null
+      const items = rows.map((row) => {
+        const item: {
+          filePath: string
+          chunkIndex: number
+          text: string
+          isTarget: boolean
+          fileTitle: string | null
+          source?: string
+        } = {
+          filePath: row.filePath,
+          chunkIndex: row.chunkIndex,
+          text: row.text,
+          isTarget: row.chunkIndex === chunkIndex,
+          fileTitle: row.fileTitle ?? null,
+        }
+        if (sourceForAll) item.source = sourceForAll
+        return item
+      })
 
-    // Post-fetch marking: isTarget per item; source attached for raw-data rows.
-    const isRaw = looksLikeRawDataPath(targetPath)
-    const sourceForAll = isRaw ? extractSourceFromPath(targetPath) : null
-    const items = rows.map((row) => {
-      const item: {
-        filePath: string
-        chunkIndex: number
-        text: string
-        isTarget: boolean
-        fileTitle: string | null
-        source?: string
-      } = {
-        filePath: row.filePath,
-        chunkIndex: row.chunkIndex,
-        text: row.text,
-        isTarget: row.chunkIndex === chunkIndex,
-        fileTitle: row.fileTitle ?? null,
-      }
-      if (sourceForAll) item.source = sourceForAll
-      return item
-    })
-
-    // Output JSON to stdout (2-space indent per query.ts convention).
-    process.stdout.write(`${JSON.stringify(items, null, 2)}\n`)
+      process.stdout.write(`${JSON.stringify(items, null, 2)}\n`)
+    } finally {
+      await vectorStore.close()
+    }
   } catch (error) {
     const reason = formatCliError(error)
     console.error(`Error: ${reason}`)
-    process.exit(1)
+    process.exitCode = 1
   }
 }

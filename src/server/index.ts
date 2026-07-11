@@ -1,6 +1,7 @@
 // RAGServer implementation with MCP tools
 
 import { readFile, unlink } from 'node:fs/promises'
+import { createRequire } from 'node:module'
 import { resolve, sep } from 'node:path'
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
@@ -12,28 +13,26 @@ import {
 } from '@modelcontextprotocol/sdk/types.js'
 import { DEFAULT_MIN_CHUNK_LENGTH, SemanticChunker } from '../chunker/index.js'
 import { Embedder } from '../embedder/index.js'
+import { listDocuments } from '../features/list.js'
 import { buildChunksAndEmbeddings, buildVectorChunks } from '../ingest/compute.js'
 import { prepareVisualPdfChunks } from '../ingest/visual.js'
 import { parseHtml } from '../parser/html-parser.js'
 import { DocumentParser } from '../parser/index.js'
 import { extractMarkdownTitle, extractTxtTitle } from '../parser/title-extractor.js'
 import type { BaseDirsConfigError } from '../utils/base-dirs.js'
-import { classifyIngestedSources } from '../utils/list-sources.js'
 import {
-  type ContentFormat,
   checkRawDataArtifacts,
   extractSourceFromPath,
   generateMetaJsonPath,
   generateRawDataPath,
   isEnoent,
+  isManagedRawDataPath,
   isPathInRawDataDir,
   isPathInRawDataDirLexical,
   loadMetaJson,
-  looksLikeRawDataPath,
   saveMetaJson,
   saveRawData,
 } from '../utils/raw-data-utils.js'
-import { realpathForMatch } from '../utils/scan.js'
 import { nonAbsolutePrefixes } from '../utils/scope-match.js'
 import { type VectorChunk, VectorStore } from '../vectordb/index.js'
 import { DatabaseError } from '../vectordb/types.js'
@@ -48,23 +47,23 @@ import {
 import { normalizeBaseDirs, scanBaseDir } from './list-scanner.js'
 import { toolDefinitions } from './tool-definitions.js'
 import {
+  parseDeleteFileInput,
   parseIngestDataInput,
+  parseIngestFileInput,
   parseListFilesInput,
   parseQueryDocumentsInput,
+  parseReadChunkNeighborsInput,
 } from './tool-input.js'
 import type {
-  DeleteFileInput,
   DeleteFileResult,
   FileEntry,
   IngestDataInput,
-  IngestFileInput,
   IngestResult,
   ListFilesInput,
   ListFilesResult,
   QueryDocumentsInput,
   QueryResult,
   RAGServerConfig,
-  ReadChunkNeighborsInput,
   ReadChunkNeighborsResultItem,
   SourceEntry,
 } from './types.js'
@@ -89,6 +88,9 @@ const TOOL_ERROR_CONTEXT: Record<string, ToMcpErrorContext> = {
   list_files: {},
   status: {},
 }
+
+const packageVersion = (createRequire(import.meta.url)('../../package.json') as { version: string })
+  .version
 
 /** RAG server compliant with MCP Protocol */
 export class RAGServer {
@@ -149,7 +151,7 @@ export class RAGServer {
     this.device = config.device
     this.excludePaths = [`${resolve(this.dbPath)}${sep}`, `${resolve(this.cacheDir)}${sep}`]
     this.server = new Server(
-      { name: 'rag-mcp-server', version: '1.0.0' },
+      { name: 'rag-mcp-server', version: packageVersion },
       { capabilities: { tools: {} } }
     )
 
@@ -256,19 +258,13 @@ export class RAGServer {
                 parseQueryDocumentsInput(request.params.arguments)
               )
             case 'ingest_file':
-              return await this.handleIngestFile(
-                request.params.arguments as unknown as IngestFileInput
-              )
+              return await this.handleIngestFile(request.params.arguments)
             case 'ingest_data':
               return await this.handleIngestData(parseIngestDataInput(request.params.arguments))
             case 'delete_file':
-              return await this.handleDeleteFile(
-                request.params.arguments as unknown as DeleteFileInput
-              )
+              return await this.handleDeleteFile(request.params.arguments)
             case 'read_chunk_neighbors':
-              return await this.handleReadChunkNeighbors(
-                request.params.arguments as unknown as ReadChunkNeighborsInput
-              )
+              return await this.handleReadChunkNeighbors(request.params.arguments)
             case 'list_files':
               return await this.handleListFiles(parseListFilesInput(request.params.arguments))
             case 'status':
@@ -327,7 +323,7 @@ export class RAGServer {
         fileTitle: result.fileTitle ?? null,
       }
 
-      if (looksLikeRawDataPath(result.filePath)) {
+      if (isManagedRawDataPath(result.filePath, this.dbPath)) {
         const source = extractSourceFromPath(result.filePath)
         if (source) {
           queryResult.source = source
@@ -352,7 +348,8 @@ export class RAGServer {
   /**
    * ingest_file tool handler (re-ingestion support, transaction processing, rollback capability)
    */
-  async handleIngestFile(args: IngestFileInput): Promise<{ content: RagContentBlock[] }> {
+  async handleIngestFile(raw: unknown): Promise<{ content: RagContentBlock[] }> {
+    const args = parseIngestFileInput(raw)
     // Skip the configError gate only for paths structurally inside
     // `<dbPath>/raw-data/` (internal invocation from handleIngestData).
     if (!(await isPathInRawDataDir(args.filePath, this.dbPath))) {
@@ -361,32 +358,8 @@ export class RAGServer {
     // `args.filePath` is the DB key (backup/delete/insert/result), stored
     // verbatim so lookups match (realpath stays in validateFilePath; see
     // BaseDirsConfig for the path policy).
-    // Runtime validation: the MCP JSON Schema declares `visual` as a
-    // boolean and `IngestFileInput.visual` types it as `boolean | undefined`,
-    // but tool arguments arrive as `unknown` at the SDK boundary so the
-    // structural type is not enforced by the compiler. Validation fires
-    // BEFORE any parser/chunker/embedder/vectorStore access.
-    const visualArg: unknown = args.visual
-    if (visualArg !== undefined && typeof visualArg !== 'boolean') {
-      throw new McpError(ErrorCode.InvalidParams, "'visual' must be a boolean if provided")
-    }
-
-    // Runtime validation + normalization of `visualQuality`. The MCP boundary
-    // receives `unknown`, so the JSON Schema enum is necessary but not
-    // sufficient. Some MCP clients send `""` for unspecified optional
-    // parameters; accept both `undefined` and `""` and normalize to `'fast'`
-    // so the internal `QualityProfile` type stays narrow.
-    const visualQualityArg: unknown = (args as { visualQuality?: unknown }).visualQuality
-    let visualQuality: 'fast' | 'quality' = 'fast'
-    if (visualQualityArg !== undefined && visualQualityArg !== '') {
-      if (visualQualityArg !== 'fast' && visualQualityArg !== 'quality') {
-        throw new McpError(
-          ErrorCode.InvalidParams,
-          "'visualQuality' must be 'fast' or 'quality' if provided"
-        )
-      }
-      visualQuality = visualQualityArg
-    }
+    const visualArg = args.visual
+    const visualQuality = args.visualQuality ?? 'fast'
 
     let backup: VectorChunk[] | null = null
 
@@ -407,12 +380,7 @@ export class RAGServer {
       const meta = await loadMetaJson(args.filePath)
       title = meta?.title ?? null
       console.error(`Read raw-data file: ${args.filePath} (${text.length} characters)`)
-      ;({ chunks, embeddings } = await buildChunksAndEmbeddings(
-        text,
-        title,
-        this.chunker,
-        this.embedder
-      ))
+      ;({ chunks, embeddings } = await buildChunksAndEmbeddings(text, this.chunker, this.embedder))
     } else if (visualArg === true && isPdf) {
       // Visual dispatch delegates to `prepareVisualPdfChunks`, which owns
       // the dynamic `pdf-visual` import so the default path does not load
@@ -437,22 +405,12 @@ export class RAGServer {
       const result = await this.parser.parsePdf(args.filePath, this.embedder)
       text = result.content
       title = result.title || null
-      ;({ chunks, embeddings } = await buildChunksAndEmbeddings(
-        text,
-        title,
-        this.chunker,
-        this.embedder
-      ))
+      ;({ chunks, embeddings } = await buildChunksAndEmbeddings(text, this.chunker, this.embedder))
     } else {
       const result = await this.parser.parseFile(args.filePath)
       text = result.content
       title = result.title || null
-      ;({ chunks, embeddings } = await buildChunksAndEmbeddings(
-        text,
-        title,
-        this.chunker,
-        this.embedder
-      ))
+      ;({ chunks, embeddings } = await buildChunksAndEmbeddings(text, this.chunker, this.embedder))
     }
 
     // Fail-fast: Prevent data loss when chunking produces 0 chunks
@@ -558,7 +516,6 @@ export class RAGServer {
     // to the central dispatcher mapper. The inner raw-data rollback try/catch
     // below is retained — it is local-effect (file cleanup) only.
     let contentToSave = args.content
-    let formatToSave: ContentFormat = args.metadata.format
     let title: string | null = null
 
     // Per-format title extraction and content preparation
@@ -577,7 +534,6 @@ export class RAGServer {
 
       title = htmlTitle || null
       contentToSave = markdown
-      formatToSave = 'markdown' // Save as .md file
       console.error(`Converted HTML to Markdown: ${markdown.length} characters`)
     } else if (args.metadata.format === 'markdown') {
       const result = extractMarkdownTitle(args.content, args.metadata.source)
@@ -589,12 +545,7 @@ export class RAGServer {
     }
 
     // Save content to raw-data directory
-    const rawDataPath = await saveRawData(
-      this.dbPath,
-      args.metadata.source,
-      contentToSave,
-      formatToSave
-    )
+    const rawDataPath = await saveRawData(this.dbPath, args.metadata.source, contentToSave)
 
     // Save metadata sidecar (.meta.json) alongside the raw-data file
     await saveMetaJson(rawDataPath, {
@@ -655,60 +606,16 @@ export class RAGServer {
         : Array.isArray(input.scope)
           ? input.scope
           : [input.scope]
-    // Get all ingested entries and index them by file IDENTITY (realpath), so
-    // a file ingested via a different spelling (symlinked prefix or alias)
-    // still matches the scan. Storage/display stay normal-path; realpath is
-    // used here only for the "same file?" comparison (see BaseDirsConfig).
     const ingested = await this.vectorStore.listFiles()
-    const ingestedKeyed = await Promise.all(
-      ingested.map(async (f) => ({ entry: f, key: await realpathForMatch(f.filePath) }))
-    )
-    const ingestedByKey = new Map(ingestedKeyed.map(({ entry, key }) => [key, entry]))
-
-    // Scan each effective root (normal-path `rawBaseDirs`), dedup by identity
-    // key (a file reachable from multiple roots appears once, first root wins),
-    // and cross-reference by that key. Per-root scan warnings are surfaced via
-    // `withWarnings` below.
-    const files: FileEntry[] = []
-    const seenKeys = new Set<string>()
-    const matchedKeys = new Set<string>()
-    const scanWarnings: string[] = []
-    for (const baseDir of this.rawBaseDirs) {
-      const { files: scanned, warnings: rootWarnings } = await scanBaseDir(
-        baseDir,
-        this.excludePaths,
-        scope
-      )
-      for (const w of rootWarnings) {
-        scanWarnings.push(`[${baseDir}] ${w}`)
-      }
-      for (const scannedPath of scanned) {
-        const key = await realpathForMatch(scannedPath)
-        if (seenKeys.has(key)) continue
-        seenKeys.add(key)
-        const entry = ingestedByKey.get(key)
-        // Ingested rows display the stored (normal) path so it round-trips
-        // into delete/read; not-ingested rows display the scanned path.
-        files.push(
-          entry
-            ? {
-                filePath: entry.filePath,
-                baseDir,
-                ingested: true,
-                chunkCount: entry.chunkCount,
-                timestamp: entry.timestamp,
-              }
-            : { filePath: scannedPath, baseDir, ingested: false }
-        )
-        if (entry) matchedKeys.add(key)
-      }
-    }
-
-    // Content ingested via ingest_data plus orphaned DB entries: ingested
-    // entries whose identity key matched no scanned file. With `scope` present,
-    // raw-data sources are always kept while real-file entries are scope-filtered
-    // (see `classifyIngestedSources`); scope-absent behavior is unchanged.
-    const sources: SourceEntry[] = classifyIngestedSources(ingestedKeyed, matchedKeys, scope)
+    const listed = await listDocuments({
+      roots: this.rawBaseDirs,
+      dbPath: this.dbPath,
+      ingested,
+      scope,
+      scan: (baseDir, scanScope) => scanBaseDir(baseDir, this.excludePaths, scanScope),
+    })
+    const files: FileEntry[] = listed.files
+    const sources: SourceEntry[] = listed.sources
 
     const result: ListFilesResult = {
       baseDir: this.rawBaseDir,
@@ -722,8 +629,11 @@ export class RAGServer {
     // to inspect stderr. Config-level warnings (`configWarnings`) are
     // still appended via `withWarnings`.
     const content: RagContentBlock[] = [{ type: 'text', text: JSON.stringify(result, null, 2) }]
-    for (const w of scanWarnings) {
-      content.push({ type: 'text', text: `Warning: ${w}` })
+    for (const warning of listed.warnings) {
+      content.push({
+        type: 'text',
+        text: `Warning: [${warning.baseDir}] ${warning.message}`,
+      })
     }
     // A non-absolute scope prefix matches nothing (the scan is absolute-path
     // based) but yields no result-level signal, so surface it as a non-fatal
@@ -773,7 +683,8 @@ export class RAGServer {
    * Deletes chunks from VectorDB and physical raw-data files
    * Supports both filePath (for ingest_file) and source (for ingest_data)
    */
-  async handleDeleteFile(args: DeleteFileInput): Promise<{ content: RagContentBlock[] }> {
+  async handleDeleteFile(raw: unknown): Promise<{ content: RagContentBlock[] }> {
+    const args = parseDeleteFileInput(raw)
     // No outer error-mapping catch: the inline `McpError(InvalidParams)` and
     // `assertConfigOk` throw propagate with original identity to the central
     // dispatcher mapper. The inner unlink try/catch blocks below are
@@ -781,14 +692,14 @@ export class RAGServer {
     let targetPath: string
     let skipValidation = false
 
-    if (args.source) {
+    if ('source' in args) {
       // Generate raw-data path from source (extension is always .md)
       // Internal path generation is secure, skip baseDir validation.
       // The `source` branch never touches `baseDirs`, so it stays callable
       // in degraded mode (configError present).
-      targetPath = generateRawDataPath(this.dbPath, args.source, 'markdown')
+      targetPath = generateRawDataPath(this.dbPath, args.source)
       skipValidation = true
-    } else if (args.filePath) {
+    } else {
       // Root-dependent branch: a user-supplied filePath is validated against
       // the configured roots, so we must fail fast when the config is
       // invalid. Placed AFTER the `source` branch so source-mode requests
@@ -797,10 +708,6 @@ export class RAGServer {
       // DB key = the verbatim resolve()-stored path; look up as-is (realpath
       // stays in validateFilePath; see BaseDirsConfig for the path policy).
       targetPath = args.filePath
-    } else {
-      // Missing required input is a client error → InvalidParams (matches
-      // read_chunk_neighbors); a plain Error would surface as InternalError.
-      throw new McpError(ErrorCode.InvalidParams, 'Either filePath or source must be provided')
     }
 
     // Only validate user-provided filePath (not internally generated paths)
@@ -867,41 +774,14 @@ export class RAGServer {
    * Context-expansion utility — not a search tool. Mirrors handleDeleteFile's
    * dual-input (filePath XOR source) resolution pattern.
    */
-  async handleReadChunkNeighbors(
-    args: ReadChunkNeighborsInput
-  ): Promise<{ content: RagContentBlock[] }> {
-    // No local error-mapping catch: the inline `McpError(InvalidParams)` input
-    // checks and `assertConfigOk` throw propagate with original identity to the
+  async handleReadChunkNeighbors(raw: unknown): Promise<{ content: RagContentBlock[] }> {
+    const args = parseReadChunkNeighborsInput(raw)
+    // No local error-mapping catch: `assertConfigOk` errors propagate with original identity to the
     // central dispatcher mapper. A `DatabaseError` reaches the mapper as a
     // recognized `AppError` and so stays prefix-less (no "Failed to read chunk
     // neighbors" prefix); only a native error picks up that prefix.
-    // Validate everything before DB access. This handler intentionally uses
-    // structured InvalidParams errors for input validation.
-    if (!Number.isInteger(args.chunkIndex) || args.chunkIndex < 0) {
-      throw new McpError(ErrorCode.InvalidParams, 'chunkIndex must be a non-negative integer')
-    }
     const before = args.before ?? 2
-    if (!Number.isInteger(before) || before < 0) {
-      throw new McpError(ErrorCode.InvalidParams, 'before must be a non-negative integer')
-    }
-    if (before > 50) {
-      throw new McpError(ErrorCode.InvalidParams, `before must be between 0 and 50 (got ${before})`)
-    }
     const after = args.after ?? 2
-    if (!Number.isInteger(after) || after < 0) {
-      throw new McpError(ErrorCode.InvalidParams, 'after must be a non-negative integer')
-    }
-    if (after > 50) {
-      throw new McpError(ErrorCode.InvalidParams, `after must be between 0 and 50 (got ${after})`)
-    }
-    const hasFilePath = typeof args.filePath === 'string' && args.filePath.trim().length > 0
-    const hasSource = typeof args.source === 'string' && args.source.trim().length > 0
-    if (hasFilePath && hasSource) {
-      throw new McpError(ErrorCode.InvalidParams, 'Provide either filePath or source, not both')
-    }
-    if (!hasFilePath && !hasSource) {
-      throw new McpError(ErrorCode.InvalidParams, 'Either filePath or source must be provided')
-    }
 
     // Dual-input resolution (mirrors handleDeleteFile).
     // Use the same non-empty predicates as the XOR check above so an empty
@@ -914,15 +794,14 @@ export class RAGServer {
     // depends on the configured roots being valid.
     let targetPath: string
     let skipValidation = false
-    if (hasSource) {
-      targetPath = generateRawDataPath(this.dbPath, args.source as string, 'markdown')
+    if ('source' in args) {
+      targetPath = generateRawDataPath(this.dbPath, args.source)
       skipValidation = true
     } else {
-      // XOR + hasSource === false guarantees filePath is a non-empty string here.
       this.assertConfigOk()
       // DB key = the verbatim resolve()-stored path; look up as-is (realpath
       // stays in validateFilePath; see BaseDirsConfig for the path policy).
-      targetPath = args.filePath as string
+      targetPath = args.filePath
     }
     if (!skipValidation) {
       await this.parser.validateFilePath(targetPath)
@@ -936,7 +815,7 @@ export class RAGServer {
     const rows = await this.vectorStore.getChunksByRange(targetPath, minIdx, maxIdx)
 
     // Post-fetch marking: isTarget per item; source attached for raw-data rows.
-    const isRaw = looksLikeRawDataPath(targetPath)
+    const isRaw = isManagedRawDataPath(targetPath, this.dbPath)
     const sourceForAll = isRaw ? extractSourceFromPath(targetPath) : null
     const items: ReadChunkNeighborsResultItem[] = rows.map((row) => {
       const item: ReadChunkNeighborsResultItem = {

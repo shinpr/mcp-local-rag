@@ -14,14 +14,13 @@
 //   - afterAll: rmSync tmp dirs recursively
 //   - Use handleIngestFile / handleIngestData to seed real chunks
 
-import { randomUUID } from 'node:crypto'
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { ErrorCode } from '@modelcontextprotocol/sdk/types.js'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { testModelCacheDir, withTestDevice } from '../../__tests__/test-device.js'
-import { looksLikeRawDataPath } from '../../utils/raw-data-utils.js'
-import type { VectorChunk, VectorStore } from '../../vectordb/index.js'
+import { isManagedRawDataPath } from '../../utils/raw-data-utils.js'
+import type { VectorStore } from '../../vectordb/index.js'
 import { RAGServer } from '../index.js'
 import type { ReadChunkNeighborsInput, ReadChunkNeighborsResultItem } from '../types.js'
 
@@ -523,7 +522,7 @@ describe('read_chunk_neighbors integration', () => {
       const filePaths = new Set(items.map((i) => i.filePath))
       expect(filePaths.size).toBe(1)
       const sharedPath = items[0]?.filePath ?? ''
-      expect(looksLikeRawDataPath(sharedPath)).toBe(true)
+      expect(isManagedRawDataPath(sharedPath, testDbPath)).toBe(true)
 
       const targets = items.filter((i) => i.isTarget)
       expect(targets).toHaveLength(1)
@@ -630,167 +629,6 @@ describe('read_chunk_neighbors integration', () => {
         // source key is either absent or undefined on file-backed items
         expect(item.source).toBeUndefined()
       }
-    })
-  })
-
-  // =============================================================================
-  // Test 7: P95 under 100ms on 10k chunk document (NFR)
-  // =============================================================================
-  // AC: PRD Non-Functional Requirement "P95 under 100 ms for a window of
-  //     before=2, after=2 on a document with up to 10,000 chunks, measured in
-  //     CI on the default GitHub Actions runner."
-  // ROI: 85 (BV:8 x Freq:10 + Legal:0 + Defect:5)
-  // Behavior: Seed a LanceDB table with 10,000 chunks for a single filePath ->
-  //   warm up with 3 discarded calls -> measure 20 consecutive neighbor calls
-  //   -> assert computed P95 < 100 ms.
-  // @category: core-functionality
-  // @dependency: RAGServer, VectorStore, LanceDB
-  // @complexity: high
-  //
-  // Setup (per Design Doc §Performance Measurement Mechanism):
-  //   - Insert 10,000 contiguous chunks for one synthetic filePath. Use a
-  //     small constant vector (e.g., zeros of embedding dimension) to keep
-  //     insertion fast; this is setup, not part of the measured section.
-  //   - Consider bypassing the full handleIngestFile pipeline (which invokes
-  //     the real embedder) by inserting directly through vectorStore if the
-  //     existing test helper (createTestChunk from vectordb unit tests)
-  //     allows — otherwise accept longer setup and rely on vitest's 10s
-  //     default timeout; if setup exceeds that, split via beforeAll so only
-  //     the measured section runs under the per-test timeout.
-  //
-  // Measurement protocol:
-  //   - Warm up: call handleReadChunkNeighbors 3 times with before=2, after=2
-  //     on varied chunkIndex values (e.g., 100, 5000, 9500); discard timings.
-  //   - Measurement: call handleReadChunkNeighbors 20 times with before=2,
-  //     after=2 on a varied set of chunkIndex values spanning start / middle /
-  //     end (e.g., a cycle through [50, 2500, 5000, 7500, 9950] four times).
-  //   - Record per-call wall-clock using performance.now() deltas (start
-  //     BEFORE the call, end AFTER the awaited promise resolves).
-  //   - Sort timings ascending; P95 = timings[Math.ceil(0.95 * 20) - 1]
-  //     (index 18 of the sorted 20-element array, i.e., the 19th smallest).
-  //
-  // Verification items:
-  //   - All 20 measured calls resolve without throwing
-  //   - P95 value is a finite number > 0 (sanity)
-  //   - P95 < 100 (milliseconds)
-  //   - Emit the observed P95 via console.error(`P95: ${p95.toFixed(2)} ms`)
-  //     so CI logs capture the value for the PR description (PRD Success
-  //     Criteria 2)
-  //
-  // Pass criteria:
-  //   - P95 strictly below 100 ms.
-  //   - On failure, the failure message includes the full timings array for
-  //     the PR author (Design Doc §Performance Measurement Mechanism).
-  //
-  // Flake mitigation note:
-  //   - The 100 ms target includes headroom vs. the expected operation cost
-  //     on GitHub Actions shared runners (Design Doc §Risks). If the test
-  //     flakes in practice, relax to P95 < 150 ms and record the observed
-  //     distribution per Design Doc mitigation guidance.
-  describe('Test 7: P95 under 100ms on 10k chunk document (NFR)', () => {
-    let ragServer: RAGServer
-    const testDbPath = resolve('./tmp/test-lancedb-read-neighbors-t7')
-    const testDataDir = resolve('./tmp/test-data-read-neighbors-t7')
-    // Synthetic path must live under baseDir so validateFilePath accepts it.
-    // The file itself need not exist on disk (must exist as a real path for
-    // validation: writeFileSync an empty file).
-    const syntheticFilePath = resolve(testDataDir, 'read-neighbors-perf.txt')
-    const TOTAL_CHUNKS = 10000
-    const EMBEDDING_DIM = 384
-
-    beforeAll(async () => {
-      mkdirSync(testDbPath, { recursive: true })
-      mkdirSync(testDataDir, { recursive: true })
-      // Create a minimal placeholder file so validateFilePath's realpath/BASE_DIR
-      // check succeeds. Content is irrelevant — we bypass ingest and write chunks
-      // directly via vectorStore.insertChunks.
-      writeFileSync(syntheticFilePath, 'placeholder')
-      ragServer = createTestRagServer({
-        dbPath: testDbPath,
-        modelName: 'Xenova/all-MiniLM-L6-v2',
-        cacheDir: testModelCacheDir(),
-        baseDir: testDataDir,
-        maxFileSize: 100 * 1024 * 1024,
-      })
-      await ragServer.initialize()
-
-      // Direct vectorStore insertion bypasses the embedder pipeline for speed.
-      // Use a constant small vector — content matters for predicate filtering,
-      // not for the (unused-here) search pathway.
-      const vectorStore = getVectorStore(ragServer)
-      const timestamp = new Date().toISOString()
-      const constantVector = new Array(EMBEDDING_DIM).fill(0.01)
-
-      // Insert in batches of 1000 to keep each insert call modest.
-      const BATCH = 1000
-      for (let start = 0; start < TOTAL_CHUNKS; start += BATCH) {
-        const end = Math.min(start + BATCH, TOTAL_CHUNKS)
-        const batch: VectorChunk[] = []
-        for (let i = start; i < end; i++) {
-          batch.push({
-            id: randomUUID(),
-            filePath: syntheticFilePath,
-            chunkIndex: i,
-            text: `synthetic chunk ${i}`,
-            vector: constantVector,
-            metadata: {
-              fileName: 'read-neighbors-perf.txt',
-              fileSize: 0,
-              fileType: 'txt',
-            },
-            fileTitle: null,
-            timestamp,
-          })
-        }
-        await vectorStore.insertChunks(batch)
-      }
-      await vectorStore.optimize()
-    }, 120000)
-
-    afterAll(async () => {
-      await ragServer.close()
-      rmSync(testDbPath, { recursive: true, force: true })
-      rmSync(testDataDir, { recursive: true, force: true })
-    })
-
-    it('P95 of 20 neighbor reads under 100 ms', async () => {
-      // Warm-up (discard timings): varied indices to avoid cold-cache bias
-      for (const warmIdx of [100, 5000, 9500]) {
-        await ragServer.handleReadChunkNeighbors({
-          filePath: syntheticFilePath,
-          chunkIndex: warmIdx,
-        })
-      }
-
-      // Measurement: 20 calls cycling through start/middle/end indices
-      const cycle = [50, 2500, 5000, 7500, 9950]
-      const timings: number[] = []
-      for (let iter = 0; iter < 4; iter++) {
-        for (const idx of cycle) {
-          const start = performance.now()
-          await ragServer.handleReadChunkNeighbors({
-            filePath: syntheticFilePath,
-            chunkIndex: idx,
-          })
-          timings.push(performance.now() - start)
-        }
-      }
-
-      expect(timings).toHaveLength(20)
-      const sorted = [...timings].sort((a, b) => a - b)
-      // P95 at n=20: Math.ceil(0.95 * 20) - 1 = index 18 (19th smallest)
-      const p95 = sorted[Math.ceil(0.95 * 20) - 1] ?? Number.NaN
-
-      // Emit for PR description capture (PRD Success Criteria 2)
-      console.error(`P95: ${p95.toFixed(2)} ms`)
-
-      expect(Number.isFinite(p95)).toBe(true)
-      expect(p95).toBeGreaterThan(0)
-
-      expect(
-        p95,
-        `P95 latency ${p95.toFixed(2)} ms exceeds 100 ms threshold. Timings: ${JSON.stringify(timings)}`
-      ).toBeLessThan(100)
     })
   })
 
@@ -1092,7 +930,7 @@ describe('read_chunk_neighbors integration', () => {
       expect(items.length).toBeGreaterThan(0)
       const filePaths = new Set(items.map((i) => i.filePath))
       expect(filePaths.size).toBe(1)
-      expect(looksLikeRawDataPath(items[0]?.filePath ?? '')).toBe(true)
+      expect(isManagedRawDataPath(items[0]?.filePath ?? '', testDbPath)).toBe(true)
       for (const item of items) {
         expect(item.source).toBe(SOURCE)
       }

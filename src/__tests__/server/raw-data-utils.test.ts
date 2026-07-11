@@ -9,11 +9,9 @@ import {
   decodeBase64Url,
   encodeBase64Url,
   extractSourceFromPath,
-  formatToExtension,
   generateRawDataPath,
   getRawDataDir,
   isPathInRawDataDir,
-  looksLikeRawDataPath,
   normalizeSource,
   saveRawData,
 } from '../../utils/raw-data-utils.js'
@@ -118,19 +116,6 @@ describe('Raw Data Utilities', () => {
   })
 
   // --------------------------------------------
-  // Format to Extension
-  // --------------------------------------------
-  describe('Format to Extension', () => {
-    it('returns .md for all formats (unified extension)', () => {
-      // All formats now return .md for consistency
-      // This allows generating unique path from source without knowing original format
-      expect(formatToExtension('html')).toBe('md')
-      expect(formatToExtension('markdown')).toBe('md')
-      expect(formatToExtension('text')).toBe('md')
-    })
-  })
-
-  // --------------------------------------------
   // Raw Data Directory
   // --------------------------------------------
   describe('Raw Data Directory', () => {
@@ -149,9 +134,7 @@ describe('Raw Data Utilities', () => {
     it('generates correct path with base64url encoded filename', () => {
       const dbPath = '/path/to/lancedb'
       const source = 'https://example.com/page'
-      const format = 'html' as const
-
-      const path = generateRawDataPath(dbPath, source, format)
+      const path = generateRawDataPath(dbPath, source)
 
       expect(path).toContain(`raw-data${sep}`)
       expect(path).toMatch(/\.md$/) // All formats use .md extension
@@ -166,9 +149,9 @@ describe('Raw Data Utilities', () => {
       const source2 = 'https://example.com/page#section'
       const source3 = 'https://example.com/page'
 
-      const path1 = generateRawDataPath(dbPath, source1, 'html')
-      const path2 = generateRawDataPath(dbPath, source2, 'html')
-      const path3 = generateRawDataPath(dbPath, source3, 'html')
+      const path1 = generateRawDataPath(dbPath, source1)
+      const path2 = generateRawDataPath(dbPath, source2)
+      const path3 = generateRawDataPath(dbPath, source3)
 
       // All should generate the same path (normalized source is the same)
       expect(path1).toBe(path2)
@@ -183,9 +166,7 @@ describe('Raw Data Utilities', () => {
     it('saves content to raw-data directory and returns file path', async () => {
       const source = 'https://example.com/test-page'
       const content = '<html><body>Test content</body></html>'
-      const format = 'html' as const
-
-      const savedPath = await saveRawData(testDbPath, source, content, format)
+      const savedPath = await saveRawData(testDbPath, source, content)
 
       // Verify file was saved
       const savedContent = await readFile(savedPath, 'utf-8')
@@ -202,9 +183,7 @@ describe('Raw Data Utilities', () => {
 
       const source = 'https://example.com/new-page'
       const content = 'Test content'
-      const format = 'text' as const
-
-      const savedPath = await saveRawData(newDbPath, source, content, format)
+      const savedPath = await saveRawData(newDbPath, source, content)
 
       // Verify file was saved
       const savedContent = await readFile(savedPath, 'utf-8')
@@ -216,32 +195,15 @@ describe('Raw Data Utilities', () => {
 
     it('overwrites existing file with same source', async () => {
       const source = 'https://example.com/overwrite-test'
-      const format = 'text' as const
-
       // Save initial content
-      await saveRawData(testDbPath, source, 'Original content', format)
+      await saveRawData(testDbPath, source, 'Original content')
 
       // Save updated content
-      const savedPath = await saveRawData(testDbPath, source, 'Updated content', format)
+      const savedPath = await saveRawData(testDbPath, source, 'Updated content')
 
       // Verify content was updated
       const savedContent = await readFile(savedPath, 'utf-8')
       expect(savedContent).toBe('Updated content')
-    })
-  })
-
-  // --------------------------------------------
-  // Path Detection
-  // --------------------------------------------
-  describe('Path Detection (display heuristic)', () => {
-    it('looksLikeRawDataPath returns true for raw-data paths', () => {
-      expect(looksLikeRawDataPath('/path/to/lancedb/raw-data/abc123.html')).toBe(true)
-      expect(looksLikeRawDataPath('./lancedb/raw-data/xyz.txt')).toBe(true)
-    })
-
-    it('looksLikeRawDataPath returns false for non-raw-data paths', () => {
-      expect(looksLikeRawDataPath('/path/to/documents/file.pdf')).toBe(false)
-      expect(looksLikeRawDataPath('/home/user/raw-data-backup/file.txt')).toBe(false)
     })
   })
 
@@ -321,7 +283,7 @@ describe('Raw Data Utilities', () => {
   describe('Source Extraction', () => {
     it('extractSourceFromPath extracts original source from raw-data path', () => {
       const originalSource = 'https://example.com/page'
-      const filePath = generateRawDataPath(testDbPath, originalSource, 'html')
+      const filePath = generateRawDataPath(testDbPath, originalSource)
 
       const extractedSource = extractSourceFromPath(filePath)
 
@@ -344,7 +306,7 @@ describe('Raw Data Utilities', () => {
       ]
 
       for (const source of sources) {
-        const savedPath = await saveRawData(testDbPath, source, 'content', 'text')
+        const savedPath = await saveRawData(testDbPath, source, 'content')
         const extractedSource = extractSourceFromPath(savedPath)
 
         // For URLs, the source will be normalized

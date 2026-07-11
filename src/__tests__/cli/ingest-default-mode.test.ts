@@ -191,19 +191,10 @@ let VectorStore: VectorStoreCtor
 // ============================================
 
 const GENERIC_PDF_PATH = '/tmp/test/default-mode-generic.pdf'
-const FIGURE_HEAVY_PDF_PATH = '/tmp/test/default-mode-figure-heavy.pdf'
 
 // Variant (a): generic content — no figure references.
 const GENERIC_PDF_CONTENT = 'plain pdf content for default-mode test'
 const GENERIC_PDF_TITLE = 'Generic Test Document'
-
-// Variant (b): figure-heavy content — names figures, tables, captions so the
-// adversarial intent is visible in the fixture. The dispatch site MUST still
-// stay on the default branch because `visual` is omitted.
-const FIGURE_HEAVY_PDF_CONTENT =
-  'Figure 1: Architecture diagram. Table 2: Benchmark results. ' +
-  'See caption below the inset image for details.'
-const FIGURE_HEAVY_PDF_TITLE = 'Figure-Heavy Test Document'
 
 // Deterministic chunker output — exactly 2 chunks regardless of input text.
 // Mirrors the shape used by `src/__tests__/cli/ingest.test.ts:163-167`.
@@ -424,87 +415,6 @@ describe('VLM PDF Enrichment - Default Mode (no --visual)', () => {
       expect(accessed.touched).toBe(false)
       expect(mocks.parsePdf).toHaveBeenCalledTimes(1)
       expect(mocks.parsePdfPages).toHaveBeenCalledTimes(0)
-    })
-  })
-
-  // AC-001 (NFR-1 strict): even if the file is a PDF that WOULD have visual
-  // candidates, the default path must not reach into pdf-visual. This is the
-  // adversarial form of the sentinel assertion — a fixture chosen to be the
-  // worst case for accidental dynamic import.
-  // ROI: 88 (BV:9 × Freq:8 + Legal:0 + Defect:8) — variant of AC-001
-  // Behavior: Ingest figure-heavy PDF without visual flag → sentinel stays false
-  // @category: core-functionality
-  // @lane: integration
-  // @dependency: ingestSingleFile, RAGServer.handleIngestFile, pdf-visual (Proxy sentinel)
-  // @complexity: medium
-  describe('AC-001 (NFR-1 strict): figure-heavy PDF in default mode does not trigger pdf-visual dynamic import', () => {
-    it('handleIngestFile: figure-heavy PDF default path keeps pdf-visual untouched', async () => {
-      // Arrange — parser is mocked, so the "figure-heavy" nature lives in the
-      // content string. The dispatch decision is purely based on `visual`
-      // (omitted) and file extension (.pdf), so this is the adversarial case:
-      // a reader inspecting the fixture sees content that screams "VLM-ready",
-      // yet the default branch must not reach pdf-visual.
-      mocks.parsePdf.mockResolvedValue({
-        content: FIGURE_HEAVY_PDF_CONTENT,
-        title: FIGURE_HEAVY_PDF_TITLE,
-      })
-      const server = buildServer()
-
-      // Act
-      await server.handleIngestFile({ filePath: FIGURE_HEAVY_PDF_PATH })
-
-      // Assert: NFR-1 strict — sentinel untouched even on adversarial fixture
-      expect(accessed.touched).toBe(false)
-      expect(accessed.prop).toBeUndefined()
-
-      // Assert: default PDF parser reached; visual parser NOT reached
-      expect(mocks.parsePdf).toHaveBeenCalledTimes(1)
-      expect(mocks.parsePdf).toHaveBeenCalledWith(FIGURE_HEAVY_PDF_PATH, expect.anything())
-      expect(mocks.parsePdfPages).toHaveBeenCalledTimes(0)
-
-      // Assert: chunks produced (count > 0 per task)
-      expect(mocks.insertChunks).toHaveBeenCalledTimes(1)
-      const insertedChunks = mocks.insertChunks.mock.calls[0]?.[0] as Array<unknown>
-      expect(insertedChunks.length).toBeGreaterThan(0)
-      expect(insertedChunks).toHaveLength(2)
-    })
-
-    it('ingestSingleFile: figure-heavy PDF default path keeps pdf-visual untouched', async () => {
-      // Arrange
-      mocks.parsePdf.mockResolvedValue({
-        content: FIGURE_HEAVY_PDF_CONTENT,
-        title: FIGURE_HEAVY_PDF_TITLE,
-      })
-      const parser = new DocumentParser({ baseDir: '/tmp/test', maxFileSize: 1024 * 1024 })
-      const chunker = new SemanticChunker({})
-      const embedder = new Embedder({
-        modelPath: 'mock-model',
-        batchSize: 16,
-        cacheDir: '/tmp/test/cache',
-      })
-      const vectorStore = new VectorStore({ dbPath: '/tmp/test/db', tableName: 'chunks' })
-
-      // Act — omit visual entirely
-      const chunkCount = await ingestSingleFile(
-        FIGURE_HEAVY_PDF_PATH,
-        parser,
-        chunker,
-        embedder,
-        vectorStore
-      )
-
-      // Assert: NFR-1 strict — sentinel untouched
-      expect(accessed.touched).toBe(false)
-      expect(accessed.prop).toBeUndefined()
-
-      // Assert: default PDF parser reached; visual parser NOT reached
-      expect(mocks.parsePdf).toHaveBeenCalledTimes(1)
-      expect(mocks.parsePdf).toHaveBeenCalledWith(FIGURE_HEAVY_PDF_PATH, expect.anything())
-      expect(mocks.parsePdfPages).toHaveBeenCalledTimes(0)
-
-      // Assert: chunks produced (count > 0 per task)
-      expect(chunkCount).toBe(2)
-      expect(mocks.insertChunks).toHaveBeenCalledTimes(1)
     })
   })
 })

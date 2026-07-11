@@ -2,10 +2,10 @@
 
 import { resolve, sep } from 'node:path'
 
+import { listDocuments } from '../features/list.js'
 import { displayPath } from '../utils/base-dirs.js'
 import { MAX_SCAN_DEPTH } from '../utils/limits.js'
-import { classifyIngestedSources } from '../utils/list-sources.js'
-import { bfsCollectSupportedFiles, realpathForMatch } from '../utils/scan.js'
+import { bfsCollectSupportedFiles } from '../utils/scan.js'
 import { nonAbsolutePrefixes } from '../utils/scope-match.js'
 import { createVectorStore, formatCliError, resolveCliBaseDirsOrExit } from './common.js'
 import type { GlobalOptions } from './options.js'
@@ -281,9 +281,8 @@ export async function runList(args: string[], globalOptions: GlobalOptions = {})
   }
   const baseDir = firstRawBaseDir
 
+  const vectorStore = createVectorStore(globalConfig)
   try {
-    // Initialize VectorStore only (no Embedder needed for list)
-    const vectorStore = createVectorStore(globalConfig)
     await vectorStore.initialize()
 
     // Build exclude paths (resolved to absolute, platform-aware trailing
@@ -295,68 +294,21 @@ export async function runList(args: string[], globalOptions: GlobalOptions = {})
       `${resolve(globalConfig.cacheDir)}${sep}`,
     ]
 
-    // Get ingested entries and index by file IDENTITY (realpath), so a file
-    // ingested via a different spelling (symlinked prefix or alias) still
-    // matches the scan. realpath is used only for this "same file?" comparison;
-    // storage/display stay normal-path (see utils/base-dirs.ts BaseDirsConfig).
     const ingested = await vectorStore.listFiles()
-    const ingestedKeyed = await Promise.all(
-      ingested.map(async (f) => ({ entry: f, key: await realpathForMatch(f.filePath) }))
-    )
-    const ingestedByKey = new Map(ingestedKeyed.map(({ entry, key }) => [key, entry]))
-
-    // Scan every effective root, deduping by identity key (a file reachable
-    // from multiple roots — via symlinks/bind mounts — appears once, first root
-    // wins). Per-root errors are non-fatal stderr warnings.
-    const keyToRoot = new Map<string, string>()
-    const keyToScanned = new Map<string, string>()
-    for (const root of rawBaseDirs) {
-      const { files: perRoot, warnings: rootWarnings } = await scanRoot(
-        root,
-        excludePaths,
-        options.scope
-      )
-      for (const warning of rootWarnings) {
-        console.error(`Warning [${root}]: ${warning}`)
-      }
-      for (const scannedPath of perRoot) {
-        const key = await realpathForMatch(scannedPath)
-        if (!keyToRoot.has(key)) {
-          keyToRoot.set(key, root)
-          keyToScanned.set(key, scannedPath)
-        }
-      }
+    const listed = await listDocuments({
+      roots: rawBaseDirs,
+      dbPath: globalConfig.dbPath,
+      ingested,
+      scope: options.scope,
+      scan: (root, scope) => scanRoot(root, excludePaths, scope),
+    })
+    for (const warning of listed.warnings) {
+      console.error(`Warning [${warning.baseDir}]: ${warning.message}`)
     }
 
-    // Ingested rows display the stored (normal) path so it round-trips into
-    // delete/read; not-ingested rows display the scanned path.
-    const matchedKeys = new Set<string>()
-    const files: FileEntry[] = [...keyToRoot.entries()].map(([key, producingRoot]) => {
-      const entry = ingestedByKey.get(key)
-      if (entry) {
-        matchedKeys.add(key)
-        return {
-          filePath: entry.filePath,
-          baseDir: producingRoot,
-          ingested: true,
-          chunkCount: entry.chunkCount,
-          timestamp: entry.timestamp,
-        }
-      }
-      return { filePath: keyToScanned.get(key) ?? key, baseDir: producingRoot, ingested: false }
-    })
+    const files: FileEntry[] = listed.files
     files.sort((a, b) => (a.filePath < b.filePath ? -1 : a.filePath > b.filePath ? 1 : 0))
-
-    // Content ingested via ingest_data plus orphaned DB entries: ingested
-    // entries whose identity key matched no scanned file. With `scope` present,
-    // raw-data sources are always kept while real-file entries are scope-filtered
-    // (see `classifyIngestedSources`); scope-absent behavior is unchanged. The
-    // same helper backs the MCP `list_files` surface, so both stay identical.
-    const sources: SourceEntry[] = classifyIngestedSources(
-      ingestedKeyed,
-      matchedKeys,
-      options.scope
-    )
+    const sources: SourceEntry[] = listed.sources
 
     const result: ListResult = {
       baseDirs: [...rawBaseDirs],
@@ -370,6 +322,8 @@ export async function runList(args: string[], globalOptions: GlobalOptions = {})
   } catch (error) {
     const message = formatCliError(error)
     console.error(`Failed to list files: ${message}`)
-    process.exit(1)
+    process.exitCode = 1
+  } finally {
+    await vectorStore.close()
   }
 }

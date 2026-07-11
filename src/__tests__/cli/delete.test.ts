@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => {
     initialize: vi.fn(),
     deleteChunks: vi.fn(),
     optimize: vi.fn(),
+    close: vi.fn(),
     // fs.unlink
     unlink: vi.fn(),
   }
@@ -27,6 +28,7 @@ const cliCommonFactory = () => ({
     initialize: mocks.initialize,
     deleteChunks: mocks.deleteChunks,
     optimize: mocks.optimize,
+    close: mocks.close,
   })),
   // Catch-block renderer; faithful shim preserves the `Error: <message>`
   // stderr behavior the tests assert.
@@ -113,6 +115,7 @@ describe('CLI delete', () => {
     mocks.initialize.mockResolvedValue(undefined)
     mocks.deleteChunks.mockResolvedValue(0)
     mocks.optimize.mockResolvedValue(undefined)
+    mocks.close.mockResolvedValue(undefined)
     mocks.unlink.mockResolvedValue(undefined)
   })
 
@@ -221,7 +224,7 @@ describe('CLI delete', () => {
     const { generateMetaJsonPath, generateRawDataPath } = await import(
       '../../utils/raw-data-utils.js'
     )
-    const mdPath = generateRawDataPath(cleanupDbPath, 'https://example.com/meta-only', 'markdown')
+    const mdPath = generateRawDataPath(cleanupDbPath, 'https://example.com/meta-only')
     await mkdir(resolve(cleanupDbPath, 'raw-data'), { recursive: true })
     await writeFile(generateMetaJsonPath(mdPath), '{}')
 
@@ -272,7 +275,7 @@ describe('CLI delete', () => {
     // resolves and the cleanup branch runs. `unlink` is mocked so the file
     // stays on disk and is removed by the afterAll cleanup below.
     const { generateRawDataPath } = await import('../../utils/raw-data-utils.js')
-    const mdPath = generateRawDataPath(cleanupDbPath, 'https://example.com/page', 'markdown')
+    const mdPath = generateRawDataPath(cleanupDbPath, 'https://example.com/page')
     await mkdir(resolve(cleanupDbPath, 'raw-data'), { recursive: true })
     await writeFile(mdPath, 'fixture')
 
@@ -402,8 +405,8 @@ describe('CLI delete', () => {
 
     const { output, error } = await captureStderr(() => runDelete(['/path/to/file.md']))
 
-    expect(error).toBeInstanceOf(Error)
-    expect((error as Error).message).toBe('process.exit(1)')
+    expect(error).toBeUndefined()
+    expect(process.exitCode).toBe(1)
 
     const joined = output.join('\n')
     expect(joined).toContain('DB write failed')
@@ -414,8 +417,8 @@ describe('CLI delete', () => {
 
     const { output, error } = await captureStderr(() => runDelete(['/path/to/file.md']))
 
-    expect(error).toBeInstanceOf(Error)
-    expect((error as Error).message).toBe('process.exit(1)')
+    expect(error).toBeUndefined()
+    expect(process.exitCode).toBe(1)
 
     const joined = output.join('\n')
     expect(joined).toContain('Init failed')

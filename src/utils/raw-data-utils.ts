@@ -2,7 +2,7 @@
 // Handles: base64url encoding, source normalization, file saving, source extraction
 
 import { access, mkdir, readFile, realpath, writeFile } from 'node:fs/promises'
-import { dirname, join, resolve, sep } from 'node:path'
+import { basename, dirname, join, resolve, sep } from 'node:path'
 
 // ============================================
 // Base64URL Encoding/Decoding
@@ -78,19 +78,7 @@ export function normalizeSource(source: string): string {
  */
 export type ContentFormat = 'text' | 'html' | 'markdown'
 
-/**
- * Get file extension from content format
- *
- * All formats return .md for consistency.
- * This allows generating unique path from source without knowing original format,
- * which is essential for delete_file with source parameter.
- *
- * @param _format - Content format (ignored, always returns 'md')
- * @returns File extension (without dot) - always 'md'
- */
-export function formatToExtension(_format: ContentFormat): string {
-  return 'md'
-}
+const RAW_DATA_EXTENSION = 'md'
 
 // ============================================
 // Path Generation
@@ -115,12 +103,11 @@ export function getRawDataDir(dbPath: string): string {
  * @param format - Content format
  * @returns Generated file path
  */
-export function generateRawDataPath(dbPath: string, source: string, format: ContentFormat): string {
+export function generateRawDataPath(dbPath: string, source: string): string {
   const normalizedSource = normalizeSource(source)
   const encoded = encodeBase64Url(normalizedSource)
-  const extension = formatToExtension(format)
   // Use resolve to ensure absolute path (required by validateFilePath)
-  return resolve(getRawDataDir(dbPath), `${encoded}.${extension}`)
+  return resolve(getRawDataDir(dbPath), `${encoded}.${RAW_DATA_EXTENSION}`)
 }
 
 // ============================================
@@ -140,10 +127,9 @@ export function generateRawDataPath(dbPath: string, source: string, format: Cont
 export async function saveRawData(
   dbPath: string,
   source: string,
-  content: string,
-  format: ContentFormat
+  content: string
 ): Promise<string> {
-  const filePath = generateRawDataPath(dbPath, source, format)
+  const filePath = generateRawDataPath(dbPath, source)
 
   // Ensure directory exists
   await mkdir(dirname(filePath), { recursive: true })
@@ -158,13 +144,11 @@ export async function saveRawData(
 // Path Detection and Source Extraction
 // ============================================
 
-/**
- * Display-only heuristic. NOT a security boundary — use
- * {@link isPathInRawDataDir} when the result gates filesystem access.
- */
-export function looksLikeRawDataPath(filePath: string): boolean {
-  const normalized = filePath.replace(/\\/g, '/')
-  return normalized.includes('/raw-data/')
+/** True only for managed raw-data content files under this database. */
+export function isManagedRawDataPath(filePath: string, dbPath: string): boolean {
+  return (
+    isPathInRawDataDirLexical(filePath, dbPath) && /^[A-Za-z0-9_-]+\.md$/.test(basename(filePath))
+  )
 }
 
 /**

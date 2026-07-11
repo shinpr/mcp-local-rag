@@ -407,12 +407,6 @@ This is markdown content with **bold** and _italic_ text.
       const targetAfter = filesAfter.sources.find((f: { source: string }) => f.source === source)
       expect(targetAfter).toBeUndefined()
     })
-
-    it('delete_file throws error when neither filePath nor source provided', async () => {
-      await expect(server.handleDeleteFile({})).rejects.toThrow(
-        'Either filePath or source must be provided'
-      )
-    })
   })
 
   // --------------------------------------------

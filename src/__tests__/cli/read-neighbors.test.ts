@@ -17,6 +17,7 @@ const mocks = vi.hoisted(() => {
     // VectorStore instance methods used by runReadNeighbors
     initialize: vi.fn(),
     getChunksByRange: vi.fn(),
+    close: vi.fn(),
   }
 })
 
@@ -28,6 +29,7 @@ const cliCommonFactory = () => ({
   createVectorStore: vi.fn().mockImplementation(() => ({
     initialize: mocks.initialize,
     getChunksByRange: mocks.getChunksByRange,
+    close: mocks.close,
   })),
   // Catch-block renderer; faithful shim renders the full cause chain + stack
   // so the cause-chain-to-stderr assertions exercise real behavior, not a stub.
@@ -96,6 +98,7 @@ describe('CLI read-neighbors', () => {
     // Default: VectorStore methods succeed
     mocks.initialize.mockResolvedValue(undefined)
     mocks.getChunksByRange.mockResolvedValue([])
+    mocks.close.mockResolvedValue(undefined)
   })
 
   afterEach(() => {
@@ -139,8 +142,8 @@ describe('CLI read-neighbors', () => {
       ])
     )
 
-    expect(error).toBeInstanceOf(Error)
-    expect((error as Error).message).toBe('process.exit(1)')
+    expect(error).toBeUndefined()
+    expect(process.exitCode).toBe(1)
     expect(output.join('\n')).toContain('Cannot specify both --file-path and --source')
     expect(mocks.getChunksByRange).not.toHaveBeenCalled()
   })
@@ -151,8 +154,8 @@ describe('CLI read-neighbors', () => {
   it('should exit 1 when neither --file-path nor --source is provided', async () => {
     const { output, error } = await captureStderr(() => runReadNeighbors(['--chunk-index', '5']))
 
-    expect(error).toBeInstanceOf(Error)
-    expect((error as Error).message).toBe('process.exit(1)')
+    expect(error).toBeUndefined()
+    expect(process.exitCode).toBe(1)
     expect(output.join('\n')).toContain('Either --file-path or --source is required')
     expect(mocks.getChunksByRange).not.toHaveBeenCalled()
   })
@@ -165,8 +168,8 @@ describe('CLI read-neighbors', () => {
       runReadNeighbors(['--file-path', '/abs/path.md'])
     )
 
-    expect(error).toBeInstanceOf(Error)
-    expect((error as Error).message).toBe('process.exit(1)')
+    expect(error).toBeUndefined()
+    expect(process.exitCode).toBe(1)
     expect(output.join('\n')).toContain('--chunk-index')
     expect(mocks.getChunksByRange).not.toHaveBeenCalled()
   })
@@ -221,8 +224,8 @@ describe('CLI read-neighbors', () => {
       runReadNeighbors(['--file-path', '/abs/path.md', '--chunk-index', '5', '--before', '51'])
     )
 
-    expect(error).toBeInstanceOf(Error)
-    expect((error as Error).message).toBe('process.exit(1)')
+    expect(error).toBeUndefined()
+    expect(process.exitCode).toBe(1)
     expect(output.join('\n')).toContain('before must be between 0 and 50')
     expect(mocks.getChunksByRange).not.toHaveBeenCalled()
   })
@@ -242,8 +245,8 @@ describe('CLI read-neighbors', () => {
     )
 
     // Exit code preserved (1).
-    expect(error).toBeInstanceOf(Error)
-    expect((error as Error).message).toBe('process.exit(1)')
+    expect(error).toBeUndefined()
+    expect(process.exitCode).toBe(1)
 
     // Both the outer message and the root cause reach stderr (CLI is
     // operator-facing → cause chain printed, unlike the MCP boundary).

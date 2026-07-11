@@ -16,6 +16,7 @@ const mocks = vi.hoisted(() => {
     // VectorStore instance methods
     initialize: vi.fn().mockResolvedValue(undefined),
     listFiles: vi.fn().mockResolvedValue([]),
+    close: vi.fn().mockResolvedValue(undefined),
 
     // Shared CLI base-dirs resolver. Per-test impls can mirror precedence
     // (CLI roots replace env roots, env falls through to cwd) or simulate
@@ -41,6 +42,7 @@ const cliCommonFactory = () => ({
   createVectorStore: vi.fn().mockImplementation(() => ({
     initialize: mocks.initialize,
     listFiles: mocks.listFiles,
+    close: mocks.close,
   })),
   resolveCliBaseDirsOrExit: vi
     .fn()
@@ -202,7 +204,7 @@ describe('CLI list', () => {
     ])
 
     // Act
-    const { stdout, error } = await captureOutput(() => runList([]))
+    const { stdout, error } = await captureOutput(() => runList([], { dbPath: '/some/db' }))
 
     // Assert: no error
     expect(error).toBeUndefined()
@@ -281,7 +283,7 @@ describe('CLI list', () => {
     mocks.listFiles.mockResolvedValue([])
 
     // Act
-    const { stdout, error } = await captureOutput(() => runList([]))
+    const { stdout, error } = await captureOutput(() => runList([], { dbPath: '/some/db' }))
 
     // Assert
     expect(error).toBeUndefined()
@@ -325,7 +327,7 @@ describe('CLI list', () => {
     ])
 
     // Act
-    const { stdout, error } = await captureOutput(() => runList([]))
+    const { stdout, error } = await captureOutput(() => runList([], { dbPath: '/some/db' }))
 
     // Assert
     expect(error).toBeUndefined()
@@ -381,8 +383,8 @@ describe('CLI list', () => {
     const { stderr, error } = await captureOutput(() => runList([]))
 
     // Assert
-    expect(error).toBeInstanceOf(Error)
-    expect((error as Error).message).toBe('process.exit(1)')
+    expect(error).toBeUndefined()
+    expect(process.exitCode).toBe(1)
     const joined = stderr.join('\n')
     expect(joined).toContain('DB connection failed')
   })

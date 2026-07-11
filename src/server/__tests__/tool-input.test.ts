@@ -1,9 +1,12 @@
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js'
 import { describe, expect, it } from 'vitest'
 import {
+  parseDeleteFileInput,
   parseIngestDataInput,
+  parseIngestFileInput,
   parseListFilesInput,
   parseQueryDocumentsInput,
+  parseReadChunkNeighborsInput,
 } from '../tool-input.js'
 
 describe('parseQueryDocumentsInput', () => {
@@ -210,5 +213,69 @@ describe('parseIngestDataInput', () => {
     ['non-string format', { content: 'b', metadata: { source: 's', format: 1 } }],
   ])('rejects %s', (_label, raw) => {
     expect(() => parseIngestDataInput(raw)).toThrow(/metadata\.format must be one of/)
+  })
+})
+
+describe('parseIngestFileInput', () => {
+  it('accepts and preserves valid options', () => {
+    expect(
+      parseIngestFileInput({ filePath: '/docs/a.pdf', visual: true, visualQuality: 'quality' })
+    ).toEqual({
+      filePath: '/docs/a.pdf',
+      visual: true,
+      visualQuality: 'quality',
+    })
+  })
+
+  it.each([
+    undefined,
+    null,
+    {},
+    { filePath: '' },
+    { filePath: 1 },
+  ])('rejects malformed input %#', (raw) =>
+    expect(() => parseIngestFileInput(raw)).toThrow(McpError))
+
+  it.each(['true', 1, null])('rejects visual=%j', (visual) => {
+    expect(() => parseIngestFileInput({ filePath: '/docs/a.pdf', visual })).toThrow(
+      /visual.*boolean/
+    )
+  })
+})
+
+describe('parseDeleteFileInput', () => {
+  it.each([
+    [{ filePath: '/docs/a.md' }, { filePath: '/docs/a.md' }],
+    [{ source: 'https://example.com' }, { source: 'https://example.com' }],
+  ])('accepts one document reference', (raw, expected) => {
+    expect(parseDeleteFileInput(raw)).toEqual(expected)
+  })
+
+  it.each([
+    undefined,
+    null,
+    {},
+    { filePath: '', source: '' },
+    { filePath: '/a', source: 's' },
+  ])('rejects malformed or non-XOR input %#', (raw) =>
+    expect(() => parseDeleteFileInput(raw)).toThrow(McpError))
+})
+
+describe('parseReadChunkNeighborsInput', () => {
+  it('accepts a valid range request', () => {
+    expect(
+      parseReadChunkNeighborsInput({ filePath: '/docs/a.md', chunkIndex: 3, before: 1, after: 4 })
+    ).toEqual({ filePath: '/docs/a.md', chunkIndex: 3, before: 1, after: 4 })
+  })
+
+  it.each([
+    undefined,
+    {},
+    { filePath: '/a', chunkIndex: -1 },
+    { filePath: '/a', chunkIndex: 1.5 },
+    { filePath: '/a', chunkIndex: 0, before: 51 },
+    { filePath: '/a', chunkIndex: 0, after: -1 },
+  ])('rejects malformed input %#', (raw) => {
+    expect(() => parseReadChunkNeighborsInput(raw)).toThrow(McpError)
   })
 })

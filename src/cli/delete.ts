@@ -122,10 +122,9 @@ export async function runDelete(args: string[], globalOptions: GlobalOptions = {
 
   // Resolve global config
   const globalConfig = resolveGlobalConfig(globalOptions)
+  const vectorStore = createVectorStore(globalConfig)
 
   try {
-    // Create and initialize VectorStore (no Embedder needed for delete)
-    const vectorStore = createVectorStore(globalConfig)
     await vectorStore.initialize()
 
     // Determine target file path
@@ -133,7 +132,7 @@ export async function runDelete(args: string[], globalOptions: GlobalOptions = {
 
     if (parsed.source) {
       // Generate raw-data path from source URL
-      targetPath = generateRawDataPath(globalConfig.dbPath, parsed.source, 'markdown')
+      targetPath = generateRawDataPath(globalConfig.dbPath, parsed.source)
     } else {
       // DB key is the resolve()'d ingest path, so look up by resolve() (never
       // realpath) — realpath stays in validatePath/validateFilePath.
@@ -196,6 +195,8 @@ export async function runDelete(args: string[], globalOptions: GlobalOptions = {
   } catch (error) {
     const reason = formatCliError(error)
     console.error(`Error: ${reason}`)
-    process.exit(1)
+    process.exitCode = 1
+  } finally {
+    await vectorStore.close()
   }
 }
