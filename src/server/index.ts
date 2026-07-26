@@ -1,6 +1,7 @@
 // RAGServer implementation with MCP tools
 
-import { readFile, unlink } from 'node:fs/promises'
+import { randomUUID } from 'node:crypto'
+import { readFile, stat, unlink } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { resolve, sep } from 'node:path'
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
@@ -15,6 +16,13 @@ import { DEFAULT_MIN_CHUNK_LENGTH, SemanticChunker } from '../chunker/index.js'
 import { Embedder } from '../embedder/index.js'
 import { listDocuments } from '../features/list.js'
 import {
+  runSync,
+  type SyncCollaborators,
+  type SyncCoverage,
+  type SyncError,
+  type SyncPathKind,
+} from '../features/sync.js'
+import {
   buildChunksAndEmbeddings,
   buildVectorChunks,
   computeContentHash,
@@ -24,6 +32,7 @@ import { parseHtml } from '../parser/html-parser.js'
 import { DocumentParser } from '../parser/index.js'
 import { extractMarkdownTitle, extractTxtTitle } from '../parser/title-extractor.js'
 import type { BaseDirsConfigError } from '../utils/base-dirs.js'
+import { MAX_SCAN_DEPTH } from '../utils/limits.js'
 import {
   checkRawDataArtifacts,
   extractSourceFromPath,
@@ -37,12 +46,14 @@ import {
   saveMetaJson,
   saveRawData,
 } from '../utils/raw-data-utils.js'
+import { bfsCollectSupportedFiles } from '../utils/scan.js'
 import { nonAbsolutePrefixes } from '../utils/scope-match.js'
 import { type VectorChunk, VectorStore } from '../vectordb/index.js'
 import { DatabaseError } from '../vectordb/types.js'
 import {
   appendConfigWarnings,
   buildConfigErrorBlock,
+  formatErrorForClient,
   logError,
   type RagContentBlock,
   type ToMcpErrorContext,
@@ -57,6 +68,8 @@ import {
   parseListFilesInput,
   parseQueryDocumentsInput,
   parseReadChunkNeighborsInput,
+  parseSyncStartInput,
+  parseSyncStatusInput,
 } from './tool-input.js'
 import type {
   DeleteFileResult,
@@ -70,6 +83,9 @@ import type {
   RAGServerConfig,
   ReadChunkNeighborsResultItem,
   SourceEntry,
+  SyncStartInput,
+  SyncStatusInput,
+  SyncStatusResult,
 } from './types.js'
 
 /**
@@ -88,13 +104,72 @@ const TOOL_ERROR_CONTEXT: Record<string, ToMcpErrorContext> = {
   ingest_data: { prefix: 'Failed to ingest data' },
   delete_file: { prefix: 'Failed to delete file' },
   read_chunk_neighbors: { prefix: 'Failed to read chunk neighbors' },
+  sync_start: { prefix: 'Failed to start sync' },
   query_documents: {},
   list_files: {},
   status: {},
+  sync_status: {},
 }
+
+/**
+ * Tools that mutate the index and therefore pass through the one server-instance
+ * mutation guard (SYNC-007). Read-only tools are deliberately absent: they stay
+ * callable while a sync holds the guard.
+ */
+const MUTATION_TOOLS: ReadonlySet<string> = new Set([
+  'sync_start',
+  'ingest_file',
+  'ingest_data',
+  'delete_file',
+])
 
 const packageVersion = (createRequire(import.meta.url)('../../package.json') as { version: string })
   .version
+
+/**
+ * Zero-chunk outcome of {@link RAGServer.handleIngestFile}, raised before any
+ * destructive work so the existing index is preserved.
+ *
+ * An `McpError` subclass rather than a separate error type: the code and message
+ * a client sees are unchanged, while the internal sync collaborator can tell
+ * "this file produced nothing" apart from a genuine ingest failure and count it
+ * as `empty` instead of failing the whole job.
+ */
+class NoChunksError extends McpError {}
+
+/**
+ * Render the scanner's coverage facts as caller-facing warnings, one per
+ * unobserved region, because each one is a reason prune was withheld there. The
+ * wording is not a contract. Carried as JSON strings on the job record rather
+ * than as content blocks, because status is a single pollable record — the
+ * `list_files` warning blocks are unchanged.
+ */
+function coverageWarnings(coverage: SyncCoverage): string[] {
+  return [
+    ...coverage.unreadableDirs.map(
+      ({ dirPath, code }) =>
+        `Warning: cannot read directory (${code}), so its indexed files were kept: ${dirPath}`
+    ),
+    ...coverage.depthLimitedDirs.map(
+      (dirPath) =>
+        `Warning: not scanned because it exceeds the maximum depth (${MAX_SCAN_DEPTH}), so its indexed files were kept: ${dirPath}`
+    ),
+    ...coverage.skippedSymlinks.map(
+      (linkPath) =>
+        `Warning: symbolic link not followed, so its indexed files were kept: ${linkPath}`
+    ),
+  ]
+}
+
+/**
+ * The one controlled error string a failed job exposes. Scope and existence
+ * messages already name the path, while a per-file ingest failure ("Missing
+ * embedding for chunk 1") does not — there the suffix is the only thing
+ * identifying the file, so it is appended exactly once.
+ */
+function syncErrorText({ message, filePath }: SyncError): string {
+  return filePath === null || message.includes(filePath) ? message : `${message} (${filePath})`
+}
 
 /** RAG server compliant with MCP Protocol */
 export class RAGServer {
@@ -135,6 +210,19 @@ export class RAGServer {
   private readonly configError: BaseDirsConfigError | null
   private readonly minChunkLength: number
   private readonly device: string | undefined
+  /**
+   * The one current-or-latest sync job this process retains (SYNC-006). A new
+   * `sync_start` replaces a terminal record, so the older id becomes unknown,
+   * and process exit simply discards it: there is no history, persistence,
+   * eviction policy, or recovery.
+   */
+  private syncJob: SyncStatusResult | null = null
+  /**
+   * True while one external mutation is in flight (SYNC-007). A request-scoped
+   * mutation clears it when the request completes; a sync keeps it until its
+   * job reaches a terminal state.
+   */
+  private mutationInFlight = false
 
   constructor(config: RAGServerConfig) {
     this.dbPath = config.dbPath
@@ -236,6 +324,32 @@ export class RAGServer {
   }
 
   /**
+   * Take the single external-mutation slot, or describe the overlap.
+   *
+   * Returns `null` when the slot was free (the caller now holds it), otherwise
+   * the responsive overlap result: an ordinary tool result with `isError: true`
+   * rather than a thrown error, so it never passes through `toMcpError`. When a
+   * sync holds the guard the message names its job id and points at
+   * `sync_status`, which is the only way for the caller to learn when to retry.
+   */
+  private acquireMutation(): { content: RagContentBlock[]; isError: true } | null {
+    if (!this.mutationInFlight) {
+      this.mutationInFlight = true
+      return null
+    }
+    const runningJob = this.syncJob?.state === 'running' ? this.syncJob : null
+    const text =
+      runningJob === null
+        ? 'Another write operation is already running on this server. Retry when it finishes.'
+        : `A sync job is running (jobId: ${runningJob.jobId}). Poll sync_status with that jobId and retry once it is no longer running.`
+    return { content: this.withWarnings([{ type: 'text', text }]), isError: true }
+  }
+
+  private releaseMutation(): void {
+    this.mutationInFlight = false
+  }
+
+  /**
    * Set up MCP handlers
    */
   private setupHandlers(): void {
@@ -255,6 +369,17 @@ export class RAGServer {
       CallToolRequestSchema,
       async (request: { params: { name: string; arguments?: unknown } }) => {
         const toolName = request.params.name
+        // The mutation guard sits here, on the external dispatch path only, so
+        // an internal call such as `handleIngestData` -> `handleIngestFile`
+        // cannot reacquire it and self-deadlock.
+        if (MUTATION_TOOLS.has(toolName)) {
+          const overlap = this.acquireMutation()
+          if (overlap !== null) return overlap
+        }
+        // `sync_start` hands the guard to the job it schedules, which releases
+        // it on the terminal transition; every other mutation is request-scoped
+        // and releases below whether it succeeds or throws.
+        let releaseWhenRequestEnds = MUTATION_TOOLS.has(toolName)
         try {
           switch (toolName) {
             case 'query_documents':
@@ -273,6 +398,17 @@ export class RAGServer {
               return await this.handleListFiles(parseListFilesInput(request.params.arguments))
             case 'status':
               return await this.handleStatus()
+            case 'sync_start': {
+              const started = await this.handleSyncStart(
+                parseSyncStartInput(request.params.arguments)
+              )
+              // Reached only once a job is registered and scheduled; a throw
+              // above leaves the flag set so the `finally` frees the guard.
+              releaseWhenRequestEnds = false
+              return started
+            }
+            case 'sync_status':
+              return await this.handleSyncStatus(parseSyncStatusInput(request.params.arguments))
             default:
               throw new Error(`Unknown tool: ${toolName}`)
           }
@@ -280,6 +416,8 @@ export class RAGServer {
           const context = TOOL_ERROR_CONTEXT[toolName] ?? {}
           logError(toolName, error)
           throw toMcpError(error, context)
+        } finally {
+          if (releaseWhenRequestEnds) this.releaseMutation()
         }
       }
     )
@@ -424,7 +562,7 @@ export class RAGServer {
     // Fail-fast: Prevent data loss when chunking produces 0 chunks
     // This check must happen BEFORE delete to preserve existing data on re-ingest
     if (chunks.length === 0) {
-      throw new McpError(
+      throw new NoChunksError(
         ErrorCode.InvalidParams,
         `No chunks generated from file: ${args.filePath}. The file may be empty or all content was filtered (minimum ${this.minChunkLength} characters required). Existing data has been preserved.`
       )
@@ -848,6 +986,167 @@ export class RAGServer {
           text: JSON.stringify(items, null, 2),
         },
       ]),
+    }
+  }
+
+  /**
+   * sync_start tool handler
+   *
+   * Registers the one current job, schedules the run, and answers with its id
+   * without waiting for any of it: the caller polls `sync_status` (SYNC-006).
+   * The scheduled promise is deliberately floating — an unexpected rejection is
+   * captured into the job record instead of escaping, and the run holds the
+   * external-mutation guard until it is terminal.
+   */
+  async handleSyncStart(input: SyncStartInput): Promise<{ content: RagContentBlock[] }> {
+    // Root-dependent tool: fail fast on configError before registering a job.
+    this.assertConfigOk()
+
+    const jobId = randomUUID()
+    this.syncJob = {
+      jobId,
+      state: 'running',
+      total: null,
+      completed: 0,
+      summary: { upserted: 0, skipped: 0, empty: 0, pruned: 0 },
+      warnings: [],
+      error: null,
+    }
+
+    void this.runSyncJob(jobId, input.path)
+      .catch((error: unknown) => {
+        // Only an unexpected orchestration failure lands here: `runSync` already
+        // returns its own controlled error. One error, no rollback, no retry.
+        this.updateSyncJob(jobId, { state: 'failed', error: formatErrorForClient(error) })
+      })
+      .finally(() => {
+        this.releaseMutation()
+      })
+
+    return {
+      content: this.withWarnings([{ type: 'text', text: JSON.stringify({ jobId }, null, 2) }]),
+    }
+  }
+
+  /**
+   * sync_status tool handler
+   *
+   * Read-only, so it stays callable while a sync holds the mutation guard. Any
+   * id other than the current one is unknown: the record was replaced by a newer
+   * `sync_start` or lost with a previous server process.
+   */
+  async handleSyncStatus(input: SyncStatusInput): Promise<{ content: RagContentBlock[] }> {
+    const job = this.syncJob
+    if (job === null || job.jobId !== input.jobId) {
+      throw new McpError(
+        ErrorCode.InvalidParams,
+        `Unknown sync job: ${input.jobId}. Only the current or latest job is kept: it is replaced by a newer sync_start and discarded when the server process exits.`
+      )
+    }
+    return {
+      content: this.withWarnings([{ type: 'text', text: JSON.stringify(job, null, 2) }]),
+    }
+  }
+
+  /** Patch the current job, ignoring a write aimed at a record already replaced. */
+  private updateSyncJob(jobId: string, patch: Partial<SyncStatusResult>): void {
+    if (this.syncJob === null || this.syncJob.jobId !== jobId) return
+    this.syncJob = { ...this.syncJob, ...patch }
+  }
+
+  /**
+   * The scheduled body of one sync job: supply the real collaborators to the
+   * shared core (`src/features/sync.ts`) and fold its result into the pollable
+   * record. Planning, prune eligibility, and the stop-on-first-error policy stay
+   * in the core; path classification and depth therefore match the CLI exactly.
+   */
+  private async runSyncJob(jobId: string, requestedPath: string | undefined): Promise<void> {
+    let hashedFiles = 0
+    let ingestedFiles = 0
+
+    const collaborators: SyncCollaborators = {
+      classifyPath: async (path: string): Promise<SyncPathKind> => {
+        try {
+          return (await stat(path)).isDirectory() ? 'directory' : 'file'
+        } catch {
+          return 'missing'
+        }
+      },
+      // No `scope` argument, on purpose: a scope-pruned directory appears in
+      // none of the coverage arrays, which would hide an unobserved region and
+      // make prune unsafe.
+      scanDir: async (rootPath: string) =>
+        await bfsCollectSupportedFiles(rootPath, this.excludePaths, MAX_SCAN_DEPTH),
+      hashFile: async (filePath: string) => {
+        const contentHash = computeContentHash(await readFile(filePath))
+        hashedFiles += 1
+        return contentHash
+      },
+      loadDbManifest: async () => {
+        // The core hashes every scanned file before it loads the manifest, so
+        // this is the first moment the supported-file count is final.
+        this.updateSyncJob(jobId, { total: hashedFiles })
+        return await this.vectorStore.listChunkHashes()
+      },
+      ingestFile: async (filePath: string) => {
+        const chunkCount = await this.ingestFileForSync(filePath)
+        ingestedFiles += 1
+        this.updateSyncJob(jobId, { completed: ingestedFiles })
+        return chunkCount
+      },
+      deleteExactPath: async (filePath: string) => await this.vectorStore.deleteChunks(filePath),
+      optimize: async () => {
+        await this.vectorStore.optimize()
+      },
+    }
+
+    const result = await runSync({
+      roots: this.rawBaseDirs,
+      dbPath: this.dbPath,
+      excludePaths: this.excludePaths,
+      platform: process.platform,
+      // resolve() (never realpath) so the requested path is spelled like the
+      // stored DB keys; the core validates it against the configured roots.
+      ...(requestedPath === undefined ? {} : { requestedPath: resolve(requestedPath) }),
+      collaborators,
+    })
+
+    this.updateSyncJob(jobId, {
+      state: result.error === null ? 'succeeded' : 'failed',
+      // Skips are only known once the plan has run, so the final value can only
+      // grow: a poll never sees `completed` go backwards.
+      completed: result.upserted + result.skipped + result.empty,
+      summary: {
+        upserted: result.upserted,
+        skipped: result.skipped,
+        empty: result.empty,
+        pruned: result.pruned,
+      },
+      warnings: coverageWarnings(result.coverage),
+      error: result.error === null ? null : syncErrorText(result.error),
+    })
+  }
+
+  /**
+   * Sync's `ingestFile` collaborator: the ordinary MCP ingest path, so a sync
+   * upsert keeps the same backup/rollback semantics as `ingest_file`, reduced to
+   * the chunk count the core needs. The zero-chunk file is the one difference —
+   * `handleIngestFile` rejects it to protect the existing index, while sync
+   * counts it as `empty` and leaves its prior rows alone.
+   *
+   * The count is read back out of the handler's own response block rather than
+   * duplicating the handler to return it twice.
+   */
+  private async ingestFileForSync(filePath: string): Promise<number> {
+    try {
+      const response = await this.handleIngestFile({ filePath })
+      const { chunkCount } = JSON.parse(response.content[0]?.text ?? '{}') as {
+        chunkCount?: number
+      }
+      return chunkCount ?? 0
+    } catch (error) {
+      if (error instanceof NoChunksError) return 0
+      throw error
     }
   }
 

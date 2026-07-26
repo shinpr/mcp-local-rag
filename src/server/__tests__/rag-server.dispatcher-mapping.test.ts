@@ -23,7 +23,7 @@ import type { VectorStore } from '../../vectordb/index.js'
 import { DatabaseError } from '../../vectordb/types.js'
 import { RAGServer } from '../index.js'
 
-type DispatchResult = { content: { type: string; text: string }[] }
+type DispatchResult = { content: { type: string; text: string }[]; isError?: boolean }
 type RegisteredHandler = (
   request: { method: string; params: { name: string; arguments?: unknown } },
   extra: { signal: AbortSignal }
@@ -404,4 +404,210 @@ describe('Config-gate central mapping + status diagnostic block (AC-007)', () =>
     expect(joined).toContain('Configuration error')
     expect(joined).toContain('BASE_DIRS must be a JSON array')
   })
+})
+
+// ---- SYNC-006/SYNC-007: sync dispatch + the server-instance mutation guard ----
+//
+// The guard lives in the `CallToolRequestSchema` closure, so these tests drive
+// it through the same `_requestHandlers` entry the SDK calls. The embedder is
+// stubbed (external ML I/O) and, for the overlap case, gated on a promise this
+// file resolves, so one mutation is provably still in flight — and parked
+// BEFORE any store mutation — while the probes run. Everything else (dispatch,
+// guard, parser, chunker, store, filesystem) is real.
+describe('External mutation guard at the dispatch boundary (SYNC-007)', () => {
+  let server: RAGServer
+  const testDbPath = resolve('./tmp/test-lancedb-guard')
+  const testDataDir = resolve('./tmp/test-data-guard')
+
+  /** Embedding width of the production model, so stub rows match the schema. */
+  const VECTOR_DIMENSION = 384
+
+  function unitVector(seed: number): number[] {
+    const raw = Array.from({ length: VECTOR_DIMENSION }, (_, index) => Math.sin(seed + index))
+    const norm = Math.sqrt(raw.reduce((sum, value) => sum + value * value, 0))
+    return raw.map((value) => value / norm)
+  }
+
+  /** When set, every batch embedding parks here until the test releases it. */
+  let embedGate: { pending: Promise<void>; release: () => void } | null = null
+
+  function openGate(): { pending: Promise<void>; release: () => void } {
+    let release!: () => void
+    const pending = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    return { pending, release }
+  }
+
+  function stubEmbedder(): void {
+    const embedder = internals(server).embedder
+    vi.spyOn(embedder, 'embedBatch').mockImplementation(async (texts: string[]) => {
+      if (embedGate !== null) await embedGate.pending
+      return texts.map((_, index) => unitVector(index + 1))
+    })
+    vi.spyOn(embedder, 'embed').mockResolvedValue(unitVector(1))
+  }
+
+  beforeAll(async () => {
+    mkdirSync(testDbPath, { recursive: true })
+    mkdirSync(testDataDir, { recursive: true })
+    server = new RAGServer(
+      withTestDevice({
+        dbPath: testDbPath,
+        modelName: 'Xenova/all-MiniLM-L6-v2',
+        cacheDir: testModelCacheDir(),
+        baseDir: testDataDir,
+        maxFileSize: 100 * 1024 * 1024,
+      })
+    )
+    await server.initialize()
+  })
+
+  afterEach(() => {
+    embedGate = null
+    vi.restoreAllMocks()
+  })
+
+  afterAll(async () => {
+    await server.close()
+    rmSync(testDbPath, { recursive: true, force: true })
+    rmSync(testDataDir, { recursive: true, force: true })
+  })
+
+  it('routes sync_start and sync_status to their own handlers, not the Unknown tool arm', async () => {
+    // A rejected `sync_start` argument can only come from `parseSyncStartInput`,
+    // and `Unknown sync job` can only come from `handleSyncStatus`: both prove
+    // the switch reached the new arms.
+    await expect(dispatch(server, 'sync_start', { path: 42 })).rejects.toMatchObject({
+      code: ErrorCode.InvalidParams,
+    })
+    try {
+      await dispatch(server, 'sync_start', { path: 42 })
+      throw new Error('expected throw')
+    } catch (e) {
+      expect((e as McpError).message).toContain('path must be a non-empty string')
+      expect((e as McpError).message).not.toContain('Unknown tool')
+    }
+
+    try {
+      await dispatch(server, 'sync_status', { jobId: 'never-issued' })
+      throw new Error('expected throw')
+    } catch (e) {
+      const err = e as McpError
+      expect(err).toBeInstanceOf(McpError)
+      expect(err.message).toContain('Unknown sync job')
+      expect(err.message).not.toContain('Unknown tool')
+    }
+  })
+
+  it('releases the guard when sync_start is rejected before a job is scheduled', async () => {
+    stubEmbedder()
+    await expect(dispatch(server, 'sync_start', { path: '   ' })).rejects.toMatchObject({
+      code: ErrorCode.InvalidParams,
+    })
+
+    // A leaked guard here would soft-lock every mutation for the process
+    // lifetime, so the next mutation must be accepted normally.
+    const testFile = resolve(testDataDir, 'guard-after-rejected-start.txt')
+    writeFileSync(testFile, 'Content after a rejected sync_start. '.repeat(40))
+    const result = await dispatch(server, 'ingest_file', { filePath: testFile })
+    expect(result.isError).toBeUndefined()
+    expect(JSON.parse(result.content[0]?.text ?? '{}').chunkCount).toBeGreaterThan(0)
+  }, 60000)
+
+  it('rejects every other external mutation while one is in flight and keeps read-only tools callable', async () => {
+    stubEmbedder()
+    // Seed a document so the read-only probes have real data to return.
+    const probeFile = resolve(testDataDir, 'guard-probe.txt')
+    writeFileSync(probeFile, 'Guard probe content for read-only tools. '.repeat(40))
+    await dispatch(server, 'ingest_file', { filePath: probeFile })
+
+    const inFlightFile = resolve(testDataDir, 'guard-in-flight.txt')
+    writeFileSync(inFlightFile, 'Content held mid-ingest by the embedder gate. '.repeat(40))
+    const gate = openGate()
+    embedGate = gate
+    // Parked inside the embedder, i.e. before any delete/insert: the store is
+    // quiescent while the probes below run, but the guard is held.
+    const inFlight = dispatch(server, 'ingest_file', { filePath: inFlightFile })
+
+    for (const [tool, args] of [
+      ['sync_start', {}],
+      ['ingest_file', { filePath: probeFile }],
+      [
+        'ingest_data',
+        { content: 'blocked '.repeat(20), metadata: { source: 'g', format: 'text' } },
+      ],
+      ['delete_file', { filePath: probeFile }],
+    ] as const) {
+      const overlap = await dispatch(server, tool, args)
+      expect(overlap.isError, `${tool} must be rejected as busy`).toBe(true)
+      expect(overlap.content.map((block) => block.text).join('\n')).toMatch(/in progress|running/i)
+    }
+
+    // Read-only tools are deliberately not gated.
+    const queried = await dispatch(server, 'query_documents', { query: 'guard probe' })
+    expect(queried.isError).toBeUndefined()
+    const neighbors = await dispatch(server, 'read_chunk_neighbors', {
+      filePath: probeFile,
+      chunkIndex: 0,
+    })
+    expect(neighbors.isError).toBeUndefined()
+    expect(JSON.parse(neighbors.content[0]?.text ?? '[]').length).toBeGreaterThan(0)
+    const listed = await dispatch(server, 'list_files', {})
+    expect(listed.isError).toBeUndefined()
+    const status = await dispatch(server, 'status', {})
+    expect(status.isError).toBeUndefined()
+    // `sync_status` is ungated too: with no job registered it answers with its
+    // own unknown-job error rather than the busy overlap message.
+    await expect(dispatch(server, 'sync_status', { jobId: 'never-issued' })).rejects.toThrow(
+      /Unknown sync job/
+    )
+
+    gate.release()
+    const finished = await inFlight
+    expect(finished.isError).toBeUndefined()
+
+    // The guard was released when the request completed.
+    embedGate = null
+    const afterwards = await dispatch(server, 'delete_file', { filePath: probeFile })
+    expect(afterwards.isError).toBeUndefined()
+  }, 60000)
+
+  it('releases the guard when a mutation throws, so the next mutation is accepted', async () => {
+    stubEmbedder()
+    const testFile = resolve(testDataDir, 'guard-throwing-delete.txt')
+    writeFileSync(testFile, 'Content for the throwing delete. '.repeat(40))
+    await dispatch(server, 'ingest_file', { filePath: testFile })
+
+    const vectorStore = internals(server).vectorStore
+    const deleteSpy = vi
+      .spyOn(vectorStore, 'deleteChunks')
+      .mockRejectedValueOnce(new Error('induced delete failure'))
+    await expect(dispatch(server, 'delete_file', { filePath: testFile })).rejects.toThrow(
+      /induced delete failure/
+    )
+    deleteSpy.mockRestore()
+
+    const recovered = resolve(testDataDir, 'guard-after-throw.txt')
+    writeFileSync(recovered, 'Content ingested after the failure. '.repeat(40))
+    const result = await dispatch(server, 'ingest_file', { filePath: recovered })
+    expect(result.isError).toBeUndefined()
+    expect(JSON.parse(result.content[0]?.text ?? '{}').chunkCount).toBeGreaterThan(0)
+  }, 60000)
+
+  it('completes ingest_data end to end, so the internal handleIngestFile never reacquires the guard', async () => {
+    stubEmbedder()
+    const result = await dispatch(server, 'ingest_data', {
+      content: 'Nested ingest must not self-deadlock. '.repeat(30),
+      metadata: { source: 'guard-nested-ingest-data', format: 'text' },
+    })
+
+    expect(result.isError).toBeUndefined()
+    const ingested = JSON.parse(result.content[0]?.text ?? '{}')
+    expect(ingested.chunkCount).toBeGreaterThan(0)
+    // And the guard is free afterwards.
+    const followUp = await dispatch(server, 'delete_file', { source: 'guard-nested-ingest-data' })
+    expect(followUp.isError).toBeUndefined()
+    expect(JSON.parse(followUp.content[0]?.text ?? '{}').deleted).toBe(true)
+  }, 60000)
 })
