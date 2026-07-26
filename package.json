@@ -77,20 +77,20 @@
     "turndown": "7.2.4"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.5.3",
+    "@biomejs/biome": "^2.5.5",
     "@types/jsdom": "^28.0.3",
     "@types/node": "^26.1.1",
     "@types/turndown": "5.0.6",
     "dpdm": "^4.2.0",
     "husky": "^9.1.7",
-    "knip": "^6.25.0",
-    "lint-staged": "^17.0.8",
-    "tsx": "^4.23.0",
-    "typescript": "^6.0.3",
-    "vite": "^7.3.6",
+    "knip": "^6.29.0",
+    "lint-staged": "^17.2.0",
+    "tsx": "^4.23.1",
+    "typescript": "^7.0.2",
+    "vite": "^8.1.5",
     "vitest": "^4.1.10"
   },
-  "packageManager": "pnpm@11.9.0",
+  "packageManager": "pnpm@11.17.0",
   "engines": {
     "node": ">=22"
   },

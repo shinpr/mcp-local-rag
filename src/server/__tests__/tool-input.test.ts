@@ -227,14 +227,10 @@ describe('parseIngestFileInput', () => {
     })
   })
 
-  it.each([
-    undefined,
-    null,
-    {},
-    { filePath: '' },
-    { filePath: 1 },
-  ])('rejects malformed input %#', (raw) =>
-    expect(() => parseIngestFileInput(raw)).toThrow(McpError))
+  it.each([undefined, null, {}, { filePath: '' }, { filePath: 1 }])(
+    'rejects malformed input %#',
+    (raw) => expect(() => parseIngestFileInput(raw)).toThrow(McpError)
+  )
 
   it.each(['true', 1, null])('rejects visual=%j', (visual) => {
     expect(() => parseIngestFileInput({ filePath: '/docs/a.pdf', visual })).toThrow(
@@ -251,14 +247,10 @@ describe('parseDeleteFileInput', () => {
     expect(parseDeleteFileInput(raw)).toEqual(expected)
   })
 
-  it.each([
-    undefined,
-    null,
-    {},
-    { filePath: '', source: '' },
-    { filePath: '/a', source: 's' },
-  ])('rejects malformed or non-XOR input %#', (raw) =>
-    expect(() => parseDeleteFileInput(raw)).toThrow(McpError))
+  it.each([undefined, null, {}, { filePath: '', source: '' }, { filePath: '/a', source: 's' }])(
+    'rejects malformed or non-XOR input %#',
+    (raw) => expect(() => parseDeleteFileInput(raw)).toThrow(McpError)
+  )
 })
 
 describe('parseReadChunkNeighborsInput', () => {
