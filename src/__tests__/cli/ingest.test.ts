@@ -68,6 +68,10 @@ const fsPromisesFactory = async (
     stat: mocks.stat,
     readdir: mocks.readdir,
     realpath: mocks.realpath,
+    // `ingestSingleFile` reads the raw source bytes to compute `contentHash`.
+    // These tests drive fully mocked parsers over paths that never exist on
+    // disk, so the byte read returns fixed content.
+    readFile: async () => Buffer.from('fixture bytes', 'utf-8'),
   }
 }
 

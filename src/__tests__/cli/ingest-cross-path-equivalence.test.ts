@@ -45,12 +45,12 @@
 //   shape changes, update `cliInlineIngest` below to match.
 
 import { randomUUID } from 'node:crypto'
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { basename, extname, resolve } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { SemanticChunker } from '../../chunker/index.js'
 import { Embedder } from '../../embedder/index.js'
-import { buildChunksAndEmbeddings } from '../../ingest/compute.js'
+import { buildChunksAndEmbeddings, computeContentHash } from '../../ingest/compute.js'
 import { DocumentParser } from '../../parser/index.js'
 import { RAGServer } from '../../server/index.js'
 import { type VectorChunk, VectorStore } from '../../vectordb/index.js'
@@ -131,8 +131,9 @@ async function cliInlineIngest(
     return 0
   }
 
-  await vectorStore.deleteChunks(filePath)
-
+  // Construction (including the source-byte hash) completes before the
+  // destructive delete, mirroring `ingestSingleFile`.
+  const contentHash = computeContentHash(readFileSync(filePath))
   const timestamp = new Date().toISOString()
   const vectorChunks: VectorChunk[] = chunks.map((chunk, index) => {
     const embedding = embeddings[index]
@@ -151,10 +152,12 @@ async function cliInlineIngest(
         fileType: extname(filePath).slice(1),
       },
       fileTitle: title,
+      contentHash,
       timestamp,
     }
   })
 
+  await vectorStore.deleteChunks(filePath)
   await vectorStore.insertChunks(vectorChunks)
   return vectorChunks.length
 }

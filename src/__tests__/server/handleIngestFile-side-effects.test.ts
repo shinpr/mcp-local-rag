@@ -27,6 +27,8 @@
 //   real dependencies would leave a cached version that ignores our
 //   mocks.
 
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js'
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -165,7 +167,10 @@ let RAGServer: RAGServerCtor
 // Fixture
 // ============================================
 
-const FIXTURE_FILE_PATH = '/tmp/test/handleingestfile-side-effects.md'
+// Fixture bytes live under the project-root `tmp/` (gitignored) like the rest
+// of the suite, so nothing is written outside the repository tree.
+const FIXTURE_DIR = resolve('./tmp/test-data-handleingestfile-side-effects')
+const FIXTURE_FILE_PATH = resolve(FIXTURE_DIR, 'handleingestfile-side-effects.md')
 const FIXTURE_TEXT = 'Fixture content for handleIngestFile side-effects test.'
 const FIXTURE_TITLE = 'Side Effects Fixture'
 const FIXTURE_EMBEDDINGS = [
@@ -190,6 +195,11 @@ function buildServer(): InstanceType<RAGServerCtor> {
 
 describe('handleIngestFile - Phase 0 Wrapper Side Effects (AC-008a)', () => {
   beforeAll(async () => {
+    // `handleIngestFile` hashes the raw source bytes for `contentHash`, so the
+    // fixture must exist on disk even though the parser is mocked.
+    mkdirSync(FIXTURE_DIR, { recursive: true })
+    writeFileSync(FIXTURE_FILE_PATH, FIXTURE_TEXT)
+
     vi.resetModules()
     vi.doMock('../../parser/index.js', parserFactory)
     vi.doMock('../../chunker/index.js', chunkerFactory)
@@ -200,6 +210,7 @@ describe('handleIngestFile - Phase 0 Wrapper Side Effects (AC-008a)', () => {
   })
 
   afterAll(() => {
+    rmSync(FIXTURE_DIR, { recursive: true, force: true })
     for (const p of MOCKED_PATHS) vi.doUnmock(p)
     vi.resetModules()
   })

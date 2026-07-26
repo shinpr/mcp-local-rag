@@ -77,6 +77,10 @@ const fsPromisesFactory = async (
   return {
     ...actual,
     stat: mocks.stat,
+    // `ingestSingleFile` reads the raw source bytes to compute `contentHash`.
+    // The visual fixtures are mocked parser output, not files on disk, so the
+    // byte read returns fixed content.
+    readFile: async () => Buffer.from('fixture bytes', 'utf-8'),
   }
 }
 

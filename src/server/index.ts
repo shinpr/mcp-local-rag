@@ -14,7 +14,11 @@ import {
 import { DEFAULT_MIN_CHUNK_LENGTH, SemanticChunker } from '../chunker/index.js'
 import { Embedder } from '../embedder/index.js'
 import { listDocuments } from '../features/list.js'
-import { buildChunksAndEmbeddings, buildVectorChunks } from '../ingest/compute.js'
+import {
+  buildChunksAndEmbeddings,
+  buildVectorChunks,
+  computeContentHash,
+} from '../ingest/compute.js'
 import { prepareVisualPdfChunks } from '../ingest/visual.js'
 import { parseHtml } from '../parser/html-parser.js'
 import { DocumentParser } from '../parser/index.js'
@@ -374,9 +378,13 @@ export class RAGServer {
     let title: string | null = null
     let chunks: Awaited<ReturnType<typeof buildChunksAndEmbeddings>>['chunks']
     let embeddings: Awaited<ReturnType<typeof buildChunksAndEmbeddings>>['embeddings']
+    // Set only by the raw-data branch, which already reads the whole file, so
+    // the contentHash below costs no second read there.
+    let sourceBytes: Buffer | undefined
     if (await isPathInRawDataDir(args.filePath, this.dbPath)) {
       // Raw-data files: skip parser validation, read directly.
-      text = await readFile(args.filePath, 'utf-8')
+      sourceBytes = await readFile(args.filePath)
+      text = sourceBytes.toString('utf-8')
       const meta = await loadMetaJson(args.filePath)
       title = meta?.title ?? null
       console.error(`Read raw-data file: ${args.filePath} (${text.length} characters)`)
@@ -433,18 +441,22 @@ export class RAGServer {
       console.error(`Backup created: ${backup.length} chunks for ${args.filePath}`)
     }
 
-    // Delete existing data
-    await this.vectorStore.deleteChunks(args.filePath)
-    console.error(`Deleted existing chunks for: ${args.filePath}`)
-
-    // Create vector chunks
+    // Create vector chunks BEFORE the destructive delete, so a construction
+    // failure (e.g. a missing embedding) cannot leave the file with no rows.
+    // The hash covers the raw file bytes, not the decoded text; parser branches
+    // read them here, after the parser's size limit has been enforced.
     const vectorChunks = buildVectorChunks({
       filePath: args.filePath,
       chunks,
       embeddings,
       fileSize: text.length,
       fileTitle: title || null,
+      contentHash: computeContentHash(sourceBytes ?? (await readFile(args.filePath))),
     })
+
+    // Delete existing data
+    await this.vectorStore.deleteChunks(args.filePath)
+    console.error(`Deleted existing chunks for: ${args.filePath}`)
 
     // Insert vectors (transaction processing)
     try {

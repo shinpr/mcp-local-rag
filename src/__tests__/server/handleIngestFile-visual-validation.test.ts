@@ -14,6 +14,8 @@
 // other test files. The positive case for `visual: true` uses real-shaped
 // mocks of `src/pdf-visual/index.js` so the dispatch branch can actually run.
 
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js'
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -156,9 +158,27 @@ let RAGServer: RAGServerCtor
 // Fixture
 // ============================================
 
-const FIXTURE_PDF_PATH = '/tmp/test/handleingestfile-visual.pdf'
-const FIXTURE_NON_PDF_PATH = '/tmp/test/handleingestfile-visual.md'
+// Fixture bytes live under the project-root `tmp/` (gitignored) like the rest
+// of the suite, so nothing is written outside the repository tree.
+const FIXTURE_DIR = resolve('./tmp/test-data-handleingestfile-visual')
+const FIXTURE_PDF_PATH = resolve(FIXTURE_DIR, 'handleingestfile-visual.pdf')
+const FIXTURE_NON_PDF_PATH = resolve(FIXTURE_DIR, 'handleingestfile-visual.md')
 const INVALID_PARAMS_MESSAGE = "'visual' must be a boolean if provided"
+
+/**
+ * `handleIngestFile` hashes the raw source bytes for `contentHash`, so the
+ * fixtures must exist on disk even though the parser is mocked. Their content
+ * is irrelevant — every parse result comes from the mocks.
+ */
+function writeFixtureFiles(): void {
+  mkdirSync(FIXTURE_DIR, { recursive: true })
+  writeFileSync(FIXTURE_PDF_PATH, 'fixture bytes')
+  writeFileSync(FIXTURE_NON_PDF_PATH, 'fixture bytes')
+}
+
+function removeFixtureFiles(): void {
+  rmSync(FIXTURE_DIR, { recursive: true, force: true })
+}
 
 function buildServer(): InstanceType<RAGServerCtor> {
   return new RAGServer({
@@ -177,6 +197,7 @@ function buildServer(): InstanceType<RAGServerCtor> {
 
 describe('handleIngestFile - `visual` Runtime Validation (AC-012)', () => {
   beforeAll(async () => {
+    writeFixtureFiles()
     vi.resetModules()
     vi.doMock('../../parser/index.js', parserFactory)
     vi.doMock('../../chunker/index.js', chunkerFactory)
@@ -188,6 +209,7 @@ describe('handleIngestFile - `visual` Runtime Validation (AC-012)', () => {
   })
 
   afterAll(() => {
+    removeFixtureFiles()
     for (const p of MOCKED_PATHS) vi.doUnmock(p)
     vi.resetModules()
   })
@@ -427,6 +449,7 @@ const QUALITY_INVALID_MESSAGE = "'visualQuality' must be 'fast' or 'quality' if 
 
 describe('handleIngestFile - `visualQuality` Runtime Validation', () => {
   beforeAll(async () => {
+    writeFixtureFiles()
     vi.resetModules()
     vi.doMock('../../parser/index.js', parserFactory)
     vi.doMock('../../chunker/index.js', chunkerFactory)
@@ -438,6 +461,7 @@ describe('handleIngestFile - `visualQuality` Runtime Validation', () => {
   })
 
   afterAll(() => {
+    removeFixtureFiles()
     for (const p of MOCKED_PATHS) vi.doUnmock(p)
     vi.resetModules()
   })

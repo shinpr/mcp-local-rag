@@ -2,6 +2,9 @@ import { randomUUID } from 'node:crypto'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type { TextChunk } from '../../chunker/index.js'
+import { ingestSingleFile } from '../../cli/ingest.js'
+import { buildVectorChunks, computeContentHash } from '../../ingest/compute.js'
 import { type VectorChunk, VectorStore } from '../index.js'
 import { type ChunkRow, DatabaseError, isLanceDBRawResult, toSearchResult } from '../types.js'
 
@@ -1488,6 +1491,165 @@ describe('VectorStore', () => {
 
         const rows = byChunkIndex(await store.getChunksByFilePath(filePath))
         expect(rows.map((row) => row.contentHash)).toEqual([HASH_ONE, HASH_TWO, undefined])
+      })
+    })
+  })
+
+  /**
+   * contentHash production — the ingestion half of sync content identity.
+   *
+   * Storage (above) proves the column round-trips. These tests prove the value
+   * actually written by filesystem ingestion: one shared SHA-256 of the raw
+   * file bytes on every chunk of a file, and vector construction completing
+   * before the destructive delete so a construction failure cannot empty a
+   * file's rows.
+   *
+   * The embedder/chunker/parser are deterministic stubs (external ML I/O is
+   * slow and non-deterministic); the store is real because value round-tripping
+   * is the subject.
+   */
+  describe('contentHash production during ingestion', () => {
+    // SHA-256 of the 5 bytes "hello" (`printf 'hello' | shasum -a 256`), an
+    // oracle independent of computeContentHash, so a drift in the digest, the
+    // encoding, or the hashed input fails here.
+    const HELLO_SHA256 = '2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824'
+
+    const byChunkIndex = (chunks: VectorChunk[]): VectorChunk[] =>
+      [...chunks].sort((a, b) => a.chunkIndex - b.chunkIndex)
+
+    const textChunks = (count: number): TextChunk[] =>
+      Array.from({ length: count }, (_, index) => ({ text: `chunk ${index}`, index }))
+
+    /**
+     * Stubs for `ingestSingleFile`'s injected collaborators. `parsedText` is
+     * deliberately unrelated to the bytes on disk: the hash must come from the
+     * file, not from the parser output. `embeddingCount` below the chunk count
+     * reproduces the missing-embedding construction failure.
+     */
+    function ingestCollaborators(options: {
+      parsedText: string
+      chunkCount: number
+      embeddingCount?: number
+    }) {
+      const chunks = textChunks(options.chunkCount)
+      const embeddings = Array.from(
+        { length: options.embeddingCount ?? options.chunkCount },
+        (_, i) => createNormalizedVector(i + 1)
+      )
+      return {
+        parser: {
+          parseFile: async () => ({ content: options.parsedText, title: 'Stub Title' }),
+        } as unknown as Parameters<typeof ingestSingleFile>[1],
+        chunker: {
+          chunkText: async () => chunks,
+        } as unknown as Parameters<typeof ingestSingleFile>[2],
+        embedder: {
+          embedBatch: async () => embeddings,
+        } as unknown as Parameters<typeof ingestSingleFile>[3],
+      }
+    }
+
+    /** Write `content` to a fresh temp file and return its absolute path. */
+    function writeSourceFile(name: string, content: string): string {
+      const dir = path.resolve('./tmp/test-ingest-hash')
+      fs.mkdirSync(dir, { recursive: true })
+      const filePath = path.join(dir, name)
+      fs.writeFileSync(filePath, content)
+      return filePath
+    }
+
+    afterEach(() => {
+      const dir = path.resolve('./tmp/test-ingest-hash')
+      if (fs.existsSync(dir)) {
+        fs.rmSync(dir, { recursive: true })
+      }
+    })
+
+    it('should compute the lowercase SHA-256 hex of the given bytes', () => {
+      expect(computeContentHash(Buffer.from('hello', 'utf-8'))).toBe(HELLO_SHA256)
+    })
+
+    it('should set the same contentHash on every chunk it builds', () => {
+      const built = buildVectorChunks({
+        filePath: '/test/shared-hash.md',
+        chunks: textChunks(3),
+        embeddings: [
+          createNormalizedVector(1),
+          createNormalizedVector(2),
+          createNormalizedVector(3),
+        ],
+        fileSize: 42,
+        fileTitle: null,
+        contentHash: HELLO_SHA256,
+      })
+
+      expect(built).toHaveLength(3)
+      expect(built.map((chunk) => chunk.contentHash)).toEqual([
+        HELLO_SHA256,
+        HELLO_SHA256,
+        HELLO_SHA256,
+      ])
+    })
+
+    it('should omit contentHash on every chunk when no source hash is available', () => {
+      const built = buildVectorChunks({
+        filePath: '/test/hashless.md',
+        chunks: textChunks(2),
+        embeddings: [createNormalizedVector(1), createNormalizedVector(2)],
+        fileSize: 42,
+        fileTitle: null,
+        contentHash: null,
+      })
+
+      expect(built).toHaveLength(2)
+      for (const chunk of built) {
+        expect(chunk).not.toHaveProperty('contentHash')
+      }
+    })
+
+    it('should store one identical hash of the file bytes on every chunk of an ingested file', async () => {
+      await withTempDb('ingest-content-hash', async (store) => {
+        const filePath = writeSourceFile('hello.md', 'hello')
+        const { parser, chunker, embedder } = ingestCollaborators({
+          parsedText: 'parsed text that is deliberately not the file bytes',
+          chunkCount: 3,
+        })
+
+        const inserted = await ingestSingleFile(filePath, parser, chunker, embedder, store)
+        expect(inserted).toBe(3)
+
+        const rows = byChunkIndex(await store.getChunksByFilePath(filePath))
+        expect(rows.map((row) => row.chunkIndex)).toEqual([0, 1, 2])
+        expect(rows.map((row) => row.contentHash)).toEqual([
+          HELLO_SHA256,
+          HELLO_SHA256,
+          HELLO_SHA256,
+        ])
+        expect(new Set(rows.map((row) => row.contentHash)).size).toBe(1)
+      })
+    })
+
+    it('should keep previously stored rows when vector construction fails during re-ingest', async () => {
+      await withTempDb('ingest-construct-before-delete', async (store) => {
+        const filePath = writeSourceFile('kept.md', 'hello')
+        await store.insertChunks([
+          createTestChunk('stored one', filePath, 0, createNormalizedVector(1)),
+          createTestChunk('stored two', filePath, 1, createNormalizedVector(2)),
+        ])
+
+        // One embedding short of the chunk count: buildVectorChunks throws.
+        const { parser, chunker, embedder } = ingestCollaborators({
+          parsedText: 'replacement text',
+          chunkCount: 2,
+          embeddingCount: 1,
+        })
+
+        await expect(ingestSingleFile(filePath, parser, chunker, embedder, store)).rejects.toThrow(
+          'Missing embedding for chunk 1'
+        )
+
+        const rows = byChunkIndex(await store.getChunksByFilePath(filePath))
+        expect(rows.map((row) => row.text)).toEqual(['stored one', 'stored two'])
       })
     })
   })
