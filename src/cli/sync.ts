@@ -213,8 +213,12 @@ export async function runSync(args: string[], globalOptions: GlobalOptions = {})
     }
 
     if (result.error !== null) {
-      const location = result.error.filePath === null ? '' : ` (${result.error.filePath})`
-      console.error(`Error: ${result.error.message}${location}`)
+      const { message, filePath } = result.error
+      // Scope and existence errors already name the path in the message; a
+      // per-file ingest failure ("Missing embedding for chunk 1") does not, and
+      // there the suffix is the only thing identifying the file.
+      const location = filePath === null || message.includes(filePath) ? '' : ` (${filePath})`
+      console.error(`Error: ${message}${location}`)
       process.exitCode = 1
       return
     }

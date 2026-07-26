@@ -151,6 +151,11 @@ function sha256(content: string): string {
   return createHash('sha256').update(Buffer.from(content)).digest('hex')
 }
 
+/** How many times `needle` appears in `haystack` (non-overlapping). */
+function occurrences(haystack: string, needle: string): number {
+  return haystack.split(needle).length - 1
+}
+
 async function writeFixtureFile(filePath: string, content: string): Promise<string> {
   await mkdir(join(filePath, '..'), { recursive: true })
   await writeFile(filePath, content)
@@ -371,7 +376,10 @@ describe('CLI sync', () => {
     expect(outcome.stdout).toBe('')
     const errorLines = outcome.stderr.filter((line) => line.startsWith('Error:'))
     expect(errorLines).toHaveLength(1)
-    expect(errorLines[0]).toContain(outsidePath)
+    // The core message already names the path, so the CLI must not append it a
+    // second time: the operator sees the offending path exactly once.
+    expect(errorLines[0]).toBe(`Error: Sync path is outside every configured root: ${outsidePath}`)
+    expect(occurrences(errorLines[0] ?? '', outsidePath)).toBe(1)
     expect(calls.createEmbedder).toBe(0)
     expect(calls.optimize).toBe(0)
     expect(await storedManifest(fixture)).toEqual([
@@ -581,8 +589,10 @@ describe('CLI sync', () => {
     expect(outcome.stdout).toBe('')
     const errorLines = outcome.stderr.filter((line) => line.startsWith('Error:'))
     expect(errorLines).toHaveLength(1)
-    expect(errorLines[0]).toContain(failingPath)
-    expect(errorLines[0]).toContain('induced embedding failure')
+    // The per-file failure message carries no path of its own, so the appended
+    // suffix is the only thing identifying which file failed.
+    expect(errorLines[0]).toBe(`Error: induced embedding failure (${failingPath})`)
+    expect(occurrences(errorLines[0] ?? '', failingPath)).toBe(1)
     // Prune and optimize are both abandoned after the first error.
     expect(calls.optimize).toBe(0)
 
