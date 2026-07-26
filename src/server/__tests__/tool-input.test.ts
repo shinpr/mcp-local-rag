@@ -7,6 +7,8 @@ import {
   parseListFilesInput,
   parseQueryDocumentsInput,
   parseReadChunkNeighborsInput,
+  parseSyncStartInput,
+  parseSyncStatusInput,
 } from '../tool-input.js'
 
 describe('parseQueryDocumentsInput', () => {
@@ -269,5 +271,117 @@ describe('parseReadChunkNeighborsInput', () => {
     { filePath: '/a', chunkIndex: 0, after: -1 },
   ])('rejects malformed input %#', (raw) => {
     expect(() => parseReadChunkNeighborsInput(raw)).toThrow(McpError)
+  })
+})
+
+describe('parseSyncStartInput', () => {
+  it('returns {} when arguments are omitted (undefined)', () => {
+    expect(parseSyncStartInput(undefined)).toEqual({})
+  })
+
+  it('returns {} for an empty object (sync every configured root)', () => {
+    expect(parseSyncStartInput({})).toEqual({})
+  })
+
+  it('passes an absolute path through', () => {
+    expect(parseSyncStartInput({ path: '/docs/api' })).toEqual({ path: '/docs/api' })
+  })
+
+  it('trims surrounding whitespace from path', () => {
+    expect(parseSyncStartInput({ path: '  /docs/api\t' })).toEqual({ path: '/docs/api' })
+  })
+
+  it.each([
+    ['empty path', { path: '' }],
+    ['whitespace path', { path: '   ' }],
+    ['number path', { path: 42 }],
+    ['null path', { path: null }],
+    ['array path', { path: ['/docs/api'] }],
+    ['object path', { path: { dir: '/docs/api' } }],
+  ])('rejects %s', (_label, raw) => {
+    expect(() => parseSyncStartInput(raw)).toThrow(/path must be a non-empty string/)
+  })
+
+  it.each([
+    ['non-object', 42],
+    ['null', null],
+    ['array', ['/docs/api']],
+  ])('rejects %s arguments', (_label, raw) => {
+    expect(() => parseSyncStartInput(raw)).toThrow(McpError)
+  })
+
+  it('throws InvalidParams error code', () => {
+    try {
+      parseSyncStartInput({ path: 42 })
+      expect.unreachable('should have thrown')
+    } catch (error) {
+      expect(error).toBeInstanceOf(McpError)
+      expect((error as McpError).code).toBe(ErrorCode.InvalidParams)
+    }
+  })
+
+  it('reports a message that leaks no stack or caller-supplied path', () => {
+    try {
+      parseSyncStartInput({ path: ['/Users/someone/private/docs'] })
+      expect.unreachable('should have thrown')
+    } catch (error) {
+      const { message } = error as McpError
+      expect(message).not.toContain('/Users/someone/private/docs')
+      expect(message).not.toContain('\n')
+      expect(message).not.toMatch(/\bat\s+\S+:\d+/)
+    }
+  })
+})
+
+describe('parseSyncStatusInput', () => {
+  it('accepts a job id', () => {
+    expect(parseSyncStatusInput({ jobId: '8f2d1c34-1f9a-4f1e-9a3f-6d1b2c3e4f50' })).toEqual({
+      jobId: '8f2d1c34-1f9a-4f1e-9a3f-6d1b2c3e4f50',
+    })
+  })
+
+  it('trims surrounding whitespace from jobId', () => {
+    expect(parseSyncStatusInput({ jobId: '  abc\t' })).toEqual({ jobId: 'abc' })
+  })
+
+  it.each([
+    ['missing jobId', {}],
+    ['empty jobId', { jobId: '' }],
+    ['whitespace jobId', { jobId: '   ' }],
+    ['number jobId', { jobId: 1 }],
+    ['null jobId', { jobId: null }],
+    ['array jobId', { jobId: ['abc'] }],
+  ])('rejects %s', (_label, raw) => {
+    expect(() => parseSyncStatusInput(raw)).toThrow(/jobId must be a non-empty string/)
+  })
+
+  it.each([
+    ['omitted arguments', undefined],
+    ['non-object', 42],
+    ['null', null],
+    ['array', ['abc']],
+  ])('rejects %s', (_label, raw) => {
+    expect(() => parseSyncStatusInput(raw)).toThrow(McpError)
+  })
+
+  it('throws InvalidParams error code', () => {
+    try {
+      parseSyncStatusInput({})
+      expect.unreachable('should have thrown')
+    } catch (error) {
+      expect(error).toBeInstanceOf(McpError)
+      expect((error as McpError).code).toBe(ErrorCode.InvalidParams)
+    }
+  })
+
+  it('reports a message that leaks no stack or caller-supplied value', () => {
+    try {
+      parseSyncStatusInput({ jobId: ['/Users/someone/private/docs'] })
+      expect.unreachable('should have thrown')
+    } catch (error) {
+      const { message } = error as McpError
+      expect(message).not.toContain('/Users/someone/private/docs')
+      expect(message).not.toMatch(/\bat\s+\S+:\d+/)
+    }
   })
 })

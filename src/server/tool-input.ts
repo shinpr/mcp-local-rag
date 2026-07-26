@@ -17,6 +17,8 @@ import type {
   ListFilesInput,
   QueryDocumentsInput,
   ReadChunkNeighborsInput,
+  SyncStartInput,
+  SyncStatusInput,
 } from './types.js'
 
 const CONTENT_FORMATS: readonly ContentFormat[] = ['text', 'html', 'markdown']
@@ -207,4 +209,46 @@ export function parseReadChunkNeighborsInput(raw: unknown): ReadChunkNeighborsIn
     ...(before !== undefined ? { before: before as number } : {}),
     ...(after !== undefined ? { after: after as number } : {}),
   }
+}
+
+/**
+ * Validate `sync_start` arguments. The tool is legitimately callable with no
+ * arguments — an omitted `path` means "every configured base directory" — so
+ * both `undefined` and `{}` are accepted, the same contract `list_files` has.
+ *
+ * Root containment is deliberately not checked here: the sync core owns that
+ * rule so the CLI and MCP surfaces cannot drift apart.
+ */
+export function parseSyncStartInput(raw: unknown): SyncStartInput {
+  if (raw === undefined) {
+    return {}
+  }
+
+  const { path } = asRecord(raw, 'sync_start')
+
+  if (path === undefined) {
+    return {}
+  }
+
+  if (!nonEmptyString(path)) {
+    throw new McpError(ErrorCode.InvalidParams, 'path must be a non-empty string')
+  }
+
+  // Trimmed for the same reason as `scope`: a whitespace-padded path would
+  // otherwise be resolved verbatim and silently match nothing on disk.
+  return { path: path.trim() }
+}
+
+/**
+ * Validate `sync_status` arguments. `jobId` is required; an unknown but
+ * well-formed id is the handler's concern, not this boundary's.
+ */
+export function parseSyncStatusInput(raw: unknown): SyncStatusInput {
+  const { jobId } = asRecord(raw, 'sync_status')
+
+  if (!nonEmptyString(jobId)) {
+    throw new McpError(ErrorCode.InvalidParams, 'jobId must be a non-empty string')
+  }
+
+  return { jobId: jobId.trim() }
 }

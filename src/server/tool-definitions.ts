@@ -169,4 +169,34 @@ export const toolDefinitions: Tool[] = [
       required: ['chunkIndex'],
     },
   },
+  {
+    name: 'sync_start',
+    description:
+      'Reconcile the index with the files on disk: ingest new and changed files, leave unchanged files alone, and remove index entries for files that are gone. Returns { jobId } immediately, before scanning or hashing starts; poll sync_status with that jobId for progress and the final outcome. Only one job is kept, and it is lost when the server process exits.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: {
+          type: 'string',
+          description:
+            'Optional absolute path to a file or directory inside a configured base directory. Omit it to synchronize every configured base directory. Example: "/Users/user/documents/manual.pdf"',
+        },
+      },
+    },
+  },
+  {
+    name: 'sync_status',
+    description:
+      'Get the current or latest sync job record: { jobId, state ("running" | "succeeded" | "failed"), total (null until scanning has counted the files on disk), completed (upserted + skipped + empty), summary { upserted, skipped, empty, pruned }, warnings, error (null unless the job failed) }. An unknown jobId means the job was replaced by a newer one or lost with a previous server process.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        jobId: {
+          type: 'string',
+          description: 'Identifier returned by sync_start.',
+        },
+      },
+      required: ['jobId'],
+    },
+  },
 ]
