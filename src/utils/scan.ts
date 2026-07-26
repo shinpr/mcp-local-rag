@@ -1,13 +1,16 @@
 // Shared bounded directory scan for supported document files.
 //
-// Extracts the BFS traversal mechanism duplicated by the CLI `ingest` walker,
-// the CLI `list` walker, and the MCP server's `list_files` scan: bounded depth,
-// symlink skipping, exclude-path filtering, and supported-extension matching.
+// The single bounded directory walker behind the CLI `ingest` walker, the CLI
+// `list` walker, and the MCP server's `list_files` scan: bounded depth, symlink
+// skipping, exclude-path filtering, and supported-extension matching.
 //
 // Presentation (warning wording, when/where warnings are surfaced) and
 // post-processing (sort/dedup) stay with each caller — this helper returns
-// structured facts (`unreadableDirs`, `depthLimited`) so callers preserve
-// their own, intentionally-different, user-facing messages.
+// structured coverage facts (`unreadableDirs`, `depthLimitedDirs`,
+// `skippedSymlinks`, and the derived `depthLimited`) so callers preserve their
+// own, intentionally-different, user-facing messages. The path-granular facts
+// let a caller tell an unobserved region apart from an observed one instead of
+// treating any gap as a whole-scan failure.
 
 import { readdir, realpath } from 'node:fs/promises'
 import { extname, join } from 'node:path'
@@ -44,15 +47,26 @@ export interface DirScanResult {
   files: string[]
   /** Directories skipped because `readdir` failed (caller decides how to warn). */
   unreadableDirs: UnreadableDir[]
+  /**
+   * Each entry is the first unvisited directory of a branch pruned for
+   * exceeding `maxDepth` — the directory that was reached but never read. That
+   * path and every descendant of it is unobserved by this scan; its ancestors
+   * and fully visited siblings are not listed.
+   */
+  depthLimitedDirs: string[]
+  /** Full paths of directory entries skipped because they are symbolic links. */
+  skippedSymlinks: string[]
   /** True if any branch was pruned for exceeding `maxDepth`. */
   depthLimited: boolean
 }
 
 /**
  * Bounded BFS scan of a single root, collecting every supported file up to
- * `maxDepth` levels deep. Symlinks are skipped; paths under any `excludePaths`
- * prefix are filtered out. A per-directory `readdir` failure is captured into
- * `unreadableDirs` and does not abort the scan (best-effort per directory).
+ * `maxDepth` levels deep, counted from `rootPath` itself. Symlinks are skipped
+ * (never followed) and recorded in `skippedSymlinks`; paths under any
+ * `excludePaths` prefix are filtered out. A per-directory `readdir` failure is
+ * captured into `unreadableDirs` and does not abort the scan (best-effort per
+ * directory); a branch pruned at `maxDepth` is captured into `depthLimitedDirs`.
  *
  * When `scope` is provided (non-empty), the predicate is pushed into the
  * traversal: a directory is visited only if it is in-scope or an ancestor of
@@ -71,7 +85,8 @@ export async function bfsCollectSupportedFiles(
 ): Promise<DirScanResult> {
   const files: string[] = []
   const unreadableDirs: UnreadableDir[] = []
-  let depthLimited = false
+  const depthLimitedDirs: string[] = []
+  const skippedSymlinks: string[] = []
 
   // Scope pushdown (shared with scanBaseDir via scope-match): visit a directory
   // only if it is in-scope or an ancestor of the scoped subtree, and collect a
@@ -85,7 +100,9 @@ export async function bfsCollectSupportedFiles(
     const { dirPath, depth } = queue.shift()!
 
     if (depth >= maxDepth) {
-      depthLimited = true
+      // `dirPath` was reached but never read, so it is the first unvisited
+      // directory of this branch: it and all its descendants are unobserved.
+      depthLimitedDirs.push(dirPath)
       continue
     }
 
@@ -109,7 +126,10 @@ export async function bfsCollectSupportedFiles(
 
     for (const entry of entries) {
       const fullPath = join(dirPath, entry.name)
-      if (entry.isSymbolicLink()) continue
+      if (entry.isSymbolicLink()) {
+        skippedSymlinks.push(fullPath)
+        continue
+      }
       if (excludePaths.some((ep) => fullPath.startsWith(ep))) continue
       if (entry.isDirectory()) {
         if (shouldVisitDir(fullPath, scope)) {
@@ -123,5 +143,11 @@ export async function bfsCollectSupportedFiles(
     }
   }
 
-  return { files, unreadableDirs, depthLimited }
+  return {
+    files,
+    unreadableDirs,
+    depthLimitedDirs,
+    skippedSymlinks,
+    depthLimited: depthLimitedDirs.length > 0,
+  }
 }

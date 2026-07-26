@@ -1,30 +1,32 @@
 // Pure helpers for the RAGServer `list_files` surface and base-dir config
-// normalization. Extracted from `RAGServer` so the bounded-BFS directory scan
+// normalization. Extracted from `RAGServer` so the directory-scan presentation
 // and the constructor's config-shape normalization live as standalone,
-// behavior-preserving functions independent of instance state.
+// behavior-preserving functions independent of instance state. Traversal itself
+// belongs to the shared walker in `utils/scan.ts`; only the `list_files`
+// wording, sort, and warning selection live here.
 
-import { readdir } from 'node:fs/promises'
-import { extname, join } from 'node:path'
-import { SUPPORTED_EXTENSIONS } from '../parser/index.js'
 import { displayPath } from '../utils/base-dirs.js'
 import { MAX_SCAN_DEPTH } from '../utils/limits.js'
-import { isInScope, shouldVisitDir } from '../utils/scope-match.js'
+import { bfsCollectSupportedFiles } from '../utils/scan.js'
 import type { RAGServerConfig } from './types.js'
 
 /**
- * Bounded BFS scan of a single base directory for supported files,
- * excluding system-managed paths (dbPath, cacheDir). Returns sorted
+ * `list_files` presentation adapter over {@link bfsCollectSupportedFiles}:
+ * scans one base directory for supported files, excluding system-managed paths
+ * (dbPath, cacheDir), and renders the walker's coverage facts as sorted
  * absolute paths plus a list of non-fatal warnings.
  *
  * Behavior contract:
- *  - Depth is bounded by {@link MAX_SCAN_DEPTH}, mirroring the
- *    CLI ingest walker so the same "how deep do we look under a root"
- *    boundary applies to every list/ingest surface.
- *  - A `readdir` failure under one directory is captured as a warning
- *    rather than aborting the whole list call. One unreadable root must not
- *    hide files under the other roots, so the multi-root contract makes this
- *    asymmetry user-visible, so the policy is now best-effort per root.
- *  - Symlinks are skipped (mirrors the CLI ingest walker).
+ *  - Depth is bounded by {@link MAX_SCAN_DEPTH}, counted from `baseDir`, so the
+ *    same "how deep do we look under a root" boundary applies to every
+ *    list/ingest surface.
+ *  - A `readdir` failure under one directory becomes a warning rather than
+ *    aborting the whole list call. One unreadable root must not hide files
+ *    under the other roots, so the policy is best-effort per directory.
+ *  - The depth-limit warning names the base directory and is emitted at most
+ *    once per call, however many branches were pruned.
+ *  - Symlinks are skipped (mirrors the CLI ingest walker); `list_files` does
+ *    not surface them.
  *  - When `scope` is provided (non-empty), the predicate is pushed into the
  *    traversal: a directory is visited only if it is in-scope or an ancestor of
  *    some scope prefix, and a file is collected only if it is in-scope. A
@@ -36,61 +38,17 @@ export async function scanBaseDir(
   excludePaths: readonly string[],
   scope?: string[]
 ): Promise<{ files: string[]; warnings: string[] }> {
-  const files: string[] = []
+  const { files, unreadableDirs, depthLimited } = await bfsCollectSupportedFiles(
+    baseDir,
+    excludePaths,
+    MAX_SCAN_DEPTH,
+    scope
+  )
+
   const warnings: string[] = []
-  let depthLimited = false
-
-  // Scope pushdown (shared with bfsCollectSupportedFiles via scope-match): visit
-  // a directory only if it is in-scope or an ancestor of the scoped subtree, and
-  // collect a file only if it is in-scope. A baseDir intersecting no prefix is
-  // skipped without any `readdir`; absent scope leaves traversal/collection
-  // unchanged.
-  const queue: { dirPath: string; depth: number }[] = shouldVisitDir(baseDir, scope)
-    ? [{ dirPath: baseDir, depth: 0 }]
-    : []
-
-  while (queue.length > 0) {
-    const { dirPath, depth } = queue.shift()!
-
-    if (depth >= MAX_SCAN_DEPTH) {
-      depthLimited = true
-      continue
-    }
-
-    // TypeScript's `readdir` has overloads keyed on the options shape;
-    // pin the encoding to `'utf8'` and cast so the loop body operates on
-    // string-encoded Dirent entries (matches the rest of the codebase).
-    let entries: import('node:fs').Dirent<string>[]
-    try {
-      entries = (await readdir(dirPath, {
-        withFileTypes: true,
-        encoding: 'utf8',
-      })) as import('node:fs').Dirent<string>[]
-    } catch (error) {
-      const code =
-        error && typeof error === 'object' && 'code' in error
-          ? ((error as NodeJS.ErrnoException).code ?? 'UNKNOWN')
-          : 'UNKNOWN'
-      warnings.push(`cannot read directory: ${displayPath(dirPath)} (${code})`)
-      continue
-    }
-
-    for (const entry of entries) {
-      const fullPath = join(dirPath, entry.name)
-      if (entry.isSymbolicLink()) continue
-      if (excludePaths.some((ep) => fullPath.startsWith(ep))) continue
-      if (entry.isDirectory()) {
-        if (shouldVisitDir(fullPath, scope)) {
-          queue.push({ dirPath: fullPath, depth: depth + 1 })
-        }
-      } else if (entry.isFile() && SUPPORTED_EXTENSIONS.has(extname(entry.name).toLowerCase())) {
-        if (isInScope(fullPath, scope)) {
-          files.push(fullPath)
-        }
-      }
-    }
+  for (const { dirPath, code } of unreadableDirs) {
+    warnings.push(`cannot read directory: ${displayPath(dirPath)} (${code})`)
   }
-
   if (depthLimited) {
     warnings.push(
       `some directories under ${displayPath(baseDir)} were skipped because they exceed the maximum depth (${MAX_SCAN_DEPTH})`

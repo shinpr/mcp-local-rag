@@ -34,7 +34,9 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { testModelCacheDir, withTestDevice } from '../../__tests__/test-device.js'
 import { resolveServerConfig } from '../../server-main.js'
 import { BaseDirsConfigError, displayPath, resolveBaseDirs } from '../../utils/base-dirs.js'
+import { MAX_SCAN_DEPTH } from '../../utils/limits.js'
 import { RAGServer } from '../index.js'
+import { scanBaseDir } from '../list-scanner.js'
 
 // =============================================================================
 // Helpers
@@ -538,6 +540,82 @@ describe('post-launch finding #10: list_files per-root error tolerance', () => {
       chmodSync(rootA, 0o755)
     }
   }, 60000)
+})
+
+// =============================================================================
+// `scanBaseDir` as a presentation adapter over the single bounded walker.
+//
+// After consolidation `scanBaseDir` owns no traversal — only the `list_files`
+// warning wording, the once-per-call depth warning, and the sort. These
+// assertions pin that presentation contract byte-for-byte so the shared walker
+// cannot silently change `list_files` output. Mock-free on purpose: a
+// non-existent directory makes an attempted `readdir` observable as an ENOENT
+// warning, so its absence proves the scope pushdown skipped the syscall.
+// =============================================================================
+describe('scanBaseDir presentation contract over the shared walker', () => {
+  const testBase = resolve('./tmp/test-list-scanner-adapter')
+  const root = resolve(testBase, 'root')
+  const missing = resolve(testBase, 'does-not-exist')
+  const otherTree = resolve(testBase, 'other')
+
+  /** Nested chain deep enough that its tail is dequeued past MAX_SCAN_DEPTH. */
+  function deepChain(prefix: string): string {
+    const segments = Array.from({ length: MAX_SCAN_DEPTH + 2 }, (_, i) => `${prefix}-l${i + 1}`)
+    return join(root, ...segments)
+  }
+
+  beforeAll(() => {
+    mkdirSync(root, { recursive: true })
+    mkdirSync(otherTree, { recursive: true })
+    mkdirSync(join(root, 'sub'), { recursive: true })
+    mkdirSync(deepChain('a'), { recursive: true })
+    mkdirSync(deepChain('b'), { recursive: true })
+    writeFileSync(join(root, 'zebra.md'), 'z')
+    writeFileSync(join(root, 'alpha.md'), 'a')
+    writeFileSync(join(root, 'sub', 'middle.md'), 'm')
+    writeFileSync(join(root, 'unsupported.bin'), 'skip me')
+  })
+
+  afterAll(() => {
+    rmSync(testBase, { recursive: true, force: true })
+  })
+
+  it('returns sorted supported files from the shared walker', async () => {
+    const { files } = await scanBaseDir(root, [])
+
+    expect(files).toEqual(
+      [join(root, 'alpha.md'), join(root, 'sub', 'middle.md'), join(root, 'zebra.md')].sort()
+    )
+    expect(files).not.toContain(join(root, 'unsupported.bin'))
+  })
+
+  it('renders the unreadable-directory warning verbatim', async () => {
+    const { files, warnings } = await scanBaseDir(missing, [])
+
+    expect(files).toEqual([])
+    expect(warnings).toEqual([`cannot read directory: ${displayPath(missing)} (ENOENT)`])
+  })
+
+  it('emits the depth-limit warning once per call even with several depth-limited branches', async () => {
+    const { warnings } = await scanBaseDir(root, [])
+
+    const depthWarnings = warnings.filter((w) => w.includes('exceed the maximum depth'))
+    expect(depthWarnings).toEqual([
+      `some directories under ${displayPath(root)} were skipped because they exceed the maximum depth (${MAX_SCAN_DEPTH})`,
+    ])
+  })
+
+  it('skips a baseDir intersecting no scope prefix without any readdir', async () => {
+    // Scope excludes `missing` entirely: pushdown means no readdir, so the
+    // ENOENT warning the sentinel below produces must not appear.
+    const scoped = await scanBaseDir(missing, [], [otherTree])
+    expect(scoped.files).toEqual([])
+    expect(scoped.warnings).toEqual([])
+
+    // Sentinel: the same baseDir without scope does attempt the readdir.
+    const unscoped = await scanBaseDir(missing, [])
+    expect(unscoped.warnings).toEqual([`cannot read directory: ${displayPath(missing)} (ENOENT)`])
+  })
 })
 
 // =============================================================================
