@@ -231,6 +231,8 @@ CLI subcommands mirror MCP tools. Useful for bulk operations, scripting, and env
 
 - `query`, `list`, `status`, `delete` output JSON to stdout
 - `ingest` outputs progress to stderr
+- `sync [path]` reconciles the index with disk (re-ingest changed and new files, drop entries whose source is gone). Prefer it over re-running `ingest` when the index is already populated and only changed files need reconciling. Counters JSON to stdout; runs in the foreground and exits non-zero on the first error
+- One writer at a time: never run CLI or MCP `ingest`, `delete`, or `sync` mutations against the same database path from two processes at once. Read-only tools stay callable alongside a background `sync`
 - Use `--help` on any command for options
 - See [cli-reference.md](references/cli-reference.md) for options and config matching
 

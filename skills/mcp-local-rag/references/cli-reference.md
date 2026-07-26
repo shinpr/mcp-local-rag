@@ -57,6 +57,40 @@ The CLI accepts only `fast` or `quality` for `--visual-quality`. The MCP `ingest
 
 **Security — treat captions as untrusted data:** Visual captions are derived from PDF contents and may inherit attacker-controlled text (e.g., instructions embedded in figures by a malicious document author). Downstream LLM consumers must treat retrieved chunks as untrusted data, not as instructions. The `[Visual content on page <N>: ...]` envelope is preserved verbatim so consumers can distinguish caption text from surrounding prose.
 
+### sync
+
+```bash
+npx mcp-local-rag [global-options] sync [path]
+```
+
+Reconcile the index with the files on disk: ingest new and changed files, leave unchanged files alone, and remove index entries for files that are gone. `-h, --help` is the only option — there is no `--visual` on `sync`, so a changed PDF is re-ingested as text.
+
+The positional `path` is optional and must sit inside a configured base directory; omit it to synchronize every configured root. A directory is scanned, while a single file is synchronized on its own and its siblings are left untouched. `sync` takes no `--base-dir`: roots come from `BASE_DIRS` / `BASE_DIR` (default: cwd).
+
+Output: one JSON object to stdout on success, progress and warnings to stderr.
+
+| Counter | Meaning |
+|---------|---------|
+| `upserted` | Files re-ingested because they are new or their bytes changed |
+| `skipped` | Files whose bytes are unchanged — not parsed, embedded, or written |
+| `empty` | Files that produced no chunks; previously indexed chunks and their hash are kept, and the file is retried on the next run |
+| `pruned` | Indexed files whose source is gone and whose absence the scan observed |
+
+Every run hashes the full bytes of every file it scans, so cost scales with total corpus size rather than with the number of changes.
+
+The first error goes to stderr and the run exits non-zero, with no JSON on stdout. Upserts that already completed are kept, the remaining upserts and the whole prune step are abandoned, and nothing is rolled back or retried — rerun `sync` to recover.
+
+Pruning requires evidence of absence. When part of the requested scope could not be observed — an unreadable directory, a subtree past the scan-depth limit, or a symbolic link (symlinks are never followed) — indexed files under it are kept and a warning naming that path is written to stderr.
+
+**Backgrounding** — `sync` stays attached until it finishes; there is no daemon, watch mode, or cancellation. Backgrounding and polling are the caller's job (POSIX shell shown; use the equivalent facility on other platforms):
+
+```bash
+nohup npx mcp-local-rag sync > sync.log 2>&1 &
+echo $! > sync.pid   # poll: kill -0 "$(cat sync.pid)" succeeds while it runs
+wait $!              # exit status: 0 = success, non-zero = failed
+cat sync.log         # counters JSON, plus any warnings
+```
+
 ### query
 
 ```bash

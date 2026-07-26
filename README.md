@@ -221,6 +221,8 @@ All MCP tools are also available as CLI commands — no MCP server needed:
 
 ```bash
 npx mcp-local-rag ingest ./docs/               # Bulk ingest files
+npx mcp-local-rag sync ./docs/                  # Reconcile the index with disk
+npx mcp-local-rag sync                          # Same, for every configured root
 npx mcp-local-rag query "authentication API"    # Search documents
 npx mcp-local-rag query "auth" --scope /docs/api --scope /docs/guide  # Restrict to path prefixes (repeatable)
 npx mcp-local-rag read-neighbors --file-path /abs/path.md --chunk-index 5  # Expand context
@@ -231,9 +233,11 @@ npx mcp-local-rag delete ./docs/old.pdf         # Remove content
 npx mcp-local-rag delete --source "https://..."  # Remove by source URL
 ```
 
-`query`, `read-neighbors`, `list`, `status`, and `delete` output JSON to stdout for piping (e.g., `| jq`). `ingest` outputs progress to stderr. Global options (`--db-path`, `--cache-dir`, `--model-name`) go before the subcommand. Run `npx mcp-local-rag --help` for details.
+`query`, `read-neighbors`, `list`, `status`, and `delete` output JSON to stdout for piping (e.g., `| jq`). `ingest` outputs progress to stderr; `sync` reports its counters (`upserted`, `skipped`, `empty`, `pruned`) as JSON on stdout and progress on stderr, runs in the foreground, and exits non-zero on the first error. Global options (`--db-path`, `--cache-dir`, `--model-name`) go before the subcommand. Run `npx mcp-local-rag --help` for details.
 
 > ⚠️ The CLI does **not** read your MCP client config (`mcp.json`, `config.toml`, etc.). Configure the CLI via flags or environment variables as shown below.
+
+> ⚠️ **One writer at a time.** Do not run CLI or MCP `ingest`, `delete`, or `sync` mutations concurrently against the same database path from different processes. Nothing enforces this across processes — it is an operating constraint you keep. A background CLI `sync` may run alongside MCP read-only tools (`query_documents`, `list_files`, `status`, `read_chunk_neighbors`).
 
 #### Configuration
 
@@ -250,7 +254,7 @@ npx mcp-local-rag ingest --base-dir ./docs --base-dir ./specs ./docs/readme.md
 npx mcp-local-rag list --base-dir ./docs --base-dir ./specs
 ```
 
-The positional path to `ingest` must sit inside one of the configured roots. When at least one `--base-dir` is supplied, CLI roots replace any env-var roots (no merge).
+The positional path to `ingest`, and to `sync` when given, must sit inside one of the configured roots. `sync` accepts no `--base-dir`; it reads its roots from `BASE_DIRS` / `BASE_DIR`. When at least one `--base-dir` is supplied, CLI roots replace any env-var roots (no merge).
 
 **Environment variables** — set in your shell:
 
