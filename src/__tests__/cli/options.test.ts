@@ -12,6 +12,10 @@ import {
   validateModelName,
   validatePath,
 } from '../../cli/options.js'
+// The SUBCOMMANDS tuple is the single source of truth for the routable commands,
+// so the help-text completeness check below reads it instead of a local literal —
+// that is what makes a future subcommand's missing help line fail this suite.
+import { SUBCOMMANDS } from '../../cli-main.js'
 
 describe('CLI global options', () => {
   let exitSpy: ReturnType<typeof vi.spyOn>
@@ -81,6 +85,12 @@ describe('CLI global options', () => {
       const result = parseGlobalOptions(['--db-path', '/db', 'ingest', '--base-dir', '/base'])
       expect(result.globalOptions.dbPath).toBe('/db')
       expect(result.remainingArgs).toEqual(['ingest', '--base-dir', '/base'])
+    })
+
+    it('should forward everything after the sync subcommand untouched', () => {
+      const result = parseGlobalOptions(['--db-path', '/db', 'sync', './docs', '--help'])
+      expect(result.globalOptions).toEqual({ dbPath: '/db' })
+      expect(result.remainingArgs).toEqual(['sync', './docs', '--help'])
     })
 
     it('should return empty remainingArgs when only global flags given', () => {
@@ -404,6 +414,34 @@ describe('CLI global options', () => {
         errorSpy.mockRestore()
       }
     })
+  })
+})
+
+// ============================================
+// ROOT_HELP_TEXT
+// ============================================
+describe('ROOT_HELP_TEXT command list', () => {
+  /** First token of every entry under `Commands:` (e.g. `skills install` → `skills`). */
+  function listedCommands(): string[] {
+    const block = ROOT_HELP_TEXT.split('Commands:\n')[1] ?? ''
+    return block
+      .split('\n')
+      .map((line) => line.trim().split(/\s+/)[0] ?? '')
+      .filter((name) => name.length > 0)
+  }
+
+  it('lists sync directly under ingest with the description column aligned', () => {
+    const lines = ROOT_HELP_TEXT.split('\n')
+    const ingestIndex = lines.findIndex((line) => line.trim().startsWith('ingest '))
+
+    expect(ingestIndex).toBeGreaterThan(-1)
+    expect(lines[ingestIndex + 1]).toBe(
+      '  sync [path]            Incrementally synchronize indexed files with disk'
+    )
+  })
+
+  it('documents every routable subcommand', () => {
+    expect(listedCommands().sort()).toEqual([...SUBCOMMANDS].sort())
   })
 })
 
