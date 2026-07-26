@@ -464,6 +464,46 @@ export class VectorStore {
   }
 
   /**
+   * Per-chunk `(filePath, contentHash)` projection — the manifest incremental
+   * sync reconciles the disk against.
+   *
+   * One entry per stored row rather than one per file, because a file whose
+   * rows disagree on the hash (or carry none) must be detectable as dirty.
+   * `filePath` is the verbatim stored spelling, since that is what
+   * {@link deleteChunks} matches. An empty-string hash — the value the
+   * create-path seeds for Arrow schema inference — is normalized to `null` so a
+   * hashless row can never read as a real hash, mirroring `toVectorChunk`.
+   *
+   * Projects only the two columns so a manifest load does not materialize the
+   * embedding vectors. Lazy-table null returns `[]` (mirrors {@link listFiles}).
+   */
+  async listChunkHashes(): Promise<{ filePath: string; contentHash: string | null }[]> {
+    if (!this.table) {
+      return []
+    }
+
+    try {
+      const records = await this.table.query().select(['filePath', 'contentHash']).toArray()
+      const entries: { filePath: string; contentHash: string | null }[] = []
+      for (const record of records) {
+        const filePath: unknown = record.filePath
+        const contentHash: unknown = record.contentHash
+        // Type-guard parity with listFiles: skip rows missing the expected
+        // string column rather than coercing via `as string`.
+        if (typeof filePath !== 'string') continue
+        entries.push({
+          filePath,
+          contentHash:
+            typeof contentHash === 'string' && contentHash.length > 0 ? contentHash : null,
+        })
+      }
+      return entries
+    } catch (error) {
+      throw new DatabaseError('Failed to list chunk content hashes', error as Error)
+    }
+  }
+
+  /**
    * Get list of ingested files
    *
    * @returns Array of file information

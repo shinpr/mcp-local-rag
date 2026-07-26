@@ -131,6 +131,44 @@ describe('VectorStore', () => {
 
       expect((await store.listFiles()).map((f) => f.filePath)).toEqual(['/docs/other.txt'])
     })
+
+    // Sync reconciles by a case-folded comparison key on Windows but must delete
+    // by the verbatim stored spelling. This pins the storage fact that makes the
+    // per-variant deletion necessary: two spellings of one Windows file are two
+    // independent row sets here, so deleting the key would delete nothing and
+    // deleting one spelling cannot touch the other.
+    it('deletes only the exact stored spelling and leaves a case-differing spelling of the same file', async () => {
+      await withTempDb('delete-exact-spelling', async (store) => {
+        const lowerSpelling = 'c:\\root\\sub\\report.md'
+        const upperSpelling = 'C:\\Root\\Sub\\Report.md'
+        await store.insertChunks([
+          createTestChunk('stale variant', lowerSpelling, 0, createNormalizedVector(1)),
+          createTestChunk('live variant', upperSpelling, 0, createNormalizedVector(2)),
+        ])
+
+        expect(await store.deleteChunks(lowerSpelling)).toBe(1)
+
+        expect((await store.listFiles()).map((file) => file.filePath)).toEqual([upperSpelling])
+      })
+    })
+
+    // Guards against a future rewrite of the equality predicate into a LIKE
+    // term: `%` and `_` in a stored path are literal characters, so a path
+    // containing them must not match its neighbours.
+    it('treats LIKE metacharacters in the path as literals, not wildcards', async () => {
+      await withTempDb('delete-like-metacharacters', async (store) => {
+        const wildcardish = '/docs/100%_done.md'
+        const neighbour = '/docs/100x1done.md'
+        await store.insertChunks([
+          createTestChunk('wildcardish body', wildcardish, 0, createNormalizedVector(1)),
+          createTestChunk('neighbour body', neighbour, 0, createNormalizedVector(2)),
+        ])
+
+        expect(await store.deleteChunks(wildcardish)).toBe(1)
+
+        expect((await store.listFiles()).map((file) => file.filePath)).toEqual([neighbour])
+      })
+    })
   })
 
   describe('FTS per-request degrade', () => {
@@ -1491,6 +1529,96 @@ describe('VectorStore', () => {
 
         const rows = byChunkIndex(await store.getChunksByFilePath(filePath))
         expect(rows.map((row) => row.contentHash)).toEqual([HASH_ONE, HASH_TWO, undefined])
+      })
+    })
+
+    /**
+     * `listChunkHashes` is the DB-manifest projection sync reconciles against.
+     * It must preserve verbatim stored spellings (they are the deletion keys),
+     * emit one entry per chunk row (so a conflicting-hash file is detectable),
+     * and report a hashless row as `null` rather than the create-path `''` seed.
+     */
+    describe('listChunkHashes projection', () => {
+      // Row order is not a storage contract, so compare as a code-point-sorted
+      // list (hashless entries first) rather than asserting insertion order.
+      const compare = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0)
+      const sortEntries = <T extends { filePath: string; contentHash: string | null }>(
+        entries: T[]
+      ): T[] =>
+        [...entries].sort(
+          (a, b) =>
+            compare(a.filePath, b.filePath) || compare(a.contentHash ?? '', b.contentHash ?? '')
+        )
+
+      it('returns one verbatim-spelled entry per chunk row', async () => {
+        await withTempDb('list-chunk-hashes-per-row', async (store) => {
+          await store.insertChunks([
+            {
+              ...createTestChunk('one', '/test/a.md', 0, createNormalizedVector(1)),
+              contentHash: HASH_ONE,
+            },
+            {
+              ...createTestChunk('two', '/test/a.md', 1, createNormalizedVector(2)),
+              contentHash: HASH_ONE,
+            },
+            {
+              ...createTestChunk('three', '/test/B.md', 0, createNormalizedVector(3)),
+              contentHash: HASH_TWO,
+            },
+          ])
+
+          expect(sortEntries(await store.listChunkHashes())).toEqual([
+            { filePath: '/test/B.md', contentHash: HASH_TWO },
+            { filePath: '/test/a.md', contentHash: HASH_ONE },
+            { filePath: '/test/a.md', contentHash: HASH_ONE },
+          ])
+        })
+      })
+
+      it('reports a hashless row as null so it is never read as a real hash', async () => {
+        await withTempDb('list-chunk-hashes-hashless', async (store) => {
+          await store.insertChunks([
+            {
+              ...createTestChunk('hashed', '/test/hashed.md', 0, createNormalizedVector(1)),
+              contentHash: HASH_ONE,
+            },
+            createTestChunk('hashless', '/test/hashless.md', 0, createNormalizedVector(2)),
+          ])
+
+          expect(sortEntries(await store.listChunkHashes())).toEqual([
+            { filePath: '/test/hashed.md', contentHash: HASH_ONE },
+            { filePath: '/test/hashless.md', contentHash: null },
+          ])
+        })
+      })
+
+      it('exposes per-chunk hash disagreement for one file', async () => {
+        await withTempDb('list-chunk-hashes-conflicting', async (store) => {
+          const filePath = '/test/conflicting.md'
+          await store.insertChunks([
+            {
+              ...createTestChunk('one', filePath, 0, createNormalizedVector(1)),
+              contentHash: HASH_ONE,
+            },
+            {
+              ...createTestChunk('two', filePath, 1, createNormalizedVector(2)),
+              contentHash: HASH_TWO,
+            },
+            createTestChunk('three', filePath, 2, createNormalizedVector(3)),
+          ])
+
+          expect(sortEntries(await store.listChunkHashes())).toEqual([
+            { filePath, contentHash: null },
+            { filePath, contentHash: HASH_TWO },
+            { filePath, contentHash: HASH_ONE },
+          ])
+        })
+      })
+
+      it('returns an empty manifest when the backing table does not exist yet', async () => {
+        await withTempDb('list-chunk-hashes-lazy', async (store) => {
+          expect(await store.listChunkHashes()).toEqual([])
+        })
       })
     })
   })
