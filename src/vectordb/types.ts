@@ -95,6 +95,8 @@ export interface VectorChunk {
   metadata: DocumentMetadata
   /** Document title extracted from file content (display-only, not used for scoring) */
   fileTitle: string | null
+  /** SHA-256 of the source file bytes; absent for chunks not ingested from a file. */
+  contentHash?: string
   /** Ingestion timestamp (ISO 8601 format) */
   timestamp: string
 }
@@ -216,7 +218,8 @@ export function toVectorChunk(raw: unknown): VectorChunk {
     throw new DatabaseError('Invalid chunk row shape from LanceDB')
   }
   const obj = raw as Record<string, unknown>
-  const { id, filePath, chunkIndex, text, vector, metadata, fileTitle, timestamp } = obj
+  const { id, filePath, chunkIndex, text, vector, metadata, fileTitle, contentHash, timestamp } =
+    obj
   if (
     typeof id !== 'string' ||
     typeof filePath !== 'string' ||
@@ -240,6 +243,10 @@ export function toVectorChunk(raw: unknown): VectorChunk {
     vector: Array.from(vector as ArrayLike<number>),
     metadata,
     fileTitle: typeof fileTitle === 'string' && fileTitle.length > 0 ? fileTitle : null,
+    // Omit the key rather than store '' or undefined: the create path seeds ''
+    // for schema inference, and a '' that survived to a caller would read as a
+    // real hash equal to nothing on disk.
+    ...(typeof contentHash === 'string' && contentHash.length > 0 ? { contentHash } : {}),
     timestamp,
   }
 }
