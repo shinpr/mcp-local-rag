@@ -1,6 +1,6 @@
 ---
 name: mcp-local-rag
-description: Search, ingest, expand chunk context, or manage local documents via a local RAG MCP server (tools: query_documents, read_chunk_neighbors, ingest_file, ingest_data, delete_file, list_files). Use when user says "search my docs", "save this page", "read around that chunk", "what did I save about X", or invokes `npx mcp-local-rag`.
+description: Searches, saves, and maintains a local document index through a local RAG MCP server. Use when user says "search my docs", "save this page", "read around that chunk", "sync my index", or invokes `npx mcp-local-rag`.
 ---
 
 # MCP Local RAG Skills
@@ -25,7 +25,7 @@ description: Search, ingest, expand chunk context, or manage local documents via
 2. When a retrieved hit lacks enough surrounding context for a grounded answer, expand only that chunk via `read_chunk_neighbors`.
 3. For ingestion, choose `ingest_file` for local files and `ingest_data` for raw/web content.
 4. For PDFs, ask once about ingest mode unless the current request already specifies one (text-only, visual fast, or visual quality). See decision protocol in Ingestion.
-5. When files may have changed on disk since they were ingested, call `sync_start` once and poll `sync_status` instead of re-running `ingest_file` file by file.
+5. Call `sync_start` once and poll `sync_status` when the user asks to synchronize, or when a change they reported on disk has to be reflected before you can answer. It replaces re-running `ingest_file` file by file.
 
 ## Search: Core Rules
 
@@ -254,6 +254,7 @@ Every run hashes the full bytes of every file it scans, so cost scales with tota
 
 - **While a sync runs**, `sync_start`, `ingest_file`, `ingest_data`, and `delete_file` return a tool error naming the active `jobId` — poll `sync_status` instead of retrying. `query_documents`, `read_chunk_neighbors`, `list_files`, `status`, and `sync_status` stay callable throughout.
 - **On failure**, report the message and start a new sync once the cause is fixed. There is no retry, resume, or cancel; upserts that already completed are kept and no prune runs.
+- **When you cannot poll to a terminal state**, report the `jobId` and the latest counters and stop. The run continues in the server and the same `jobId` still answers, so it can be re-checked later.
 - **Only the current or latest job is kept.** A new `sync_start` replaces a terminal record, and the older `jobId` then reports as unknown. Server process exit discards the job, so never treat a `jobId` as durable.
 - **One writer at a time.** A running sync only excludes mutations inside this server process: never run CLI or MCP `ingest`, `delete`, or `sync` mutations against the same database path from two processes at once (see [CLI commands](#cli-commands)). Read-only tools stay callable alongside a background CLI `sync`.
 

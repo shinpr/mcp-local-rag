@@ -179,7 +179,7 @@ export const toolDefinitions: Tool[] = [
         path: {
           type: 'string',
           description:
-            'Optional absolute path to a file or directory inside a configured base directory; list_files returns those directories as baseDirs. Omit it to synchronize every configured base directory. Example: "/Users/user/documents/manual.pdf"',
+            'Optional absolute path to a file or directory inside a configured base directory; list_files returns those directories as baseDirs. A file synchronizes only itself and a directory only its own subtree, leaving every path outside it untouched. Omit it to synchronize every configured base directory.',
         },
       },
     },
