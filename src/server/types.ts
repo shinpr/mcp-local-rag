@@ -275,3 +275,65 @@ export interface ReadChunkNeighborsResultItem {
   /** Document title extracted from file content (display-only, not used for scoring) */
   fileTitle: string | null
 }
+
+/**
+ * sync_start tool input
+ */
+export interface SyncStartInput {
+  /** Absolute path inside a configured root. Omitted means every configured root. */
+  path?: string
+}
+
+/**
+ * sync_status tool input
+ */
+export interface SyncStatusInput {
+  /** Identifier returned by sync_start. */
+  jobId: string
+}
+
+/**
+ * Lifecycle of the one process-local sync job the server retains. There is no
+ * cancelled, queued, or recovered state: the record lives only for the server
+ * process and a new job replaces a terminal one.
+ */
+export type SyncJobState = 'running' | 'succeeded' | 'failed'
+
+/**
+ * Per-file outcome counters of a sync job. Structurally identical to the sync
+ * core's counters, restated here because `server/` does not depend on
+ * `features/`.
+ */
+export interface SyncSummary {
+  /** Files re-ingested because they were new, changed, or stored inconsistently. */
+  upserted: number
+  /** Files whose stored content identity already matched the disk bytes. */
+  skipped: number
+  /** Present files that produced zero chunks; their prior rows and hash are kept. */
+  empty: number
+  /** Indexed files removed from the index. Counts files, not rows, and is outside `completed`. */
+  pruned: number
+}
+
+/**
+ * sync_status tool output — the whole pollable record for one job.
+ *
+ * `total` stays `null` until scanning has counted the supported files on disk,
+ * and `completed` (`upserted + skipped + empty`) never exceeds a non-null
+ * `total`. `error` is `null` unless the job failed; a failed job carries one
+ * controlled message that names the file for a per-file failure. A job succeeds
+ * only when `error` is `null`.
+ */
+export interface SyncStatusResult {
+  jobId: string
+  state: SyncJobState
+  total: number | null
+  completed: number
+  summary: SyncSummary
+  /**
+   * Scanner coverage warnings, carried as JSON rather than as the content
+   * blocks `list_files` uses, because status is a single pollable record.
+   */
+  warnings: string[]
+  error: string | null
+}

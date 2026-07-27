@@ -2,6 +2,9 @@ import { randomUUID } from 'node:crypto'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type { TextChunk } from '../../chunker/index.js'
+import { ingestSingleFile } from '../../cli/ingest.js'
+import { buildVectorChunks, computeContentHash } from '../../ingest/compute.js'
 import { type VectorChunk, VectorStore } from '../index.js'
 import { type ChunkRow, DatabaseError, isLanceDBRawResult, toSearchResult } from '../types.js'
 
@@ -65,7 +68,7 @@ describe('VectorStore', () => {
    */
   async function withTempDb(
     name: string,
-    fn: (store: VectorStore) => Promise<void>
+    fn: (store: VectorStore, dbPath: string) => Promise<void>
   ): Promise<void> {
     const dbPath = `./tmp/test-vectordb-${name}`
     if (fs.existsSync(dbPath)) {
@@ -74,7 +77,7 @@ describe('VectorStore', () => {
     try {
       const store = new VectorStore({ dbPath, tableName: 'chunks' })
       await store.initialize()
-      await fn(store)
+      await fn(store, dbPath)
     } finally {
       if (fs.existsSync(dbPath)) {
         fs.rmSync(dbPath, { recursive: true })
@@ -127,6 +130,44 @@ describe('VectorStore', () => {
       await store.deleteChunks(tricky)
 
       expect((await store.listFiles()).map((f) => f.filePath)).toEqual(['/docs/other.txt'])
+    })
+
+    // Sync reconciles by a case-folded comparison key on Windows but must delete
+    // by the verbatim stored spelling. This pins the storage fact that makes the
+    // per-variant deletion necessary: two spellings of one Windows file are two
+    // independent row sets here, so deleting the key would delete nothing and
+    // deleting one spelling cannot touch the other.
+    it('deletes only the exact stored spelling and leaves a case-differing spelling of the same file', async () => {
+      await withTempDb('delete-exact-spelling', async (store) => {
+        const lowerSpelling = 'c:\\root\\sub\\report.md'
+        const upperSpelling = 'C:\\Root\\Sub\\Report.md'
+        await store.insertChunks([
+          createTestChunk('stale variant', lowerSpelling, 0, createNormalizedVector(1)),
+          createTestChunk('live variant', upperSpelling, 0, createNormalizedVector(2)),
+        ])
+
+        expect(await store.deleteChunks(lowerSpelling)).toBe(1)
+
+        expect((await store.listFiles()).map((file) => file.filePath)).toEqual([upperSpelling])
+      })
+    })
+
+    // Guards against a future rewrite of the equality predicate into a LIKE
+    // term: `%` and `_` in a stored path are literal characters, so a path
+    // containing them must not match its neighbours.
+    it('treats LIKE metacharacters in the path as literals, not wildcards', async () => {
+      await withTempDb('delete-like-metacharacters', async (store) => {
+        const wildcardish = '/docs/100%_done.md'
+        const neighbour = '/docs/100x1done.md'
+        await store.insertChunks([
+          createTestChunk('wildcardish body', wildcardish, 0, createNormalizedVector(1)),
+          createTestChunk('neighbour body', neighbour, 0, createNormalizedVector(2)),
+        ])
+
+        expect(await store.deleteChunks(wildcardish)).toBe(1)
+
+        expect((await store.listFiles()).map((file) => file.filePath)).toEqual([neighbour])
+      })
     })
   })
 
@@ -1281,6 +1322,468 @@ describe('VectorStore', () => {
             fs.rmSync(dbPath, { recursive: true })
           }
         }
+      })
+    })
+  })
+
+  /**
+   * contentHash — SHA-256 of the source file bytes, the storage half of sync
+   * content identity. Covers a freshly created schema, a schema migrated from a
+   * table that predates the column, '' → absent read normalization, and the
+   * hashless / conflicting per-file states a later sync step classifies as dirty.
+   */
+  describe('contentHash support', () => {
+    // Literal SHA-256 hex digests, independent of any production hashing code.
+    const HASH_ONE = '9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08'
+    const HASH_TWO = '60303ae22b998861bce3b28f33eec1be758a213c86c93c076dbe9f558c11c752'
+
+    /** Read the persisted Arrow schema through a separate read-only connection. */
+    async function schemaFieldNames(dbPath: string): Promise<string[]> {
+      const { connect: lanceConnect } = await import('@lancedb/lancedb')
+      const db = await lanceConnect(dbPath)
+      const table = await db.openTable('chunks')
+      const schema = await table.schema()
+      const names = schema.fields.map((field: { name: string }) => field.name)
+      await db.close()
+      return names
+    }
+
+    const byChunkIndex = (chunks: VectorChunk[]): VectorChunk[] =>
+      [...chunks].sort((a, b) => a.chunkIndex - b.chunkIndex)
+
+    it('should expose a contentHash column and round-trip a hex digest on a freshly created table', async () => {
+      await withTempDb('content-hash-fresh', async (store, dbPath) => {
+        const filePath = '/test/hashed.md'
+        await store.insertChunks([
+          {
+            ...createTestChunk('body', filePath, 0, createNormalizedVector(1)),
+            contentHash: HASH_ONE,
+          },
+        ])
+
+        expect(await schemaFieldNames(dbPath)).toContain('contentHash')
+
+        const stored = await store.getChunksByFilePath(filePath)
+        expect(stored).toHaveLength(1)
+        expect(stored[0]?.contentHash).toBe(HASH_ONE)
+      })
+    })
+
+    it('should read back an omitted contentHash as absent so the create-path seed never leaks a fake hash', async () => {
+      await withTempDb('content-hash-absent', async (store) => {
+        const filePath = '/test/unhashed.md'
+        await store.insertChunks([createTestChunk('body', filePath, 0, createNormalizedVector(1))])
+
+        const stored = await store.getChunksByFilePath(filePath)
+        expect(stored).toHaveLength(1)
+        expect(stored[0]).not.toHaveProperty('contentHash')
+      })
+    })
+
+    it('should accept a chunk with no contentHash through the existing-table add branch', async () => {
+      await withTempDb('content-hash-add-branch', async (store) => {
+        // First insert creates the table; the second goes through table.add,
+        // which passes records straight to LanceDB without the create-path seed.
+        await store.insertChunks([
+          {
+            ...createTestChunk('body', '/test/first.md', 0, createNormalizedVector(1)),
+            contentHash: HASH_ONE,
+          },
+        ])
+        await store.insertChunks([
+          createTestChunk('body', '/test/second.md', 0, createNormalizedVector(2)),
+        ])
+
+        const stored = await store.getChunksByFilePath('/test/second.md')
+        expect(stored).toHaveLength(1)
+        expect(stored[0]).not.toHaveProperty('contentHash')
+      })
+    })
+
+    it('should normalize a stored empty-string contentHash to absent on read', async () => {
+      await withTempDb('content-hash-empty-string', async (store) => {
+        const filePath = '/test/empty-hash.md'
+        await store.insertChunks([
+          { ...createTestChunk('body', filePath, 0, createNormalizedVector(1)), contentHash: '' },
+        ])
+
+        const stored = await store.getChunksByFilePath(filePath)
+        expect(stored).toHaveLength(1)
+        expect(stored[0]).not.toHaveProperty('contentHash')
+      })
+    })
+
+    it('should add the contentHash column to a table created before the column existed', async () => {
+      const dbPath = './tmp/test-vectordb-content-hash-migration'
+      if (fs.existsSync(dbPath)) {
+        fs.rmSync(dbPath, { recursive: true })
+      }
+
+      try {
+        const { connect: lanceConnect } = await import('@lancedb/lancedb')
+        const legacyDb = await lanceConnect(dbPath)
+        await legacyDb.createTable('chunks', [
+          {
+            id: randomUUID(),
+            filePath: '/test/legacy.md',
+            chunkIndex: 0,
+            text: 'Row stored before contentHash existed',
+            vector: createNormalizedVector(1),
+            metadata: { fileName: 'legacy.md', fileSize: 100, fileType: 'md' },
+            fileTitle: 'Legacy Document',
+            timestamp: new Date().toISOString(),
+            // NOTE: no contentHash field -- simulates the pre-migration schema
+          },
+        ])
+        await legacyDb.close()
+
+        const store = new VectorStore({ dbPath, tableName: 'chunks' })
+        await store.initialize()
+
+        expect(await schemaFieldNames(dbPath)).toContain('contentHash')
+
+        const legacyRows = await store.getChunksByFilePath('/test/legacy.md')
+        expect(legacyRows).toHaveLength(1)
+        expect(legacyRows[0]).not.toHaveProperty('contentHash')
+
+        // The migrated table must still accept a hashed insert (table.add branch)
+        await store.insertChunks([
+          {
+            ...createTestChunk('new body', '/test/migrated.md', 0, createNormalizedVector(2)),
+            contentHash: HASH_ONE,
+          },
+        ])
+        const migratedRows = await store.getChunksByFilePath('/test/migrated.md')
+        expect(migratedRows).toHaveLength(1)
+        expect(migratedRows[0]?.contentHash).toBe(HASH_ONE)
+      } finally {
+        if (fs.existsSync(dbPath)) {
+          fs.rmSync(dbPath, { recursive: true })
+        }
+      }
+    })
+
+    it('should keep the contentHash migration idempotent across repeated initialize calls', async () => {
+      const dbPath = './tmp/test-vectordb-content-hash-idempotent'
+      if (fs.existsSync(dbPath)) {
+        fs.rmSync(dbPath, { recursive: true })
+      }
+
+      try {
+        const first = new VectorStore({ dbPath, tableName: 'chunks' })
+        await first.initialize()
+        await first.insertChunks([
+          {
+            ...createTestChunk('body', '/test/idempotent.md', 0, createNormalizedVector(1)),
+            contentHash: HASH_ONE,
+          },
+        ])
+
+        const second = new VectorStore({ dbPath, tableName: 'chunks' })
+        await second.initialize()
+        const third = new VectorStore({ dbPath, tableName: 'chunks' })
+        await third.initialize()
+
+        const names = await schemaFieldNames(dbPath)
+        expect(names.filter((name) => name === 'contentHash')).toHaveLength(1)
+
+        const rows = await third.getChunksByFilePath('/test/idempotent.md')
+        expect(rows).toHaveLength(1)
+        expect(rows[0]?.contentHash).toBe(HASH_ONE)
+      } finally {
+        if (fs.existsSync(dbPath)) {
+          fs.rmSync(dbPath, { recursive: true })
+        }
+      }
+    })
+
+    it('should store every chunk of one file without a hash (hashless file)', async () => {
+      await withTempDb('content-hash-hashless', async (store) => {
+        const filePath = '/test/hashless.md'
+        await store.insertChunks([
+          createTestChunk('one', filePath, 0, createNormalizedVector(1)),
+          createTestChunk('two', filePath, 1, createNormalizedVector(2)),
+          createTestChunk('three', filePath, 2, createNormalizedVector(3)),
+        ])
+
+        const rows = byChunkIndex(await store.getChunksByFilePath(filePath))
+        expect(rows.map((row) => row.chunkIndex)).toEqual([0, 1, 2])
+        expect(rows.map((row) => row.contentHash)).toEqual([undefined, undefined, undefined])
+      })
+    })
+
+    it('should store different and missing per-chunk hashes for one file (conflicting hashes)', async () => {
+      await withTempDb('content-hash-conflicting', async (store) => {
+        const filePath = '/test/conflicting.md'
+        await store.insertChunks([
+          {
+            ...createTestChunk('one', filePath, 0, createNormalizedVector(1)),
+            contentHash: HASH_ONE,
+          },
+          {
+            ...createTestChunk('two', filePath, 1, createNormalizedVector(2)),
+            contentHash: HASH_TWO,
+          },
+          createTestChunk('three', filePath, 2, createNormalizedVector(3)),
+        ])
+
+        const rows = byChunkIndex(await store.getChunksByFilePath(filePath))
+        expect(rows.map((row) => row.contentHash)).toEqual([HASH_ONE, HASH_TWO, undefined])
+      })
+    })
+
+    /**
+     * `listChunkHashes` is the DB-manifest projection sync reconciles against.
+     * It must preserve verbatim stored spellings (they are the deletion keys),
+     * emit one entry per chunk row (so a conflicting-hash file is detectable),
+     * and report a hashless row as `null` rather than the create-path `''` seed.
+     */
+    describe('listChunkHashes projection', () => {
+      // Row order is not a storage contract, so compare as a code-point-sorted
+      // list (hashless entries first) rather than asserting insertion order.
+      const compare = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0)
+      const sortEntries = <T extends { filePath: string; contentHash: string | null }>(
+        entries: T[]
+      ): T[] =>
+        [...entries].sort(
+          (a, b) =>
+            compare(a.filePath, b.filePath) || compare(a.contentHash ?? '', b.contentHash ?? '')
+        )
+
+      it('returns one verbatim-spelled entry per chunk row', async () => {
+        await withTempDb('list-chunk-hashes-per-row', async (store) => {
+          await store.insertChunks([
+            {
+              ...createTestChunk('one', '/test/a.md', 0, createNormalizedVector(1)),
+              contentHash: HASH_ONE,
+            },
+            {
+              ...createTestChunk('two', '/test/a.md', 1, createNormalizedVector(2)),
+              contentHash: HASH_ONE,
+            },
+            {
+              ...createTestChunk('three', '/test/B.md', 0, createNormalizedVector(3)),
+              contentHash: HASH_TWO,
+            },
+          ])
+
+          expect(sortEntries(await store.listChunkHashes())).toEqual([
+            { filePath: '/test/B.md', contentHash: HASH_TWO },
+            { filePath: '/test/a.md', contentHash: HASH_ONE },
+            { filePath: '/test/a.md', contentHash: HASH_ONE },
+          ])
+        })
+      })
+
+      it('reports a hashless row as null so it is never read as a real hash', async () => {
+        await withTempDb('list-chunk-hashes-hashless', async (store) => {
+          await store.insertChunks([
+            {
+              ...createTestChunk('hashed', '/test/hashed.md', 0, createNormalizedVector(1)),
+              contentHash: HASH_ONE,
+            },
+            createTestChunk('hashless', '/test/hashless.md', 0, createNormalizedVector(2)),
+          ])
+
+          expect(sortEntries(await store.listChunkHashes())).toEqual([
+            { filePath: '/test/hashed.md', contentHash: HASH_ONE },
+            { filePath: '/test/hashless.md', contentHash: null },
+          ])
+        })
+      })
+
+      it('exposes per-chunk hash disagreement for one file', async () => {
+        await withTempDb('list-chunk-hashes-conflicting', async (store) => {
+          const filePath = '/test/conflicting.md'
+          await store.insertChunks([
+            {
+              ...createTestChunk('one', filePath, 0, createNormalizedVector(1)),
+              contentHash: HASH_ONE,
+            },
+            {
+              ...createTestChunk('two', filePath, 1, createNormalizedVector(2)),
+              contentHash: HASH_TWO,
+            },
+            createTestChunk('three', filePath, 2, createNormalizedVector(3)),
+          ])
+
+          expect(sortEntries(await store.listChunkHashes())).toEqual([
+            { filePath, contentHash: null },
+            { filePath, contentHash: HASH_TWO },
+            { filePath, contentHash: HASH_ONE },
+          ])
+        })
+      })
+
+      it('returns an empty manifest when the backing table does not exist yet', async () => {
+        await withTempDb('list-chunk-hashes-lazy', async (store) => {
+          expect(await store.listChunkHashes()).toEqual([])
+        })
+      })
+    })
+  })
+
+  /**
+   * contentHash production — the ingestion half of sync content identity.
+   *
+   * Storage (above) proves the column round-trips. These tests prove the value
+   * actually written by filesystem ingestion: one shared SHA-256 of the raw
+   * file bytes on every chunk of a file, and vector construction completing
+   * before the destructive delete so a construction failure cannot empty a
+   * file's rows.
+   *
+   * The embedder/chunker/parser are deterministic stubs (external ML I/O is
+   * slow and non-deterministic); the store is real because value round-tripping
+   * is the subject.
+   */
+  describe('contentHash production during ingestion', () => {
+    // SHA-256 of the 5 bytes "hello" (`printf 'hello' | shasum -a 256`), an
+    // oracle independent of computeContentHash, so a drift in the digest, the
+    // encoding, or the hashed input fails here.
+    const HELLO_SHA256 = '2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824'
+
+    const byChunkIndex = (chunks: VectorChunk[]): VectorChunk[] =>
+      [...chunks].sort((a, b) => a.chunkIndex - b.chunkIndex)
+
+    const textChunks = (count: number): TextChunk[] =>
+      Array.from({ length: count }, (_, index) => ({ text: `chunk ${index}`, index }))
+
+    /**
+     * Stubs for `ingestSingleFile`'s injected collaborators. `parsedText` is
+     * deliberately unrelated to the bytes on disk: the hash must come from the
+     * file, not from the parser output. `embeddingCount` below the chunk count
+     * reproduces the missing-embedding construction failure.
+     */
+    function ingestCollaborators(options: {
+      parsedText: string
+      chunkCount: number
+      embeddingCount?: number
+    }) {
+      const chunks = textChunks(options.chunkCount)
+      const embeddings = Array.from(
+        { length: options.embeddingCount ?? options.chunkCount },
+        (_, i) => createNormalizedVector(i + 1)
+      )
+      return {
+        parser: {
+          parseFile: async () => ({ content: options.parsedText, title: 'Stub Title' }),
+          // Real DocumentParser boundary checks, as recording spies: the pre-parse
+          // `contentHash` read runs them itself, because it no longer sits behind
+          // the parse that used to. Their decisions are pinned against a real
+          // `DocumentParser` in `src/__tests__/cli/ingest-content-hash-pre-parse.test.ts`.
+          validateFilePath: vi.fn().mockResolvedValue(undefined),
+          validateFileSize: vi.fn(),
+        } as unknown as Parameters<typeof ingestSingleFile>[1],
+        chunker: {
+          chunkText: async () => chunks,
+        } as unknown as Parameters<typeof ingestSingleFile>[2],
+        embedder: {
+          embedBatch: async () => embeddings,
+        } as unknown as Parameters<typeof ingestSingleFile>[3],
+      }
+    }
+
+    /** Write `content` to a fresh temp file and return its absolute path. */
+    function writeSourceFile(name: string, content: string): string {
+      const dir = path.resolve('./tmp/test-ingest-hash')
+      fs.mkdirSync(dir, { recursive: true })
+      const filePath = path.join(dir, name)
+      fs.writeFileSync(filePath, content)
+      return filePath
+    }
+
+    afterEach(() => {
+      const dir = path.resolve('./tmp/test-ingest-hash')
+      if (fs.existsSync(dir)) {
+        fs.rmSync(dir, { recursive: true })
+      }
+    })
+
+    it('should compute the lowercase SHA-256 hex of the given bytes', () => {
+      expect(computeContentHash(Buffer.from('hello', 'utf-8'))).toBe(HELLO_SHA256)
+    })
+
+    it('should set the same contentHash on every chunk it builds', () => {
+      const built = buildVectorChunks({
+        filePath: '/test/shared-hash.md',
+        chunks: textChunks(3),
+        embeddings: [
+          createNormalizedVector(1),
+          createNormalizedVector(2),
+          createNormalizedVector(3),
+        ],
+        fileSize: 42,
+        fileTitle: null,
+        contentHash: HELLO_SHA256,
+      })
+
+      expect(built).toHaveLength(3)
+      expect(built.map((chunk) => chunk.contentHash)).toEqual([
+        HELLO_SHA256,
+        HELLO_SHA256,
+        HELLO_SHA256,
+      ])
+    })
+
+    it('should omit contentHash on every chunk when no source hash is available', () => {
+      const built = buildVectorChunks({
+        filePath: '/test/hashless.md',
+        chunks: textChunks(2),
+        embeddings: [createNormalizedVector(1), createNormalizedVector(2)],
+        fileSize: 42,
+        fileTitle: null,
+        contentHash: null,
+      })
+
+      expect(built).toHaveLength(2)
+      for (const chunk of built) {
+        expect(chunk).not.toHaveProperty('contentHash')
+      }
+    })
+
+    it('should store one identical hash of the file bytes on every chunk of an ingested file', async () => {
+      await withTempDb('ingest-content-hash', async (store) => {
+        const filePath = writeSourceFile('hello.md', 'hello')
+        const { parser, chunker, embedder } = ingestCollaborators({
+          parsedText: 'parsed text that is deliberately not the file bytes',
+          chunkCount: 3,
+        })
+
+        const inserted = await ingestSingleFile(filePath, parser, chunker, embedder, store)
+        expect(inserted).toBe(3)
+
+        const rows = byChunkIndex(await store.getChunksByFilePath(filePath))
+        expect(rows.map((row) => row.chunkIndex)).toEqual([0, 1, 2])
+        expect(rows.map((row) => row.contentHash)).toEqual([
+          HELLO_SHA256,
+          HELLO_SHA256,
+          HELLO_SHA256,
+        ])
+        expect(new Set(rows.map((row) => row.contentHash)).size).toBe(1)
+      })
+    })
+
+    it('should keep previously stored rows when vector construction fails during re-ingest', async () => {
+      await withTempDb('ingest-construct-before-delete', async (store) => {
+        const filePath = writeSourceFile('kept.md', 'hello')
+        await store.insertChunks([
+          createTestChunk('stored one', filePath, 0, createNormalizedVector(1)),
+          createTestChunk('stored two', filePath, 1, createNormalizedVector(2)),
+        ])
+
+        // One embedding short of the chunk count: buildVectorChunks throws.
+        const { parser, chunker, embedder } = ingestCollaborators({
+          parsedText: 'replacement text',
+          chunkCount: 2,
+          embeddingCount: 1,
+        })
+
+        await expect(ingestSingleFile(filePath, parser, chunker, embedder, store)).rejects.toThrow(
+          'Missing embedding for chunk 1'
+        )
+
+        const rows = byChunkIndex(await store.getChunksByFilePath(filePath))
+        expect(rows.map((row) => row.text)).toEqual(['stored one', 'stored two'])
       })
     })
   })

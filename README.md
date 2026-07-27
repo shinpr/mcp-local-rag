@@ -107,7 +107,7 @@ mcp-local-rag provides two interfaces: an **MCP server** for AI coding tools and
 
 ### Using with MCP
 
-The MCP server provides 7 tools: `ingest_file`, `ingest_data`, `query_documents`, `read_chunk_neighbors`, `list_files`, `delete_file`, `status`.
+The MCP server provides 9 tools: `ingest_file`, `ingest_data`, `query_documents`, `read_chunk_neighbors`, `list_files`, `delete_file`, `status`, `sync_start`, `sync_status`.
 
 #### Ingesting Documents
 
@@ -215,12 +215,44 @@ Pass the `filePath` and `chunkIndex` from the search result. The response includ
 
 Narrow the listing with `scope` on `list_files` — one path prefix or a list of them. Results are restricted to files reachable at a path equal to or under a prefix (exact-or-descendant); for example, `"/docs/api"` matches `/docs/api` and `/docs/api/auth.md` but not `/docs/apiv2`. Raw-data sources (from `ingest_data`) stay listed regardless of scope. On large volumes, scope also speeds up the listing by skipping out-of-scope directories during the scan.
 
+#### Synchronizing the Index
+
+When files under a configured root change outside your assistant, `sync_start` brings the index back in line: new and changed files are re-ingested, byte-identical files are left untouched, and entries whose source file is gone are removed.
+
+```
+"Sync the index with /Users/me/docs"
+"Sync everything and tell me when it's finished"
+```
+
+`sync_start` takes an optional absolute `path` — a file or a directory inside a configured root; omit it to cover every root — and returns a `jobId` without waiting for the run to finish. Progress is read by polling `sync_status` with that `jobId` until `state` is no longer `running`:
+
+| Field | Meaning |
+|---|---|
+| `state` | `running`, `succeeded`, or `failed`. A job succeeds only when `error` is `null`. |
+| `total` | `null` until the scan has counted the supported files whose bytes it read, then a number. A file skipped for exceeding `MAX_FILE_SIZE` is never read, so it is not counted. |
+| `completed` | `upserted + skipped + empty`; never more than a non-null `total`. |
+| `summary` | `upserted` (new or changed, re-ingested), `skipped` (bytes identical, untouched), `empty` (produced no chunks; prior chunks kept and retried next run), `pruned` (indexed files whose source is gone). `pruned` is counted outside `completed`. |
+| `warnings` | Parts of the scope the scan could not observe — an unreadable directory, a subtree past the scan-depth limit, a symbolic link (the scan never descends into one), or a file larger than `MAX_FILE_SIZE` (never read). Indexed files under them are kept rather than pruned. Paths are shown with your home directory abbreviated to `~`. |
+| `error` | `null` unless the job failed; a failed job carries one message and, for a per-file failure, the file path. |
+
+Whether `path` is inside a configured root is decided from its real location, not from how it is spelled: a path that leaves every root through a symlinked parent directory is refused before anything reads it, with one message that reveals nothing about the target — not whether it exists, and not whether it is readable. A path that is inside a root keeps its own specific message (does not exist, is a symbolic link, is not a regular file or directory, is inside the database or cache directory, is not a supported document type).
+
+Every run hashes the full bytes of every file it scans, so cost scales with the size of the corpus rather than the number of changes. There is no visual mode on sync — a changed PDF is re-ingested as text.
+
+While a sync is running, that server refuses `sync_start`, `ingest_file`, `ingest_data`, and `delete_file` with an error naming the active `jobId`; poll `sync_status` instead of retrying. Search and inspection (`query_documents`, `read_chunk_neighbors`, `list_files`, `status`, `sync_status`) keep working throughout. After a failure, fix the cause and start a new sync — nothing is retried, resumed, or cancelled, and re-ingests that already completed are kept.
+
+The server keeps only the current or latest job: starting a new one replaces a finished record, after which the older `jobId` is reported as unknown, and stopping the server discards the job entirely. Job state lasts only as long as the server process — there is no history and no recovery after a restart, so polling is how a client learns the outcome.
+
+The same reconciliation is available as the CLI [`sync` command](#using-as-cli), which runs in the foreground and prints the counters as JSON. Either way, only one writer may touch a database path at a time: do not run MCP and CLI `ingest`, `delete`, or `sync` mutations against the same `DB_PATH` from different processes — a sync inside the MCP server only excludes mutations in that same process. A background CLI `sync` may run alongside MCP read-only tools.
+
 ### Using as CLI
 
-All MCP tools are also available as CLI commands — no MCP server needed:
+Most MCP tools are also available as CLI commands — no MCP server needed. `sync_status` has no CLI counterpart, since the CLI `sync` blocks until the sync completes and leaves nothing to poll:
 
 ```bash
 npx mcp-local-rag ingest ./docs/               # Bulk ingest files
+npx mcp-local-rag sync ./docs/                  # Reconcile the index with disk
+npx mcp-local-rag sync                          # Same, for every configured root
 npx mcp-local-rag query "authentication API"    # Search documents
 npx mcp-local-rag query "auth" --scope /docs/api --scope /docs/guide  # Restrict to path prefixes (repeatable)
 npx mcp-local-rag read-neighbors --file-path /abs/path.md --chunk-index 5  # Expand context
@@ -231,9 +263,11 @@ npx mcp-local-rag delete ./docs/old.pdf         # Remove content
 npx mcp-local-rag delete --source "https://..."  # Remove by source URL
 ```
 
-`query`, `read-neighbors`, `list`, `status`, and `delete` output JSON to stdout for piping (e.g., `| jq`). `ingest` outputs progress to stderr. Global options (`--db-path`, `--cache-dir`, `--model-name`) go before the subcommand. Run `npx mcp-local-rag --help` for details.
+`query`, `read-neighbors`, `list`, `status`, and `delete` output JSON to stdout for piping (e.g., `| jq`). `ingest` outputs progress to stderr; `sync` reports its counters (`upserted`, `skipped`, `empty`, `pruned`) as JSON on stdout, names each upserted and pruned path on stderr as it happens, runs in the foreground, and exits non-zero on the first error. Global options (`--db-path`, `--cache-dir`, `--model-name`) go before the subcommand. Run `npx mcp-local-rag --help` for details.
 
 > ⚠️ The CLI does **not** read your MCP client config (`mcp.json`, `config.toml`, etc.). Configure the CLI via flags or environment variables as shown below.
+
+> ⚠️ **One writer at a time.** Do not run CLI or MCP `ingest`, `delete`, or `sync` mutations concurrently against the same database path from different processes. Nothing enforces this across processes — it is an operating constraint you keep. A background CLI `sync` may run alongside MCP read-only tools (`query_documents`, `list_files`, `status`, `read_chunk_neighbors`).
 
 #### Configuration
 
@@ -250,7 +284,7 @@ npx mcp-local-rag ingest --base-dir ./docs --base-dir ./specs ./docs/readme.md
 npx mcp-local-rag list --base-dir ./docs --base-dir ./specs
 ```
 
-The positional path to `ingest` must sit inside one of the configured roots. When at least one `--base-dir` is supplied, CLI roots replace any env-var roots (no merge).
+The positional path to `ingest`, and to `sync` when given, must sit inside one of the configured roots. `sync` accepts no `--base-dir`; it reads its roots from `BASE_DIRS` / `BASE_DIR`. When at least one `--base-dir` is supplied, CLI roots replace any env-var roots (no merge).
 
 **Environment variables** — set in your shell:
 

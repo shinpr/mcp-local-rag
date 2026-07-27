@@ -8,6 +8,7 @@
 // structured failure shape `read_chunk_neighbors` already uses — without
 // leaking internal diagnostics to the client.
 
+import { isAbsolute } from 'node:path'
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js'
 import type { ContentFormat } from '../utils/raw-data-utils.js'
 import type {
@@ -17,6 +18,8 @@ import type {
   ListFilesInput,
   QueryDocumentsInput,
   ReadChunkNeighborsInput,
+  SyncStartInput,
+  SyncStatusInput,
 } from './types.js'
 
 const CONTENT_FORMATS: readonly ContentFormat[] = ['text', 'html', 'markdown']
@@ -207,4 +210,72 @@ export function parseReadChunkNeighborsInput(raw: unknown): ReadChunkNeighborsIn
     ...(before !== undefined ? { before: before as number } : {}),
     ...(after !== undefined ? { after: after as number } : {}),
   }
+}
+
+/**
+ * Validate `sync_start` arguments. The tool is legitimately callable with no
+ * arguments — an omitted `path` means "every configured base directory" — so
+ * both `undefined` and `{}` are accepted, the same contract `list_files` has.
+ *
+ * Root containment is deliberately not checked here: the sync core owns that
+ * rule so the CLI and MCP surfaces cannot drift apart.
+ */
+export function parseSyncStartInput(raw: unknown): SyncStartInput {
+  if (raw === undefined) {
+    return {}
+  }
+
+  const { path } = asRecord(raw, 'sync_start')
+
+  if (path === undefined) {
+    return {}
+  }
+
+  if (!nonEmptyString(path)) {
+    throw new McpError(ErrorCode.InvalidParams, 'path must be a non-empty string')
+  }
+
+  // Trimmed for the same reason as `scope`: a whitespace-padded path would
+  // otherwise be resolved verbatim and silently match nothing on disk.
+  const trimmed = path.trim()
+
+  // A relative path would be resolved against the server process's working
+  // directory, which the caller cannot see. `ingest_file` and `delete_file`
+  // already require absolute paths, and the tool description promises one.
+  if (!isAbsolute(trimmed)) {
+    throw new McpError(ErrorCode.InvalidParams, 'path must be an absolute path')
+  }
+
+  return { path: trimmed }
+}
+
+/**
+ * A job id is a `randomUUID()` this server handed out: 36 characters of
+ * hexadecimal and dashes. The cap and the alphabet are enforced because the value
+ * is echoed into the "unknown sync job" message and into a stderr log line — an
+ * unbounded id with a newline in it would forge a log line for the operator.
+ */
+const JOB_ID_PATTERN = /^[0-9a-fA-F-]{1,128}$/
+
+/**
+ * Validate `sync_status` arguments. `jobId` is required; an unknown but
+ * well-formed id is the handler's concern, not this boundary's.
+ */
+export function parseSyncStatusInput(raw: unknown): SyncStatusInput {
+  const { jobId } = asRecord(raw, 'sync_status')
+
+  if (!nonEmptyString(jobId)) {
+    throw new McpError(ErrorCode.InvalidParams, 'jobId must be a non-empty string')
+  }
+
+  const trimmed = jobId.trim()
+
+  if (!JOB_ID_PATTERN.test(trimmed)) {
+    throw new McpError(
+      ErrorCode.InvalidParams,
+      'jobId must be at most 128 characters of hexadecimal digits and dashes'
+    )
+  }
+
+  return { jobId: trimmed }
 }

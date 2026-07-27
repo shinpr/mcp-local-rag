@@ -125,7 +125,7 @@ export const toolDefinitions: Tool[] = [
         scope: {
           oneOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' } }],
           description:
-            'Optional absolute path prefix(es) — one string or a list (unioned) — restricting the listing to files reachable at a path equal to or under a prefix within the base directories. "/docs/api" matches "/docs/api/x.md" but not "/docs/apiv2". Must be absolute (server OS style); a relative prefix matches nothing. Scope filters files by their scan path; ingest_data sources, which have no base-directory path, are always listed.',
+            'Optional absolute path prefix(es) — one string or a list (unioned) — restricting the listing to files reachable at a path equal to or under a prefix within the base directories. "/docs/api" matches "/docs/api/x.md" but not "/docs/apiv2". Must be absolute (server OS style); a relative prefix matches nothing. A prefix outside every base directory yields an empty files list, so compare it against the baseDirs in the response before concluding no files exist. Scope filters files by their scan path; ingest_data sources, which have no base-directory path, are always listed.',
         },
       },
     },
@@ -167,6 +167,36 @@ export const toolDefinitions: Tool[] = [
         },
       },
       required: ['chunkIndex'],
+    },
+  },
+  {
+    name: 'sync_start',
+    description:
+      'Reconcile the index with the files on disk: ingest new and changed files, leave unchanged files alone, and remove index entries for files that are gone. Returns { jobId } without waiting for the run to finish; poll sync_status with that jobId for progress and the final outcome. Only one job is kept, and it is lost when the server process exits.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: {
+          type: 'string',
+          description:
+            'Optional absolute path to a file or directory inside a configured base directory; list_files returns those directories as baseDirs. A file synchronizes only itself and a directory only its own subtree, leaving every path outside it untouched. Omit it to synchronize every configured base directory.',
+        },
+      },
+    },
+  },
+  {
+    name: 'sync_status',
+    description:
+      'Get the current or latest sync job record: { jobId, state ("running" | "succeeded" | "failed"), total (null until scanning has counted the files on disk), completed (upserted + skipped + empty; pruned is counted separately), summary { upserted, skipped, empty, pruned }, warnings, error (null unless the job failed) }. An unknown jobId means the job was replaced by a newer one or lost with a previous server process.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        jobId: {
+          type: 'string',
+          description: 'Identifier returned by sync_start.',
+        },
+      },
+      required: ['jobId'],
     },
   },
 ]

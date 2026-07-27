@@ -91,13 +91,33 @@ function realDelegate(deny: Set<string> = new Set()) {
   }
 }
 
-function mockDirent(name: string, type: 'file' | 'directory') {
+type EntryType = 'file' | 'directory' | 'symlink'
+
+function mockDirent(name: string, type: EntryType) {
   return {
     name,
     isFile: () => type === 'file',
     isDirectory: () => type === 'directory',
-    isSymbolicLink: () => false,
+    isSymbolicLink: () => type === 'symlink',
   }
+}
+
+/**
+ * readdir impl backed by an in-memory tree, leaving `join` as the real (host)
+ * join. Used for entry shapes a real fixture cannot portably produce — a
+ * symlink `Dirent` (creating real symlinks needs elevation on Windows CI).
+ */
+function useSyntheticTree(dirMap: Map<string, Array<[string, EntryType]>>) {
+  mocks.readdir.mockImplementation(async (dirPath: string) => {
+    visited.push(dirPath)
+    const entries = dirMap.get(dirPath)
+    if (!entries) {
+      const err = new Error(`ENOENT: ${dirPath}`) as NodeJS.ErrnoException
+      err.code = 'ENOENT'
+      throw err
+    }
+    return entries.map(([name, type]) => mockDirent(name, type))
+  })
 }
 
 /**
@@ -105,7 +125,7 @@ function mockDirent(name: string, type: 'file' | 'directory') {
  * separator case, which cannot exist on a POSIX filesystem). Also flips `join`
  * to backslash-join so the walker composes Windows-style child paths.
  */
-function useSyntheticBackslashTree(dirMap: Map<string, Array<[string, 'file' | 'directory']>>) {
+function useSyntheticBackslashTree(dirMap: Map<string, Array<[string, EntryType]>>) {
   mocks.join.mockImplementation((...parts: string[]) => parts.join('\\'))
   mocks.readdir.mockImplementation(async (dirPath: string) => {
     visited.push(dirPath)
@@ -391,7 +411,7 @@ describe.each([0, 1])('walker[%i]', (walkerIndex) => {
   // Behavior: scope=[C:\base\a\b] over a backslash tree → in-b.md collected, C:\base\a\bc pruned.
   it('prunes correctly with a backslash-style separator', async () => {
     const winBase = 'C:\\base'
-    const dirMap = new Map<string, Array<[string, 'file' | 'directory']>>([
+    const dirMap = new Map<string, Array<[string, EntryType]>>([
       ['C:\\base', [['a', 'directory']]],
       [
         'C:\\base\\a',
@@ -408,5 +428,106 @@ describe.each([0, 1])('walker[%i]', (walkerIndex) => {
     const result = await walker().run(winBase, ['C:\\base\\a\\b'])
     expect(walker().files(result)).toEqual(['C:\\base\\a\\b\\in-b.md'])
     expect(visited).not.toContain('C:\\base\\a\\bc')
+  })
+})
+
+// ============================================================================
+// Path-granular scan coverage facts (`bfsCollectSupportedFiles` only).
+//
+// Sync converts these paths into comparison-key prefixes that protect exactly
+// the unobserved regions from prune, so each fact must name the first unvisited
+// directory (or the skipped entry) rather than a boolean or a parent path.
+// ============================================================================
+describe('bfsCollectSupportedFiles coverage facts', () => {
+  it('reports the first unvisited directory in depthLimitedDirs and omits fully visited siblings', async () => {
+    // maxDepth 3: base(0) a(1) x(1) a/b(2) a/bc(2) x/y(2) are read; a/b/c(3) is
+    // dequeued and skipped, so it is the only unobserved region.
+    const result = await bfsCollectSupportedFiles(base, [], 3)
+
+    expect(result.depthLimitedDirs).toEqual([dirABC])
+    // Fully visited siblings/ancestors are observed and must stay prunable.
+    for (const observed of [base, dirA, dirAB, dirABc, dirX, dirXY]) {
+      expect(result.depthLimitedDirs).not.toContain(observed)
+    }
+    expect(sorted(result.files)).toEqual(sorted([fRoot, fBar, fInA, fInB, fBoundary, fOut]))
+    expect(result.files).not.toContain(fDeep)
+  })
+
+  it('keeps depthLimited equal to depthLimitedDirs.length > 0', async () => {
+    const limited = await bfsCollectSupportedFiles(base, [], 3)
+    expect(limited.depthLimitedDirs.length).toBeGreaterThan(0)
+    expect(limited.depthLimited).toBe(true)
+
+    const complete = await bfsCollectSupportedFiles(base, [], 10)
+    expect(complete.depthLimitedDirs).toEqual([])
+    expect(complete.depthLimited).toBe(false)
+  })
+
+  it('records every depth-limited branch, one entry per first unvisited directory', async () => {
+    // maxDepth 2: a/b, a/bc and x/y are all dequeued and skipped; a/b/c is never
+    // enqueued, so descendants of an unobserved directory are not repeated.
+    const result = await bfsCollectSupportedFiles(base, [], 2)
+
+    expect(sorted(result.depthLimitedDirs)).toEqual(sorted([dirAB, dirABc, dirXY]))
+    expect(result.depthLimitedDirs).not.toContain(dirABC)
+  })
+
+  it('keeps the { dirPath, code } shape for an unreadable directory', async () => {
+    mocks.readdir.mockImplementation(realDelegate(new Set([dirA])))
+    const result = await bfsCollectSupportedFiles(base, [])
+
+    expect(result.unreadableDirs).toEqual([{ dirPath: dirA, code: 'EACCES' }])
+    expect(result.depthLimitedDirs).toEqual([])
+    expect(result.skippedSymlinks).toEqual([])
+  })
+
+  it('records the full path of every symlinked entry in skippedSymlinks', async () => {
+    // Mocked `Dirent`s, not a real symlink(): Windows CI cannot create symlinks
+    // without elevation, so a real-FS fixture would silently skip there.
+    const symRoot = join(tmpRoot, 'symlink-tree')
+    const symSub = join(symRoot, 'sub')
+    useSyntheticTree(
+      new Map<string, Array<[string, EntryType]>>([
+        [
+          symRoot,
+          [
+            ['linked-dir', 'symlink'],
+            ['real.md', 'file'],
+            ['sub', 'directory'],
+          ],
+        ],
+        [
+          symSub,
+          [
+            ['linked-file.md', 'symlink'],
+            ['ok.md', 'file'],
+          ],
+        ],
+      ])
+    )
+
+    const result = await bfsCollectSupportedFiles(symRoot, [])
+
+    expect(result.skippedSymlinks).toEqual([
+      join(symRoot, 'linked-dir'),
+      join(symSub, 'linked-file.md'),
+    ])
+    // Symlinks are skipped, never followed: the linked dir was never read.
+    expect(visited).not.toContain(join(symRoot, 'linked-dir'))
+    expect(sorted(result.files)).toEqual(sorted([join(symRoot, 'real.md'), join(symSub, 'ok.md')]))
+  })
+
+  it('counts depth from whichever root it is passed', async () => {
+    // Same maxDepth, different roots: /base/a/b as its own depth-zero root
+    // reaches deep.md, which /base cannot reach within the same budget.
+    const fromBase = await bfsCollectSupportedFiles(base, [], 2)
+    expect(fromBase.files).not.toContain(fDeep)
+    expect(fromBase.depthLimitedDirs).toContain(dirAB)
+
+    visited.length = 0
+    const fromSubtree = await bfsCollectSupportedFiles(dirAB, [], 2)
+    expect(fromSubtree.files).toContain(fDeep)
+    expect(fromSubtree.depthLimitedDirs).toEqual([])
+    expect(visited).toEqual(expect.arrayContaining([dirAB, dirABC]))
   })
 })

@@ -24,6 +24,8 @@
 // Chunk-row output is asserted against literal expected values produced by
 // the deterministically-mocked chunker + embedder.
 
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // ============================================
@@ -190,7 +192,10 @@ let VectorStore: VectorStoreCtor
 // Fixtures
 // ============================================
 
-const GENERIC_PDF_PATH = '/tmp/test/default-mode-generic.pdf'
+// Fixture bytes live under the project-root `tmp/` (gitignored) like the rest
+// of the suite, so nothing is written outside the repository tree.
+const GENERIC_PDF_DIR = resolve('./tmp/test-data-ingest-default-mode')
+const GENERIC_PDF_PATH = resolve(GENERIC_PDF_DIR, 'default-mode-generic.pdf')
 
 // Variant (a): generic content — no figure references.
 const GENERIC_PDF_CONTENT = 'plain pdf content for default-mode test'
@@ -224,6 +229,11 @@ function buildServer(): InstanceType<RAGServerCtor> {
 
 describe('VLM PDF Enrichment - Default Mode (no --visual)', () => {
   beforeAll(async () => {
+    // Both dispatch sites hash the raw source bytes for `contentHash`, so the
+    // fixture must exist on disk even though the parser is mocked.
+    mkdirSync(GENERIC_PDF_DIR, { recursive: true })
+    writeFileSync(GENERIC_PDF_PATH, GENERIC_PDF_CONTENT)
+
     vi.resetModules()
     vi.doMock('../../pdf-visual/index.js', pdfVisualFactory)
     vi.doMock('../../parser/index.js', parserFactory)
@@ -266,6 +276,7 @@ describe('VLM PDF Enrichment - Default Mode (no --visual)', () => {
   })
 
   afterAll(() => {
+    rmSync(GENERIC_PDF_DIR, { recursive: true, force: true })
     accessed.touched = false
     accessed.prop = undefined
     // Unregister the mocks installed in beforeAll so they cannot leak to

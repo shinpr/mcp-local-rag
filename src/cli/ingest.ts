@@ -1,11 +1,15 @@
 // CLI ingest subcommand — bulk file ingestion with single optimize() at end
 
-import { stat } from 'node:fs/promises'
+import { readFile, stat } from 'node:fs/promises'
 import { resolve, sep } from 'node:path'
 
 import { SemanticChunker } from '../chunker/index.js'
 import type { Embedder } from '../embedder/index.js'
-import { buildChunksAndEmbeddings, buildVectorChunks } from '../ingest/compute.js'
+import {
+  buildChunksAndEmbeddings,
+  buildVectorChunks,
+  computeContentHash,
+} from '../ingest/compute.js'
 import { prepareVisualPdfChunks } from '../ingest/visual.js'
 import { DocumentParser } from '../parser/index.js'
 import type { QualityProfile } from '../pdf-visual/types.js'
@@ -304,8 +308,42 @@ export type IngestSingleFileOptions =
     }
 
 /**
- * Ingest a single file: parse, chunk, embed, delete old chunks, insert new chunks.
- * Returns the number of chunks inserted.
+ * Read the source file's raw bytes and hash them for `contentHash`.
+ *
+ * Separate from the parser read on purpose: the parser hands back decoded text,
+ * while sync compares the bytes on disk.
+ *
+ * Called BEFORE parsing, which is what fixes the direction of the remaining race.
+ * The reads are still two, so a file rewritten mid-ingestion cannot be captured as
+ * one snapshot; taking the hash first makes the stored hash the OLDER of the two,
+ * so the next sync sees a mismatch and re-ingests. Hashing afterwards paired
+ * chunks built from the old bytes with the new bytes' hash, and every later sync
+ * then read `disk hash == stored hash` and skipped the file forever.
+ *
+ * The parser's two boundary checks therefore have to run here rather than
+ * implicitly ahead of this read: `validateFilePath` refuses a path outside every
+ * configured root — or one reaching outside through a symlinked ancestor — before
+ * its bytes are touched, and `validateFileSize` keeps a whole oversized file out
+ * of memory (the bound the old post-parse position relied on). Both are the
+ * parser's own semantics, re-run idempotently by the parse that follows.
+ *
+ * Unlike the MCP surface, no "is this a regular file" check is needed here:
+ * every path reaching `ingestSingleFile` has already passed a collector that
+ * accepts only regular files with supported extensions — `collectFiles` for the
+ * `ingest` subcommand, `classifyRequestedPath` / `bfsCollectSupportedFiles` for
+ * `sync` — so a directory or a FIFO (whose read never returns) cannot arrive.
+ * `RAGServer.readPreParseContentHash` takes a client-supplied path with no such
+ * collector in front of it and carries that check.
+ */
+async function readContentHash(filePath: string, parser: DocumentParser): Promise<string> {
+  await parser.validateFilePath(filePath)
+  parser.validateFileSize(filePath)
+  return computeContentHash(await readFile(filePath))
+}
+
+/**
+ * Ingest a single file: hash, parse, chunk, embed, delete old chunks, insert new
+ * chunks. Returns the number of chunks inserted.
  *
  * When `options.visual === true` AND the file is a `.pdf`, routes through the
  * visual-enrichment path: `parsePdfPages` + VLM captioning (`pdf-visual`
@@ -324,6 +362,10 @@ export async function ingestSingleFile(
   vectorStore: VectorStore,
   options?: IngestSingleFileOptions
 ): Promise<number> {
+  // Hash before anything parses the file: see `readContentHash` for why the order
+  // is load-bearing rather than incidental.
+  const contentHash = await readContentHash(filePath, parser)
+
   // Parse file
   const isPdf = filePath.toLowerCase().endsWith('.pdf')
   let text: string
@@ -354,15 +396,17 @@ export async function ingestSingleFile(
     // chunks/embeddings produced on the visual path persist correctly. The
     // joined enriched-page text is taken from the helper to preserve the
     // pre-existing `metadata.fileSize` semantics (post-enrichment,
-    // pre-chunking text length).
-    await vectorStore.deleteChunks(filePath)
+    // pre-chunking text length). Construction runs before the delete so a
+    // failure here cannot leave the file absent from the index.
     const vectorChunks = buildVectorChunks({
       filePath,
       chunks,
       embeddings,
       fileSize: visualResult.text.length,
       fileTitle: title,
+      contentHash,
     })
+    await vectorStore.deleteChunks(filePath)
     await vectorStore.insertChunks(vectorChunks)
     return vectorChunks.length
   } else if (isPdf) {
@@ -382,19 +426,19 @@ export async function ingestSingleFile(
     return 0
   }
 
-  // Delete existing chunks for this file
-  await vectorStore.deleteChunks(filePath)
-
-  // Build vector chunks
+  // Build vector chunks before the destructive delete: a construction failure
+  // (e.g. a missing embedding) then leaves the previously indexed rows intact.
   const vectorChunks = buildVectorChunks({
     filePath,
     chunks,
     embeddings,
     fileSize: text.length,
     fileTitle: title,
+    contentHash,
   })
 
-  // Insert chunks
+  // Delete existing chunks for this file, then insert the new ones
+  await vectorStore.deleteChunks(filePath)
   await vectorStore.insertChunks(vectorChunks)
 
   return vectorChunks.length
