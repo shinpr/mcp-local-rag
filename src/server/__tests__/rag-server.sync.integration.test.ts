@@ -19,7 +19,8 @@
 // signal an MCP client has.
 
 import { createHash } from 'node:crypto'
-import { mkdir, rm, writeFile } from 'node:fs/promises'
+import { mkdirSync, rmSync, symlinkSync } from 'node:fs'
+import { chmod, mkdir, rm, symlink, writeFile } from 'node:fs/promises'
 import { join, resolve, sep } from 'node:path'
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { withTestDevice } from '../../__tests__/test-device.js'
@@ -126,6 +127,25 @@ async function makeFixture(name: string, rootCount = 1): Promise<Fixture> {
     roots.push(root)
   }
   return { roots, dbPath: join(caseDir, 'db'), cacheDir: join(caseDir, 'cache') }
+}
+
+/**
+ * Directory symlinks need admin/developer mode on the `windows-latest` CI leg, so
+ * probe support once and skip the escape suite there rather than failing the job
+ * on an environment limitation (same probe as
+ * `src/__tests__/cli/list-scope.int.test.ts`).
+ */
+function directorySymlinkSupported(): boolean {
+  const probeDir = join(TMP_ROOT, 'symlink-probe')
+  try {
+    mkdirSync(join(probeDir, 'target'), { recursive: true })
+    symlinkSync(join(probeDir, 'target'), join(probeDir, 'link'), 'dir')
+    return true
+  } catch {
+    return false
+  } finally {
+    rmSync(probeDir, { recursive: true, force: true })
+  }
 }
 
 /**
@@ -308,6 +328,8 @@ function expectProgressInvariants(snapshots: SyncStatusResult[]): void {
 // ============================================
 // Tests
 // ============================================
+
+const describeSymlinkedRoot = directorySymlinkSupported() ? describe : describe.skip
 
 describe('MCP sync tools', () => {
   beforeAll(async () => {
@@ -774,5 +796,152 @@ describe('MCP sync tools', () => {
     expect(manifest.filter((row) => row.filePath === siblingPath)).toEqual([
       { filePath: siblingPath, contentHash: sha256('an older sibling revision') },
     ])
+  }, 45000)
+
+  // --------------------------------------------
+  // A `path` named THROUGH a symlinked directory
+  // --------------------------------------------
+  //
+  // The MCP client fully controls `path` and is the untrusted party here.
+  // `resolve()` is lexical, so it cannot see that an intermediate component is a
+  // symbolic link: `<root>/link/x.md` passes a key-based containment check while
+  // its real location is outside every configured root. `ingest_file` already
+  // realpath-validates, so this surface must refuse the same paths.
+
+  describeSymlinkedRoot('with a symlinked intermediate directory', () => {
+    interface EscapeFixture extends Fixture {
+      rootDir: string
+      /** The real, out-of-root directory `<root>/link` points at. */
+      outsideDir: string
+    }
+
+    /** `<case>/root/link` → `<case>/outside/secret`, with `db`/`cache` siblings. */
+    async function makeEscapeFixture(name: string): Promise<EscapeFixture> {
+      const caseDir = join(TMP_ROOT, name)
+      await rm(caseDir, { recursive: true, force: true })
+      const rootDir = join(caseDir, 'root')
+      const outsideDir = join(caseDir, 'outside', 'secret')
+      await mkdir(rootDir, { recursive: true })
+      await mkdir(outsideDir, { recursive: true })
+      await symlink(outsideDir, join(rootDir, 'link'), 'dir')
+      return {
+        roots: [rootDir],
+        dbPath: join(caseDir, 'db'),
+        cacheDir: join(caseDir, 'cache'),
+        rootDir,
+        outsideDir,
+      }
+    }
+
+    it('fails the job for an out-of-root file named through the link, naming nothing under it', async () => {
+      const fixture = await makeEscapeFixture('escape-file')
+      const requestedPath = join(fixture.rootDir, 'link', 'inner.md')
+      await writeFile(requestedPath, `out-of-root document ${'s'.repeat(200)}`)
+      const insidePath = await writeFixtureFile(
+        join(fixture.rootDir, 'a.md'),
+        `in-root document ${'a'.repeat(200)}`
+      )
+      await seedRows(fixture, insidePath, 'stale-hash')
+
+      const server = await makeServer(fixture)
+      let terminal: SyncStatusResult
+      try {
+        const jobId = await syncStart(server, { path: requestedPath })
+        terminal = lastSnapshot(await pollUntilTerminal(server, jobId))
+      } finally {
+        await server.close()
+      }
+
+      // The job never reaches `succeeded`, and the one error names only the path
+      // the caller already supplied.
+      expect(terminal.state).toBe('failed')
+      expect(terminal.error).toBe(`Sync path is outside every configured root: ${requestedPath}`)
+      expect(terminal.warnings).toEqual([])
+      expect(JSON.stringify(terminal)).not.toContain(fixture.outsideDir)
+      expect(terminal.summary).toEqual({ upserted: 0, skipped: 0, empty: 0, pruned: 0 })
+      // Nothing out of root was hashed, so the file count never counted it.
+      expect(terminal.total).toBeNull()
+      // No walk happened at all, and no out-of-root row was written.
+      expect(scanArgs).toEqual([])
+      expect(await storedPaths(fixture)).toEqual([insidePath])
+    }, 45000)
+
+    it('fails the job for an out-of-root directory named through the link and scans nothing under it', async () => {
+      const fixture = await makeEscapeFixture('escape-directory')
+      const requestedPath = join(fixture.rootDir, 'link', 'quiet')
+      await writeFixtureFile(
+        join(requestedPath, 'hidden.md'),
+        `out-of-root document ${'h'.repeat(200)}`
+      )
+
+      const server = await makeServer(fixture)
+      let terminal: SyncStatusResult
+      try {
+        const jobId = await syncStart(server, { path: requestedPath })
+        terminal = lastSnapshot(await pollUntilTerminal(server, jobId))
+      } finally {
+        await server.close()
+      }
+
+      expect(terminal.state).toBe('failed')
+      expect(terminal.error).toBe(`Sync path is outside every configured root: ${requestedPath}`)
+      expect(terminal.warnings).toEqual([])
+      const record = JSON.stringify(terminal)
+      expect(record).not.toContain('hidden.md')
+      expect(record).not.toContain(fixture.outsideDir)
+      expect(scanArgs).toEqual([])
+      expect(await storedPaths(fixture)).toEqual([])
+    }, 45000)
+
+    // The assertion that kills the oracle: one requested path, three states of
+    // the out-of-root target, one byte-identical error. Anything that varied per
+    // state would tell the client whether a path outside the roots exists and
+    // whether it is readable.
+    it('reports one identical error whether the out-of-root target is readable, unreadable, or absent', async () => {
+      const fixture = await makeEscapeFixture('escape-oracle')
+      const requestedPath = join(fixture.rootDir, 'link', 'probe.md')
+      await writeFile(requestedPath, `out-of-root document ${'p'.repeat(200)}`)
+
+      const server = await makeServer(fixture)
+      const errors: (string | null)[] = []
+      try {
+        const runOnce = async (): Promise<void> => {
+          const jobId = await syncStart(server, { path: requestedPath })
+          errors.push(lastSnapshot(await pollUntilTerminal(server, jobId)).error)
+        }
+        await runOnce()
+        await chmod(requestedPath, 0o000)
+        await runOnce()
+        await chmod(requestedPath, 0o600)
+        await rm(requestedPath)
+        await runOnce()
+      } finally {
+        await server.close()
+      }
+
+      expect(errors[0]).toBe(`Sync path is outside every configured root: ${requestedPath}`)
+      expect(errors[1]).toBe(errors[0])
+      expect(errors[2]).toBe(errors[0])
+      expect(new Set(errors).size).toBe(1)
+    }, 60000)
+  })
+
+  // The collapse above applies only to out-of-root requests: an in-root path
+  // names nothing the client did not already know, so its specific message stays.
+  it('keeps the specific error for an in-root path that does not exist', async () => {
+    const fixture = await makeFixture('requested-missing')
+    const missingPath = join(fixture.roots[0] ?? '', 'ghost.md')
+
+    const server = await makeServer(fixture)
+    let terminal: SyncStatusResult
+    try {
+      const jobId = await syncStart(server, { path: missingPath })
+      terminal = lastSnapshot(await pollUntilTerminal(server, jobId))
+    } finally {
+      await server.close()
+    }
+
+    expect(terminal.state).toBe('failed')
+    expect(terminal.error).toBe(`Sync path does not exist: ${missingPath}`)
   }, 45000)
 })

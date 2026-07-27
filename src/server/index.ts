@@ -46,7 +46,11 @@ import {
   saveMetaJson,
   saveRawData,
 } from '../utils/raw-data-utils.js'
-import { bfsCollectSupportedFiles, classifyRequestedPath } from '../utils/scan.js'
+import {
+  bfsCollectSupportedFiles,
+  canonicalizeRequestedPath,
+  classifyRequestedPath,
+} from '../utils/scan.js'
 import { nonAbsolutePrefixes } from '../utils/scope-match.js'
 import { type VectorChunk, VectorStore } from '../vectordb/index.js'
 import { DatabaseError } from '../vectordb/types.js'
@@ -1092,6 +1096,11 @@ export class RAGServer {
     let ingestedFiles = 0
 
     const collaborators: SyncCollaborators = {
+      // The containment boundary for a client-supplied path: the core compares
+      // this canonical form against the realpath'd roots, which is the only way
+      // to see that an intermediate component is a symbolic link out of the root.
+      // `ingest_file` validates the same way, so both tools refuse the same paths.
+      canonicalizeRequestedPath,
       // The walker's own predicates, so an explicitly requested path is subject
       // to the same rules as a discovered one and is refused before it is read.
       // A path whose read would never return (a FIFO) is refused here too, which
@@ -1107,6 +1116,13 @@ export class RAGServer {
       // parser, which runs long after the whole file would already be in memory
       // here. Declining (`null`) keeps the rest of the run usable instead of
       // failing every future sync of the whole root on one oversized file.
+      //
+      // The bound holds only against a non-racing filesystem: a writer that grows
+      // the file, or replaces it with a FIFO, between the `stat` and the
+      // `readFile` restores the unbounded read or an indefinite block. That actor
+      // needs local write access as this same user and can already reach the
+      // database directly, so this is a recorded limitation rather than a defended
+      // boundary — as with the watchdog limitation noted on the mutation guard.
       hashFile: async (filePath: string) => {
         if ((await stat(filePath)).size > this.maxFileSize) return null
         const contentHash = computeContentHash(await readFile(filePath))
@@ -1133,6 +1149,9 @@ export class RAGServer {
 
     const result = await runSync({
       roots: this.rawBaseDirs,
+      // The realpath'd counterpart of the same roots, which is what the core
+      // decides requested-path containment in (the parser's boundary domain).
+      canonicalRoots: this.baseDirs,
       dbPath: this.dbPath,
       excludePaths: this.excludePaths,
       platform: process.platform,

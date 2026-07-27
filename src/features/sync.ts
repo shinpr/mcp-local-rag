@@ -13,6 +13,14 @@
 // own. Deletion, by contrast, always uses the verbatim stored `filePath`
 // spellings, because those are what the storage predicate matches.
 //
+// Two spellings, one matcher: `toSyncPathKey` stays purely lexical (a key must be
+// derivable for a file that is no longer on disk) and is what keys, prune
+// identity, and display use, while the requested path's CONTAINMENT is decided
+// against canonicalized values — see `isRequestedPathContained`. This is the same
+// split `DocumentParser` already uses: canonicalize to decide the boundary, store
+// the `resolve()` spelling. Do not collapse it by making key generation follow
+// symbolic links.
+//
 // `platform` is an explicit input rather than a host-platform read, so the
 // Windows key semantics are provable from a POSIX host.
 
@@ -152,6 +160,13 @@ export interface SyncExecutor {
 /** Everything {@link runSync} needs from the outside world. */
 export interface SyncCollaborators extends SyncExecutor {
   /**
+   * Canonical form of the requested path — its parent chain resolved through
+   * symbolic links, the final component verbatim — or `null` when that chain
+   * cannot be resolved. Injected because this module performs no filesystem
+   * access; both adapters supply `canonicalizeRequestedPath` from `utils/scan.ts`.
+   */
+  canonicalizeRequestedPath(path: string): Promise<string | null>
+  /**
    * Classify the requested path WITHOUT reading it, applying the walker's collect
    * predicates (`classifyRequestedPath` in `utils/scan.ts`) so both surfaces
    * refuse the same paths.
@@ -175,7 +190,15 @@ export interface SyncCollaborators extends SyncExecutor {
 }
 
 export interface RunSyncInput {
+  /** Configured roots in the `resolve()`-only spelling the DB keys live in. */
   roots: readonly string[]
+  /**
+   * The same configured roots, canonicalized (realpath'd) — the security domain
+   * the requested path's canonical form is checked against. Both adapters already
+   * hold this list: the MCP server as `baseDirs`, the CLI as
+   * `config.baseDirs.baseDirs`, each the counterpart of its `roots` entry.
+   */
+  canonicalRoots: readonly string[]
   dbPath: string
   excludePaths: readonly string[]
   platform: NodeJS.Platform
@@ -319,6 +342,49 @@ function requestedPathRejection(
 }
 
 /**
+ * The one message every out-of-root request receives. A readable target, an
+ * unreadable one, and an absent one are deliberately indistinguishable here, so
+ * the error text cannot be used to probe for the existence or readability of
+ * paths outside the configured roots. Requests that ARE inside a root keep their
+ * specific messages ({@link requestedPathRejection}): those name nothing the
+ * caller did not already supply.
+ */
+function outsideConfiguredRootsMessage(path: string): string {
+  return `Sync path is outside every configured root: ${path}`
+}
+
+/**
+ * Containment of an explicitly requested path, decided before anything reads it.
+ * Two questions, both answered by composing generated keys with the unchanged
+ * `isUnderOrEqual`:
+ *
+ * 1. Is the requested spelling under a configured root spelling? This keeps the
+ *    request in the same lexical space as the stored DB keys.
+ * 2. Is its canonical form under a canonicalized root? This is the security
+ *    boundary. `resolve()` cannot see that an intermediate component is a
+ *    symbolic link, so question 1 alone accepts `<root>/link/secret.md` whose
+ *    real location is outside every root, and the walker's own symlink skipping
+ *    does not help: nothing walks an explicitly named path.
+ *
+ * A path that cannot be canonicalized fails, which is also what makes the
+ * rejection uniform.
+ */
+async function isRequestedPathContained(
+  requestedPath: string,
+  input: RunSyncInput
+): Promise<boolean> {
+  const { platform } = input
+  const isUnderAny = (path: string, prefixes: readonly string[]): boolean =>
+    prefixes.some((prefix) =>
+      isUnderOrEqual(toSyncPathKey(path, platform), toSyncPathKey(prefix, platform))
+    )
+
+  if (!isUnderAny(requestedPath, input.roots)) return false
+  const canonicalPath = await input.collaborators.canonicalizeRequestedPath(requestedPath)
+  return canonicalPath !== null && isUnderAny(canonicalPath, input.canonicalRoots)
+}
+
+/**
  * Apply a plan: upserts first, then prune, then a single `optimize()`.
  *
  * The first failure anywhere stops the run. Earlier successful mutations stay,
@@ -426,12 +492,11 @@ async function gatherSyncInputs(input: RunSyncInput): Promise<GatherOutcome> {
       scanRoots = input.roots
     } else {
       attributedPath = requestedPath
-      const requestedKey = toSyncPathKey(requestedPath, platform)
-      const insideConfiguredRoot = input.roots.some((root) =>
-        isUnderOrEqual(requestedKey, toSyncPathKey(root, platform))
-      )
-      if (!insideConfiguredRoot) {
-        throw new Error(`Sync path is outside every configured root: ${requestedPath}`)
+      // Containment first, and against canonical values: a path that reaches
+      // outside a configured root through a symlinked ancestor must be refused
+      // before anything classifies, walks, hashes, or ingests it.
+      if (!(await isRequestedPathContained(requestedPath, input))) {
+        throw new Error(outsideConfiguredRootsMessage(requestedPath))
       }
       // Classification happens before any read, and only a directory or a
       // supported regular file survives it: a link, an irregular file, an

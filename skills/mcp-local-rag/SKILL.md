@@ -242,7 +242,7 @@ sync_status({ jobId: "<jobId returned by sync_start>" })
 | Field | Meaning |
 |-------|---------|
 | `state` | `running`, `succeeded`, or `failed`. A job succeeds only when `error` is `null` |
-| `total` | `null` until scanning has counted the supported files on disk, then a number |
+| `total` | `null` until scanning has counted the supported files whose bytes it read, then a number; a file skipped for exceeding `MAX_FILE_SIZE` is never read, so it is not counted |
 | `completed` | `upserted + skipped + empty`; never exceeds a non-null `total` |
 | `summary` | `upserted` (new or changed, re-ingested), `skipped` (bytes identical, untouched), `empty` (no chunks produced; prior chunks and hash kept, retried next run), `pruned` (indexed files whose source is gone). `pruned` is counted outside `completed` |
 | `warnings` | Regions the scan could not observe — an unreadable directory, a subtree past the scan-depth limit, a symbolic link (the scan never descends into one), or a file larger than `MAX_FILE_SIZE` (never read). Indexed files under them are kept, not pruned. Paths appear with the home directory abbreviated to `~` |
@@ -250,7 +250,7 @@ sync_status({ jobId: "<jobId returned by sync_start>" })
 
 Every run hashes the full bytes of every file it scans, so cost scales with total corpus size rather than with the number of changes. A file over `MAX_FILE_SIZE` is not read at all: it is named in `warnings` and its already-indexed chunks are kept.
 
-`path` must be absolute and inside a configured root, and it must be a directory or a supported document file — a symbolic link, a path inside the database or cache directory, and an unsupported extension are all rejected before anything is read.
+`path` must be absolute and inside a configured root, and it must be a directory or a supported document file — a symbolic link, a path inside the database or cache directory, and an unsupported extension are all rejected before anything is read. "Inside a configured root" is decided from the path's real location, not its spelling: a path that leaves every root through a symlinked parent directory is refused with one message that reveals nothing about the target, neither whether it exists nor whether it is readable. A path that is inside a root keeps its own specific message.
 
 - **While a sync runs**, `sync_start`, `ingest_file`, `ingest_data`, and `delete_file` return a tool error naming the active `jobId` — poll `sync_status` instead of retrying. `query_documents`, `read_chunk_neighbors`, `list_files`, `status`, and `sync_status` stay callable throughout.
 - **On failure**, report the message and start a new sync once the cause is fixed. There is no retry, resume, or cancel; upserts that already completed are kept and no prune runs.

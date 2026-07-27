@@ -24,7 +24,11 @@ import {
 import { computeContentHash } from '../ingest/compute.js'
 import { DocumentParser } from '../parser/index.js'
 import { MAX_SCAN_DEPTH } from '../utils/limits.js'
-import { bfsCollectSupportedFiles, classifyRequestedPath } from '../utils/scan.js'
+import {
+  bfsCollectSupportedFiles,
+  canonicalizeRequestedPath,
+  classifyRequestedPath,
+} from '../utils/scan.js'
 import { createEmbedder, createVectorStore, formatCliError } from './common.js'
 import { ingestSingleFile, resolveConfig } from './ingest.js'
 import type { GlobalOptions } from './options.js'
@@ -173,6 +177,10 @@ export async function runSync(args: string[], globalOptions: GlobalOptions = {})
   }
 
   const collaborators: SyncCollaborators = {
+    // The containment boundary for a requested path: the core compares this
+    // canonical form against the realpath'd roots, which is the only way to see
+    // that an intermediate component is a symbolic link out of the root.
+    canonicalizeRequestedPath,
     // The walker's own predicates, so an explicitly requested path is subject to
     // the same rules as a discovered one and is refused before it is read.
     classifyPath: async (path: string) => await classifyRequestedPath(path, excludePaths),
@@ -185,6 +193,13 @@ export async function runSync(args: string[], globalOptions: GlobalOptions = {})
     // parser, which runs long after the whole file would already be in memory
     // here. Declining (`null`) keeps the rest of the run usable instead of
     // aborting every future sync of the whole root on one oversized file.
+    //
+    // The bound holds only against a non-racing filesystem: a writer that grows
+    // the file, or replaces it with a FIFO, between the `stat` and the `readFile`
+    // restores the unbounded read or an indefinite block. That actor needs local
+    // write access as this same user and can already reach the database directly,
+    // so this is a recorded limitation rather than a defended boundary — as with
+    // the watchdog limitation noted on `requestedPathRejection`.
     hashFile: async (filePath: string) => {
       if ((await stat(filePath)).size > config.maxFileSize) return null
       return computeContentHash(await readFile(filePath))
@@ -205,6 +220,9 @@ export async function runSync(args: string[], globalOptions: GlobalOptions = {})
 
     const result = await runSyncCore({
       roots: config.baseDirs.rawBaseDirs,
+      // The realpath'd counterpart of the same roots, which is what the core
+      // decides requested-path containment in (the parser's boundary domain).
+      canonicalRoots: config.baseDirs.baseDirs,
       dbPath: config.dbPath,
       excludePaths,
       platform: process.platform,

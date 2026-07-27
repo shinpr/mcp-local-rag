@@ -732,6 +732,13 @@ describe('executeSyncPlan — first error stops the run (SYNC-004)', () => {
 interface FakeSetup {
   scans?: Record<string, Partial<SyncScanResult>>
   kinds?: Record<string, SyncPathKind>
+  /**
+   * Canonical (realpath'd parent chain) form per requested path. An absent entry
+   * canonicalizes to the path itself, which is what every fixture without a
+   * symlinked ancestor looks like on disk; an explicit `null` is a path whose
+   * parent chain could not be resolved at all.
+   */
+  canonical?: Record<string, string | null>
   hashes?: Record<string, string>
   /** Paths whose hasher declines to read them (over the configured size limit). */
   oversized?: string[]
@@ -751,6 +758,11 @@ function createCollaborators(setup: FakeSetup = {}): {
     log,
     scanArgs,
     collaborators: {
+      // Deliberately unlogged: the ordering proof these tests rely on is that an
+      // out-of-root canonical form leaves the log EMPTY, so the canonicalizer
+      // must not be the entry that makes it non-empty.
+      canonicalizeRequestedPath: async (path) =>
+        path in (setup.canonical ?? {}) ? (setup.canonical?.[path] ?? null) : path,
       classifyPath: async (path) => {
         log.push(`classify:${path}`)
         return setup.kinds?.[path] ?? 'missing'
@@ -801,6 +813,7 @@ const runInput = (
   overrides: Partial<Parameters<typeof runSync>[0]> = {}
 ): Parameters<typeof runSync>[0] => ({
   roots: [ROOT],
+  canonicalRoots: [ROOT],
   dbPath: DB_PATH,
   excludePaths: [],
   platform: 'linux',
@@ -870,6 +883,81 @@ describe('runSync — request classification and scan roots', () => {
     expect(result.error?.filePath).toBe('/elsewhere/x.md')
     expect(result.error?.message).toContain('/elsewhere/x.md')
     expect(result.upserted).toBe(0)
+  })
+
+  // `resolve()` is lexical, so it cannot see that an intermediate component of
+  // the requested path is a symbolic link: `<root>/link/x.md` passes a key-based
+  // containment check while its real location is outside every configured root.
+  // Containment is therefore also decided against canonical values, before
+  // anything classifies, scans, hashes, or ingests the path — the empty log is
+  // that proof.
+  it('rejects a requested path whose canonical form is outside every configured root', async () => {
+    const requestedPath = `${ROOT}/link/secret.md`
+    const { collaborators, log } = createCollaborators({
+      canonical: { [requestedPath]: '/elsewhere/secret-dir/secret.md' },
+      // Both would accept the path if the canonical gate were missing.
+      kinds: { [requestedPath]: 'file' },
+      hashes: { [requestedPath]: HASH_A },
+    })
+
+    const result = await runSync(runInput(collaborators, { requestedPath }))
+
+    expect(log).toEqual([])
+    expect(result.error).toEqual({
+      message: `Sync path is outside every configured root: ${requestedPath}`,
+      filePath: requestedPath,
+    })
+    // The real location never appears in the one message the caller receives.
+    expect(result.error?.message).not.toContain('/elsewhere/secret-dir')
+    expect(result).toMatchObject({ upserted: 0, skipped: 0, empty: 0, pruned: 0 })
+  })
+
+  // A target that cannot be canonicalized at all — an absent parent chain, or a
+  // directory the process may not traverse — must be indistinguishable from a
+  // resolvable out-of-root one, so the error text cannot be used to probe for the
+  // existence or readability of paths outside the roots.
+  it('refuses a requested path it cannot canonicalize with the identical out-of-root message', async () => {
+    const requestedPath = `${ROOT}/link/secret.md`
+    const { collaborators, log } = createCollaborators({
+      canonical: { [requestedPath]: null },
+      kinds: { [requestedPath]: 'file' },
+      hashes: { [requestedPath]: HASH_A },
+    })
+
+    const result = await runSync(runInput(collaborators, { requestedPath }))
+
+    expect(log).toEqual([])
+    expect(result.error).toEqual({
+      message: `Sync path is outside every configured root: ${requestedPath}`,
+      filePath: requestedPath,
+    })
+  })
+
+  // The mirror image: under a symlinked configured root the canonical form of an
+  // in-root path differs from every configured spelling, so the gate must compare
+  // it against the CANONICAL roots. The requested spelling is what continues into
+  // hashing and ingestion, because the stored DB keys are in that space.
+  it('accepts an in-root path whose canonical form is under a canonicalized root', async () => {
+    const requestedPath = `${ROOT}/doc.md`
+    const { collaborators, log } = createCollaborators({
+      canonical: { [requestedPath]: '/real-root/doc.md' },
+      kinds: { [requestedPath]: 'file' },
+      hashes: { [requestedPath]: HASH_A },
+    })
+
+    const result = await runSync(
+      runInput(collaborators, { requestedPath, canonicalRoots: ['/real-root'] })
+    )
+
+    expect(result.error).toBeNull()
+    expect(result.upserted).toBe(1)
+    expect(log).toEqual([
+      `classify:${requestedPath}`,
+      `hash:${requestedPath}`,
+      'manifest',
+      `ingest:${requestedPath}`,
+      'optimize',
+    ])
   })
 
   it('rejects a requested path that does not exist', async () => {
@@ -1187,8 +1275,11 @@ describe('sync executor against a real VectorStore (Early Verification Point)', 
     store: VectorStore,
     log: string[],
     ingest: (filePath: string) => Promise<number>
-  ): SyncExecutor {
+  ): SyncExecutor & Pick<SyncCollaborators, 'canonicalizeRequestedPath'> {
     return {
+      // These fixtures name paths whose parent chain holds no symbolic link, so
+      // the canonical form is the requested spelling itself.
+      canonicalizeRequestedPath: async (path) => path,
       ingestFile: ingest,
       deleteExactPath: async (filePath) => {
         log.push(`delete:${filePath}`)
@@ -1218,6 +1309,7 @@ describe('sync executor against a real VectorStore (Early Verification Point)', 
 
       const result = await runSync({
         roots: [ROOT],
+        canonicalRoots: [ROOT],
         dbPath,
         excludePaths: [],
         platform: 'linux',
@@ -1250,6 +1342,7 @@ describe('sync executor against a real VectorStore (Early Verification Point)', 
 
       const result = await runSync({
         roots: ['C:\\Root'],
+        canonicalRoots: ['C:\\Root'],
         dbPath,
         excludePaths: [],
         platform: 'win32',
@@ -1281,6 +1374,7 @@ describe('sync executor against a real VectorStore (Early Verification Point)', 
 
       const result = await runSync({
         roots: ['C:\\Root'],
+        canonicalRoots: ['C:\\Root'],
         dbPath,
         excludePaths: [],
         platform: 'win32',
@@ -1320,6 +1414,7 @@ describe('sync executor against a real VectorStore (Early Verification Point)', 
 
       const result = await runSync({
         roots: ['C:\\Root'],
+        canonicalRoots: ['C:\\Root'],
         dbPath,
         excludePaths: [],
         platform: 'win32',
@@ -1352,6 +1447,7 @@ describe('sync executor against a real VectorStore (Early Verification Point)', 
 
       const result = await runSync({
         roots: [ROOT],
+        canonicalRoots: [ROOT],
         dbPath,
         excludePaths: [],
         platform: 'linux',
@@ -1387,6 +1483,7 @@ describe('sync executor against a real VectorStore (Early Verification Point)', 
 
       const result = await runSync({
         roots: [ROOT, dbPath],
+        canonicalRoots: [ROOT, dbPath],
         dbPath,
         excludePaths: [`${ROOT}/.cache`],
         platform: 'linux',
@@ -1427,6 +1524,7 @@ describe('sync executor against a real VectorStore (Early Verification Point)', 
 
       const result = await runSync({
         roots: [ROOT],
+        canonicalRoots: [ROOT],
         dbPath,
         excludePaths: [],
         platform: 'linux',
@@ -1465,6 +1563,7 @@ describe('sync executor against a real VectorStore (Early Verification Point)', 
 
       const result = await runSync({
         roots: [ROOT],
+        canonicalRoots: [ROOT],
         dbPath,
         excludePaths: [],
         platform: 'linux',
@@ -1515,6 +1614,7 @@ describe('sync executor against a real VectorStore (Early Verification Point)', 
 
       const first = await runSync({
         roots: [ROOT],
+        canonicalRoots: [ROOT],
         dbPath,
         excludePaths: [],
         platform: 'linux',
@@ -1527,6 +1627,7 @@ describe('sync executor against a real VectorStore (Early Verification Point)', 
 
       const second = await runSync({
         roots: [ROOT],
+        canonicalRoots: [ROOT],
         dbPath,
         excludePaths: [],
         platform: 'linux',

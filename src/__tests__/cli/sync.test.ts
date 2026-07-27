@@ -17,7 +17,7 @@
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { mkdirSync, rmSync, symlinkSync } from 'node:fs'
-import { mkdir, rm, symlink, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, rm, symlink, writeFile } from 'node:fs/promises'
 import { join, resolve, sep } from 'node:path'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -893,6 +893,139 @@ describe('CLI sync', () => {
         { filePath: linkSpelling, contentHash: sha256(content) },
       ])
     })
+  })
+
+  // --------------------------------------------
+  // A path named THROUGH a symlinked directory
+  // --------------------------------------------
+  //
+  // `resolve()` is lexical: it cannot see that an intermediate component of the
+  // requested path is a symbolic link, so `<root>/link/x.md` looks in-root while
+  // its real location is outside every configured root. The walk is unaffected
+  // (it never descends into a link entry), so this is the one route that has to
+  // be closed, and it has to be closed before anything reads the target.
+
+  describeSymlinkedRoot('with a symlinked intermediate directory', () => {
+    interface EscapeFixture extends Fixture {
+      rootDir: string
+      /** The real, out-of-root directory `<root>/link` points at. */
+      outsideDir: string
+    }
+
+    /** `<case>/root/link` → `<case>/outside/secret`, with `db`/`cache` siblings. */
+    async function makeEscapeFixture(name: string): Promise<EscapeFixture> {
+      const caseDir = join(TMP_ROOT, name)
+      await rm(caseDir, { recursive: true, force: true })
+      const rootDir = join(caseDir, 'root')
+      const outsideDir = join(caseDir, 'outside', 'secret')
+      await mkdir(rootDir, { recursive: true })
+      await mkdir(outsideDir, { recursive: true })
+      await symlink(outsideDir, join(rootDir, 'link'), 'dir')
+      const fixture: EscapeFixture = {
+        roots: [rootDir],
+        dbPath: join(caseDir, 'db'),
+        cacheDir: join(caseDir, 'cache'),
+        rootDir,
+        outsideDir,
+      }
+      process.env['BASE_DIRS'] = JSON.stringify(fixture.roots)
+      return fixture
+    }
+
+    it('refuses an out-of-root file named through the link, ingesting and disclosing nothing', async () => {
+      const fixture = await makeEscapeFixture('escape-file')
+      const requestedPath = join(fixture.rootDir, 'link', 'inner.md')
+      await writeFile(requestedPath, `out-of-root document ${'s'.repeat(200)}`)
+      const insidePath = await writeFixtureFile(join(fixture.rootDir, 'a.md'), 'a'.repeat(200))
+      await seedRows(fixture, insidePath, 'stale-hash')
+
+      const outcome = await runCli(fixture, [requestedPath])
+
+      expect(outcome.exitCode).toBe(1)
+      expect(outcome.stdout).toBe('')
+      expect(outcome.stderr.filter((line) => line.startsWith('Error:'))).toEqual([
+        `Error: Sync path is outside every configured root: ${requestedPath}`,
+      ])
+      // Nothing about the real location leaks, under any spelling.
+      expect(outcome.stderr.join('\n')).not.toContain(fixture.outsideDir)
+      // No embedder was built and no row was written for the out-of-root file:
+      // its bytes were never hashed or parsed.
+      expect(calls.createEmbedder).toBe(0)
+      expect(await storedManifest(fixture)).toEqual([
+        { filePath: insidePath, contentHash: 'stale-hash' },
+        { filePath: insidePath, contentHash: 'stale-hash' },
+      ])
+    })
+
+    it('refuses an out-of-root directory named through the link and scans nothing under it', async () => {
+      const fixture = await makeEscapeFixture('escape-directory')
+      const requestedPath = join(fixture.rootDir, 'link', 'quiet')
+      await writeFixtureFile(
+        join(requestedPath, 'hidden.md'),
+        `out-of-root document ${'h'.repeat(200)}`
+      )
+
+      const outcome = await runCli(fixture, [requestedPath])
+
+      expect(outcome.exitCode).toBe(1)
+      expect(outcome.stdout).toBe('')
+      expect(outcome.stderr.filter((line) => line.startsWith('Error:'))).toEqual([
+        `Error: Sync path is outside every configured root: ${requestedPath}`,
+      ])
+      // No entry under the out-of-root directory is named anywhere in the output.
+      expect(outcome.stderr.join('\n')).not.toContain('hidden.md')
+      expect(outcome.stderr.join('\n')).not.toContain(fixture.outsideDir)
+      expect(calls.createEmbedder).toBe(0)
+      expect(await storedManifest(fixture)).toEqual([])
+    })
+
+    // The assertion that kills the oracle: one requested path, three states of
+    // the out-of-root target, one byte-identical message. Anything that varied
+    // per state would tell the caller whether a path outside the roots exists
+    // and whether it is readable.
+    it('answers with one identical message whether the out-of-root target is readable, unreadable, or absent', async () => {
+      const fixture = await makeEscapeFixture('escape-oracle')
+      const requestedPath = join(fixture.rootDir, 'link', 'probe.md')
+      const expectedMessage = `Error: Sync path is outside every configured root: ${requestedPath}`
+      const errorsOf = (outcome: RunOutcome): string[] =>
+        outcome.stderr.filter((line) => line.startsWith('Error:'))
+
+      await writeFile(requestedPath, `out-of-root document ${'p'.repeat(200)}`)
+      const readable = await runCli(fixture, [requestedPath])
+
+      process.exitCode = undefined
+      await chmod(requestedPath, 0o000)
+      const unreadable = await runCli(fixture, [requestedPath])
+
+      process.exitCode = undefined
+      await chmod(requestedPath, 0o600)
+      await rm(requestedPath)
+      const absent = await runCli(fixture, [requestedPath])
+
+      expect(errorsOf(readable)).toEqual([expectedMessage])
+      expect(errorsOf(unreadable)).toEqual(errorsOf(readable))
+      expect(errorsOf(absent)).toEqual(errorsOf(readable))
+      for (const outcome of [readable, unreadable, absent]) {
+        expect(outcome.stdout).toBe('')
+        expect(outcome.stderr.join('\n')).not.toContain(fixture.outsideDir)
+      }
+    })
+  })
+
+  // The collapse above applies only to out-of-root requests: an in-root path
+  // names nothing the caller did not already know, so its specific message
+  // stays.
+  it('keeps the specific message for an in-root path that does not exist', async () => {
+    const fixture = await makeFixture('requested-missing')
+    const missingPath = join(fixture.roots[0]!, 'ghost.md')
+
+    const outcome = await runCli(fixture, [missingPath])
+
+    expect(outcome.exitCode).toBe(1)
+    expect(outcome.stderr.filter((line) => line.startsWith('Error:'))).toEqual([
+      `Error: Sync path does not exist: ${missingPath}`,
+    ])
+    expect(calls.createEmbedder).toBe(0)
   })
 
   // --------------------------------------------

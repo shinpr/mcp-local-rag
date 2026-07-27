@@ -18,7 +18,7 @@
 // treating any gap as a whole-scan failure.
 
 import { lstat, readdir, realpath } from 'node:fs/promises'
-import { extname, join } from 'node:path'
+import { basename, dirname, extname, join } from 'node:path'
 import { SUPPORTED_EXTENSIONS } from '../parser/index.js'
 import { MAX_SCAN_DEPTH } from './limits.js'
 import { isInScope, shouldVisitDir } from './scope-match.js'
@@ -36,6 +36,31 @@ export async function realpathForMatch(filePath: string): Promise<string> {
     return await realpath(filePath)
   } catch {
     return filePath
+  }
+}
+
+/**
+ * Canonical form of one explicitly requested path: its parent chain resolved
+ * through symbolic links, with the final component appended verbatim. `null` when
+ * the parent chain cannot be resolved at all — absent, or a directory this
+ * process may not traverse — which a caller must treat as "not contained",
+ * because telling those cases apart would report the state of paths outside its
+ * configured roots.
+ *
+ * Only the parent chain is resolved, because the requested entry itself is judged
+ * by {@link classifyRequestedPath}'s `lstat`: a symbolic link named directly
+ * inside a root is an in-root entry that is refused as a link, not a path to be
+ * reported by whatever it points at.
+ *
+ * `realpath` here is the containment (security) boundary, the same role it plays
+ * in `DocumentParser.validateFilePath` — never a spelling anything is stored,
+ * looked up, or displayed under. Those stay `resolve()`-only.
+ */
+export async function canonicalizeRequestedPath(path: string): Promise<string | null> {
+  try {
+    return join(await realpath(dirname(path)), basename(path))
+  } catch {
+    return null
   }
 }
 
