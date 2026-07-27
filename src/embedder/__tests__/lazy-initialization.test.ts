@@ -4,7 +4,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { getTestDevice, testModelCacheDir } from '../../__tests__/test-device.js'
 import type { EmbedderConfig } from '../index.js'
-import { Embedder, EmbeddingError } from '../index.js'
+import { Embedder } from '../index.js'
 
 describe('Embedder - Lazy Initialization', () => {
   let testConfig: EmbedderConfig
@@ -95,22 +95,9 @@ describe('Embedder - Lazy Initialization', () => {
     expect(result.length).toBe(384)
   }, 180000)
 
-  // Test 5: Init failure surfaces transformers.js' own message as an EmbeddingError.
-  // Use an invalid DEVICE (a local, network-independent failure) rather than a
-  // nonexistent model: a missing model triggers a live network fetch whose error
-  // text varies by connectivity (HF-hub 404 with the path when online, "fetch
-  // failed" offline), which would make a message-content assertion flaky.
-  // Device validation fails locally with a deterministic message.
-  it('should surface the underlying transformers.js message as an EmbeddingError on init failure', async () => {
-    const embedderWithBadDevice = new Embedder({
-      ...testConfig,
-      device: 'definitely-not-a-real-device',
-    })
-
-    const error = await embedderWithBadDevice.embed('test').catch((e) => e as Error)
-    expect(error).toBeInstanceOf(EmbeddingError)
-    expect((error as EmbeddingError).message).toMatch(/definitely-not-a-real-device/)
-  }, 30000)
+  // Init-failure surfacing on the lazy path is covered in
+  // __tests__/embedder/embedder.test.ts ('device validation'), which asserts the
+  // same EmbeddingError plus the underlying `Unsupported device` text.
 
   // Test 6: Explicit initialize() should still work (backward compatibility)
   it('should still work with explicit initialize() call for backward compatibility', async () => {

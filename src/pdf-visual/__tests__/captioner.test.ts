@@ -19,9 +19,9 @@
 //     resolved device.
 //   - `model.generate` receives the `fast`-profile decoding options
 //     (`max_new_tokens`, `repetition_penalty`, `no_repeat_ngram_size`).
-//   - Post-decode boundary cases: 1000 chars passes through unchanged, 1001
-//     chars truncated to 1000 + `…` (final length 1001), empty/whitespace-only/
-//     control-char-only inputs return `null` without throwing.
+//   - The decoded text is returned through `shared.postProcess`. The control-char,
+//     trim, emptiness, and length-cap rules are pinned directly on that function
+//     in `captioners-shared.test.ts`, which both profiles share.
 //   - Load / decode / generate failures throw `VlmError` with `pageNum` + `cause`.
 //
 // `@huggingface/transformers` is mocked via `vi.hoisted` per the project-wide
@@ -39,7 +39,7 @@ const mocks = vi.hoisted(() => {
   // Default behaviour: processor returns inputs with a 4-token prompt;
   // model.generate returns a 6-token output (4 prompt + 2 generated). The
   // mock processor.batch_decode returns whatever string the test has staged
-  // in `mocks.decodedText` so each AC-011 boundary case can be exercised.
+  // in `mocks.decodedText`.
   const state: {
     decodedText: string
     fromPretrainedThrows: Error | null
@@ -148,7 +148,7 @@ const BASE_CONFIG = {
   cacheDir: '/tmp/cache',
 }
 
-describe('createCaptioner — fast profile dispatch (CaptionerConfig flow + AC-011 length / emptiness)', () => {
+describe('createCaptioner — fast profile dispatch (CaptionerConfig flow)', () => {
   beforeAll(async () => {
     vi.resetModules()
     vi.doMock('@huggingface/transformers', transformersFactory)
@@ -236,79 +236,17 @@ describe('createCaptioner — fast profile dispatch (CaptionerConfig flow + AC-0
     expect(mocks.mockModelFromPretrained).not.toHaveBeenCalled()
   })
 
-  // ----- AC-011: 1000 chars -----
+  // ----- postProcess wiring -----
 
-  it('returns the caption unchanged when decoded length is exactly 1000', async () => {
-    // Arrange
-    const text = 'a'.repeat(1000)
-    mocks.state.decodedText = text
+  it('returns the decoded text through postProcess, not the raw decode', async () => {
+    // The rules themselves are pinned on postProcess in captioners-shared.test.ts;
+    // this only proves the captioner routes its decode through it.
+    mocks.state.decodedText = 'b'.repeat(1001)
     const captioner = createCaptioner(BASE_CONFIG)
 
-    // Act
     const result = await captioner.caption(PNG_BYTES, 1)
 
-    // Assert
-    expect(result).toBe(text)
-    expect(result?.length).toBe(1000)
-  })
-
-  // ----- AC-011: 1001 chars (truncated) -----
-
-  it('truncates to 1000 chars + … when decoded length is 1001', async () => {
-    // Arrange
-    const text = 'b'.repeat(1001)
-    mocks.state.decodedText = text
-    const captioner = createCaptioner(BASE_CONFIG)
-
-    // Act
-    const result = await captioner.caption(PNG_BYTES, 1)
-
-    // Assert: 1000 chars of 'b' + '…' = length 1001 ending in '…'.
-    expect(result?.length).toBe(1001)
-    expect(result?.endsWith('…')).toBe(true)
-    expect(result?.slice(0, 1000)).toBe('b'.repeat(1000))
-  })
-
-  // ----- AC-011: empty -----
-
-  it('returns null when decoded output is the empty string', async () => {
-    // Arrange
-    mocks.state.decodedText = ''
-    const captioner = createCaptioner(BASE_CONFIG)
-
-    // Act
-    const result = await captioner.caption(PNG_BYTES, 1)
-
-    // Assert
-    expect(result).toBeNull()
-  })
-
-  // ----- AC-011: whitespace-only -----
-
-  it('returns null when decoded output is whitespace-only', async () => {
-    // Arrange
-    mocks.state.decodedText = '   \n\t  '
-    const captioner = createCaptioner(BASE_CONFIG)
-
-    // Act
-    const result = await captioner.caption(PNG_BYTES, 1)
-
-    // Assert
-    expect(result).toBeNull()
-  })
-
-  // ----- AC-011: control-char-only -----
-
-  it('returns null when decoded output contains only control chars (except \\n, \\t)', async () => {
-    // Arrange: C0 control chars 0x00..0x08, 0x0b, 0x0c, 0x0e..0x1f and a C1 (0x80).
-    mocks.state.decodedText = ' '
-    const captioner = createCaptioner(BASE_CONFIG)
-
-    // Act
-    const result = await captioner.caption(PNG_BYTES, 1)
-
-    // Assert
-    expect(result).toBeNull()
+    expect(result).toBe(`${'b'.repeat(1000)}…`)
   })
 
   // ----- generate options -----

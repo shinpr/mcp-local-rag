@@ -32,7 +32,7 @@
 
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { basename, join, sep } from 'node:path'
+import { basename, join } from 'node:path'
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // ============================================================================
@@ -350,18 +350,9 @@ describe.each([0, 1])('walker[%i]', (walkerIndex) => {
     expect(scoped).toEqual(unscoped.filter((f) => survivors.has(f)))
   })
 
-  // AC: AC5 — trailing-separator equivalence: /a/b ≡ /a/b/ ≡ /a/b//.
-  // Behavior: three trailing-separator spellings of the same prefix yield one result set.
-  it('treats /a/b, /a/b/ and /a/b// as the same scope', async () => {
-    // Use the OS separator, not a hardcoded "/", so Windows doesn't get a mixed "\...\a\b/" prefix.
-    const plain = walker().files(await walker().run(base, [dirAB]))
-    visited.length = 0
-    const oneSlash = walker().files(await walker().run(base, [`${dirAB}${sep}`]))
-    visited.length = 0
-    const twoSlash = walker().files(await walker().run(base, [`${dirAB}${sep}${sep}`]))
-    expect(sorted(oneSlash)).toEqual(sorted(plain))
-    expect(sorted(twoSlash)).toEqual(sorted(plain))
-  })
+  // Trailing-separator equivalence is a property of the prefix predicate, proved
+  // on it directly in scope-match.test.ts. This file asserts pruning behavior,
+  // which that spelling does not change.
 
   // AC: AC4a — THE load-bearing pushdown proof. A readdir mock that returns
   // EACCES for a scope-outside path AND records visits shows that path is never

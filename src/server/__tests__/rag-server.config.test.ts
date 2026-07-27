@@ -12,6 +12,7 @@ import { mkdirSync, rmSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { testModelCacheDir } from '../../__tests__/test-device.js'
+import type { DocumentParser } from '../../parser/index.js'
 import { BaseDirsConfigError } from '../../utils/base-dirs.js'
 import { RAGServer } from '../index.js'
 
@@ -56,8 +57,7 @@ describe('RAGServerConfig degraded-mode construction guards (P3-T1)', () => {
       maxFileSize: 100 * 1024 * 1024,
       configError,
     })
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const parser = (server as any).parser
+    const { parser } = server as unknown as { parser: DocumentParser }
     await expect(parser.validateFilePath('/tmp/anything.txt')).rejects.toThrow(
       /No configured base directory/
     )

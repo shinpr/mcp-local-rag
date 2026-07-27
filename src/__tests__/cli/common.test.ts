@@ -33,7 +33,6 @@ const MOCKED_PATHS = ['../../vectordb/index.js', '../../embedder/index.js'] as c
 // ============================================
 
 let createEmbedder: typeof import('../../cli/common.js').createEmbedder
-let createVectorStore: typeof import('../../cli/common.js').createVectorStore
 let formatCliError: typeof import('../../cli/common.js').formatCliError
 type ResolvedGlobalConfig = import('../../cli/options.js').ResolvedGlobalConfig
 
@@ -59,28 +58,14 @@ describe('cli/common', () => {
     vi.resetModules()
     vi.doMock('../../vectordb/index.js', vectordbFactory)
     vi.doMock('../../embedder/index.js', embedderFactory)
-    ;({ createEmbedder, createVectorStore, formatCliError } = await import('../../cli/common.js'))
+    // The vectordb mock stays installed so importing cli/common.js does not pull
+    // in the real LanceDB module under `isolate: false`.
+    ;({ createEmbedder, formatCliError } = await import('../../cli/common.js'))
   })
 
   afterAll(() => {
     for (const p of MOCKED_PATHS) vi.doUnmock(p)
     vi.resetModules()
-  })
-
-  describe('createVectorStore', () => {
-    afterEach(() => {
-      mocks.VectorStore.mockReset()
-    })
-
-    it('should construct VectorStore with dbPath from config', () => {
-      createVectorStore(makeConfig({ dbPath: '/data/my-db' }))
-
-      expect(mocks.VectorStore).toHaveBeenCalledOnce()
-      expect(mocks.VectorStore).toHaveBeenCalledWith({
-        dbPath: '/data/my-db',
-        tableName: 'chunks',
-      })
-    })
   })
 
   describe('formatCliError', () => {
