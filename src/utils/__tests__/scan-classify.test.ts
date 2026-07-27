@@ -13,7 +13,7 @@
 // functions under test need no collaborator substitution.
 
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, rmSync, symlinkSync } from 'node:fs'
+import { lstatSync, mkdirSync, rmSync, symlinkSync } from 'node:fs'
 import { mkdir, rm, writeFile } from 'node:fs/promises'
 import { join, resolve, sep } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
@@ -62,7 +62,8 @@ function fifoSupported(): boolean {
   try {
     mkdirSync(TMP_ROOT, { recursive: true })
     execFileSync('mkfifo', [probePath])
-    return true
+    const probe = lstatSync(probePath)
+    return !probe.isFile() && !probe.isDirectory()
   } catch {
     return false
   } finally {

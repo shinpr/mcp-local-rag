@@ -16,7 +16,7 @@
 
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { mkdirSync, rmSync, symlinkSync } from 'node:fs'
+import { lstatSync, mkdirSync, rmSync, symlinkSync } from 'node:fs'
 import { chmod, mkdir, rm, symlink, writeFile } from 'node:fs/promises'
 import { join, resolve, sep } from 'node:path'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -153,7 +153,8 @@ function fifoSupported(): boolean {
   try {
     mkdirSync(TMP_ROOT, { recursive: true })
     execFileSync('mkfifo', [probePath])
-    return true
+    const probe = lstatSync(probePath)
+    return !probe.isFile() && !probe.isDirectory()
   } catch {
     return false
   } finally {
