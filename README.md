@@ -224,7 +224,7 @@ When files under a configured root change outside your assistant, `sync_start` b
 "Sync everything and tell me when it's finished"
 ```
 
-`sync_start` takes an optional absolute `path` — a file or a directory inside a configured root; omit it to cover every root — and returns a `jobId` right away, before any scanning or hashing starts. Progress is read by polling `sync_status` with that `jobId` until `state` is no longer `running`:
+`sync_start` takes an optional absolute `path` — a file or a directory inside a configured root; omit it to cover every root — and returns a `jobId` without waiting for the run to finish. Progress is read by polling `sync_status` with that `jobId` until `state` is no longer `running`:
 
 | Field | Meaning |
 |---|---|

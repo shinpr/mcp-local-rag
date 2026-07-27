@@ -86,6 +86,31 @@ interface EntryTypeFacts {
 }
 
 /**
+ * True when `fullPath` sits under one of the configured excluded prefixes (the
+ * database or cache directory).
+ *
+ * Case-folded on Windows, whose filesystem is case-insensitive: the prefixes are
+ * built with `resolve()` only, which preserves whatever case `BASE_DIRS` and
+ * `DB_PATH` were spelled in, so a raw comparison let `C:\Docs\lancedb\raw.md`
+ * past `c:\docs\lancedb\`. That is worse than a plain miss, because sync's prune
+ * guard compares case-folded keys (`toSyncPathKey`): the internals were ingested
+ * and then could never be pruned. Both sides now agree.
+ *
+ * Purely lexical — no `realpath`, `stat`, or any other syscall, because this runs
+ * once per directory entry on the walk shared with `list_files`, CLI `list`, and
+ * CLI `ingest`.
+ */
+function isUnderExcludedPrefix(
+  fullPath: string,
+  excludePaths: readonly string[],
+  platform: NodeJS.Platform
+): boolean {
+  const fold = (path: string): string => (platform === 'win32' ? path.toLowerCase() : path)
+  const candidate = fold(fullPath)
+  return excludePaths.some((prefix) => candidate.startsWith(fold(prefix)))
+}
+
+/**
  * The collect predicates of {@link bfsCollectSupportedFiles} as one decision, so
  * a discovered directory entry and an explicitly requested path
  * ({@link classifyRequestedPath}) are judged by exactly the same rules instead of
@@ -95,16 +120,22 @@ interface EntryTypeFacts {
  * is reported as a link even under an excluded prefix, and a directory is
  * accepted without any extension test.
  *
+ * `platform` is a parameter rather than a direct `process.platform` read — the
+ * same reason `toSyncPathKey` takes one: the Windows exclusion semantics
+ * ({@link isUnderExcludedPrefix}) must be provable on a macOS/Linux machine. The
+ * default leaves every call site unchanged.
+ *
  * Both `Dirent` (from `readdir`) and `Stats` (from `lstat`) satisfy
  * {@link EntryTypeFacts} structurally.
  */
 export function classifyScanEntry(
   fullPath: string,
   entry: EntryTypeFacts,
-  excludePaths: readonly string[]
+  excludePaths: readonly string[],
+  platform: NodeJS.Platform = process.platform
 ): ScanEntryKind {
   if (entry.isSymbolicLink()) return 'symlink'
-  if (excludePaths.some((ep) => fullPath.startsWith(ep))) return 'excluded'
+  if (isUnderExcludedPrefix(fullPath, excludePaths, platform)) return 'excluded'
   if (entry.isDirectory()) return 'directory'
   if (!entry.isFile()) return 'irregular'
   return SUPPORTED_EXTENSIONS.has(extname(fullPath).toLowerCase()) ? 'file' : 'unsupported'
@@ -125,10 +156,11 @@ export function classifyScanEntry(
  */
 export async function classifyRequestedPath(
   path: string,
-  excludePaths: readonly string[]
+  excludePaths: readonly string[],
+  platform: NodeJS.Platform = process.platform
 ): Promise<ScanEntryKind | 'missing'> {
   try {
-    return classifyScanEntry(path, await lstat(path), excludePaths)
+    return classifyScanEntry(path, await lstat(path), excludePaths, platform)
   } catch {
     return 'missing'
   }
@@ -174,6 +206,10 @@ export interface DirScanResult {
  * intersects no prefix is skipped without any `readdir`. An absent/empty `scope`
  * leaves traversal and collection byte-for-byte unchanged.
  *
+ * `platform` only selects how the exclusion comparison treats case (see
+ * {@link classifyScanEntry}); it defaults to the host, so every existing call is
+ * unchanged.
+ *
  * Does not sort, dedupe, or emit warnings — callers handle those so their
  * existing output contracts are preserved.
  */
@@ -181,7 +217,8 @@ export async function bfsCollectSupportedFiles(
   rootPath: string,
   excludePaths: readonly string[],
   maxDepth: number = MAX_SCAN_DEPTH,
-  scope?: string[]
+  scope?: string[],
+  platform: NodeJS.Platform = process.platform
 ): Promise<DirScanResult> {
   const files: string[] = []
   const unreadableDirs: UnreadableDir[] = []
@@ -226,7 +263,7 @@ export async function bfsCollectSupportedFiles(
 
     for (const entry of entries) {
       const fullPath = join(dirPath, entry.name)
-      const kind = classifyScanEntry(fullPath, entry, excludePaths)
+      const kind = classifyScanEntry(fullPath, entry, excludePaths, platform)
       if (kind === 'symlink') {
         skippedSymlinks.push(fullPath)
       } else if (kind === 'directory') {

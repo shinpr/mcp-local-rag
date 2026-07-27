@@ -311,17 +311,39 @@ export type IngestSingleFileOptions =
  * Read the source file's raw bytes and hash them for `contentHash`.
  *
  * Separate from the parser read on purpose: the parser hands back decoded text,
- * while sync compares the bytes on disk. Called only after parsing has
- * succeeded, so `DocumentParser`'s size limit is enforced before a whole file
- * is held in memory.
+ * while sync compares the bytes on disk.
+ *
+ * Called BEFORE parsing, which is what fixes the direction of the remaining race.
+ * The reads are still two, so a file rewritten mid-ingestion cannot be captured as
+ * one snapshot; taking the hash first makes the stored hash the OLDER of the two,
+ * so the next sync sees a mismatch and re-ingests. Hashing afterwards paired
+ * chunks built from the old bytes with the new bytes' hash, and every later sync
+ * then read `disk hash == stored hash` and skipped the file forever.
+ *
+ * The parser's two boundary checks therefore have to run here rather than
+ * implicitly ahead of this read: `validateFilePath` refuses a path outside every
+ * configured root — or one reaching outside through a symlinked ancestor — before
+ * its bytes are touched, and `validateFileSize` keeps a whole oversized file out
+ * of memory (the bound the old post-parse position relied on). Both are the
+ * parser's own semantics, re-run idempotently by the parse that follows.
+ *
+ * Unlike the MCP surface, no "is this a regular file" check is needed here:
+ * every path reaching `ingestSingleFile` has already passed a collector that
+ * accepts only regular files with supported extensions — `collectFiles` for the
+ * `ingest` subcommand, `classifyRequestedPath` / `bfsCollectSupportedFiles` for
+ * `sync` — so a directory or a FIFO (whose read never returns) cannot arrive.
+ * `RAGServer.readPreParseContentHash` takes a client-supplied path with no such
+ * collector in front of it and carries that check.
  */
-async function readContentHash(filePath: string): Promise<string> {
+async function readContentHash(filePath: string, parser: DocumentParser): Promise<string> {
+  await parser.validateFilePath(filePath)
+  parser.validateFileSize(filePath)
   return computeContentHash(await readFile(filePath))
 }
 
 /**
- * Ingest a single file: parse, chunk, embed, delete old chunks, insert new chunks.
- * Returns the number of chunks inserted.
+ * Ingest a single file: hash, parse, chunk, embed, delete old chunks, insert new
+ * chunks. Returns the number of chunks inserted.
  *
  * When `options.visual === true` AND the file is a `.pdf`, routes through the
  * visual-enrichment path: `parsePdfPages` + VLM captioning (`pdf-visual`
@@ -340,6 +362,10 @@ export async function ingestSingleFile(
   vectorStore: VectorStore,
   options?: IngestSingleFileOptions
 ): Promise<number> {
+  // Hash before anything parses the file: see `readContentHash` for why the order
+  // is load-bearing rather than incidental.
+  const contentHash = await readContentHash(filePath, parser)
+
   // Parse file
   const isPdf = filePath.toLowerCase().endsWith('.pdf')
   let text: string
@@ -378,7 +404,7 @@ export async function ingestSingleFile(
       embeddings,
       fileSize: visualResult.text.length,
       fileTitle: title,
-      contentHash: await readContentHash(filePath),
+      contentHash,
     })
     await vectorStore.deleteChunks(filePath)
     await vectorStore.insertChunks(vectorChunks)
@@ -408,7 +434,7 @@ export async function ingestSingleFile(
     embeddings,
     fileSize: text.length,
     fileTitle: title,
-    contentHash: await readContentHash(filePath),
+    contentHash,
   })
 
   // Delete existing chunks for this file, then insert the new ones

@@ -29,7 +29,7 @@ import {
 } from '../ingest/compute.js'
 import { prepareVisualPdfChunks } from '../ingest/visual.js'
 import { parseHtml } from '../parser/html-parser.js'
-import { DocumentParser } from '../parser/index.js'
+import { DocumentParser, ValidationError } from '../parser/index.js'
 import { extractMarkdownTitle, extractTxtTitle } from '../parser/title-extractor.js'
 import { type BaseDirsConfigError, displayPath } from '../utils/base-dirs.js'
 import { MAX_SCAN_DEPTH } from '../utils/limits.js'
@@ -508,6 +508,37 @@ export class RAGServer {
   }
 
   /**
+   * Hash the source file's raw bytes for `contentHash`, before anything parses it.
+   *
+   * This read is now the first thing to touch a client-supplied path, so the three
+   * checks the parse used to perform ahead of it run here instead:
+   *  - `validateFilePath` refuses a path outside every configured root, or one that
+   *    reaches outside through a symlinked ancestor. It makes no judgement about
+   *    what kind of file the path names.
+   *  - `validateFileSize` keeps a whole oversized file out of memory, which is the
+   *    bound the old post-parse position relied on.
+   *  - the regular-file check refuses everything the read cannot safely consume:
+   *    `readFile` on a directory fails with a native `EISDIR` (an `InternalError`
+   *    at this boundary, where the format dispatch used to answer `InvalidParams`),
+   *    and on a FIFO it blocks forever — which would hold this tool's mutation slot
+   *    until the process restarts, the same trigger sync's `classifyRequestedPath`
+   *    closed on its own route. Neither parser check rejects those: a directory has
+   *    a small size and a FIFO reports size 0.
+   *
+   * `validateFilePath` and `validateFileSize` are re-run idempotently by the parse
+   * that follows; a regular file with an unsupported extension is still rejected
+   * there, by the parser, with its own message.
+   */
+  private async readPreParseContentHash(filePath: string): Promise<string> {
+    await this.parser.validateFilePath(filePath)
+    this.parser.validateFileSize(filePath)
+    if (!(await stat(filePath)).isFile()) {
+      throw new ValidationError(`Ingest source is not a regular file: ${filePath}`)
+    }
+    return computeContentHash(await readFile(filePath))
+  }
+
+  /**
    * ingest_file tool handler (re-ingestion support, transaction processing, rollback capability)
    *
    * `options.skipOptimize` is internal: sync compacts once per run, so its reuse
@@ -520,9 +551,10 @@ export class RAGServer {
     options: { skipOptimize?: boolean } = {}
   ): Promise<{ content: RagContentBlock[] }> {
     const args = parseIngestFileInput(raw)
+    const isRawData = await isPathInRawDataDir(args.filePath, this.dbPath)
     // Skip the configError gate only for paths structurally inside
     // `<dbPath>/raw-data/` (internal invocation from handleIngestData).
-    if (!(await isPathInRawDataDir(args.filePath, this.dbPath))) {
+    if (!isRawData) {
       this.assertConfigOk()
     }
     // `args.filePath` is the DB key (backup/delete/insert/result), stored
@@ -546,10 +578,18 @@ export class RAGServer {
     let embeddings: Awaited<ReturnType<typeof buildChunksAndEmbeddings>>['embeddings']
     // Set only by the raw-data branch, which already reads the whole file, so
     // the contentHash below costs no second read there.
-    let sourceBytes: Buffer | undefined
-    if (await isPathInRawDataDir(args.filePath, this.dbPath)) {
+    const sourceBytes = isRawData ? await readFile(args.filePath) : undefined
+    // The hash covers the raw file bytes as they were BEFORE the parse, so a file
+    // rewritten during the parse/chunk/embed window leaves a hash that is OLDER
+    // than the disk bytes and the next sync re-ingests it. Hashing afterwards
+    // stored the new bytes' hash against chunks built from the old ones, and every
+    // later sync then read `disk hash == stored hash` and skipped the file forever.
+    const contentHash =
+      sourceBytes === undefined
+        ? await this.readPreParseContentHash(args.filePath)
+        : computeContentHash(sourceBytes)
+    if (sourceBytes !== undefined) {
       // Raw-data files: skip parser validation, read directly.
-      sourceBytes = await readFile(args.filePath)
       text = sourceBytes.toString('utf-8')
       const meta = await loadMetaJson(args.filePath)
       title = meta?.title ?? null
@@ -609,15 +649,13 @@ export class RAGServer {
 
     // Create vector chunks BEFORE the destructive delete, so a construction
     // failure (e.g. a missing embedding) cannot leave the file with no rows.
-    // The hash covers the raw file bytes, not the decoded text; parser branches
-    // read them here, after the parser's size limit has been enforced.
     const vectorChunks = buildVectorChunks({
       filePath: args.filePath,
       chunks,
       embeddings,
       fileSize: text.length,
       fileTitle: title || null,
-      contentHash: computeContentHash(sourceBytes ?? (await readFile(args.filePath))),
+      contentHash,
     })
 
     // Delete existing data

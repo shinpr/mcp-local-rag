@@ -248,8 +248,16 @@ export function planSync(input: SyncPlanInput): SyncPlan {
   const isKeyUnder = (key: string, prefixes: readonly string[]): boolean =>
     prefixes.some((prefix) => isUnderOrEqual(key, keyOf(prefix)))
 
-  const scopePrefixes =
-    input.request.kind === 'roots' ? input.roots : ([input.request.path] as const)
+  const request = input.request
+  const scopePrefixes = request.kind === 'roots' ? input.roots : ([request.path] as const)
+  // A file request addresses exactly one comparison key, so its prune scope is
+  // equality rather than `isKeyUnder`'s exact-or-descendant membership: a stored
+  // row at `<requested file>/child.md` — left behind by a directory that was later
+  // replaced by a file of the same name — is a different key and must survive.
+  // Directory and roots requests keep the descendant semantics.
+  const requestedFileKey = request.kind === 'file' ? keyOf(request.path) : null
+  const isInRequestedScope = (rowKey: string): boolean =>
+    requestedFileKey === null ? isKeyUnder(rowKey, scopePrefixes) : rowKey === requestedFileKey
 
   const diskByKey = new Map<string, SyncDiskFile>()
   for (const file of input.diskFiles) {
@@ -295,7 +303,7 @@ export function planSync(input: SyncPlanInput): SyncPlan {
   const prunes: SyncPruneAction[] = []
   for (const [rowKey, group] of storedByKey) {
     if (diskByKey.has(rowKey)) continue
-    if (!isKeyUnder(rowKey, scopePrefixes)) continue
+    if (!isInRequestedScope(rowKey)) continue
     if (isKeyUnder(rowKey, unobservedPrefixes)) continue
     if (isKeyUnder(rowKey, input.excludePaths)) continue
     if (group.paths.some((path) => isManagedRawDataPath(path, input.dbPath))) continue

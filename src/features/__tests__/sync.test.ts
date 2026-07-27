@@ -272,6 +272,21 @@ describe('planSync — prune evidence (SYNC-002)', () => {
     expect(upsertPaths(plan)).toEqual([`${ROOT}/sub/target.md`])
   })
 
+  it('never prunes a stored key that is a descendant of the requested file path', () => {
+    // A file request addresses exactly one comparison key, but scope membership is
+    // exact-or-descendant: a row left behind by a directory that was later replaced
+    // by a file of the same name counts as "inside" the requested file's scope.
+    const plan = planSync(
+      planInput({
+        request: { kind: 'file', path: `${ROOT}/report.md` },
+        diskFiles: [{ filePath: `${ROOT}/report.md`, contentHash: HASH_A }],
+        dbRows: [{ filePath: `${ROOT}/report.md/old-child.md`, contentHash: HASH_B }],
+      })
+    )
+
+    expect(plan.prunes).toEqual([])
+  })
+
   it('prunes the requested file itself once it has left the disk', () => {
     const plan = planSync(
       planInput({

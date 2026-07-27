@@ -172,7 +172,7 @@ export const toolDefinitions: Tool[] = [
   {
     name: 'sync_start',
     description:
-      'Reconcile the index with the files on disk: ingest new and changed files, leave unchanged files alone, and remove index entries for files that are gone. Returns { jobId } immediately, before scanning or hashing starts; poll sync_status with that jobId for progress and the final outcome. Only one job is kept, and it is lost when the server process exits.',
+      'Reconcile the index with the files on disk: ingest new and changed files, leave unchanged files alone, and remove index entries for files that are gone. Returns { jobId } without waiting for the run to finish; poll sync_status with that jobId for progress and the final outcome. Only one job is kept, and it is lost when the server process exits.',
     inputSchema: {
       type: 'object',
       properties: {

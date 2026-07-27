@@ -1667,6 +1667,12 @@ describe('VectorStore', () => {
       return {
         parser: {
           parseFile: async () => ({ content: options.parsedText, title: 'Stub Title' }),
+          // Real DocumentParser boundary checks, as recording spies: the pre-parse
+          // `contentHash` read runs them itself, because it no longer sits behind
+          // the parse that used to. Their decisions are pinned against a real
+          // `DocumentParser` in `src/__tests__/cli/ingest-content-hash-pre-parse.test.ts`.
+          validateFilePath: vi.fn().mockResolvedValue(undefined),
+          validateFileSize: vi.fn(),
         } as unknown as Parameters<typeof ingestSingleFile>[1],
         chunker: {
           chunkText: async () => chunks,

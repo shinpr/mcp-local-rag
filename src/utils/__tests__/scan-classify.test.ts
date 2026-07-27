@@ -17,7 +17,8 @@ import { mkdirSync, rmSync, symlinkSync } from 'node:fs'
 import { mkdir, rm, writeFile } from 'node:fs/promises'
 import { join, resolve, sep } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { classifyRequestedPath, classifyScanEntry } from '../scan.js'
+import { MAX_SCAN_DEPTH } from '../limits.js'
+import { bfsCollectSupportedFiles, classifyRequestedPath, classifyScanEntry } from '../scan.js'
 
 // ============================================
 // Fixtures
@@ -193,4 +194,58 @@ describe('classifyRequestedPath', () => {
     },
     5000
   )
+})
+
+// ============================================
+// Case-folded exclusion (Windows), both routes
+// ============================================
+
+describe('exclude-prefix comparison, case differences', () => {
+  // Exclude prefixes are built with `resolve()` only, which preserves case, so on
+  // Windows — where the filesystem does not — `BASE_DIRS` and `DB_PATH` spelled
+  // with different case left database and cache files classified as documents.
+  // Worse than a plain miss: the prune guard compares case-folded keys
+  // (`toSyncPathKey`), so those files were ingested and then never prunable.
+  // `platform` is a parameter for the same reason `toSyncPathKey` takes one — the
+  // Windows branch has to be provable from a POSIX host.
+  const caseDir = join(TMP_ROOT, 'case-fold')
+  const dbDir = join(caseDir, 'LanceDB')
+  const dbFile = join(dbDir, 'raw.md')
+  const documentFile = join(caseDir, 'report.md')
+  // The same directory as `dbDir`, spelled in a different case, prefixed exactly
+  // the way both adapters build `excludePaths`.
+  const differentlyCasedDbPrefix = `${dbDir.toLowerCase()}${sep}`
+
+  beforeAll(async () => {
+    await mkdir(dbDir, { recursive: true })
+    await writeFile(dbFile, 'database internals')
+    await writeFile(documentFile, 'a document')
+  })
+
+  afterAll(async () => {
+    await rm(TMP_ROOT, { recursive: true, force: true })
+  })
+
+  const walkedFiles = async (platform: NodeJS.Platform): Promise<string[]> =>
+    (
+      await bfsCollectSupportedFiles(
+        caseDir,
+        [differentlyCasedDbPrefix],
+        MAX_SCAN_DEPTH,
+        undefined,
+        platform
+      )
+    ).files.sort()
+
+  it('excludes a path that differs from its prefix only in case under win32', async () => {
+    expect(await walkedFiles('win32')).toEqual([documentFile])
+    expect(await classifyRequestedPath(dbFile, [differentlyCasedDbPrefix], 'win32')).toBe(
+      'excluded'
+    )
+  })
+
+  it('keeps the comparison case-sensitive on a POSIX platform', async () => {
+    expect(await walkedFiles('linux')).toEqual([dbFile, documentFile].sort())
+    expect(await classifyRequestedPath(dbFile, [differentlyCasedDbPrefix], 'linux')).toBe('file')
+  })
 })

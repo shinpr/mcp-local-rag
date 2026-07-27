@@ -16,7 +16,7 @@ description: Search, ingest, expand chunk context, or manage local documents via
 | `list_files` | `npx mcp-local-rag list [--scope <prefix>]` | File ingestion status; optional `scope` to limit to a path prefix (reachable scan path) |
 | `status` | `npx mcp-local-rag status` | Database stats |
 | `read_chunk_neighbors` | `npx mcp-local-rag read-neighbors` | Read N chunks adjacent to a known chunkIndex (context expansion; call after `query_documents` or grep) |
-| `sync_start` | `npx mcp-local-rag sync [path]` | Reconcile the index with disk after files changed outside this session; returns a `jobId` immediately. See [Index sync](#index-sync). |
+| `sync_start` | `npx mcp-local-rag sync [path]` | Reconcile the index with disk after files changed outside this session; returns a `jobId` without waiting for the run to finish. See [Index sync](#index-sync). |
 | `sync_status` | — | Poll a `sync_start` job for progress and its final outcome |
 
 ## Workflow
@@ -237,7 +237,7 @@ sync_start({ path: "/absolute/path/inside/a/root" })   // omit path to cover eve
 sync_status({ jobId: "<jobId returned by sync_start>" })
 ```
 
-`sync_start` returns `{ jobId }` immediately, before scanning or hashing begins — the call does not block for the sync. Poll `sync_status` with that `jobId` until `state` is no longer `running`:
+`sync_start` returns `{ jobId }` without waiting for the run to finish — the call does not block for the sync. Poll `sync_status` with that `jobId` until `state` is no longer `running`:
 
 | Field | Meaning |
 |-------|---------|

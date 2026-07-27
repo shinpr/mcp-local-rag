@@ -357,7 +357,7 @@ describe('MCP sync tools', () => {
   // Start before work (SYNC-006)
   // --------------------------------------------
 
-  it('returns a jobId before scanning or hashing starts', async () => {
+  it('returns a jobId without waiting for the run to finish', async () => {
     const fixture = await makeFixture('start-before-work')
     const filePath = await writeFixtureFile(
       join(fixture.roots[0] ?? '', 'a.md'),

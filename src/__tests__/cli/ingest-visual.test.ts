@@ -51,6 +51,9 @@ const mocks = vi.hoisted(() => {
     parseFile: vi.fn(),
     parsePdf: vi.fn(),
     parsePdfPages: vi.fn(),
+    // Real DocumentParser methods, called by the pre-parse `contentHash` read.
+    validateFilePath: vi.fn().mockResolvedValue(undefined),
+    validateFileSize: vi.fn(),
 
     // ---------------- Chunker ----------------
     chunkText: vi.fn(),
@@ -89,6 +92,12 @@ const parserFactory = () => ({
     this.parseFile = mocks.parseFile
     this.parsePdf = mocks.parsePdf
     this.parsePdfPages = mocks.parsePdfPages
+    // Real DocumentParser boundary checks, as recording spies: the pre-parse
+    // `contentHash` read runs them itself, because it no longer sits behind the
+    // parse that used to. Their decisions are pinned against a real
+    // `DocumentParser` in `ingest-content-hash-pre-parse.test.ts`.
+    this.validateFilePath = mocks.validateFilePath
+    this.validateFileSize = mocks.validateFileSize
   }),
   SUPPORTED_EXTENSIONS: new Set(['.pdf', '.docx', '.txt', '.md']),
 })

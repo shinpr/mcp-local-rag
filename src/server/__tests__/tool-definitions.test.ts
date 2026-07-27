@@ -94,10 +94,15 @@ describe('sync_start tool definition', () => {
     expect(Object.keys(syncStart.inputSchema.properties ?? {})).toEqual(['path'])
   })
 
-  it('states that the call returns a jobId before the work begins and is polled via sync_status', () => {
+  it('states that the call returns a jobId without waiting for the run and is polled via sync_status', () => {
     const description = syncStart.description as string
     expect(description).toMatch(/jobId/)
-    expect(description).toMatch(/before scanning/i)
+    expect(description).toMatch(/without waiting for the run to finish/i)
+    // Not "before scanning or hashing starts": `handleSyncStart` calls
+    // `void this.runSyncJob(...)`, which runs synchronously up to its first
+    // `await`, so the scan has already been started by the time the reply
+    // resolves — only hashing has not.
+    expect(description).not.toMatch(/before scanning/i)
     expect(description).toMatch(/sync_status/)
   })
 
