@@ -474,6 +474,18 @@ describe('CLI sync', () => {
     ])
     expect(manifest.filter((row) => row.filePath === emptyPath)).toEqual([])
     expect(manifest.filter((row) => row.filePath === gonePath)).toEqual([])
+
+    // Counters alone do not say which file changed, so each mutated path is named.
+    // Unchanged files stay silent, which keeps the output proportional to changes.
+    const named = outcome.stderr.filter((line) => /^(upserted|pruned) /.test(line)).sort()
+    expect(named).toEqual(
+      [
+        `upserted ${addedPath} (1 chunks)`,
+        `upserted ${changedPath} (1 chunks)`,
+        `pruned ${gonePath}`,
+      ].sort()
+    )
+    expect(outcome.stderr.join('\n')).not.toContain(unchangedPath)
   })
 
   // --------------------------------------------

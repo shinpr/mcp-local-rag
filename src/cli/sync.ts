@@ -205,10 +205,21 @@ export async function runSync(args: string[], globalOptions: GlobalOptions = {})
       return computeContentHash(await readFile(filePath))
     },
     loadDbManifest: async () => await vectorStore.listChunkHashes(),
-    ingestFile: async (filePath: string) =>
-      await ingestSingleFile(filePath, parser, chunker, ensureEmbedder(), vectorStore, {
-        visual: false,
-      }),
+    // Named as it happens, so a long run shows which file it is on and the
+    // counters alone are not the only record of what changed. A zero-chunk file
+    // already reports itself from inside `ingestSingleFile`.
+    ingestFile: async (filePath: string) => {
+      const chunkCount = await ingestSingleFile(
+        filePath,
+        parser,
+        chunker,
+        ensureEmbedder(),
+        vectorStore,
+        { visual: false }
+      )
+      if (chunkCount > 0) console.error(`upserted ${filePath} (${chunkCount} chunks)`)
+      return chunkCount
+    },
     deleteExactPath: async (filePath: string) => await vectorStore.deleteChunks(filePath),
     optimize: async () => {
       await vectorStore.optimize()
@@ -231,6 +242,10 @@ export async function runSync(args: string[], globalOptions: GlobalOptions = {})
       ...(parsed.path === undefined ? {} : { requestedPath: resolve(parsed.path) }),
       collaborators,
     })
+
+    for (const prunedPath of result.prunedPaths) {
+      console.error(`pruned ${prunedPath}`)
+    }
 
     for (const warning of coverageWarnings(result.coverage, config.maxFileSize)) {
       console.error(warning)

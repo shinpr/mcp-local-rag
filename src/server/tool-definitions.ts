@@ -125,7 +125,7 @@ export const toolDefinitions: Tool[] = [
         scope: {
           oneOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' } }],
           description:
-            'Optional absolute path prefix(es) — one string or a list (unioned) — restricting the listing to files reachable at a path equal to or under a prefix within the base directories. "/docs/api" matches "/docs/api/x.md" but not "/docs/apiv2". Must be absolute (server OS style); a relative prefix matches nothing. Scope filters files by their scan path; ingest_data sources, which have no base-directory path, are always listed.',
+            'Optional absolute path prefix(es) — one string or a list (unioned) — restricting the listing to files reachable at a path equal to or under a prefix within the base directories. "/docs/api" matches "/docs/api/x.md" but not "/docs/apiv2". Must be absolute (server OS style); a relative prefix matches nothing. A prefix outside every base directory yields an empty files list, so compare it against the baseDirs in the response before concluding no files exist. Scope filters files by their scan path; ingest_data sources, which have no base-directory path, are always listed.',
         },
       },
     },
@@ -179,7 +179,7 @@ export const toolDefinitions: Tool[] = [
         path: {
           type: 'string',
           description:
-            'Optional absolute path to a file or directory inside a configured base directory. Omit it to synchronize every configured base directory. Example: "/Users/user/documents/manual.pdf"',
+            'Optional absolute path to a file or directory inside a configured base directory; list_files returns those directories as baseDirs. Omit it to synchronize every configured base directory. Example: "/Users/user/documents/manual.pdf"',
         },
       },
     },
@@ -187,7 +187,7 @@ export const toolDefinitions: Tool[] = [
   {
     name: 'sync_status',
     description:
-      'Get the current or latest sync job record: { jobId, state ("running" | "succeeded" | "failed"), total (null until scanning has counted the files on disk), completed (upserted + skipped + empty), summary { upserted, skipped, empty, pruned }, warnings, error (null unless the job failed) }. An unknown jobId means the job was replaced by a newer one or lost with a previous server process.',
+      'Get the current or latest sync job record: { jobId, state ("running" | "succeeded" | "failed"), total (null until scanning has counted the files on disk), completed (upserted + skipped + empty; pruned is counted separately), summary { upserted, skipped, empty, pruned }, warnings, error (null unless the job failed) }. An unknown jobId means the job was replaced by a newer one or lost with a previous server process.',
     inputSchema: {
       type: 'object',
       properties: {

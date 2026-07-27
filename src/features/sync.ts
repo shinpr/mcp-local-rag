@@ -133,11 +133,16 @@ export interface SyncCounters {
   pruned: number
 }
 
-export interface SyncExecutionResult extends SyncCounters {
+/** One stored spelling per pruned comparison key, so a count of N reports N paths. */
+interface PrunedPaths {
+  prunedPaths: string[]
+}
+
+export interface SyncExecutionResult extends SyncCounters, PrunedPaths {
   error: SyncError | null
 }
 
-export interface SyncResult extends SyncCounters {
+export interface SyncResult extends SyncCounters, PrunedPaths {
   /** Scanner facts as data. Formatting and reporting belong to the adapters. */
   coverage: SyncCoverage
   error: SyncError | null
@@ -412,6 +417,7 @@ export async function executeSyncPlan(
   let pruned = 0
   let mutated = false
   let error: SyncError | null = null
+  const prunedPaths: string[] = []
 
   for (const action of plan.upserts) {
     try {
@@ -435,14 +441,16 @@ export async function executeSyncPlan(
 
   if (error === null) {
     for (const action of plan.prunes) {
+      const [reported] = action.storedPaths
       try {
         for (const storedPath of action.storedPaths) {
           await executor.deleteExactPath(storedPath)
           mutated = true
         }
         pruned += 1
+        if (reported !== undefined) prunedPaths.push(reported)
       } catch (caught) {
-        error = { message: toMessage(caught), filePath: action.storedPaths[0] ?? null }
+        error = { message: toMessage(caught), filePath: reported ?? null }
         break
       }
     }
@@ -456,7 +464,7 @@ export async function executeSyncPlan(
     }
   }
 
-  return { upserted, skipped: plan.skipped, empty, pruned, error }
+  return { upserted, skipped: plan.skipped, empty, pruned, prunedPaths, error }
 }
 
 // ============================================
@@ -584,6 +592,7 @@ export async function runSync(input: RunSyncInput): Promise<SyncResult> {
       skipped: 0,
       empty: 0,
       pruned: 0,
+      prunedPaths: [],
       coverage: gathered.coverage,
       error: gathered.error,
     }

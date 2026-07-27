@@ -69,7 +69,7 @@ The positional `path` is optional and must sit inside a configured base director
 
 A passed `path` is rejected before it is read when it is a symbolic link, when it is neither a regular file nor a directory, when it sits inside the database or cache directory, or when its extension is not a supported document type — the same rules the directory scan applies to what it finds.
 
-Output: one JSON object to stdout on success, warnings and errors to stderr. There is no per-file progress output (`ingest` has that; `sync` does not).
+Output: one JSON object to stdout on success. Each upserted and pruned path is named on stderr as it happens, alongside warnings and errors; unchanged files stay silent, so the output is proportional to what changed.
 
 | Counter | Meaning |
 |---------|---------|

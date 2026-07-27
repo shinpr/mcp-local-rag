@@ -263,7 +263,7 @@ npx mcp-local-rag delete ./docs/old.pdf         # Remove content
 npx mcp-local-rag delete --source "https://..."  # Remove by source URL
 ```
 
-`query`, `read-neighbors`, `list`, `status`, and `delete` output JSON to stdout for piping (e.g., `| jq`). `ingest` outputs progress to stderr; `sync` reports its counters (`upserted`, `skipped`, `empty`, `pruned`) as JSON on stdout and its warnings and errors on stderr (no per-file progress), runs in the foreground, and exits non-zero on the first error. Global options (`--db-path`, `--cache-dir`, `--model-name`) go before the subcommand. Run `npx mcp-local-rag --help` for details.
+`query`, `read-neighbors`, `list`, `status`, and `delete` output JSON to stdout for piping (e.g., `| jq`). `ingest` outputs progress to stderr; `sync` reports its counters (`upserted`, `skipped`, `empty`, `pruned`) as JSON on stdout, names each upserted and pruned path on stderr as it happens, runs in the foreground, and exits non-zero on the first error. Global options (`--db-path`, `--cache-dir`, `--model-name`) go before the subcommand. Run `npx mcp-local-rag --help` for details.
 
 > ⚠️ The CLI does **not** read your MCP client config (`mcp.json`, `config.toml`, etc.). Configure the CLI via flags or environment variables as shown below.
 

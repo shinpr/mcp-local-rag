@@ -16,7 +16,7 @@ description: Search, ingest, expand chunk context, or manage local documents via
 | `list_files` | `npx mcp-local-rag list [--scope <prefix>]` | File ingestion status; optional `scope` to limit to a path prefix (reachable scan path) |
 | `status` | `npx mcp-local-rag status` | Database stats |
 | `read_chunk_neighbors` | `npx mcp-local-rag read-neighbors` | Read N chunks adjacent to a known chunkIndex (context expansion; call after `query_documents` or grep) |
-| `sync_start` | `npx mcp-local-rag sync [path]` | Reconcile the index with disk after files changed outside this session; returns a `jobId` without waiting for the run to finish. See [Index sync](#index-sync). |
+| `sync_start` | `npx mcp-local-rag sync [path]` | Reconcile the index with disk after files changed outside this session. See [Index sync](#index-sync) |
 | `sync_status` | — | Poll a `sync_start` job for progress and its final outcome |
 
 ## Workflow
@@ -237,7 +237,7 @@ sync_start({ path: "/absolute/path/inside/a/root" })   // omit path to cover eve
 sync_status({ jobId: "<jobId returned by sync_start>" })
 ```
 
-`sync_start` returns `{ jobId }` without waiting for the run to finish — the call does not block for the sync. Poll `sync_status` with that `jobId` until `state` is no longer `running`:
+`sync_start` returns `{ jobId }` without waiting for the run to finish. Poll `sync_status` with that `jobId` until `state` is no longer `running`:
 
 | Field | Meaning |
 |-------|---------|
@@ -248,16 +248,16 @@ sync_status({ jobId: "<jobId returned by sync_start>" })
 | `warnings` | Regions the scan could not observe — an unreadable directory, a subtree past the scan-depth limit, a symbolic link (the scan never descends into one), or a file larger than `MAX_FILE_SIZE` (never read). Indexed files under them are kept, not pruned. Paths appear with the home directory abbreviated to `~` |
 | `error` | `null` unless the job failed; a failed job carries one message and, for a per-file failure, the file path |
 
-Every run hashes the full bytes of every file it scans, so cost scales with total corpus size rather than with the number of changes. A file over `MAX_FILE_SIZE` is not read at all: it is named in `warnings` and its already-indexed chunks are kept.
+Every run hashes the full bytes of every file it scans, so cost scales with total corpus size rather than with the number of changes.
 
-`path` must be absolute and inside a configured root, and it must be a directory or a supported document file — a symbolic link, a path that is neither a regular file nor a directory, a path inside the database or cache directory, and an unsupported extension are all rejected before anything is read. "Inside a configured root" is decided from the path's real location, not its spelling: a path that leaves every root through a symlinked parent directory is refused with one message that reveals nothing about the target, neither whether it exists nor whether it is readable. A path that is inside a root keeps its own specific message.
+`path` must be absolute and inside a configured root — `list_files` returns the roots as `baseDirs` — and it must be a directory or a supported document file — a symbolic link, a path that is neither a regular file nor a directory, a path inside the database or cache directory, and an unsupported extension are all rejected before anything is read. "Inside a configured root" is decided from the path's real location, not its spelling: a path that leaves every root through a symlinked parent directory is refused with one message that reveals nothing about the target, neither whether it exists nor whether it is readable. A path that is inside a root keeps its own specific message.
 
 - **While a sync runs**, `sync_start`, `ingest_file`, `ingest_data`, and `delete_file` return a tool error naming the active `jobId` — poll `sync_status` instead of retrying. `query_documents`, `read_chunk_neighbors`, `list_files`, `status`, and `sync_status` stay callable throughout.
 - **On failure**, report the message and start a new sync once the cause is fixed. There is no retry, resume, or cancel; upserts that already completed are kept and no prune runs.
 - **Only the current or latest job is kept.** A new `sync_start` replaces a terminal record, and the older `jobId` then reports as unknown. Server process exit discards the job, so never treat a `jobId` as durable.
 - **One writer at a time.** A running sync only excludes mutations inside this server process: never run CLI or MCP `ingest`, `delete`, or `sync` mutations against the same database path from two processes at once (see [CLI commands](#cli-commands)). Read-only tools stay callable alongside a background CLI `sync`.
 
-These are ordinary MCP tools: polling `sync_status` is the only progress mechanism, and no notification or client-specific setup is involved.
+Polling is the only progress mechanism: no notification or client-specific setup is involved.
 
 ### CLI commands
 
@@ -265,7 +265,7 @@ CLI subcommands mirror MCP tools. Useful for bulk operations, scripting, and env
 
 - `query`, `list`, `status`, `delete` output JSON to stdout
 - `ingest` outputs progress to stderr
-- `sync [path]` reconciles the index with disk (re-ingest changed and new files, drop entries whose source is gone). Prefer it over re-running `ingest` when the index is already populated and only changed files need reconciling. Counters JSON to stdout, warnings and errors to stderr (no per-file progress); runs in the foreground and exits non-zero on the first error
+- `sync [path]` reconciles the index with disk (re-ingest changed and new files, drop entries whose source is gone). Prefer it over re-running `ingest` when the index is already populated and only changed files need reconciling. Counters JSON to stdout; each upserted and pruned path named on stderr as it happens; runs in the foreground and exits non-zero on the first error
 - One writer at a time: never run CLI or MCP `ingest`, `delete`, or `sync` mutations against the same database path from two processes at once. Read-only tools stay callable alongside a background `sync`
 - Use `--help` on any command for options
 - See [cli-reference.md](references/cli-reference.md) for options and config matching

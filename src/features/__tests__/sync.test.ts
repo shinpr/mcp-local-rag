@@ -580,7 +580,14 @@ describe('executeSyncPlan — mutation gating', () => {
     const result = await executeSyncPlan({ upserts: [], skipped: 4, prunes: [] }, executor)
 
     expect(log).toEqual([])
-    expect(result).toEqual({ upserted: 0, skipped: 4, empty: 0, pruned: 0, error: null })
+    expect(result).toEqual({
+      upserted: 0,
+      skipped: 4,
+      empty: 0,
+      pruned: 0,
+      prunedPaths: [],
+      error: null,
+    })
   })
 
   it('records empty and optimizes nothing when a file yields zero chunks', async () => {
@@ -592,7 +599,14 @@ describe('executeSyncPlan — mutation gating', () => {
     )
 
     expect(log).toEqual([`ingest:${ROOT}/empty.md`])
-    expect(result).toEqual({ upserted: 0, skipped: 0, empty: 1, pruned: 0, error: null })
+    expect(result).toEqual({
+      upserted: 0,
+      skipped: 0,
+      empty: 1,
+      pruned: 0,
+      prunedPaths: [],
+      error: null,
+    })
   })
 
   it('optimizes exactly once after a mutating run', async () => {
@@ -608,7 +622,14 @@ describe('executeSyncPlan — mutation gating', () => {
     )
 
     expect(log).toEqual([`ingest:${ROOT}/a.md`, `delete:${ROOT}/gone.md`, 'optimize'])
-    expect(result).toEqual({ upserted: 1, skipped: 1, empty: 0, pruned: 1, error: null })
+    expect(result).toEqual({
+      upserted: 1,
+      skipped: 1,
+      empty: 0,
+      pruned: 1,
+      prunedPaths: [`${ROOT}/gone.md`],
+      error: null,
+    })
   })
 
   it('deletes stale stored spellings only after a successful insert', async () => {
@@ -659,6 +680,7 @@ describe('executeSyncPlan — first error stops the run (SYNC-004)', () => {
       skipped: 0,
       empty: 0,
       pruned: 0,
+      prunedPaths: [],
       error: { message: 'embedding failed', filePath: `${ROOT}/b.md` },
     })
   })
@@ -686,6 +708,7 @@ describe('executeSyncPlan — first error stops the run (SYNC-004)', () => {
       skipped: 0,
       empty: 0,
       pruned: 1,
+      prunedPaths: [`${ROOT}/first.md`],
       error: { message: 'delete failed', filePath: `${ROOT}/second.md` },
     })
   })
@@ -718,6 +741,7 @@ describe('executeSyncPlan — first error stops the run (SYNC-004)', () => {
       skipped: 0,
       empty: 0,
       pruned: 0,
+      prunedPaths: [],
       error: { message: 'delete failed', filePath: `${ROOT}/A.md` },
     })
   })
@@ -883,6 +907,7 @@ describe('runSync — request classification and scan roots', () => {
       skipped: 1,
       empty: 0,
       pruned: 0,
+      prunedPaths: [],
       coverage: noCoverage(),
       error: null,
     })
@@ -1093,6 +1118,7 @@ describe('runSync — gathering', () => {
       skipped: 0,
       empty: 0,
       pruned: 0,
+      prunedPaths: [],
       coverage: noCoverage(),
       error: { message: 'manifest unavailable', filePath: null },
     })
@@ -1146,6 +1172,7 @@ describe('runSync — gathering', () => {
       skipped: 0,
       empty: 0,
       pruned: 0,
+      prunedPaths: [],
       coverage: { ...noCoverage(), oversizedFiles: [oversizedPath] },
       error: null,
     })
@@ -1199,6 +1226,7 @@ describe('runSync — gathering', () => {
       skipped: 1,
       empty: 0,
       pruned: 0,
+      prunedPaths: [],
       coverage: noCoverage(),
       error: null,
     })
@@ -1374,7 +1402,13 @@ describe('sync executor against a real VectorStore (Early Verification Point)', 
         },
       })
 
-      expect(result).toMatchObject({ upserted: 0, skipped: 1, pruned: 0, error: null })
+      expect(result).toMatchObject({
+        upserted: 0,
+        skipped: 1,
+        pruned: 0,
+        prunedPaths: [],
+        error: null,
+      })
       expect(log).toEqual([])
       expect(await hashesOf(store, 'c:\\root\\sub\\live.md')).toEqual([HASH_A, HASH_A])
     })
@@ -1406,7 +1440,7 @@ describe('sync executor against a real VectorStore (Early Verification Point)', 
         },
       })
 
-      expect(result).toMatchObject({ upserted: 1, pruned: 0, error: null })
+      expect(result).toMatchObject({ upserted: 1, pruned: 0, prunedPaths: [], error: null })
       expect(log).toEqual([`ingest:${diskPath}`, 'delete:c:\\root\\sub\\live.md', 'optimize'])
       expect(await hashesOf(store, diskPath)).toEqual([HASH_B])
       expect(await store.getChunksByFilePath('c:\\root\\sub\\live.md')).toEqual([])
@@ -1446,7 +1480,13 @@ describe('sync executor against a real VectorStore (Early Verification Point)', 
         },
       })
 
-      expect(result).toMatchObject({ upserted: 1, skipped: 0, pruned: 0, error: null })
+      expect(result).toMatchObject({
+        upserted: 1,
+        skipped: 0,
+        pruned: 0,
+        prunedPaths: [],
+        error: null,
+      })
       expect(log).toEqual([`ingest:${diskPath}`, 'delete:c:\\root\\sub\\live.md', 'optimize'])
       expect(await hashesOf(store, diskPath)).toEqual([HASH_B])
       expect(await store.getChunksByFilePath('c:\\root\\sub\\live.md')).toEqual([])
@@ -1635,7 +1675,13 @@ describe('sync executor against a real VectorStore (Early Verification Point)', 
         collaborators: collaborators(),
       })
 
-      expect(first).toMatchObject({ upserted: 0, empty: 1, pruned: 0, error: null })
+      expect(first).toMatchObject({
+        upserted: 0,
+        empty: 1,
+        pruned: 0,
+        prunedPaths: [],
+        error: null,
+      })
       expect(log).toEqual([`ingest:${ROOT}/empty.md`])
       expect(await hashesOf(store, `${ROOT}/empty.md`)).toEqual([HASH_A, HASH_A, HASH_A])
 
