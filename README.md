@@ -243,7 +243,7 @@ While a sync is running, that server refuses `sync_start`, `ingest_file`, `inges
 
 The server keeps only the current or latest job: starting a new one replaces a finished record, after which the older `jobId` is reported as unknown, and stopping the server discards the job entirely. Job state lasts only as long as the server process — there is no history and no recovery after a restart, so polling is how a client learns the outcome.
 
-The same reconciliation is available as the CLI [`sync` command](#using-as-cli), which runs in the foreground and prints the counters as JSON. Either way, only one writer may touch a database path at a time: do not run MCP and CLI `ingest`, `delete`, or `sync` mutations against the same `DB_PATH` from different processes — a sync inside the MCP server only excludes mutations in that same process. A background CLI `sync` may run alongside MCP read-only tools.
+The same reconciliation is available as the CLI [`sync` command](#using-as-cli), which runs in the foreground and prints the counters as JSON. Either way, only one writer may touch a database path at a time: keep MCP and CLI `ingest`, `delete`, and `sync` mutations against one `DB_PATH` to a single process — a sync inside the MCP server only excludes mutations in that same process. A background CLI `sync` may run alongside MCP read-only tools.
 
 ### Using as CLI
 
@@ -267,7 +267,7 @@ npx mcp-local-rag delete --source "https://..."  # Remove by source URL
 
 > ⚠️ The CLI does **not** read your MCP client config (`mcp.json`, `config.toml`, etc.). Configure the CLI via flags or environment variables as shown below.
 
-> ⚠️ **One writer at a time.** Do not run CLI or MCP `ingest`, `delete`, or `sync` mutations concurrently against the same database path from different processes. Nothing enforces this across processes — it is an operating constraint you keep. A background CLI `sync` may run alongside MCP read-only tools (`query_documents`, `list_files`, `status`, `read_chunk_neighbors`).
+> ⚠️ **One writer at a time.** Keep CLI and MCP `ingest`, `delete`, and `sync` mutations against one database path to a single process. Nothing enforces this across processes — it is an operating constraint you keep. A background CLI `sync` may run alongside MCP read-only tools (`query_documents`, `list_files`, `status`, `read_chunk_neighbors`).
 
 #### Configuration
 

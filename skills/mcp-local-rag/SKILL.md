@@ -255,8 +255,8 @@ Every run hashes the full bytes of every file it scans, so cost scales with tota
 - **While a sync runs**, `sync_start`, `ingest_file`, `ingest_data`, and `delete_file` return a tool error naming the active `jobId` — poll `sync_status` instead of retrying. `query_documents`, `read_chunk_neighbors`, `list_files`, `status`, and `sync_status` stay callable throughout.
 - **On failure**, report the message and start a new sync once the cause is fixed. There is no retry, resume, or cancel; upserts that already completed are kept and no prune runs.
 - **When you cannot poll to a terminal state**, report the `jobId` and the latest counters and stop. The run continues in the server and the same `jobId` still answers, so it can be re-checked later.
-- **Only the current or latest job is kept.** A new `sync_start` replaces a terminal record, and the older `jobId` then reports as unknown. Server process exit discards the job, so never treat a `jobId` as durable.
-- **One writer at a time.** A running sync only excludes mutations inside this server process: never run CLI or MCP `ingest`, `delete`, or `sync` mutations against the same database path from two processes at once (see [CLI commands](#cli-commands)). Read-only tools stay callable alongside a background CLI `sync`.
+- **Only the current or latest job is kept.** A new `sync_start` replaces a terminal record, and the older `jobId` then reports as unknown. Server process exit discards the job, so treat a `jobId` as valid only for the life of that server process.
+- **One writer at a time.** A running sync only excludes mutations inside this server process, so keep CLI and MCP `ingest`, `delete`, and `sync` mutations against one database path to a single process at a time (see [CLI commands](#cli-commands)). Read-only tools stay callable alongside a background CLI `sync`.
 
 Polling is the only progress mechanism: no notification or client-specific setup is involved.
 
@@ -267,7 +267,7 @@ CLI subcommands mirror MCP tools. Useful for bulk operations, scripting, and env
 - `query`, `list`, `status`, `delete` output JSON to stdout
 - `ingest` outputs progress to stderr
 - `sync [path]` reconciles the index with disk (re-ingest changed and new files, drop entries whose source is gone). Prefer it over re-running `ingest` when the index is already populated and only changed files need reconciling. Counters JSON to stdout; each upserted and pruned path named on stderr as it happens; runs in the foreground and exits non-zero on the first error
-- One writer at a time: never run CLI or MCP `ingest`, `delete`, or `sync` mutations against the same database path from two processes at once. Read-only tools stay callable alongside a background `sync`
+- One writer at a time: keep CLI and MCP `ingest`, `delete`, and `sync` mutations against one database path to a single process at a time. Read-only tools stay callable alongside a background `sync`
 - Use `--help` on any command for options
 - See [cli-reference.md](references/cli-reference.md) for options and config matching
 
