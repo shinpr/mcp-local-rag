@@ -21,7 +21,7 @@ import { lstat, readdir, realpath } from 'node:fs/promises'
 import { basename, dirname, extname, join } from 'node:path'
 import { SUPPORTED_EXTENSIONS } from '../parser/index.js'
 import { MAX_SCAN_DEPTH } from './limits.js'
-import { isInScope, shouldVisitDir } from './scope-match.js'
+import { isInScope, isUnderOrEqual, shouldVisitDir } from './scope-match.js'
 
 /**
  * Canonical identity key for the `list`/`list_files` cross-reference: a file's
@@ -96,6 +96,10 @@ interface EntryTypeFacts {
  * guard compares case-folded keys (`toSyncPathKey`): the internals were ingested
  * and then could never be pruned. Both sides now agree.
  *
+ * Exact-or-descendant via `isUnderOrEqual`: the prefixes carry a trailing
+ * separator, so `startsWith` matched the directory's contents but not the
+ * directory itself, and the walk descended into it once per run.
+ *
  * Purely lexical — no `realpath`, `stat`, or any other syscall, because this runs
  * once per directory entry on the walk shared with `list_files`, CLI `list`, and
  * CLI `ingest`.
@@ -107,7 +111,7 @@ function isUnderExcludedPrefix(
 ): boolean {
   const fold = (path: string): string => (platform === 'win32' ? path.toLowerCase() : path)
   const candidate = fold(fullPath)
-  return excludePaths.some((prefix) => candidate.startsWith(fold(prefix)))
+  return excludePaths.some((prefix) => isUnderOrEqual(candidate, fold(prefix)))
 }
 
 /**

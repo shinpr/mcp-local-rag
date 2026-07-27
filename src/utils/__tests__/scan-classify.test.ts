@@ -248,4 +248,31 @@ describe('exclude-prefix comparison, case differences', () => {
     expect(await walkedFiles('linux')).toEqual([dbFile, documentFile].sort())
     expect(await classifyRequestedPath(dbFile, [differentlyCasedDbPrefix], 'linux')).toBe('file')
   })
+
+  // The prefixes carry a trailing separator, so `startsWith` matched the
+  // directory's contents but never the directory itself.
+  it('excludes the database directory itself, not only its contents', async () => {
+    const ownPrefix = `${dbDir}${sep}`
+    expect(await classifyRequestedPath(dbDir, [ownPrefix], 'linux')).toBe('excluded')
+    expect(await classifyRequestedPath(dbDir, [ownPrefix], 'win32')).toBe('excluded')
+    expect(await classifyRequestedPath(documentFile, [ownPrefix], 'linux')).toBe('file')
+  })
+
+  // A symlink inside the excluded directory is the observable proof: reaching it
+  // means the walk read a directory it should have refused, and it would then
+  // become an unobserved prefix protecting rows in a region that is out of scope.
+  itWithSymlinks('does not descend into the excluded directory during a walk', async () => {
+    symlinkSync(documentFile, join(dbDir, 'alias.md'), 'file')
+
+    const result = await bfsCollectSupportedFiles(
+      caseDir,
+      [`${dbDir}${sep}`],
+      MAX_SCAN_DEPTH,
+      undefined,
+      'linux'
+    )
+
+    expect(result.files).toEqual([documentFile])
+    expect(result.skippedSymlinks).toEqual([])
+  })
 })

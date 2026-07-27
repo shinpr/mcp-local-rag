@@ -273,9 +273,8 @@ describe('planSync — prune evidence (SYNC-002)', () => {
   })
 
   it('never prunes a stored key that is a descendant of the requested file path', () => {
-    // A file request addresses exactly one comparison key, but scope membership is
-    // exact-or-descendant: a row left behind by a directory that was later replaced
-    // by a file of the same name counts as "inside" the requested file's scope.
+    // A file request matches its own key only, so a row left behind by a directory
+    // later replaced by a file of the same name is out of scope.
     const plan = planSync(
       planInput({
         request: { kind: 'file', path: `${ROOT}/report.md` },
