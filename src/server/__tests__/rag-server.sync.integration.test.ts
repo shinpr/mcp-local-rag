@@ -630,9 +630,82 @@ describe('MCP sync tools', () => {
     expect(paths).toEqual([firstPath, secondPath].sort())
     expect(paths).not.toContain(deepPath)
     // The unobserved region is reported on the job record so the caller knows
-    // why its indexed files were kept.
-    expect(terminal.warnings.some((warning) => warning.includes(deepDir))).toBe(true)
+    // why its indexed files were kept. Matched on the portion below `tmp/`,
+    // because this surface abbreviates a home-directory prefix to `~` (whether
+    // one applies depends on where the checkout lives); the abbreviation itself
+    // is pinned by its own case below.
+    expect(
+      terminal.warnings.some((warning) => warning.includes(deepDir.slice(TMP_ROOT.length)))
+    ).toBe(true)
   }, 45000)
+
+  // --------------------------------------------
+  // Warning presentation and compaction
+  // --------------------------------------------
+
+  it('abbreviates the home directory in job warnings, as list_files already does', async () => {
+    const fixture = await makeFixture('home-abbreviation')
+    const deepDir = deepChainDir(fixture.roots[0] ?? '', MAX_SCAN_DEPTH)
+    await writeFixtureFile(
+      join(deepDir, 'deep.md'),
+      `too deep for a root-relative scan ${'c'.repeat(200)}`
+    )
+
+    const savedHome = process.env['HOME']
+    // The fixture is not really under the operator's home, so `HOME` is pointed at
+    // it: the assertion is about the abbreviation, not about where `tmp/` lives.
+    process.env['HOME'] = TMP_ROOT
+    let terminal: SyncStatusResult
+    const server = await makeServer(fixture)
+    try {
+      const jobId = await syncStart(server)
+      terminal = lastSnapshot(await pollUntilTerminal(server, jobId))
+    } finally {
+      await server.close()
+      if (savedHome === undefined) {
+        delete process.env['HOME']
+      } else {
+        process.env['HOME'] = savedHome
+      }
+    }
+
+    expect(terminal.state).toBe('succeeded')
+    const depthWarnings = terminal.warnings.filter((warning) => warning.includes('maximum depth'))
+    expect(depthWarnings).toHaveLength(1)
+    // The path is still identifiable, but the home prefix — and with it the OS
+    // account name — is withheld from the client.
+    expect(depthWarnings[0]).toContain(`~${deepDir.slice(TMP_ROOT.length)}`)
+    expect(depthWarnings[0]).not.toContain(TMP_ROOT)
+  }, 45000)
+
+  it('compacts once for the whole run, and not at all for a no-op', async () => {
+    const fixture = await makeFixture('single-optimize')
+    const rootDir = fixture.roots[0] ?? ''
+    await writeFixtureFile(join(rootDir, 'first.md'), `first document ${'a'.repeat(200)}`)
+    await writeFixtureFile(join(rootDir, 'second.md'), `second document ${'b'.repeat(200)}`)
+
+    const server = await makeServer(fixture)
+    const vectorStore = (server as unknown as { vectorStore: InstanceType<typeof VectorStore> })
+      .vectorStore
+    const optimizeSpy = vi.spyOn(vectorStore, 'optimize')
+    try {
+      const jobId = await syncStart(server)
+      const terminal = lastSnapshot(await pollUntilTerminal(server, jobId))
+      expect(terminal.summary).toEqual({ upserted: 2, skipped: 0, empty: 0, pruned: 0 })
+      // Two upserts, one compaction: the per-file `optimize()` of `ingest_file` is
+      // skipped for sync's reuse of that handler.
+      expect(optimizeSpy).toHaveBeenCalledTimes(1)
+
+      optimizeSpy.mockClear()
+      const noopJobId = await syncStart(server)
+      const noop = lastSnapshot(await pollUntilTerminal(server, noopJobId))
+      expect(noop.summary).toEqual({ upserted: 0, skipped: 2, empty: 0, pruned: 0 })
+      expect(optimizeSpy).not.toHaveBeenCalled()
+    } finally {
+      optimizeSpy.mockRestore()
+      await server.close()
+    }
+  }, 60000)
 
   it('makes an explicit directory the depth-zero BFS root and forwards no scope to the walker', async () => {
     const fixture = await makeFixture('explicit-directory')

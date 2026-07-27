@@ -67,7 +67,9 @@ Reconcile the index with the files on disk: ingest new and changed files, leave 
 
 The positional `path` is optional and must sit inside a configured base directory; omit it to synchronize every configured root. A directory is scanned, while a single file is synchronized on its own and its siblings are left untouched. `sync` takes no `--base-dir`: roots come from `BASE_DIRS` / `BASE_DIR` (default: cwd).
 
-Output: one JSON object to stdout on success, progress and warnings to stderr.
+A passed `path` is rejected before it is read when it is a symbolic link, when it is neither a regular file nor a directory, when it sits inside the database or cache directory, or when its extension is not a supported document type — the same rules the directory scan applies to what it finds.
+
+Output: one JSON object to stdout on success, warnings and errors to stderr. There is no per-file progress output (`ingest` has that; `sync` does not).
 
 | Counter | Meaning |
 |---------|---------|
@@ -76,11 +78,11 @@ Output: one JSON object to stdout on success, progress and warnings to stderr.
 | `empty` | Files that produced no chunks; previously indexed chunks and their hash are kept, and the file is retried on the next run |
 | `pruned` | Indexed files whose source is gone and whose absence the scan observed |
 
-Every run hashes the full bytes of every file it scans, so cost scales with total corpus size rather than with the number of changes.
+Every run hashes the full bytes of every file it scans, so cost scales with total corpus size rather than with the number of changes. A file larger than the configured `MAX_FILE_SIZE` is not read at all: it is named in a stderr warning, its already-indexed chunks are kept, and the rest of the run proceeds.
 
 The first error goes to stderr and the run exits non-zero, with no JSON on stdout. Upserts that already completed are kept, the remaining upserts and the whole prune step are abandoned, and nothing is rolled back or retried — rerun `sync` to recover.
 
-Pruning requires evidence of absence. When part of the requested scope could not be observed — an unreadable directory, a subtree past the scan-depth limit, or a symbolic link (symlinks are never followed) — indexed files under it are kept and a warning naming that path is written to stderr.
+Pruning requires evidence of absence. When part of the requested scope could not be observed — an unreadable directory, a subtree past the scan-depth limit, a symbolic link (the scan never descends into one), or a file too large to read — indexed files under it are kept and a warning naming that path is written to stderr.
 
 **Backgrounding** — `sync` stays attached until it finishes; there is no daemon, watch mode, or cancellation. Backgrounding and polling are the caller's job (POSIX shell shown; use the equivalent facility on other platforms):
 

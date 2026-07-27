@@ -232,7 +232,7 @@ When files under a configured root change outside your assistant, `sync_start` b
 | `total` | `null` until the scan has counted the supported files on disk, then a number. |
 | `completed` | `upserted + skipped + empty`; never more than a non-null `total`. |
 | `summary` | `upserted` (new or changed, re-ingested), `skipped` (bytes identical, untouched), `empty` (produced no chunks; prior chunks kept and retried next run), `pruned` (indexed files whose source is gone). `pruned` is counted outside `completed`. |
-| `warnings` | Parts of the scope the scan could not observe — an unreadable directory, a subtree past the scan-depth limit, or a symbolic link (symlinks are never followed). Indexed files under them are kept rather than pruned. |
+| `warnings` | Parts of the scope the scan could not observe — an unreadable directory, a subtree past the scan-depth limit, a symbolic link (the scan never descends into one), or a file larger than `MAX_FILE_SIZE` (never read). Indexed files under them are kept rather than pruned. Paths are shown with your home directory abbreviated to `~`. |
 | `error` | `null` unless the job failed; a failed job carries one message and, for a per-file failure, the file path. |
 
 Every run hashes the full bytes of every file it scans, so cost scales with the size of the corpus rather than the number of changes. There is no visual mode on sync — a changed PDF is re-ingested as text.
@@ -261,7 +261,7 @@ npx mcp-local-rag delete ./docs/old.pdf         # Remove content
 npx mcp-local-rag delete --source "https://..."  # Remove by source URL
 ```
 
-`query`, `read-neighbors`, `list`, `status`, and `delete` output JSON to stdout for piping (e.g., `| jq`). `ingest` outputs progress to stderr; `sync` reports its counters (`upserted`, `skipped`, `empty`, `pruned`) as JSON on stdout and progress on stderr, runs in the foreground, and exits non-zero on the first error. Global options (`--db-path`, `--cache-dir`, `--model-name`) go before the subcommand. Run `npx mcp-local-rag --help` for details.
+`query`, `read-neighbors`, `list`, `status`, and `delete` output JSON to stdout for piping (e.g., `| jq`). `ingest` outputs progress to stderr; `sync` reports its counters (`upserted`, `skipped`, `empty`, `pruned`) as JSON on stdout and its warnings and errors on stderr (no per-file progress), runs in the foreground, and exits non-zero on the first error. Global options (`--db-path`, `--cache-dir`, `--model-name`) go before the subcommand. Run `npx mcp-local-rag --help` for details.
 
 > ⚠️ The CLI does **not** read your MCP client config (`mcp.json`, `config.toml`, etc.). Configure the CLI via flags or environment variables as shown below.
 

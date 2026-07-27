@@ -20,12 +20,11 @@ import {
   runSync as runSyncCore,
   type SyncCollaborators,
   type SyncCoverage,
-  type SyncPathKind,
 } from '../features/sync.js'
 import { computeContentHash } from '../ingest/compute.js'
 import { DocumentParser } from '../parser/index.js'
 import { MAX_SCAN_DEPTH } from '../utils/limits.js'
-import { bfsCollectSupportedFiles } from '../utils/scan.js'
+import { bfsCollectSupportedFiles, classifyRequestedPath } from '../utils/scan.js'
 import { createEmbedder, createVectorStore, formatCliError } from './common.js'
 import { ingestSingleFile, resolveConfig } from './ingest.js'
 import type { GlobalOptions } from './options.js'
@@ -105,7 +104,7 @@ function parseArgs(args: string[]): SyncArgs {
  * region is why prune was withheld there, so the path is named; the wording
  * itself is not a contract.
  */
-function coverageWarnings(coverage: SyncCoverage): string[] {
+function coverageWarnings(coverage: SyncCoverage, maxFileSize: number): string[] {
   return [
     ...coverage.unreadableDirs.map(
       ({ dirPath, code }) =>
@@ -118,6 +117,10 @@ function coverageWarnings(coverage: SyncCoverage): string[] {
     ...coverage.skippedSymlinks.map(
       (linkPath) =>
         `Warning: symbolic link not followed, so its indexed files were kept: ${linkPath}`
+    ),
+    ...coverage.oversizedFiles.map(
+      (filePath) =>
+        `Warning: not read because it exceeds the maximum file size (${maxFileSize} bytes), so its indexed chunks were kept: ${filePath}`
     ),
   ]
 }
@@ -170,19 +173,22 @@ export async function runSync(args: string[], globalOptions: GlobalOptions = {})
   }
 
   const collaborators: SyncCollaborators = {
-    classifyPath: async (path: string): Promise<SyncPathKind> => {
-      try {
-        return (await stat(path)).isDirectory() ? 'directory' : 'file'
-      } catch {
-        return 'missing'
-      }
-    },
+    // The walker's own predicates, so an explicitly requested path is subject to
+    // the same rules as a discovered one and is refused before it is read.
+    classifyPath: async (path: string) => await classifyRequestedPath(path, excludePaths),
     // No `scope` argument, on purpose: a scope-pruned directory appears in none
     // of the coverage arrays, which would hide an unobserved region and make
     // prune unsafe.
     scanDir: async (rootPath: string) =>
       await bfsCollectSupportedFiles(rootPath, excludePaths, MAX_SCAN_DEPTH),
-    hashFile: async (filePath: string) => computeContentHash(await readFile(filePath)),
+    // Size first, bytes second: `MAX_FILE_SIZE` is otherwise enforced inside the
+    // parser, which runs long after the whole file would already be in memory
+    // here. Declining (`null`) keeps the rest of the run usable instead of
+    // aborting every future sync of the whole root on one oversized file.
+    hashFile: async (filePath: string) => {
+      if ((await stat(filePath)).size > config.maxFileSize) return null
+      return computeContentHash(await readFile(filePath))
+    },
     loadDbManifest: async () => await vectorStore.listChunkHashes(),
     ingestFile: async (filePath: string) =>
       await ingestSingleFile(filePath, parser, chunker, ensureEmbedder(), vectorStore, {
@@ -208,7 +214,7 @@ export async function runSync(args: string[], globalOptions: GlobalOptions = {})
       collaborators,
     })
 
-    for (const warning of coverageWarnings(result.coverage)) {
+    for (const warning of coverageWarnings(result.coverage, config.maxFileSize)) {
       console.error(warning)
     }
 

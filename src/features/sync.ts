@@ -17,6 +17,7 @@
 // Windows key semantics are provable from a POSIX host.
 
 import { isManagedRawDataPath } from '../utils/raw-data-utils.js'
+import type { ScanEntryKind } from '../utils/scan.js'
 import { isUnderOrEqual } from '../utils/scope-match.js'
 import { toSyncPathKey } from '../utils/sync-path-key.js'
 
@@ -24,15 +25,26 @@ import { toSyncPathKey } from '../utils/sync-path-key.js'
 // Data contracts
 // ============================================
 
-/** Path-granular facts about the regions a scan could not observe. */
-export interface SyncCoverage {
+/** Path-granular facts about the regions a directory scan could not observe. */
+export interface SyncScanCoverage {
   unreadableDirs: { dirPath: string; code: string }[]
   depthLimitedDirs: string[]
   skippedSymlinks: string[]
 }
 
+/**
+ * Everything one run could not observe: the scan facts plus the files whose
+ * bytes were never read because they exceed the configured size limit. Every
+ * path here is an unobserved prefix, so the rows under it are protected from
+ * prune.
+ */
+export interface SyncCoverage extends SyncScanCoverage {
+  /** Files skipped by `hashFile` for exceeding the configured size limit. */
+  oversizedFiles: string[]
+}
+
 /** One bounded directory scan: the supported files found plus its coverage facts. */
-export interface SyncScanResult extends SyncCoverage {
+export interface SyncScanResult extends SyncScanCoverage {
   files: string[]
 }
 
@@ -58,8 +70,13 @@ export type SyncRequest =
   | { kind: 'directory'; path: string }
   | { kind: 'file'; path: string }
 
-/** Result of classifying a requested path on disk. */
-export type SyncPathKind = 'directory' | 'file' | 'missing'
+/**
+ * Result of classifying a requested path on disk. Anything other than
+ * `directory` or `file` is refused before the path is read: the union is the
+ * walker's own {@link ScanEntryKind} plus `missing`, so a path a caller names and
+ * a path the walk discovers pass the identical predicates.
+ */
+export type SyncPathKind = ScanEntryKind | 'missing'
 
 /** Re-ingest one disk file, then drop the other stored spellings of its key. */
 export interface SyncUpsertAction {
@@ -134,6 +151,11 @@ export interface SyncExecutor {
 
 /** Everything {@link runSync} needs from the outside world. */
 export interface SyncCollaborators extends SyncExecutor {
+  /**
+   * Classify the requested path WITHOUT reading it, applying the walker's collect
+   * predicates (`classifyRequestedPath` in `utils/scan.ts`) so both surfaces
+   * refuse the same paths.
+   */
   classifyPath(path: string): Promise<SyncPathKind>
   /**
    * Bounded scan of one root. Deliberately takes no scope predicate: a
@@ -141,7 +163,13 @@ export interface SyncCollaborators extends SyncExecutor {
    * scope filter here would make unobserved regions invisible and prune unsafe.
    */
   scanDir(rootPath: string): Promise<SyncScanResult>
-  hashFile(filePath: string): Promise<string>
+  /**
+   * Hash the file's current bytes, or return `null` to decline reading it because
+   * it exceeds the configured size limit. A declined file is left out of the disk
+   * manifest and recorded in `coverage.oversizedFiles`, which protects its stored
+   * rows from prune — omitting it without that record would make it look deleted.
+   */
+  hashFile(filePath: string): Promise<string | null>
   /** Every stored chunk row's verbatim path and hash, for the whole table. */
   loadDbManifest(): Promise<SyncManifestRow[]>
 }
@@ -188,8 +216,9 @@ function isConverged(stored: StoredGroup, diskHash: string): boolean {
  *
  * A prune action is emitted only when all four conditions hold for the key: it
  * is inside the requested scope, absent from the disk manifest, outside the
- * configured excluded and managed paths, and outside every unobserved scan
- * prefix. Dropping any one of them protects the rows.
+ * configured excluded and managed paths, and outside every unobserved prefix —
+ * unreadable, depth-limited, symlinked, or too large to have been read.
+ * Dropping any one of them protects the rows.
  */
 export function planSync(input: SyncPlanInput): SyncPlan {
   const keyOf = (path: string): string => toSyncPathKey(path, input.platform)
@@ -237,6 +266,7 @@ export function planSync(input: SyncPlanInput): SyncPlan {
     ...input.coverage.unreadableDirs.map((dir) => dir.dirPath),
     ...input.coverage.depthLimitedDirs,
     ...input.coverage.skippedSymlinks,
+    ...input.coverage.oversizedFiles,
   ]
 
   const prunes: SyncPruneAction[] = []
@@ -258,6 +288,34 @@ export function planSync(input: SyncPlanInput): SyncPlan {
 
 function toMessage(caught: unknown): string {
   return caught instanceof Error ? caught.message : String(caught)
+}
+
+/**
+ * The controlled error for a requested path the collect predicates refuse. One
+ * message per rejection, owned here rather than in the adapters, so the CLI and
+ * MCP surfaces refuse the same paths with the same words.
+ *
+ * The `irregular` case is also what keeps a caller from handing sync something
+ * whose read never returns (a FIFO). It fixes that trigger only: nothing here
+ * bounds a collaborator that hangs for some other reason, and the MCP mutation
+ * guard is still released solely by the job promise settling.
+ */
+function requestedPathRejection(
+  kind: Exclude<SyncPathKind, 'file' | 'directory'>,
+  path: string
+): string {
+  switch (kind) {
+    case 'missing':
+      return `Sync path does not exist: ${path}`
+    case 'irregular':
+      return `Sync path is not a regular file or directory: ${path}`
+    case 'symlink':
+      return `Sync path is a symbolic link, which sync never follows: ${path}`
+    case 'excluded':
+      return `Sync path is inside the database or cache directory: ${path}`
+    case 'unsupported':
+      return `Sync path is not a supported document type: ${path}`
+  }
 }
 
 /**
@@ -354,6 +412,7 @@ async function gatherSyncInputs(input: RunSyncInput): Promise<GatherOutcome> {
     unreadableDirs: [],
     depthLimitedDirs: [],
     skippedSymlinks: [],
+    oversizedFiles: [],
   }
   let attributedPath: string | null = null
 
@@ -374,9 +433,13 @@ async function gatherSyncInputs(input: RunSyncInput): Promise<GatherOutcome> {
       if (!insideConfiguredRoot) {
         throw new Error(`Sync path is outside every configured root: ${requestedPath}`)
       }
+      // Classification happens before any read, and only a directory or a
+      // supported regular file survives it: a link, an irregular file, an
+      // excluded path, or an unsupported extension is refused here rather than
+      // after its bytes have been read and hashed.
       const kind = await collaborators.classifyPath(requestedPath)
-      if (kind === 'missing') {
-        throw new Error(`Sync path does not exist: ${requestedPath}`)
+      if (kind !== 'directory' && kind !== 'file') {
+        throw new Error(requestedPathRejection(kind, requestedPath))
       }
       request = { kind, path: requestedPath }
       // An explicit directory becomes its own depth-zero BFS root; an explicit
@@ -408,7 +471,15 @@ async function gatherSyncInputs(input: RunSyncInput): Promise<GatherOutcome> {
     const diskFiles: SyncDiskFile[] = []
     for (const filePath of diskByKey.values()) {
       attributedPath = filePath
-      diskFiles.push({ filePath, contentHash: await collaborators.hashFile(filePath) })
+      const contentHash = await collaborators.hashFile(filePath)
+      if (contentHash === null) {
+        // Its bytes were never read, so its content identity is unknown for this
+        // run. Recording it as an unobserved region is what keeps its stored rows
+        // alive: leaving it out of the manifest alone would look like a deletion.
+        coverage.oversizedFiles.push(filePath)
+        continue
+      }
+      diskFiles.push({ filePath, contentHash })
     }
 
     attributedPath = null

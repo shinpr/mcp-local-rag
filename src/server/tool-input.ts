@@ -8,6 +8,7 @@
 // structured failure shape `read_chunk_neighbors` already uses — without
 // leaking internal diagnostics to the client.
 
+import { isAbsolute } from 'node:path'
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js'
 import type { ContentFormat } from '../utils/raw-data-utils.js'
 import type {
@@ -236,8 +237,25 @@ export function parseSyncStartInput(raw: unknown): SyncStartInput {
 
   // Trimmed for the same reason as `scope`: a whitespace-padded path would
   // otherwise be resolved verbatim and silently match nothing on disk.
-  return { path: path.trim() }
+  const trimmed = path.trim()
+
+  // A relative path would be resolved against the server process's working
+  // directory, which the caller cannot see. `ingest_file` and `delete_file`
+  // already require absolute paths, and the tool description promises one.
+  if (!isAbsolute(trimmed)) {
+    throw new McpError(ErrorCode.InvalidParams, 'path must be an absolute path')
+  }
+
+  return { path: trimmed }
 }
+
+/**
+ * A job id is a `randomUUID()` this server handed out: 36 characters of
+ * hexadecimal and dashes. The cap and the alphabet are enforced because the value
+ * is echoed into the "unknown sync job" message and into a stderr log line — an
+ * unbounded id with a newline in it would forge a log line for the operator.
+ */
+const JOB_ID_PATTERN = /^[0-9a-fA-F-]{1,128}$/
 
 /**
  * Validate `sync_status` arguments. `jobId` is required; an unknown but
@@ -250,5 +268,14 @@ export function parseSyncStatusInput(raw: unknown): SyncStatusInput {
     throw new McpError(ErrorCode.InvalidParams, 'jobId must be a non-empty string')
   }
 
-  return { jobId: jobId.trim() }
+  const trimmed = jobId.trim()
+
+  if (!JOB_ID_PATTERN.test(trimmed)) {
+    throw new McpError(
+      ErrorCode.InvalidParams,
+      'jobId must be at most 128 characters of hexadecimal digits and dashes'
+    )
+  }
+
+  return { jobId: trimmed }
 }

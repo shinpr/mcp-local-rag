@@ -4,6 +4,11 @@
 // `list` walker, and the MCP server's `list_files` scan: bounded depth, symlink
 // skipping, exclude-path filtering, and supported-extension matching.
 //
+// The four collect predicates live in `classifyScanEntry` so a path a caller
+// names explicitly (`classifyRequestedPath`) is judged by the same rules as a
+// path the walk discovers — sync accepts both, and only one of them used to be
+// filtered.
+//
 // Presentation (warning wording, when/where warnings are surfaced) and
 // post-processing (sort/dedup) stay with each caller — this helper returns
 // structured coverage facts (`unreadableDirs`, `depthLimitedDirs`,
@@ -12,7 +17,7 @@
 // let a caller tell an unobserved region apart from an observed one instead of
 // treating any gap as a whole-scan failure.
 
-import { readdir, realpath } from 'node:fs/promises'
+import { lstat, readdir, realpath } from 'node:fs/promises'
 import { extname, join } from 'node:path'
 import { SUPPORTED_EXTENSIONS } from '../parser/index.js'
 import { MAX_SCAN_DEPTH } from './limits.js'
@@ -31,6 +36,76 @@ export async function realpathForMatch(filePath: string): Promise<string> {
     return await realpath(filePath)
   } catch {
     return filePath
+  }
+}
+
+/** Why the collect predicates below refuse a path. */
+export type ScanRejection =
+  /** A symbolic link, which is never followed. */
+  | 'symlink'
+  /** Under a configured excluded prefix (the database or cache directory). */
+  | 'excluded'
+  /** A regular file whose extension is not a supported document type. */
+  | 'unsupported'
+  /** Neither a regular file nor a directory (socket, FIFO, device, …). */
+  | 'irregular'
+
+/** What a path is, once the collect predicates have judged it. */
+export type ScanEntryKind = 'file' | 'directory' | ScanRejection
+
+/** The `Dirent` / `Stats` subset the collect predicates read. */
+interface EntryTypeFacts {
+  isSymbolicLink(): boolean
+  isDirectory(): boolean
+  isFile(): boolean
+}
+
+/**
+ * The collect predicates of {@link bfsCollectSupportedFiles} as one decision, so
+ * a discovered directory entry and an explicitly requested path
+ * ({@link classifyRequestedPath}) are judged by exactly the same rules instead of
+ * by two implementations that can drift.
+ *
+ * Evaluation order is part of the contract and matches the walk: a symbolic link
+ * is reported as a link even under an excluded prefix, and a directory is
+ * accepted without any extension test.
+ *
+ * Both `Dirent` (from `readdir`) and `Stats` (from `lstat`) satisfy
+ * {@link EntryTypeFacts} structurally.
+ */
+export function classifyScanEntry(
+  fullPath: string,
+  entry: EntryTypeFacts,
+  excludePaths: readonly string[]
+): ScanEntryKind {
+  if (entry.isSymbolicLink()) return 'symlink'
+  if (excludePaths.some((ep) => fullPath.startsWith(ep))) return 'excluded'
+  if (entry.isDirectory()) return 'directory'
+  if (!entry.isFile()) return 'irregular'
+  return SUPPORTED_EXTENSIONS.has(extname(fullPath).toLowerCase()) ? 'file' : 'unsupported'
+}
+
+/**
+ * Classify one explicitly requested path with {@link classifyScanEntry}, so a
+ * path a caller names is subject to the same predicates as a path the walker
+ * discovers.
+ *
+ * `lstat` rather than `stat`, so a symbolic link is reported as a link instead of
+ * as whatever it points at; and `lstat` rather than any read, so a caller can
+ * refuse the path before its bytes cost anything — reading a FIFO blocks forever,
+ * and reading through a link reaches outside the configured roots.
+ *
+ * Any stat failure is `'missing'`: an unreachable path and an absent one are the
+ * same non-answer to "what is here".
+ */
+export async function classifyRequestedPath(
+  path: string,
+  excludePaths: readonly string[]
+): Promise<ScanEntryKind | 'missing'> {
+  try {
+    return classifyScanEntry(path, await lstat(path), excludePaths)
+  } catch {
+    return 'missing'
   }
 }
 
@@ -126,19 +201,15 @@ export async function bfsCollectSupportedFiles(
 
     for (const entry of entries) {
       const fullPath = join(dirPath, entry.name)
-      if (entry.isSymbolicLink()) {
+      const kind = classifyScanEntry(fullPath, entry, excludePaths)
+      if (kind === 'symlink') {
         skippedSymlinks.push(fullPath)
-        continue
-      }
-      if (excludePaths.some((ep) => fullPath.startsWith(ep))) continue
-      if (entry.isDirectory()) {
+      } else if (kind === 'directory') {
         if (shouldVisitDir(fullPath, scope)) {
           queue.push({ dirPath: fullPath, depth: depth + 1 })
         }
-      } else if (entry.isFile() && SUPPORTED_EXTENSIONS.has(extname(entry.name).toLowerCase())) {
-        if (isInScope(fullPath, scope)) {
-          files.push(fullPath)
-        }
+      } else if (kind === 'file' && isInScope(fullPath, scope)) {
+        files.push(fullPath)
       }
     }
   }

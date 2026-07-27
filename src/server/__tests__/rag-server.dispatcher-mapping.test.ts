@@ -428,6 +428,14 @@ describe('External mutation guard at the dispatch boundary (SYNC-007)', () => {
     return raw.map((value) => value / norm)
   }
 
+  /**
+   * A well-formed job id this server never issued. Well-formed on purpose: the
+   * input boundary bounds `jobId` to the UUID alphabet, so a prose sentinel would
+   * be rejected there and never reach `handleSyncStatus` — which is the handler
+   * these cases are proving the dispatcher reaches.
+   */
+  const NEVER_ISSUED_JOB_ID = '00000000-0000-4000-8000-000000000000'
+
   /** When set, every batch embedding parks here until the test releases it. */
   let embedGate: { pending: Promise<void>; release: () => void } | null = null
 
@@ -490,7 +498,7 @@ describe('External mutation guard at the dispatch boundary (SYNC-007)', () => {
     }
 
     try {
-      await dispatch(server, 'sync_status', { jobId: 'never-issued' })
+      await dispatch(server, 'sync_status', { jobId: NEVER_ISSUED_JOB_ID })
       throw new Error('expected throw')
     } catch (e) {
       const err = e as McpError
@@ -559,7 +567,7 @@ describe('External mutation guard at the dispatch boundary (SYNC-007)', () => {
     expect(status.isError).toBeUndefined()
     // `sync_status` is ungated too: with no job registered it answers with its
     // own unknown-job error rather than the busy overlap message.
-    await expect(dispatch(server, 'sync_status', { jobId: 'never-issued' })).rejects.toThrow(
+    await expect(dispatch(server, 'sync_status', { jobId: NEVER_ISSUED_JOB_ID })).rejects.toThrow(
       /Unknown sync job/
     )
 

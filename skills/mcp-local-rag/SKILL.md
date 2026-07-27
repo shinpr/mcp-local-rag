@@ -245,10 +245,12 @@ sync_status({ jobId: "<jobId returned by sync_start>" })
 | `total` | `null` until scanning has counted the supported files on disk, then a number |
 | `completed` | `upserted + skipped + empty`; never exceeds a non-null `total` |
 | `summary` | `upserted` (new or changed, re-ingested), `skipped` (bytes identical, untouched), `empty` (no chunks produced; prior chunks and hash kept, retried next run), `pruned` (indexed files whose source is gone). `pruned` is counted outside `completed` |
-| `warnings` | Regions the scan could not observe — an unreadable directory, a subtree past the scan-depth limit, or a symbolic link (symlinks are never followed). Indexed files under them are kept, not pruned |
+| `warnings` | Regions the scan could not observe — an unreadable directory, a subtree past the scan-depth limit, a symbolic link (the scan never descends into one), or a file larger than `MAX_FILE_SIZE` (never read). Indexed files under them are kept, not pruned. Paths appear with the home directory abbreviated to `~` |
 | `error` | `null` unless the job failed; a failed job carries one message and, for a per-file failure, the file path |
 
-Every run hashes the full bytes of every file it scans, so cost scales with total corpus size rather than with the number of changes.
+Every run hashes the full bytes of every file it scans, so cost scales with total corpus size rather than with the number of changes. A file over `MAX_FILE_SIZE` is not read at all: it is named in `warnings` and its already-indexed chunks are kept.
+
+`path` must be absolute and inside a configured root, and it must be a directory or a supported document file — a symbolic link, a path inside the database or cache directory, and an unsupported extension are all rejected before anything is read.
 
 - **While a sync runs**, `sync_start`, `ingest_file`, `ingest_data`, and `delete_file` return a tool error naming the active `jobId` — poll `sync_status` instead of retrying. `query_documents`, `read_chunk_neighbors`, `list_files`, `status`, and `sync_status` stay callable throughout.
 - **On failure**, report the message and start a new sync once the cause is fixed. There is no retry, resume, or cancel; upserts that already completed are kept and no prune runs.
@@ -263,14 +265,14 @@ CLI subcommands mirror MCP tools. Useful for bulk operations, scripting, and env
 
 - `query`, `list`, `status`, `delete` output JSON to stdout
 - `ingest` outputs progress to stderr
-- `sync [path]` reconciles the index with disk (re-ingest changed and new files, drop entries whose source is gone). Prefer it over re-running `ingest` when the index is already populated and only changed files need reconciling. Counters JSON to stdout; runs in the foreground and exits non-zero on the first error
+- `sync [path]` reconciles the index with disk (re-ingest changed and new files, drop entries whose source is gone). Prefer it over re-running `ingest` when the index is already populated and only changed files need reconciling. Counters JSON to stdout, warnings and errors to stderr (no per-file progress); runs in the foreground and exits non-zero on the first error
 - One writer at a time: never run CLI or MCP `ingest`, `delete`, or `sync` mutations against the same database path from two processes at once. Read-only tools stay callable alongside a background `sync`
 - Use `--help` on any command for options
 - See [cli-reference.md](references/cli-reference.md) for options and config matching
 
 ## Document Roots (Security Boundary)
 
-All ingest/list/delete/read-neighbor operations are confined to one or more configured root directories. Files outside every configured root are rejected.
+All ingest/list/delete/read-neighbor/sync operations are confined to one or more configured root directories. Files outside every configured root are rejected. A `sync` path is additionally rejected when it is a symbolic link, is not a regular file or directory, sits inside the database or cache directory, or has an unsupported extension.
 
 | Setting | How | When |
 |---------|-----|------|

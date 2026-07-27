@@ -21,7 +21,6 @@ import {
   type SyncCollaborators,
   type SyncCoverage,
   type SyncError,
-  type SyncPathKind,
 } from '../features/sync.js'
 import {
   buildChunksAndEmbeddings,
@@ -32,7 +31,7 @@ import { prepareVisualPdfChunks } from '../ingest/visual.js'
 import { parseHtml } from '../parser/html-parser.js'
 import { DocumentParser } from '../parser/index.js'
 import { extractMarkdownTitle, extractTxtTitle } from '../parser/title-extractor.js'
-import type { BaseDirsConfigError } from '../utils/base-dirs.js'
+import { type BaseDirsConfigError, displayPath } from '../utils/base-dirs.js'
 import { MAX_SCAN_DEPTH } from '../utils/limits.js'
 import {
   checkRawDataArtifacts,
@@ -47,7 +46,7 @@ import {
   saveMetaJson,
   saveRawData,
 } from '../utils/raw-data-utils.js'
-import { bfsCollectSupportedFiles } from '../utils/scan.js'
+import { bfsCollectSupportedFiles, classifyRequestedPath } from '../utils/scan.js'
 import { nonAbsolutePrefixes } from '../utils/scope-match.js'
 import { type VectorChunk, VectorStore } from '../vectordb/index.js'
 import { DatabaseError } from '../vectordb/types.js'
@@ -144,20 +143,29 @@ class NoChunksError extends McpError {}
  * wording is not a contract. Carried as JSON strings on the job record rather
  * than as content blocks, because status is a single pollable record — the
  * `list_files` warning blocks are unchanged.
+ *
+ * Paths go through `displayPath`, as `list_files` already does with the same
+ * walker facts: the MCP client is remote to the operator's account, so the home
+ * directory (and with it the OS username) is abbreviated to `~`. The CLI variant
+ * deliberately prints the full path — that terminal belongs to the operator.
  */
-function coverageWarnings(coverage: SyncCoverage): string[] {
+function coverageWarnings(coverage: SyncCoverage, maxFileSize: number): string[] {
   return [
     ...coverage.unreadableDirs.map(
       ({ dirPath, code }) =>
-        `Warning: cannot read directory (${code}), so its indexed files were kept: ${dirPath}`
+        `Warning: cannot read directory (${code}), so its indexed files were kept: ${displayPath(dirPath)}`
     ),
     ...coverage.depthLimitedDirs.map(
       (dirPath) =>
-        `Warning: not scanned because it exceeds the maximum depth (${MAX_SCAN_DEPTH}), so its indexed files were kept: ${dirPath}`
+        `Warning: not scanned because it exceeds the maximum depth (${MAX_SCAN_DEPTH}), so its indexed files were kept: ${displayPath(dirPath)}`
     ),
     ...coverage.skippedSymlinks.map(
       (linkPath) =>
-        `Warning: symbolic link not followed, so its indexed files were kept: ${linkPath}`
+        `Warning: symbolic link not followed, so its indexed files were kept: ${displayPath(linkPath)}`
+    ),
+    ...coverage.oversizedFiles.map(
+      (filePath) =>
+        `Warning: not read because it exceeds the maximum file size (${maxFileSize} bytes), so its indexed chunks were kept: ${displayPath(filePath)}`
     ),
   ]
 }
@@ -210,6 +218,12 @@ export class RAGServer {
    */
   private readonly configError: BaseDirsConfigError | null
   private readonly minChunkLength: number
+  /**
+   * Configured byte ceiling for one ingested file. The parser enforces it for
+   * parsing; sync also needs it before hashing, where nothing else bounds the
+   * read.
+   */
+  private readonly maxFileSize: number
   private readonly device: string | undefined
   /**
    * The one current-or-latest sync job this process retains (SYNC-006). A new
@@ -241,6 +255,7 @@ export class RAGServer {
     this.configWarnings = config.configWarnings ?? []
     this.configError = config.configError ?? null
     this.minChunkLength = config.chunkMinLength ?? DEFAULT_MIN_CHUNK_LENGTH
+    this.maxFileSize = config.maxFileSize
     this.device = config.device
     this.excludePaths = [`${resolve(this.dbPath)}${sep}`, `${resolve(this.cacheDir)}${sep}`]
     this.server = new Server(
@@ -490,8 +505,16 @@ export class RAGServer {
 
   /**
    * ingest_file tool handler (re-ingestion support, transaction processing, rollback capability)
+   *
+   * `options.skipOptimize` is internal: sync compacts once per run, so its reuse
+   * of this handler must not compact once per file (a 100-file sync would
+   * otherwise perform 101 compactions). The `ingest_file` and `ingest_data` tools
+   * omit it and keep compacting per call, which is the behavior they always had.
    */
-  async handleIngestFile(raw: unknown): Promise<{ content: RagContentBlock[] }> {
+  async handleIngestFile(
+    raw: unknown,
+    options: { skipOptimize?: boolean } = {}
+  ): Promise<{ content: RagContentBlock[] }> {
     const args = parseIngestFileInput(raw)
     // Skip the configError gate only for paths structurally inside
     // `<dbPath>/raw-data/` (internal invocation from handleIngestData).
@@ -602,8 +625,11 @@ export class RAGServer {
       await this.vectorStore.insertChunks(vectorChunks)
       console.error(`Inserted ${vectorChunks.length} chunks for: ${args.filePath}`)
 
-      // Optimize once after both delete + insert (not per-operation)
-      await this.vectorStore.optimize()
+      // Optimize once after both delete + insert (not per-operation), unless the
+      // caller compacts once for the whole batch.
+      if (options.skipOptimize !== true) {
+        await this.vectorStore.optimize()
+      }
 
       // Delete backup on success
       backup = null
@@ -1066,19 +1092,23 @@ export class RAGServer {
     let ingestedFiles = 0
 
     const collaborators: SyncCollaborators = {
-      classifyPath: async (path: string): Promise<SyncPathKind> => {
-        try {
-          return (await stat(path)).isDirectory() ? 'directory' : 'file'
-        } catch {
-          return 'missing'
-        }
-      },
+      // The walker's own predicates, so an explicitly requested path is subject
+      // to the same rules as a discovered one and is refused before it is read.
+      // A path whose read would never return (a FIFO) is refused here too, which
+      // matters more on this surface than on the CLI: the mutation guard is
+      // released by this job's promise settling, and nothing else would.
+      classifyPath: async (path: string) => await classifyRequestedPath(path, this.excludePaths),
       // No `scope` argument, on purpose: a scope-pruned directory appears in
       // none of the coverage arrays, which would hide an unobserved region and
       // make prune unsafe.
       scanDir: async (rootPath: string) =>
         await bfsCollectSupportedFiles(rootPath, this.excludePaths, MAX_SCAN_DEPTH),
+      // Size first, bytes second: `maxFileSize` is otherwise enforced inside the
+      // parser, which runs long after the whole file would already be in memory
+      // here. Declining (`null`) keeps the rest of the run usable instead of
+      // failing every future sync of the whole root on one oversized file.
       hashFile: async (filePath: string) => {
+        if ((await stat(filePath)).size > this.maxFileSize) return null
         const contentHash = computeContentHash(await readFile(filePath))
         hashedFiles += 1
         return contentHash
@@ -1123,7 +1153,7 @@ export class RAGServer {
         empty: result.empty,
         pruned: result.pruned,
       },
-      warnings: coverageWarnings(result.coverage),
+      warnings: coverageWarnings(result.coverage, this.maxFileSize),
       error: result.error === null ? null : syncErrorText(result.error),
     })
   }
@@ -1137,10 +1167,15 @@ export class RAGServer {
    *
    * The count is read back out of the handler's own response block rather than
    * duplicating the handler to return it twice.
+   *
+   * Compaction is the second difference: the sync core runs one `optimize()` for
+   * the whole run, so the per-file one is skipped here. A rollback still compacts
+   * — that path restores rows and then aborts the run, so no later `optimize()`
+   * follows it.
    */
   private async ingestFileForSync(filePath: string): Promise<number> {
     try {
-      const response = await this.handleIngestFile({ filePath })
+      const response = await this.handleIngestFile({ filePath }, { skipOptimize: true })
       const { chunkCount } = JSON.parse(response.content[0]?.text ?? '{}') as {
         chunkCount?: number
       }
@@ -1157,6 +1192,10 @@ export class RAGServer {
    * Exposed because the registration itself — not a re-registered copy of it —
    * is what an MCP client talks to, and `this.server` is private. `run()` passes
    * the stdio transport; a test passes an in-memory pair.
+   *
+   * One instance serves at most one client: the sync job record and the mutation
+   * slot are per-process, so a transport that multiplexed clients would share one
+   * caller's job state and one caller's write lock with every other caller.
    */
   async connect(transport: Transport): Promise<void> {
     await this.server.connect(transport)

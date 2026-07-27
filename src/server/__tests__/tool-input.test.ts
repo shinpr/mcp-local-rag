@@ -310,6 +310,29 @@ describe('parseSyncStartInput', () => {
     expect(() => parseSyncStartInput(raw)).toThrow(McpError)
   })
 
+  // A relative path would be resolved against the server process's working
+  // directory — invisible to the caller, and unlike `ingest_file` / `delete_file`,
+  // which both require an absolute path.
+  it.each([
+    ['a bare relative path', 'docs/api'],
+    ['an explicit relative path', './docs/api'],
+    ['a parent-relative path', '../docs/api'],
+    ['a bare name', 'notes.md'],
+  ])('rejects %s', (_label, path) => {
+    expect(() => parseSyncStartInput({ path })).toThrow(/path must be an absolute path/)
+  })
+
+  it('rejects a relative path with InvalidParams and no echo of the input', () => {
+    try {
+      parseSyncStartInput({ path: 'private/docs' })
+      expect.unreachable('should have thrown')
+    } catch (error) {
+      expect(error).toBeInstanceOf(McpError)
+      expect((error as McpError).code).toBe(ErrorCode.InvalidParams)
+      expect((error as McpError).message).not.toContain('private/docs')
+    }
+  })
+
   it('throws InvalidParams error code', () => {
     try {
       parseSyncStartInput({ path: 42 })
@@ -371,6 +394,38 @@ describe('parseSyncStatusInput', () => {
     } catch (error) {
       expect(error).toBeInstanceOf(McpError)
       expect((error as McpError).code).toBe(ErrorCode.InvalidParams)
+    }
+  })
+
+  // The id is echoed into the "unknown sync job" message and into a stderr log
+  // line, so it is bounded and restricted to the alphabet a `randomUUID()` uses
+  // before it can reach either.
+  it.each([
+    ['a newline-bearing id', 'abc\ninjected log line'],
+    ['a tab-bearing id', 'abc\tinjected'],
+    ['a message-shaped id', 'abc Unknown sync job: def'],
+    ['a path-shaped id', '/Users/someone/private/docs'],
+    ['an over-long id', 'a'.repeat(129)],
+  ])('rejects %s', (_label, jobId) => {
+    expect(() => parseSyncStatusInput({ jobId })).toThrow(
+      /jobId must be at most 128 characters of hexadecimal digits and dashes/
+    )
+  })
+
+  it('accepts an id at the 128-character cap and rejects one past it', () => {
+    const atCap = 'a'.repeat(128)
+    expect(parseSyncStatusInput({ jobId: atCap })).toEqual({ jobId: atCap })
+    expect(() => parseSyncStatusInput({ jobId: `${atCap}a` })).toThrow(McpError)
+  })
+
+  it('rejects a malformed id without echoing it', () => {
+    try {
+      parseSyncStatusInput({ jobId: 'abc\nUnknown sync job: forged' })
+      expect.unreachable('should have thrown')
+    } catch (error) {
+      const { message } = error as McpError
+      expect(message).not.toContain('forged')
+      expect(message).not.toContain('\n')
     }
   })
 

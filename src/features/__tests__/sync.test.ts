@@ -31,6 +31,7 @@ const noCoverage = (): SyncCoverage => ({
   unreadableDirs: [],
   depthLimitedDirs: [],
   skippedSymlinks: [],
+  oversizedFiles: [],
 })
 
 /** Planner input with POSIX defaults; each test overrides only what it exercises. */
@@ -732,6 +733,8 @@ interface FakeSetup {
   scans?: Record<string, Partial<SyncScanResult>>
   kinds?: Record<string, SyncPathKind>
   hashes?: Record<string, string>
+  /** Paths whose hasher declines to read them (over the configured size limit). */
+  oversized?: string[]
   dbRows?: SyncManifestRow[]
   ingest?: (filePath: string) => Promise<number>
   loadDbManifest?: () => Promise<SyncManifestRow[]>
@@ -764,6 +767,10 @@ function createCollaborators(setup: FakeSetup = {}): {
         }
       },
       hashFile: async (filePath) => {
+        if (setup.oversized?.includes(filePath)) {
+          log.push(`declined:${filePath}`)
+          return null
+        }
         log.push(`hash:${filePath}`)
         const hash = setup.hashes?.[filePath]
         if (hash === undefined) throw new Error(`no fixture hash for ${filePath}`)
@@ -876,6 +883,47 @@ describe('runSync — request classification and scan roots', () => {
     expect(result.error?.filePath).toBe(`${ROOT}/ghost.md`)
   })
 
+  // A requested path reaches the core already classified by the walker's own
+  // collect predicates (`classifyRequestedPath`). Anything but a directory or a
+  // supported regular file must be refused HERE, before `hashFile` reads it:
+  // reading a symlink reaches outside the configured roots, reading a FIFO never
+  // returns, and reading an excluded or unsupported file is work no ingest can
+  // use. The log assertion is the proof that no read was attempted.
+  it.each([
+    {
+      label: 'a symbolic link',
+      kind: 'symlink' as const,
+      requestedPath: `${ROOT}/alias.md`,
+      expectedMessage: `Sync path is a symbolic link, which sync never follows: ${ROOT}/alias.md`,
+    },
+    {
+      label: 'an irregular file (socket, FIFO, device)',
+      kind: 'irregular' as const,
+      requestedPath: `${ROOT}/pipe.md`,
+      expectedMessage: `Sync path is not a regular file or directory: ${ROOT}/pipe.md`,
+    },
+    {
+      label: 'a path under an excluded prefix',
+      kind: 'excluded' as const,
+      requestedPath: `${DB_PATH}/raw-data/x.md`,
+      expectedMessage: `Sync path is inside the database or cache directory: ${DB_PATH}/raw-data/x.md`,
+    },
+    {
+      label: 'an unsupported extension',
+      kind: 'unsupported' as const,
+      requestedPath: `${ROOT}/archive.bin`,
+      expectedMessage: `Sync path is not a supported document type: ${ROOT}/archive.bin`,
+    },
+  ])('refuses $label before reading it', async ({ kind, requestedPath, expectedMessage }) => {
+    const { collaborators, log } = createCollaborators({ kinds: { [requestedPath]: kind } })
+
+    const result = await runSync(runInput(collaborators, { requestedPath }))
+
+    expect(log).toEqual([`classify:${requestedPath}`])
+    expect(result.error).toEqual({ message: expectedMessage, filePath: requestedPath })
+    expect(result).toMatchObject({ upserted: 0, skipped: 0, empty: 0, pruned: 0 })
+  })
+
   it('accepts a configured root itself as the requested directory', async () => {
     const { collaborators, scanArgs } = createCollaborators({
       kinds: { [ROOT]: 'directory' },
@@ -922,6 +970,7 @@ describe('runSync — gathering', () => {
       unreadableDirs: [{ dirPath: `${ROOT}/locked`, code: 'EACCES' }],
       depthLimitedDirs: [`${OTHER_ROOT}/deep`],
       skippedSymlinks: [`${OTHER_ROOT}/link`],
+      oversizedFiles: [],
     })
   })
 
@@ -944,6 +993,59 @@ describe('runSync — gathering', () => {
       pruned: 0,
       coverage: noCoverage(),
       error: { message: 'manifest unavailable', filePath: null },
+    })
+  })
+
+  // A file the hasher declines to read (over the configured size limit) has no
+  // known content identity this run. It must not become an upsert, must not look
+  // deleted, and must not stop the run — one oversized file would otherwise make
+  // every subsequent whole-root sync abort before reconciling anything else.
+  it('leaves a declined file out of the manifest, records it as unobserved, and keeps its rows', async () => {
+    const oversizedPath = `${ROOT}/huge.md`
+    const { collaborators, log } = createCollaborators({
+      scans: { [ROOT]: { files: [oversizedPath, `${ROOT}/small.md`] } },
+      oversized: [oversizedPath],
+      hashes: { [`${ROOT}/small.md`]: HASH_A },
+      dbRows: [
+        { filePath: oversizedPath, contentHash: HASH_B },
+        { filePath: `${ROOT}/gone.md`, contentHash: HASH_C },
+      ],
+    })
+
+    const result = await runSync(runInput(collaborators))
+
+    // Declined, never read.
+    expect(log).toContain(`declined:${oversizedPath}`)
+    expect(log).not.toContain(`hash:${oversizedPath}`)
+    expect(result.coverage.oversizedFiles).toEqual([oversizedPath])
+    expect(result.error).toBeNull()
+    // Not re-ingested (no identity to compare) and not pruned (rows protected),
+    // while the rest of the run reconciles normally.
+    expect(log).not.toContain(`ingest:${oversizedPath}`)
+    expect(log).not.toContain(`delete:${oversizedPath}`)
+    expect(log).toContain(`ingest:${ROOT}/small.md`)
+    expect(log).toContain(`delete:${ROOT}/gone.md`)
+    expect(result).toMatchObject({ upserted: 1, skipped: 0, empty: 0, pruned: 1 })
+  })
+
+  it('protects an explicitly requested file that was too large to read', async () => {
+    const oversizedPath = `${ROOT}/huge.md`
+    const { collaborators, log } = createCollaborators({
+      kinds: { [oversizedPath]: 'file' },
+      oversized: [oversizedPath],
+      dbRows: [{ filePath: oversizedPath, contentHash: HASH_B }],
+    })
+
+    const result = await runSync(runInput(collaborators, { requestedPath: oversizedPath }))
+
+    expect(log).toEqual([`classify:${oversizedPath}`, `declined:${oversizedPath}`, 'manifest'])
+    expect(result).toEqual({
+      upserted: 0,
+      skipped: 0,
+      empty: 0,
+      pruned: 0,
+      coverage: { ...noCoverage(), oversizedFiles: [oversizedPath] },
+      error: null,
     })
   })
 

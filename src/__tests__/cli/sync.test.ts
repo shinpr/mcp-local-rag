@@ -14,6 +14,7 @@
 // store (instrumented to count `optimize`/`close`), and the scanner keeps walking
 // the real filesystem while recording the exact argument list it was called with.
 
+import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { mkdirSync, rmSync, symlinkSync } from 'node:fs'
 import { mkdir, rm, symlink, writeFile } from 'node:fs/promises'
@@ -146,6 +147,20 @@ function directorySymlinkSupported(): boolean {
   }
 }
 
+/** `mkfifo` is POSIX-only, so the real-FIFO case is probed the same way. */
+function fifoSupported(): boolean {
+  const probePath = join(TMP_ROOT, 'fifo-probe.md')
+  try {
+    mkdirSync(TMP_ROOT, { recursive: true })
+    execFileSync('mkfifo', [probePath])
+    return true
+  } catch {
+    return false
+  } finally {
+    rmSync(probePath, { force: true })
+  }
+}
+
 /** Independent hash oracle: `node:crypto` over the exact bytes written. */
 function sha256(content: string): string {
   return createHash('sha256').update(Buffer.from(content)).digest('hex')
@@ -267,6 +282,8 @@ function reportedCounters(outcome: RunOutcome): unknown {
 }
 
 const describeSymlinkedRoot = directorySymlinkSupported() ? describe : describe.skip
+const itWithSymlinks = directorySymlinkSupported() ? it : it.skip
+const itWithFifos = fifoSupported() ? it : it.skip
 
 /**
  * `root/d1/…/d10/deep.md`: `d10` sits at depth 10 from `root`, so a root-relative
@@ -557,6 +574,209 @@ describe('CLI sync', () => {
     expect(manifest.filter((row) => row.filePath === siblingPath)).toEqual([
       { filePath: siblingPath, contentHash: sha256('an older sibling revision') },
     ])
+  })
+
+  // --------------------------------------------
+  // An explicitly requested path passes the walker's predicates
+  // --------------------------------------------
+  //
+  // A file the walker discovers must be a non-symlink, non-excluded, supported
+  // regular file before its bytes are touched. A path the caller names used to
+  // reach `readFile` first and be judged afterwards — by the parser, or (for a
+  // FIFO) never. Each case below asserts the controlled message AND that nothing
+  // was ingested, which is what "rejected before any read" looks like from
+  // outside.
+
+  itWithSymlinks(
+    'refuses an explicitly requested symbolic link without reading its target',
+    async () => {
+      const fixture = await makeFixture('requested-symlink')
+      const rootDir = fixture.roots[0]!
+      // A perfectly readable, perfectly ingestible .md — outside every root.
+      const outsideTarget = await writeFixtureFile(
+        join(TMP_ROOT, 'requested-symlink', 'outside', 'secret.md'),
+        `a secret outside every configured root ${'s'.repeat(200)}`
+      )
+      const linkPath = join(rootDir, 'alias.md')
+      await symlink(outsideTarget, linkPath, 'file')
+      const insidePath = await writeFixtureFile(join(rootDir, 'a.md'), 'a'.repeat(200))
+      await seedRows(fixture, insidePath, 'stale-hash')
+
+      const outcome = await runCli(fixture, [linkPath])
+
+      expect(outcome.exitCode).toBe(1)
+      expect(outcome.stdout).toBe('')
+      const errorLines = outcome.stderr.filter((line) => line.startsWith('Error:'))
+      expect(errorLines).toEqual([
+        `Error: Sync path is a symbolic link, which sync never follows: ${linkPath}`,
+      ])
+      expect(calls.createEmbedder).toBe(0)
+      expect(calls.optimize).toBe(0)
+      // Nothing about the target reached the index, under either spelling.
+      expect(await storedManifest(fixture)).toEqual([
+        { filePath: insidePath, contentHash: 'stale-hash' },
+        { filePath: insidePath, contentHash: 'stale-hash' },
+      ])
+    }
+  )
+
+  it('refuses an explicitly requested file whose extension is unsupported', async () => {
+    const fixture = await makeFixture('requested-unsupported')
+    const binaryPath = await writeFixtureFile(
+      join(fixture.roots[0]!, 'archive.bin'),
+      `not a document ${'b'.repeat(200)}`
+    )
+
+    const outcome = await runCli(fixture, [binaryPath])
+
+    expect(outcome.exitCode).toBe(1)
+    expect(outcome.stderr.filter((line) => line.startsWith('Error:'))).toEqual([
+      `Error: Sync path is not a supported document type: ${binaryPath}`,
+    ])
+    expect(calls.createEmbedder).toBe(0)
+    expect(await storedManifest(fixture)).toEqual([])
+  })
+
+  it('refuses an explicitly requested path inside the database directory', async () => {
+    // The database lives inside the configured root here, which is the only way
+    // a managed path can also be a scope-valid request.
+    const caseDir = join(TMP_ROOT, 'requested-excluded')
+    await rm(caseDir, { recursive: true, force: true })
+    const rootDir = join(caseDir, 'root')
+    await mkdir(rootDir, { recursive: true })
+    const fixture: Fixture = {
+      roots: [rootDir],
+      dbPath: join(rootDir, '.rag-db'),
+      cacheDir: join(caseDir, 'cache'),
+    }
+    process.env['BASE_DIRS'] = JSON.stringify(fixture.roots)
+    const managedPath = await writeFixtureFile(
+      join(fixture.dbPath, 'raw-data', 'captured.md'),
+      `captured content ${'c'.repeat(200)}`
+    )
+
+    const outcome = await runCli(fixture, [managedPath])
+
+    expect(outcome.exitCode).toBe(1)
+    expect(outcome.stderr.filter((line) => line.startsWith('Error:'))).toEqual([
+      `Error: Sync path is inside the database or cache directory: ${managedPath}`,
+    ])
+    expect(calls.createEmbedder).toBe(0)
+    expect(await storedManifest(fixture)).toEqual([])
+  })
+
+  itWithFifos(
+    'refuses an explicitly requested FIFO instead of blocking on its bytes',
+    async () => {
+      const fixture = await makeFixture('requested-fifo')
+      const fifoPath = join(fixture.roots[0]!, 'pipe.md')
+      execFileSync('mkfifo', [fifoPath])
+
+      // Reading this path never returns, so finishing at all is the assertion:
+      // classification refuses it before any read is attempted.
+      const outcome = await runCli(fixture, [fifoPath])
+
+      expect(outcome.exitCode).toBe(1)
+      expect(outcome.stderr.filter((line) => line.startsWith('Error:'))).toEqual([
+        `Error: Sync path is not a regular file or directory: ${fifoPath}`,
+      ])
+      expect(calls.createEmbedder).toBe(0)
+    },
+    20000
+  )
+
+  // --------------------------------------------
+  // The configured file-size limit bounds the hash read
+  // --------------------------------------------
+
+  it('skips an oversized file with a warning, keeps its rows, and reconciles the rest', async () => {
+    const fixture = await makeFixture('oversized')
+    const rootDir = fixture.roots[0]!
+    const savedMaxFileSize = process.env['MAX_FILE_SIZE']
+    // Small enough that the oversized fixture stays cheap, large enough for the
+    // other documents to remain ingestible.
+    process.env['MAX_FILE_SIZE'] = '1024'
+    try {
+      const oversizedPath = await writeFixtureFile(join(rootDir, 'huge.md'), 'h'.repeat(5000))
+      const addedPath = await writeFixtureFile(
+        join(rootDir, 'added.md'),
+        `added document ${'a'.repeat(200)}`
+      )
+      const gonePath = join(rootDir, 'gone.md')
+      await seedRows(fixture, oversizedPath, 'hash-from-a-run-with-a-larger-limit')
+      await seedRows(fixture, gonePath, sha256('deleted from disk'))
+
+      const outcome = await runCli(fixture, [])
+
+      expect(outcome.exitCode).toBeUndefined()
+      // The oversized file is neither upserted nor pruned; everything else is
+      // reconciled normally, so one huge file cannot stall the whole root.
+      expect(reportedCounters(outcome)).toEqual({
+        upserted: 1,
+        skipped: 0,
+        empty: 0,
+        pruned: 1,
+      })
+      // The operator is told which path was skipped and why prune was withheld.
+      expect(
+        outcome.stderr.filter(
+          (line) => line.includes(oversizedPath) && line.includes('maximum file size')
+        )
+      ).toHaveLength(1)
+
+      const manifest = await storedManifest(fixture)
+      // THE assertion: its stored rows survived the run untouched.
+      expect(manifest.filter((row) => row.filePath === oversizedPath)).toEqual([
+        { filePath: oversizedPath, contentHash: 'hash-from-a-run-with-a-larger-limit' },
+        { filePath: oversizedPath, contentHash: 'hash-from-a-run-with-a-larger-limit' },
+      ])
+      expect(
+        new Set(manifest.filter((row) => row.filePath === addedPath).map((row) => row.contentHash))
+      ).toEqual(new Set([sha256(`added document ${'a'.repeat(200)}`)]))
+      expect(manifest.filter((row) => row.filePath === gonePath)).toEqual([])
+    } finally {
+      if (savedMaxFileSize === undefined) {
+        delete process.env['MAX_FILE_SIZE']
+      } else {
+        process.env['MAX_FILE_SIZE'] = savedMaxFileSize
+      }
+    }
+  })
+
+  it('keeps the rows of an explicitly requested oversized file', async () => {
+    const fixture = await makeFixture('oversized-explicit')
+    const savedMaxFileSize = process.env['MAX_FILE_SIZE']
+    process.env['MAX_FILE_SIZE'] = '1024'
+    try {
+      const oversizedPath = await writeFixtureFile(
+        join(fixture.roots[0]!, 'huge.md'),
+        'h'.repeat(5000)
+      )
+      await seedRows(fixture, oversizedPath, 'hash-from-a-run-with-a-larger-limit')
+
+      const outcome = await runCli(fixture, [oversizedPath])
+
+      // A single-file scope whose only file was not observed prunes nothing: the
+      // run succeeds, reports nothing done, and leaves the rows searchable.
+      expect(outcome.exitCode).toBeUndefined()
+      expect(reportedCounters(outcome)).toEqual({
+        upserted: 0,
+        skipped: 0,
+        empty: 0,
+        pruned: 0,
+      })
+      expect(calls.createEmbedder).toBe(0)
+      expect(await storedManifest(fixture)).toEqual([
+        { filePath: oversizedPath, contentHash: 'hash-from-a-run-with-a-larger-limit' },
+        { filePath: oversizedPath, contentHash: 'hash-from-a-run-with-a-larger-limit' },
+      ])
+    } finally {
+      if (savedMaxFileSize === undefined) {
+        delete process.env['MAX_FILE_SIZE']
+      } else {
+        process.env['MAX_FILE_SIZE'] = savedMaxFileSize
+      }
+    }
   })
 
   // --------------------------------------------
