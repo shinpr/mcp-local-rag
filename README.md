@@ -4,6 +4,8 @@
 
 # MCP Local RAG
 
+[![MCP Toplist](https://mcptoplist.com/badge/io.github.shinpr%2Fmcp-local-rag.svg)](https://mcptoplist.com/server/io.github.shinpr%2Fmcp-local-rag)
+
 [![GitHub stars](https://img.shields.io/github/stars/shinpr/mcp-local-rag?style=social)](https://github.com/shinpr/mcp-local-rag)
 [![npm version](https://img.shields.io/npm/v/mcp-local-rag.svg)](https://www.npmjs.com/package/mcp-local-rag)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
