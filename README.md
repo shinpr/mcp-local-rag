@@ -107,7 +107,7 @@ mcp-local-rag provides two interfaces: an **MCP server** for AI coding tools and
 
 ### Using with MCP
 
-The MCP server provides 7 tools: `ingest_file`, `ingest_data`, `query_documents`, `read_chunk_neighbors`, `list_files`, `delete_file`, `status`.
+The MCP server provides 9 tools: `ingest_file`, `ingest_data`, `query_documents`, `read_chunk_neighbors`, `list_files`, `delete_file`, `status`, `sync_start`, `sync_status`.
 
 #### Ingesting Documents
 
@@ -215,9 +215,37 @@ Pass the `filePath` and `chunkIndex` from the search result. The response includ
 
 Narrow the listing with `scope` on `list_files` — one path prefix or a list of them. Results are restricted to files reachable at a path equal to or under a prefix (exact-or-descendant); for example, `"/docs/api"` matches `/docs/api` and `/docs/api/auth.md` but not `/docs/apiv2`. Raw-data sources (from `ingest_data`) stay listed regardless of scope. On large volumes, scope also speeds up the listing by skipping out-of-scope directories during the scan.
 
+#### Synchronizing the Index
+
+When files under a configured root change outside your assistant, `sync_start` brings the index back in line: new and changed files are re-ingested, byte-identical files are left untouched, and entries whose source file is gone are removed.
+
+```
+"Sync the index with /Users/me/docs"
+"Sync everything and tell me when it's finished"
+```
+
+`sync_start` takes an optional absolute `path` — a file or a directory inside a configured root; omit it to cover every root — and returns a `jobId` right away, before any scanning or hashing starts. Progress is read by polling `sync_status` with that `jobId` until `state` is no longer `running`:
+
+| Field | Meaning |
+|---|---|
+| `state` | `running`, `succeeded`, or `failed`. A job succeeds only when `error` is `null`. |
+| `total` | `null` until the scan has counted the supported files on disk, then a number. |
+| `completed` | `upserted + skipped + empty`; never more than a non-null `total`. |
+| `summary` | `upserted` (new or changed, re-ingested), `skipped` (bytes identical, untouched), `empty` (produced no chunks; prior chunks kept and retried next run), `pruned` (indexed files whose source is gone). `pruned` is counted outside `completed`. |
+| `warnings` | Parts of the scope the scan could not observe — an unreadable directory, a subtree past the scan-depth limit, or a symbolic link (symlinks are never followed). Indexed files under them are kept rather than pruned. |
+| `error` | `null` unless the job failed; a failed job carries one message and, for a per-file failure, the file path. |
+
+Every run hashes the full bytes of every file it scans, so cost scales with the size of the corpus rather than the number of changes. There is no visual mode on sync — a changed PDF is re-ingested as text.
+
+While a sync is running, that server refuses `sync_start`, `ingest_file`, `ingest_data`, and `delete_file` with an error naming the active `jobId`; poll `sync_status` instead of retrying. Search and inspection (`query_documents`, `read_chunk_neighbors`, `list_files`, `status`, `sync_status`) keep working throughout. After a failure, fix the cause and start a new sync — nothing is retried, resumed, or cancelled, and re-ingests that already completed are kept.
+
+The server keeps only the current or latest job: starting a new one replaces a finished record, after which the older `jobId` is reported as unknown, and stopping the server discards the job entirely. Job state lasts only as long as the server process — there is no history and no recovery after a restart, so polling is how a client learns the outcome.
+
+The same reconciliation is available as the CLI [`sync` command](#using-as-cli), which runs in the foreground and prints the counters as JSON. Either way, only one writer may touch a database path at a time: do not run MCP and CLI `ingest`, `delete`, or `sync` mutations against the same `DB_PATH` from different processes — a sync inside the MCP server only excludes mutations in that same process. A background CLI `sync` may run alongside MCP read-only tools.
+
 ### Using as CLI
 
-All MCP tools are also available as CLI commands — no MCP server needed:
+Most MCP tools are also available as CLI commands — no MCP server needed. `sync_status` has no CLI counterpart, since the CLI `sync` blocks until the sync completes and leaves nothing to poll:
 
 ```bash
 npx mcp-local-rag ingest ./docs/               # Bulk ingest files
