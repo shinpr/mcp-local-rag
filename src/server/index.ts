@@ -6,6 +6,7 @@ import { createRequire } from 'node:module'
 import { resolve, sep } from 'node:path'
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
+import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
 import {
   CallToolRequestSchema,
   ErrorCode,
@@ -1151,11 +1152,21 @@ export class RAGServer {
   }
 
   /**
+   * Serve this instance's tool registration over `transport`.
+   *
+   * Exposed because the registration itself — not a re-registered copy of it —
+   * is what an MCP client talks to, and `this.server` is private. `run()` passes
+   * the stdio transport; a test passes an in-memory pair.
+   */
+  async connect(transport: Transport): Promise<void> {
+    await this.server.connect(transport)
+  }
+
+  /**
    * Start the server
    */
   async run(): Promise<void> {
-    const transport = new StdioServerTransport()
-    await this.server.connect(transport)
+    await this.connect(new StdioServerTransport())
     console.error('RAGServer running on stdio transport')
   }
 
