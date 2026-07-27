@@ -1,3 +1,7 @@
+// The `.perf.test.ts` suffix keeps this out of `pnpm test`; run `pnpm run
+// test:perf`. No CI job runs it either, on purpose: the P95 below is wall-clock
+// and shared runners cannot hold it (see ci.yml).
+
 import { randomUUID } from 'node:crypto'
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'

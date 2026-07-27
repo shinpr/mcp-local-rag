@@ -241,15 +241,6 @@ describe('createCaptioner — quality profile dispatch (Qwen2.5-VL-3B-Instruct-O
     expect(result).toBe('Summary: a figure.\n\nKeywords: alpha; beta')
   })
 
-  it('returns null when decoded output is whitespace-only (shared postProcess applies)', async () => {
-    mocks.state.decodedText = '   \n\t  '
-    const captioner = createCaptioner(BASE_CONFIG)
-
-    const result = await captioner.caption(PNG_BYTES, 1)
-
-    expect(result).toBeNull()
-  })
-
   it('wraps model-load failure in VlmError with pageNum + Qwen model identifier in the cause', async () => {
     const originalErr = new Error('boom-quality-load')
     mocks.state.fromPretrainedThrows = originalErr

@@ -44,20 +44,15 @@ describe('isAppError', () => {
 })
 
 describe('AppError discriminants', () => {
-  it('should expose layer and kind on every concrete instance', () => {
-    for (const err of oneOfEach()) {
-      expect(typeof err.layer).toBe('string')
-      expect(typeof err.kind).toBe('string')
-    }
-  })
-
-  it('should preserve the original name on each concrete class', () => {
-    expect(new EmbeddingError('x').name).toBe('EmbeddingError')
-    expect(new ValidationError('x').name).toBe('ValidationError')
-    expect(new FileOperationError('x').name).toBe('FileOperationError')
-    expect(new DatabaseError('x').name).toBe('DatabaseError')
-    expect(new BaseDirsConfigError('x').name).toBe('BaseDirsConfigError')
-    expect(new VlmError('x', { pageNum: 2 }).name).toBe('VlmError')
+  it('should map each concrete class to its own layer and kind', () => {
+    expect(oneOfEach().map((err) => [err.name, err.layer, err.kind])).toEqual([
+      ['EmbeddingError', 'embedder', 'internal'],
+      ['ValidationError', 'parser', 'validation'],
+      ['FileOperationError', 'parser', 'io'],
+      ['DatabaseError', 'vectordb', 'internal'],
+      ['BaseDirsConfigError', 'config', 'config'],
+      ['VlmError', 'pdf-visual', 'internal'],
+    ])
   })
 
   it('should preserve the cause as the original error object', () => {

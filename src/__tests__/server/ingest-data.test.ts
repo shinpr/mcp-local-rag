@@ -6,7 +6,7 @@ import { mkdir, readFile, rm } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { RAGServer } from '../../server/index.js'
-import { withTestDevice } from '../test-device.js'
+import { testModelCacheDir, withTestDevice } from '../test-device.js'
 
 // ============================================
 // Test Configuration
@@ -16,7 +16,9 @@ const testDbPath = './tmp/test-ingest-data-db'
 const testConfig = {
   dbPath: testDbPath,
   modelName: 'Xenova/all-MiniLM-L6-v2',
-  cacheDir: './tmp/test-model-cache',
+  // The prewarmed cache, so the embedder never reaches HuggingFace. A private
+  // cacheDir here downloaded the model on every CI run and failed on HTTP 429.
+  cacheDir: testModelCacheDir(),
   // Absolute root, matching the production contract (server-main.ts always
   // resolves roots to absolute). A relative '.' would make the scan emit
   // relative paths that never match the absolute excludePaths, so the raw-data

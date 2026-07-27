@@ -120,6 +120,10 @@ jobs:
         key: hf-model-allMiniLM-${{ env.HF_MODEL_REVISION }}
         enableCrossOsArchive: true
 
+    # `pnpm test` excludes two suites and CI registers no job for either, on
+    # purpose: `test:e2e` needs a pre-cached VLM (prepare-models pins the
+    # embedding model only, so it would fetch from HuggingFace mid-test), and
+    # `test:perf` asserts a wall-clock P95 that shared runners cannot hold.
     - name: Run tests
       run: pnpm test
 

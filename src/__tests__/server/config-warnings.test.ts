@@ -11,7 +11,7 @@ import {
   parseMaxDistance,
   parseMaxFiles,
 } from '../../server-main.js'
-import { withTestDevice } from '../test-device.js'
+import { testModelCacheDir, withTestDevice } from '../test-device.js'
 
 // ============================================
 // Unit Tests: Parser Functions
@@ -192,7 +192,8 @@ const testDbPath = './tmp/test-config-warnings-db'
 const baseConfig = {
   dbPath: testDbPath,
   modelName: 'Xenova/all-MiniLM-L6-v2',
-  cacheDir: './tmp/test-model-cache',
+  // The prewarmed cache: handleQueryDocuments below embeds the query for real.
+  cacheDir: testModelCacheDir(),
   baseDir: '.',
   maxFileSize: 10 * 1024 * 1024,
 }

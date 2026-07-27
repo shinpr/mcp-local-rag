@@ -251,190 +251,35 @@ describe('handleIngestFile - `visual` Runtime Validation (AC-012)', () => {
     mocks.embedBatch.mockResolvedValue([[0.1, 0.2]])
   })
 
-  // AC-012: "handleIngestFile rejects args.visual values that are neither
-  //         undefined nor a boolean with McpError(ErrorCode.InvalidParams,
-  //         \"'visual' must be a boolean if provided\"). Tested with
-  //         visual: 'true' (string), visual: 1 (number), visual: null."
-  // ROI: 49 (BV:7 × Freq:3 + Legal:0 + Defect:7)
-  // Behavior: Non-boolean `visual` → McpError(InvalidParams) before any I/O
-  // Verification items (one parametrized case per invalid value):
-  //   - Error thrown is McpError
-  //   - ErrorCode === InvalidParams
-  //   - Message includes "'visual' must be a boolean if provided"
-  //   - No parser/chunker/embedder/vectorStore method was reached
-  // @category: edge-case
+  // AC-012: non-boolean `visual` is rejected before the handler touches any
+  // collaborator. The per-value rejection itself is covered on the parse
+  // function in server/__tests__/tool-input.test.ts; what is proved here is that
+  // handleIngestFile runs that validation ahead of its first I/O call.
+  //
+  // The positive dispatch cases (visual undefined / false / true) are proved
+  // observably in __tests__/cli/ingest-default-mode.test.ts (pdf-visual Proxy
+  // sentinel + persisted chunk rows) and __tests__/cli/ingest-visual.test.ts
+  // (enriched caption content), so they are not re-asserted here as call counts.
   // @lane: integration
-  // @dependency: handleIngestFile, defensive stubs (must NOT be called)
-  // @complexity: low
-  it("AC-012: handleIngestFile throws McpError(InvalidParams) when visual === 'true' (string)", async () => {
-    // Arrange
-    const server = buildServer()
+  it.each(['true', 1, null])(
+    'rejects visual=%j before reaching any collaborator',
+    async (visual) => {
+      const server = buildServer()
 
-    // Act
-    let caught: unknown
-    try {
-      await server.handleIngestFile({
-        filePath: FIXTURE_PDF_PATH,
-        visual: 'true',
-      } as unknown as { filePath: string })
-    } catch (error) {
-      caught = error
+      await expect(
+        server.handleIngestFile({ filePath: FIXTURE_PDF_PATH, visual } as unknown as {
+          filePath: string
+        })
+      ).rejects.toMatchObject({
+        code: ErrorCode.InvalidParams,
+        message: expect.stringContaining(INVALID_PARAMS_MESSAGE),
+      })
+
+      expect(mocks.parsePdf).not.toHaveBeenCalled()
+      expect(mocks.parsePdfPages).not.toHaveBeenCalled()
+      expect(mocks.parseFile).not.toHaveBeenCalled()
     }
-
-    // Assert: error shape
-    expect(caught).toBeInstanceOf(McpError)
-    expect((caught as McpError).code).toBe(ErrorCode.InvalidParams)
-    expect((caught as McpError).message).toContain(INVALID_PARAMS_MESSAGE)
-
-    // Assert: no downstream side effect (validation short-circuited)
-    expect(mocks.parsePdf).toHaveBeenCalledTimes(0)
-    expect(mocks.parsePdfPages).toHaveBeenCalledTimes(0)
-    expect(mocks.parseFile).toHaveBeenCalledTimes(0)
-    expect(mocks.chunkText).toHaveBeenCalledTimes(0)
-    expect(mocks.embedBatch).toHaveBeenCalledTimes(0)
-    expect(mocks.deleteChunks).toHaveBeenCalledTimes(0)
-    expect(mocks.insertChunks).toHaveBeenCalledTimes(0)
-  })
-
-  it('AC-012: handleIngestFile throws McpError(InvalidParams) when visual === 1 (number)', async () => {
-    // Arrange
-    const server = buildServer()
-
-    // Act
-    let caught: unknown
-    try {
-      await server.handleIngestFile({
-        filePath: FIXTURE_PDF_PATH,
-        visual: 1,
-      } as unknown as { filePath: string })
-    } catch (error) {
-      caught = error
-    }
-
-    // Assert: error shape
-    expect(caught).toBeInstanceOf(McpError)
-    expect((caught as McpError).code).toBe(ErrorCode.InvalidParams)
-    expect((caught as McpError).message).toContain(INVALID_PARAMS_MESSAGE)
-
-    // Assert: no downstream side effect
-    expect(mocks.parsePdf).toHaveBeenCalledTimes(0)
-    expect(mocks.parsePdfPages).toHaveBeenCalledTimes(0)
-    expect(mocks.parseFile).toHaveBeenCalledTimes(0)
-    expect(mocks.chunkText).toHaveBeenCalledTimes(0)
-    expect(mocks.embedBatch).toHaveBeenCalledTimes(0)
-    expect(mocks.deleteChunks).toHaveBeenCalledTimes(0)
-    expect(mocks.insertChunks).toHaveBeenCalledTimes(0)
-  })
-
-  it('AC-012: handleIngestFile throws McpError(InvalidParams) when visual === null', async () => {
-    // Arrange
-    const server = buildServer()
-
-    // Act
-    let caught: unknown
-    try {
-      await server.handleIngestFile({
-        filePath: FIXTURE_PDF_PATH,
-        visual: null,
-      } as unknown as { filePath: string })
-    } catch (error) {
-      caught = error
-    }
-
-    // Assert: error shape
-    expect(caught).toBeInstanceOf(McpError)
-    expect((caught as McpError).code).toBe(ErrorCode.InvalidParams)
-    expect((caught as McpError).message).toContain(INVALID_PARAMS_MESSAGE)
-
-    // Assert: no downstream side effect
-    expect(mocks.parsePdf).toHaveBeenCalledTimes(0)
-    expect(mocks.parsePdfPages).toHaveBeenCalledTimes(0)
-    expect(mocks.parseFile).toHaveBeenCalledTimes(0)
-    expect(mocks.chunkText).toHaveBeenCalledTimes(0)
-    expect(mocks.embedBatch).toHaveBeenCalledTimes(0)
-    expect(mocks.deleteChunks).toHaveBeenCalledTimes(0)
-    expect(mocks.insertChunks).toHaveBeenCalledTimes(0)
-  })
-
-  // AC-012 (positive — validation does NOT fire for valid values):
-  // ROI: 28 (BV:7 × Freq:4 + Legal:0 + Defect:0)
-  // Behavior: undefined / true / false → no validation error; the call proceeds
-  //           into the dispatch (parser etc.).
-  // Verification items:
-  //   - No McpError(InvalidParams) thrown specifically for `visual` shape
-  //   - For visual === undefined and visual === false, the default-path parser
-  //     (parser.parsePdf for PDFs, parser.parseFile for non-PDFs) is reached
-  //   - For visual === true on a `.pdf`, the visual-path parser
-  //     (parser.parsePdfPages) is reached
-  // @category: edge-case
-  // @lane: integration
-  // @dependency: handleIngestFile
-  // @complexity: low
-  it('AC-012 (positive): handleIngestFile dispatches to the default PDF path when visual is undefined', async () => {
-    // Arrange
-    const server = buildServer()
-
-    // Act: omit `visual` from args (undefined) — must NOT throw InvalidParams
-    await server.handleIngestFile({ filePath: FIXTURE_PDF_PATH })
-
-    // Assert: default PDF parser reached; visual parser NOT reached
-    expect(mocks.parsePdf).toHaveBeenCalledTimes(1)
-    expect(mocks.parsePdf).toHaveBeenCalledWith(FIXTURE_PDF_PATH, expect.anything())
-    expect(mocks.parsePdfPages).toHaveBeenCalledTimes(0)
-  })
-
-  it('AC-012 (positive): handleIngestFile dispatches to the default PDF path when visual === false', async () => {
-    // Arrange
-    const server = buildServer()
-
-    // Act
-    await server.handleIngestFile({
-      filePath: FIXTURE_PDF_PATH,
-      visual: false,
-    } as unknown as { filePath: string })
-
-    // Assert: default PDF parser reached; visual parser NOT reached
-    expect(mocks.parsePdf).toHaveBeenCalledTimes(1)
-    expect(mocks.parsePdf).toHaveBeenCalledWith(FIXTURE_PDF_PATH, expect.anything())
-    expect(mocks.parsePdfPages).toHaveBeenCalledTimes(0)
-  })
-
-  it('AC-012 (positive): handleIngestFile dispatches to the non-PDF default path when visual === false on a .md file', async () => {
-    // Arrange
-    const server = buildServer()
-
-    // Act
-    await server.handleIngestFile({
-      filePath: FIXTURE_NON_PDF_PATH,
-      visual: false,
-    } as unknown as { filePath: string })
-
-    // Assert: non-PDF parser reached
-    expect(mocks.parseFile).toHaveBeenCalledTimes(1)
-    expect(mocks.parseFile).toHaveBeenCalledWith(FIXTURE_NON_PDF_PATH)
-    expect(mocks.parsePdf).toHaveBeenCalledTimes(0)
-    expect(mocks.parsePdfPages).toHaveBeenCalledTimes(0)
-  })
-
-  it('AC-012 (positive): handleIngestFile dispatches to the visual path when visual === true on a .pdf', async () => {
-    // Arrange
-    const server = buildServer()
-
-    // Act
-    await server.handleIngestFile({
-      filePath: FIXTURE_PDF_PATH,
-      visual: true,
-    } as unknown as { filePath: string })
-
-    // Assert: visual parser reached; default PDF parser NOT reached
-    expect(mocks.parsePdfPages).toHaveBeenCalledTimes(1)
-    expect(mocks.parsePdfPages).toHaveBeenCalledWith(FIXTURE_PDF_PATH, expect.anything())
-    expect(mocks.parsePdf).toHaveBeenCalledTimes(0)
-    // pdf-visual barrel exports were invoked
-    expect(mocks.createCaptioner).toHaveBeenCalledTimes(1)
-    expect(mocks.detectVisualCandidates).toHaveBeenCalledTimes(1)
-    expect(mocks.enrichPagesWithCaptions).toHaveBeenCalledTimes(1)
-  })
+  )
 })
 
 // =============================================================================
