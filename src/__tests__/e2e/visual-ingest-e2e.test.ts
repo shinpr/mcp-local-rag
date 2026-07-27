@@ -34,7 +34,8 @@
 // CI gate:
 //   describe.skipIf(process.env['RUN_E2E'] !== '1')(...)
 // also lives in package.json as a dedicated `test:e2e` script so the
-// default `pnpm test` never pulls the VLM model.
+// default `pnpm test` never pulls the VLM model. No workflow sets RUN_E2E=1
+// either, so this runs nowhere automatically — on purpose (see ci.yml).
 
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
