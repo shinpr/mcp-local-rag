@@ -5,7 +5,7 @@
 import { mkdir, rm } from 'node:fs/promises'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { RAGServer } from '../../server/index.js'
-import { withTestDevice } from '../test-device.js'
+import { testModelCacheDir, withTestDevice } from '../test-device.js'
 
 // ============================================
 // Test Configuration
@@ -15,7 +15,8 @@ const testDbPath = './tmp/test-html-workflow-db'
 const testConfig = {
   dbPath: testDbPath,
   modelName: 'Xenova/all-MiniLM-L6-v2',
-  cacheDir: './tmp/test-model-cache',
+  // The prewarmed cache, so ingest and search never reach HuggingFace.
+  cacheDir: testModelCacheDir(),
   baseDir: '.',
   maxFileSize: 10 * 1024 * 1024,
 }
