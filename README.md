@@ -165,21 +165,6 @@ Ingest the document at /Users/me/docs/api-spec.pdf.
 
 Re-ingesting the same path replaces its existing chunks.
 
-#### Re-indexing DOCX Files After Upgrading
-
-DOCX title and table-row extraction can improve between releases without changing the source file
-bytes. `sync_start` and the CLI `sync` command skip a file when its path and raw-byte hash already
-match the index, so sync alone does not refresh a byte-identical DOCX.
-
-Re-ingest the affected document root against the same database and model configuration:
-
-```bash
-npx mcp-local-rag ingest /absolute/path/to/documents
-```
-
-For MCP, call `ingest_file` once for each affected DOCX path. Direct ingestion replaces the chunks
-stored for that path; changing or touching the source file is unnecessary.
-
 ### Searching and Reading More Context
 
 ```text
