@@ -1,6 +1,7 @@
 // Title Extractor Unit Tests
 // Test Type: Unit Test
 
+import { JSDOM } from 'jsdom'
 import { describe, expect, it } from 'vitest'
 import {
   extractDocxTitle,
@@ -10,6 +11,10 @@ import {
   extractTxtTitle,
   fileNameToTitle,
 } from '../title-extractor.js'
+
+function extractDocxTitleFromHtml(html: string, fileName: string, metadataTitle?: string) {
+  return extractDocxTitle(new JSDOM(html).window.document, fileName, metadataTitle)
+}
 
 // ============================================
 // Tests
@@ -252,7 +257,7 @@ describe('Title Extractor', () => {
   describe('extractDocxTitle', () => {
     it('should extract first h1 from mammoth HTML output', () => {
       const html = '<h1>Document Title</h1><p>Some content here.</p>'
-      const result = extractDocxTitle(html, 'document.docx')
+      const result = extractDocxTitleFromHtml(html, 'document.docx')
 
       expect(result.title).toBe('Document Title')
       expect(result.source).toBe('content')
@@ -260,7 +265,7 @@ describe('Title Extractor', () => {
 
     it('should fall back to file name when no h1 found', () => {
       const html = '<p>Some content without heading.</p>'
-      const result = extractDocxTitle(html, 'my-document.docx')
+      const result = extractDocxTitleFromHtml(html, 'my-document.docx')
 
       expect(result.title).toBe('my document')
       expect(result.source).toBe('filename')
@@ -268,7 +273,7 @@ describe('Title Extractor', () => {
 
     it('should handle HTML with no heading tags', () => {
       const html = '<p>Just a paragraph.</p><p>Another paragraph.</p>'
-      const result = extractDocxTitle(html, 'notes.docx')
+      const result = extractDocxTitleFromHtml(html, 'notes.docx')
 
       expect(result.title).toBe('notes')
       expect(result.source).toBe('filename')
@@ -276,10 +281,40 @@ describe('Title Extractor', () => {
 
     it('should extract only the first h1 when multiple exist', () => {
       const html = '<h1>First Title</h1><h1>Second Title</h1><p>Content.</p>'
-      const result = extractDocxTitle(html, 'document.docx')
+      const result = extractDocxTitleFromHtml(html, 'document.docx')
 
       expect(result.title).toBe('First Title')
       expect(result.source).toBe('content')
+    })
+
+    it('should return decoded plain text without bookmark markup', () => {
+      const html = '<h1><a id="_Toc123"></a>Research &amp; Development</h1>'
+      const result = extractDocxTitleFromHtml(html, 'document.docx')
+
+      expect(result).toEqual({
+        title: 'Research & Development',
+        source: 'content',
+      })
+    })
+
+    it('should skip an empty bookmark-only h1', () => {
+      const html = '<h1><a id="_Toc123"></a></h1><h1>Second Title</h1>'
+      const result = extractDocxTitleFromHtml(html, 'document.docx')
+
+      expect(result).toEqual({
+        title: 'Second Title',
+        source: 'content',
+      })
+    })
+
+    it('should prefer a non-empty core title over h1 content', () => {
+      const html = '<h1>Heading Title</h1>'
+      const result = extractDocxTitleFromHtml(html, 'document.docx', '  Core   Title  ')
+
+      expect(result).toEqual({
+        title: 'Core Title',
+        source: 'metadata',
+      })
     })
   })
 })

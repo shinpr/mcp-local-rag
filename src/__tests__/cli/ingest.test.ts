@@ -314,6 +314,29 @@ describe('CLI ingest', () => {
     expect(insertLines[1]).toContain('vectorLen=2')
   })
 
+  it('should pass parser atomic ranges through the actual runIngest path', async () => {
+    const filePath = resolve('/tmp/test/document.docx')
+    const parsedContent = 'Intro\n\nHeader: First Second'
+    const atomicRanges = [
+      {
+        start: 'Intro\n\n'.length,
+        end: parsedContent.length,
+      },
+    ] as const
+    mocks.stat.mockResolvedValue(mockFileStat())
+    setupSuccessfulIngestion()
+    mocks.parseFile.mockResolvedValue({
+      content: parsedContent,
+      title: 'Table document',
+      atomicRanges,
+    })
+
+    const { error } = await captureStderr(() => runIngest([filePath]))
+
+    expect(error).toBeUndefined()
+    expect(mocks.chunkText).toHaveBeenCalledWith(parsedContent, expect.anything(), atomicRanges)
+  })
+
   // --------------------------------------------
   // Directory ingest
   // --------------------------------------------

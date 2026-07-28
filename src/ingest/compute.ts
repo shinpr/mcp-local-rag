@@ -12,8 +12,9 @@
 
 import { createHash, randomUUID } from 'node:crypto'
 import { basename, extname } from 'node:path'
-import type { SemanticChunker, TextChunk } from '../chunker/index.js'
+import type { AtomicTextRange, SemanticChunker, TextChunk } from '../chunker/index.js'
 import type { EmbedderInterface } from '../chunker/semantic-chunker.js'
+import type { ParseResult } from '../parser/index.js'
 import type { VectorChunk } from '../vectordb/index.js'
 
 /**
@@ -22,10 +23,6 @@ import type { VectorChunk } from '../vectordb/index.js'
  * - `chunks` is the result of a single `chunker.chunkText` call.
  * - `embeddings` is the result of `embedder.embedBatch(chunks.map(c => c.text))`
  *   and has the same length as `chunks`.
- * - `title` is passed through unchanged when non-null. When the caller
- *   passes `null`, the caller is responsible for deriving the title from
- *   `chunks[0]?.text` after this function returns (used by the visual
- *   PDF path in later phases).
  */
 export interface BuildChunksAndEmbeddingsResult {
   chunks: TextChunk[]
@@ -45,9 +42,6 @@ export interface BuildChunksAndEmbeddingsResult {
  *
  * @param text  Already-extracted document text (parser output, raw-data
  *              payload, or joined visual-enriched per-page text).
- * @param title Display-only document title. Pass-through when non-null;
- *              `null` signals that the caller will derive the title
- *              from `chunks[0]?.text` after this function returns.
  * @param chunker  Semantic chunker instance (owned by the caller).
  * @param embedder Embedder implementing the structural `EmbedderInterface`
  *                 (only `embedBatch` is required).
@@ -55,9 +49,10 @@ export interface BuildChunksAndEmbeddingsResult {
 export async function buildChunksAndEmbeddings(
   text: string,
   chunker: SemanticChunker,
-  embedder: EmbedderInterface
+  embedder: EmbedderInterface,
+  atomicRanges?: readonly AtomicTextRange[]
 ): Promise<BuildChunksAndEmbeddingsResult> {
-  const chunks = await chunker.chunkText(text, embedder)
+  const chunks = await chunker.chunkText(text, embedder, atomicRanges)
   // F5: Skip `embedBatch` entirely on zero chunks. `embedBatch` runs
   // `ensureInitialized()` (which triggers the ~90MB MiniLM download on a
   // cold cache) BEFORE checking for the empty-array short-circuit, so an
@@ -67,6 +62,18 @@ export async function buildChunksAndEmbeddings(
   }
   const embeddings = await embedder.embedBatch(chunks.map((chunk) => chunk.text))
   return { chunks, embeddings }
+}
+
+/**
+ * Preserve the parser content/range mapping at one shared boundary. Display
+ * title handling stays in each dispatch root because it does not affect chunks.
+ */
+export async function buildChunksFromParseResult(
+  result: ParseResult,
+  chunker: SemanticChunker,
+  embedder: EmbedderInterface
+): Promise<BuildChunksAndEmbeddingsResult> {
+  return await buildChunksAndEmbeddings(result.content, chunker, embedder, result.atomicRanges)
 }
 
 /**

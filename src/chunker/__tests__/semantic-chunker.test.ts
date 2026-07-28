@@ -180,6 +180,54 @@ Topic B is completely different. Topic B continues here.`
       // so every chunk is filtered out → empty result.
       expect(result).toHaveLength(0)
     })
+
+    it('should retain a short atomic row without changing ordinary prose filtering', async () => {
+      const shortRow = 'Code: 42'
+      vi.mocked(mockEmbedder.embedBatch).mockResolvedValue([createMockEmbedding([1, 0, 0])])
+
+      await expect(chunker.chunkText(shortRow, mockEmbedder)).resolves.toEqual([])
+      await expect(
+        chunker.chunkText(shortRow, mockEmbedder, [{ start: 0, end: shortRow.length }])
+      ).resolves.toEqual([{ text: shortRow, index: 0 }])
+    })
+
+    it('should embed and persist a multi-sentence atomic row as one unit', async () => {
+      const row = 'Field: 42\nDescription: First sentence. Second sentence.'
+      vi.mocked(mockEmbedder.embedBatch).mockResolvedValue([createMockEmbedding([1, 0, 0])])
+
+      const result = await chunker.chunkText(row, mockEmbedder, [{ start: 0, end: row.length }])
+
+      expect(mockEmbedder.embedBatch).toHaveBeenCalledWith([row])
+      expect(result).toEqual([{ text: row, index: 0 }])
+    })
+
+    it('should keep an atomic row intact when grouped with neighboring prose', async () => {
+      const before = 'Context before the table row is intentionally long enough.'
+      const row = 'Code: 42\nDescription: First sentence. Second sentence.'
+      const after = 'Context after the table row is also intentionally long enough.'
+      const text = `${before}\n\n${row}\n\n${after}`
+      const rowStart = before.length + 2
+      const embedding = createMockEmbedding([1, 0, 0])
+      vi.mocked(mockEmbedder.embedBatch).mockResolvedValue([embedding, embedding, embedding])
+
+      const result = await chunker.chunkText(text, mockEmbedder, [
+        { start: rowStart, end: rowStart + row.length },
+      ])
+
+      expect(mockEmbedder.embedBatch).toHaveBeenCalledWith([before, row, after])
+      expect(result).toEqual([{ text: `${before} ${row} ${after}`, index: 0 }])
+    })
+
+    it('should continue applying the garbage filter to atomic ranges', async () => {
+      const decoration = '--------'
+      vi.mocked(mockEmbedder.embedBatch).mockResolvedValue([createMockEmbedding([1, 0, 0])])
+
+      const result = await chunker.chunkText(decoration, mockEmbedder, [
+        { start: 0, end: decoration.length },
+      ])
+
+      expect(result).toEqual([])
+    })
   })
 
   // --------------------------------------------

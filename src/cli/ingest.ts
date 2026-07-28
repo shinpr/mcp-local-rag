@@ -6,7 +6,7 @@ import { resolve, sep } from 'node:path'
 import { SemanticChunker } from '../chunker/index.js'
 import type { Embedder } from '../embedder/index.js'
 import {
-  buildChunksAndEmbeddings,
+  buildChunksFromParseResult,
   buildVectorChunks,
   computeContentHash,
 } from '../ingest/compute.js'
@@ -368,8 +368,6 @@ export async function ingestSingleFile(
 
   // Parse file
   const isPdf = filePath.toLowerCase().endsWith('.pdf')
-  let text: string
-  let title: string | null = null
   if (options?.visual === true && isPdf) {
     // Visual dispatch — delegates the shared visual-PDF flow to
     // `prepareVisualPdfChunks` (NFR-1: the dynamic `pdf-visual` import lives
@@ -390,7 +388,7 @@ export async function ingestSingleFile(
       console.error(`  Warning: 0 chunks generated (file may be empty or too short)`)
       return 0
     }
-    title = visualResult.title
+    const title = visualResult.title
 
     // Persistence — identical to the default branch below; inlined here so
     // chunks/embeddings produced on the visual path persist correctly. The
@@ -409,18 +407,20 @@ export async function ingestSingleFile(
     await vectorStore.deleteChunks(filePath)
     await vectorStore.insertChunks(vectorChunks)
     return vectorChunks.length
-  } else if (isPdf) {
-    const result = await parser.parsePdf(filePath, embedder)
-    text = result.content
-    title = result.title || null
-  } else {
-    const result = await parser.parseFile(filePath)
-    text = result.content
-    title = result.title || null
   }
 
+  const parsedFileResult = isPdf
+    ? await parser.parsePdf(filePath, embedder)
+    : await parser.parseFile(filePath)
+  const text = parsedFileResult.content
+  const title = parsedFileResult.title || null
+
   // Chunk text + generate embeddings via the shared computation layer.
-  const { chunks, embeddings } = await buildChunksAndEmbeddings(text, chunker, embedder)
+  const { chunks, embeddings } = await buildChunksFromParseResult(
+    parsedFileResult,
+    chunker,
+    embedder
+  )
   if (chunks.length === 0) {
     console.error(`  Warning: 0 chunks generated (file may be empty or too short)`)
     return 0
