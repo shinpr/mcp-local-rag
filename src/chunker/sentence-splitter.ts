@@ -2,6 +2,8 @@
 // Created: 2025-12-27
 // Purpose: Split text into sentences using Intl.Segmenter (Unicode standard)
 
+import type { AtomicTextRange } from './index.js'
+
 // ============================================
 // Constants
 // ============================================
@@ -23,6 +25,11 @@ const INLINE_CODE_PLACEHOLDER = '\u0000INLINE_CODE\u0000'
 interface CodeBlockInfo {
   placeholder: string
   content: string
+}
+
+export interface SentenceUnit {
+  text: string
+  atomic: boolean
 }
 
 // ============================================
@@ -136,4 +143,63 @@ export function splitIntoSentences(text: string): string[] {
 
   // Filter empty sentences and trim
   return restoredSentences.map((s) => s.trim()).filter((s) => s.length > 0)
+}
+
+function validateAtomicRanges(text: string, atomicRanges: readonly AtomicTextRange[]): void {
+  let previousEnd = 0
+
+  for (const range of atomicRanges) {
+    const validOffsets =
+      Number.isInteger(range.start) &&
+      Number.isInteger(range.end) &&
+      range.start >= 0 &&
+      range.start < range.end &&
+      range.end <= text.length
+    const orderedAndNonOverlapping = range.start >= previousEnd
+
+    if (!validOffsets || !orderedAndNonOverlapping) {
+      throw new Error(
+        `Invalid atomic range [${range.start}, ${range.end}) for text length ${text.length}`
+      )
+    }
+    previousEnd = range.end
+  }
+}
+
+/**
+ * Split ordinary text while preserving the supplied positional ranges as
+ * indivisible sentence units.
+ */
+export function splitIntoSentenceUnits(
+  text: string,
+  atomicRanges: readonly AtomicTextRange[] = []
+): SentenceUnit[] {
+  validateAtomicRanges(text, atomicRanges)
+  if (atomicRanges.length === 0) {
+    return splitIntoSentences(text).map((sentence) => ({ text: sentence, atomic: false }))
+  }
+
+  const units: SentenceUnit[] = []
+  let cursor = 0
+  const appendOrdinary = (ordinaryText: string): void => {
+    units.push(
+      ...splitIntoSentences(ordinaryText).map((sentence) => ({
+        text: sentence,
+        atomic: false,
+      }))
+    )
+  }
+
+  for (const range of atomicRanges) {
+    appendOrdinary(text.slice(cursor, range.start))
+    const atomicText = text.slice(range.start, range.end).trim()
+    if (!atomicText) {
+      throw new Error(`Invalid atomic range [${range.start}, ${range.end}): empty text`)
+    }
+    units.push({ text: atomicText, atomic: true })
+    cursor = range.end
+  }
+  appendOrdinary(text.slice(cursor))
+
+  return units
 }

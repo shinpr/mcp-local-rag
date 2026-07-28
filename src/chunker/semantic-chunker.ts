@@ -1,8 +1,8 @@
 // Semantic Chunker implementation using Max-Min algorithm
 // Based on: "Max–Min semantic chunking of documents for RAG application" (Springer, 2025)
 
-import type { TextChunk } from './index.js'
-import { splitIntoSentences } from './sentence-splitter.js'
+import type { AtomicTextRange, TextChunk } from './index.js'
+import { type SentenceUnit, splitIntoSentenceUnits } from './sentence-splitter.js'
 
 // ============================================
 // Type Definitions
@@ -127,33 +127,44 @@ export class SemanticChunker {
    * @param embedder - Embedder to generate sentence embeddings
    * @returns Array of text chunks
    */
-  async chunkText(text: string, embedder: EmbedderInterface): Promise<TextChunk[]> {
+  async chunkText(
+    text: string,
+    embedder: EmbedderInterface,
+    atomicRanges: readonly AtomicTextRange[] = []
+  ): Promise<TextChunk[]> {
     // Handle empty input
     if (!text || text.trim().length === 0) {
+      // Supplied ranges are programmer contracts and must fail fast even when
+      // ordinary empty text would otherwise return before sentence splitting.
+      if (atomicRanges.length > 0) splitIntoSentenceUnits(text, atomicRanges)
       return []
     }
 
     // Split into sentences
-    const sentences = splitIntoSentences(text)
-    if (sentences.length === 0) {
+    const sentenceUnits = splitIntoSentenceUnits(text, atomicRanges)
+    if (sentenceUnits.length === 0) {
       return []
     }
 
     // Generate embeddings for all sentences
-    const embeddings = await embedder.embedBatch(sentences)
+    const embeddings = await embedder.embedBatch(sentenceUnits.map((unit) => unit.text))
 
     // Apply Max-Min algorithm to group sentences into chunks
-    const sentenceGroups = this.groupSentences(sentences, embeddings)
+    const sentenceGroups = this.groupSentences(sentenceUnits, embeddings)
 
     // Convert groups to TextChunks
     const chunks: TextChunk[] = []
     let chunkIndex = 0
 
     for (const group of sentenceGroups) {
-      const chunkText = group.join(' ')
+      const chunkText = group.map((unit) => unit.text).join(' ')
+      const containsAtomicUnit = group.some((unit) => unit.atomic)
 
       // Filter out chunks that are too short or garbage
-      if (chunkText.length >= this.config.minChunkLength && !isGarbageChunk(chunkText)) {
+      if (
+        (containsAtomicUnit || chunkText.length >= this.config.minChunkLength) &&
+        !isGarbageChunk(chunkText)
+      ) {
         chunks.push({
           text: chunkText,
           index: chunkIndex,
@@ -168,12 +179,15 @@ export class SemanticChunker {
   /**
    * Group sentences into chunks using Max-Min algorithm
    */
-  private groupSentences(sentences: string[], embeddings: number[][]): string[][] {
+  private groupSentences(sentences: SentenceUnit[], embeddings: number[][]): SentenceUnit[][] {
     if (sentences.length === 0) return []
-    if (sentences.length === 1) return [[sentences[0] ?? '']]
+    if (sentences.length === 1) {
+      const sentence = sentences[0]
+      return sentence ? [[sentence]] : []
+    }
 
-    const groups: string[][] = []
-    let currentGroup: string[] = []
+    const groups: SentenceUnit[][] = []
+    let currentGroup: SentenceUnit[] = []
     let currentGroupEmbeddings: number[][] = []
 
     for (let i = 0; i < sentences.length; i++) {

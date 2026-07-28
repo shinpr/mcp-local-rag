@@ -3,7 +3,7 @@
 // Purpose: Verify sentence boundary detection using Intl.Segmenter
 
 import { describe, expect, it } from 'vitest'
-import { splitIntoSentences } from '../sentence-splitter.js'
+import { splitIntoSentences, splitIntoSentenceUnits } from '../sentence-splitter.js'
 
 describe('splitIntoSentences', () => {
   // --------------------------------------------
@@ -191,5 +191,71 @@ This is after the code block.`
       expect(sentences[0]).toBe('## Section Title')
       expect(sentences[1]).toBe('This is the content.')
     })
+  })
+})
+
+describe('splitIntoSentenceUnits', () => {
+  it('keeps a multi-sentence atomic range indivisible and ordered', () => {
+    const row = 'Field: 42\nDescription: First sentence. Second sentence.'
+    const text = `Before.\n\n${row}\n\nAfter.`
+    const start = 'Before.\n\n'.length
+
+    expect(splitIntoSentenceUnits(text, [{ start, end: start + row.length }])).toEqual([
+      { text: 'Before.', atomic: false },
+      { text: row, atomic: true },
+      { text: 'After.', atomic: false },
+    ])
+  })
+
+  it('preserves repeated atomic text as separate positional units', () => {
+    const row = 'Code: 42'
+    const text = `${row}\n\n${row}`
+    const secondStart = row.length + 2
+
+    expect(
+      splitIntoSentenceUnits(text, [
+        { start: 0, end: row.length },
+        { start: secondStart, end: secondStart + row.length },
+      ])
+    ).toEqual([
+      { text: row, atomic: true },
+      { text: row, atomic: true },
+    ])
+  })
+
+  it('uses JavaScript UTF-16 offsets for ranges', () => {
+    const prefix = '😀 prefix.\n\n'
+    const row = '項目: 値。説明: 続き。'
+    const text = `${prefix}${row}`
+
+    expect(
+      splitIntoSentenceUnits(text, [{ start: prefix.length, end: prefix.length + row.length }])
+    ).toEqual([
+      { text: '😀 prefix.', atomic: false },
+      { text: row, atomic: true },
+    ])
+  })
+
+  it.each([
+    ['empty', [{ start: 1, end: 1 }]],
+    ['negative', [{ start: -1, end: 2 }]],
+    ['non-integer', [{ start: 0.5, end: 2 }]],
+    ['out of bounds', [{ start: 0, end: 99 }]],
+    [
+      'overlapping',
+      [
+        { start: 0, end: 3 },
+        { start: 2, end: 4 },
+      ],
+    ],
+    [
+      'unsorted',
+      [
+        { start: 3, end: 4 },
+        { start: 0, end: 2 },
+      ],
+    ],
+  ])('rejects %s atomic ranges before splitting', (_label, ranges) => {
+    expect(() => splitIntoSentenceUnits('valid text', ranges)).toThrow(/atomic range/i)
   })
 })

@@ -50,10 +50,15 @@ import { basename, extname, resolve } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { SemanticChunker } from '../../chunker/index.js'
 import { Embedder } from '../../embedder/index.js'
-import { buildChunksAndEmbeddings, computeContentHash } from '../../ingest/compute.js'
+import {
+  buildChunksAndEmbeddings,
+  buildChunksFromParseResult,
+  computeContentHash,
+} from '../../ingest/compute.js'
 import { DocumentParser } from '../../parser/index.js'
 import { RAGServer } from '../../server/index.js'
 import { type VectorChunk, VectorStore } from '../../vectordb/index.js'
+import { buildDocxFixture, headingXml, tableXml } from '../docx-fixture.js'
 import { withTestDevice } from '../test-device.js'
 
 // ============================================
@@ -67,6 +72,30 @@ const cliDbPath = resolve(testRoot, 'cli-db')
 const cacheDir = resolve('./tmp/models')
 const fixtureFileName = 'cross-path-equivalence.md'
 const fixtureFilePath = resolve(baseDir, fixtureFileName)
+const docxFixtureFileName = 'issue-176-equivalence.docx'
+const docxFixtureFilePath = resolve(baseDir, docxFixtureFileName)
+const DOCX_TITLE = 'DOCX Field Reference'
+const DOCX_VALUES = [
+  '42',
+  'Retry Policy Identifier',
+  'Optional',
+  'Integer(11)',
+  'First sentence. Second sentence.',
+] as const
+const DOCX_ROW_TEXT = [
+  'Field No.: 42',
+  'Field Name: Retry Policy Identifier',
+  'Required: Optional',
+  'Type: Integer(11)',
+  'Description: First sentence. Second sentence.',
+].join('\n')
+const DOCX_EXPECTED_CONTENT = `Heading Fallback\n\n${DOCX_ROW_TEXT}`
+const DOCX_EXPECTED_RANGES = [
+  {
+    start: 'Heading Fallback\n\n'.length,
+    end: DOCX_EXPECTED_CONTENT.length,
+  },
+] as const
 
 // Substantial content guarantees the SemanticChunker produces >=1 chunk
 // even with the default minChunkLength (50 chars). Using the same content
@@ -103,8 +132,8 @@ function getServerVectorStore(server: RAGServer): VectorStore {
  * Kept here to avoid importing `src/cli/ingest.ts`, which would transitively
  * load `src/cli/common.js` and `src/cli/options.js` and defeat the per-file
  * `vi.mock` factories in `src/__tests__/cli/ingest.test.ts` under
- * `isolate: false`. If `ingestSingleFile` ever diverges from this body,
- * `AC-008` will fail — that is the intended drift sentinel.
+ * `isolate: false`. Parser-to-chunker mapping is not reproduced here: both
+ * production routes and this harness delegate it to `buildChunksFromParseResult`.
  */
 async function cliInlineIngest(
   filePath: string,
@@ -116,17 +145,22 @@ async function cliInlineIngest(
   const isPdf = filePath.toLowerCase().endsWith('.pdf')
   let text: string
   let title: string | null = null
+  let parsedFileResult: Awaited<ReturnType<DocumentParser['parseFile']>> | undefined
   if (isPdf) {
     const result = await parser.parsePdf(filePath, embedder)
     text = result.content
     title = result.title || null
   } else {
     const result = await parser.parseFile(filePath)
+    parsedFileResult = result
     text = result.content
     title = result.title || null
   }
 
-  const { chunks, embeddings } = await buildChunksAndEmbeddings(text, chunker, embedder)
+  const { chunks, embeddings } =
+    parsedFileResult === undefined
+      ? await buildChunksAndEmbeddings(text, chunker, embedder)
+      : await buildChunksFromParseResult(parsedFileResult, chunker, embedder)
   if (chunks.length === 0) {
     return 0
   }
@@ -185,6 +219,16 @@ describe('VLM PDF Enrichment - Phase 0 Equivalence (AC-008)', () => {
     mkdirSync(serverDbPath, { recursive: true })
     mkdirSync(cliDbPath, { recursive: true })
     writeFileSync(fixtureFilePath, FIXTURE_TEXT)
+    writeFileSync(
+      docxFixtureFilePath,
+      await buildDocxFixture({
+        coreTitle: DOCX_TITLE,
+        bodyXml: `${headingXml('Heading Fallback')}${tableXml([
+          ['Field No.', 'Field Name', 'Required', 'Type', 'Description'],
+          DOCX_VALUES,
+        ])}`,
+      })
+    )
 
     // Prototype-level spy on SemanticChunker.chunkText — captures both
     // callers' invocations through their respective chunker instances.
@@ -247,11 +291,13 @@ describe('VLM PDF Enrichment - Phase 0 Equivalence (AC-008)', () => {
     rmSync(testRoot, { recursive: true, force: true })
   })
 
-  // AC-008: handleIngestFile and the inline CLI ingest reproduction produce
-  // identical chunk rows for the same fixture file. The inline reproduction
-  // mirrors `src/cli/ingest.ts > ingestSingleFile` exactly; divergence
-  // surfaces here.
-  it('AC-008: handleIngestFile and ingestSingleFile produce identical chunk rows for the same fixture', async () => {
+  // AC-008: handleIngestFile and the isolated CLI persistence harness produce
+  // identical chunk rows while sharing the production parser-to-chunker boundary.
+  it('AC-008: keeps Markdown chunks equivalent and preserves literal parser text', async () => {
+    serverInsertCalls.length = 0
+    cliInsertCalls.length = 0
+    chunkerSpy.mockClear()
+
     // Act: server path
     await server.handleIngestFile({ filePath: fixtureFilePath })
 
@@ -291,27 +337,35 @@ describe('VLM PDF Enrichment - Phase 0 Equivalence (AC-008)', () => {
       fileType: 'md',
     })
     expect(typeof first.fileTitle === 'string' || first.fileTitle === null).toBe(true)
-  })
 
-  // AC-008 (drift sentinel): both callers MUST invoke the shared computation
-  // layer exactly once each with the same `text` argument.
-  //
-  // `buildChunksAndEmbeddings(text, title, chunker, embedder)` calls
-  // `chunker.chunkText(text, embedder)` once. Observing the prototype-level
-  // spy on `chunkText` is functionally equivalent to observing
-  // `buildChunksAndEmbeddings` itself — same call count, same `text` arg.
-  it('AC-008 (drift sentinel): both callers invoke chunker.chunkText with the same text', () => {
-    // The previous test executed both ingest paths once each.
     expect(chunkerSpy).toHaveBeenCalledTimes(2)
-
-    const firstCallArgs = chunkerSpy.mock.calls[0]
-    const secondCallArgs = chunkerSpy.mock.calls[1]
-
-    // Same text across both callers.
-    expect(firstCallArgs?.[0]).toBe(secondCallArgs?.[0])
-
-    // Sanity check: the text arg is the fixture content the parser
-    // returned. The markdown parser returns content verbatim.
-    expect(firstCallArgs?.[0]).toBe(FIXTURE_TEXT)
+    expect(chunkerSpy.mock.calls[0]?.[0]).toBe(FIXTURE_TEXT)
+    expect(chunkerSpy.mock.calls[1]?.[0]).toBe(FIXTURE_TEXT)
   })
+
+  it('keeps literal DOCX text, title, atomic ranges, and persisted chunks equivalent across MCP and CLI', async () => {
+    serverInsertCalls.length = 0
+    cliInsertCalls.length = 0
+    chunkerSpy.mockClear()
+
+    await server.handleIngestFile({ filePath: docxFixtureFilePath })
+    await cliInlineIngest(docxFixtureFilePath, cliParser, cliChunker, cliEmbedder, cliVectorStore)
+
+    expect(serverInsertCalls).toHaveLength(1)
+    expect(cliInsertCalls).toHaveLength(1)
+    const serverChunks = serverInsertCalls[0]!
+    const cliChunks = cliInsertCalls[0]!
+    expect(cliChunks.map(stripVolatile)).toEqual(serverChunks.map(stripVolatile))
+
+    const rowChunk = serverChunks.find((chunk) =>
+      DOCX_VALUES.every((value) => chunk.text.includes(value))
+    )
+    expect(rowChunk).toBeDefined()
+    expect(rowChunk?.fileTitle).toBe(DOCX_TITLE)
+    expect(chunkerSpy).toHaveBeenCalledTimes(2)
+    expect(chunkerSpy.mock.calls[0]?.[0]).toBe(DOCX_EXPECTED_CONTENT)
+    expect(chunkerSpy.mock.calls[1]?.[0]).toBe(DOCX_EXPECTED_CONTENT)
+    expect(chunkerSpy.mock.calls[0]?.[2]).toEqual(DOCX_EXPECTED_RANGES)
+    expect(chunkerSpy.mock.calls[1]?.[2]).toEqual(DOCX_EXPECTED_RANGES)
+  }, 180_000)
 })

@@ -3,11 +3,13 @@
 import { statSync } from 'node:fs'
 import { lstat, readFile, realpath } from 'node:fs/promises'
 import { basename, extname, isAbsolute, resolve } from 'node:path'
+import { JSDOM } from 'jsdom'
 import mammoth from 'mammoth'
 import type { Document as MupdfDocument } from 'mupdf'
-import { SemanticChunker } from '../chunker/index.js'
+import { type AtomicTextRange, SemanticChunker } from '../chunker/index.js'
 import { withTrailingSeparator } from '../utils/base-dirs.js'
 import { AppError, isAppError } from '../utils/errors.js'
+import { convertDocxDocumentToText, extractDocxCoreTitle } from './docx-parser.js'
 import { extractPdfPages } from './pdf-extract.js'
 import type { EmbedderInterface } from './pdf-filter.js'
 import {
@@ -39,6 +41,7 @@ export const SUPPORTED_EXTENSIONS = new Set(['.pdf', '.docx', '.txt', '.md'])
 export interface ParseResult {
   content: string
   title: string
+  atomicRanges?: readonly AtomicTextRange[]
 }
 
 /**
@@ -481,7 +484,7 @@ export class DocumentParser {
   /**
    * DOCX parsing (using mammoth)
    *
-   * Uses extractRawText for content and convertToHtml additionally for title detection.
+   * Uses DOCX package metadata plus one Mammoth HTML conversion for title and body extraction.
    *
    * @param filePath - DOCX file path
    * @returns ParseResult with content and extracted title
@@ -489,20 +492,20 @@ export class DocumentParser {
    */
   private async parseDocx(filePath: string): Promise<ParseResult> {
     try {
-      // Read file once and pass buffer to both mammoth calls
       const buffer = await readFile(filePath)
-
-      // Use extractRawText for content (unchanged behavior)
-      const result = await mammoth.extractRawText({ buffer })
-      const rawText = result.value
-
-      // Use convertToHtml additionally for title extraction (first <h1>)
       const htmlResult = await mammoth.convertToHtml({ buffer })
+      const htmlDocument = new JSDOM(htmlResult.value).window.document
+      const coreTitle = await extractDocxCoreTitle(buffer)
+      const body = convertDocxDocumentToText(htmlDocument)
       const fileName = basename(filePath)
-      const titleResult = extractDocxTitle(htmlResult.value, fileName)
+      const titleResult = extractDocxTitle(htmlDocument, fileName, coreTitle)
 
-      console.error(`Parsed DOCX: ${filePath} (${rawText.length} characters)`)
-      return { content: rawText, title: titleResult.title }
+      console.error(`Parsed DOCX: ${filePath} (${body.content.length} characters)`)
+      return {
+        content: body.content,
+        title: titleResult.title,
+        ...(body.atomicRanges.length === 0 ? {} : { atomicRanges: body.atomicRanges }),
+      }
     } catch (error) {
       throw new FileOperationError(`Failed to parse DOCX: ${filePath}`, error as Error)
     }

@@ -24,6 +24,7 @@ import {
 } from '../features/sync.js'
 import {
   buildChunksAndEmbeddings,
+  buildChunksFromParseResult,
   buildVectorChunks,
   computeContentHash,
 } from '../ingest/compute.js'
@@ -624,7 +625,11 @@ export class RAGServer {
       const result = await this.parser.parseFile(args.filePath)
       text = result.content
       title = result.title || null
-      ;({ chunks, embeddings } = await buildChunksAndEmbeddings(text, this.chunker, this.embedder))
+      ;({ chunks, embeddings } = await buildChunksFromParseResult(
+        result,
+        this.chunker,
+        this.embedder
+      ))
     }
 
     // Fail-fast: Prevent data loss when chunking produces 0 chunks

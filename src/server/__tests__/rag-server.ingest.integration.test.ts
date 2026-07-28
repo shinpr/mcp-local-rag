@@ -4,6 +4,7 @@
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { buildDocxFixture, headingXml, tableXml } from '../../__tests__/docx-fixture.js'
 import { testModelCacheDir, withTestDevice } from '../../__tests__/test-device.js'
 import { RAGServer } from '../index.js'
 
@@ -56,6 +57,68 @@ describe('AC-008: File Re-ingestion', () => {
     expect(targetFiles.length).toBe(1)
     // Validation: Chunk count matches new data (not old + new combined)
     expect(targetFiles[0].chunkCount).toBe(updatedChunkCount)
+  }, 60000)
+
+  it('persists and queries one coherent DOCX table row with the core title', async () => {
+    const testFile = resolve(localTestDataDir, 'issue-176.docx')
+    const expectedTitle = 'DOCX Field Reference'
+    const expectedValues = [
+      '42',
+      'Retry Policy Identifier',
+      'Optional',
+      'Integer(11)',
+      'First sentence. Second sentence.',
+    ]
+    const fixture = await buildDocxFixture({
+      coreTitle: expectedTitle,
+      bodyXml: `${headingXml('Heading Fallback')}${tableXml([
+        ['Field No.', 'Field Name', 'Required', 'Type', 'Description'],
+        expectedValues,
+      ])}`,
+    })
+    writeFileSync(testFile, fixture)
+
+    const ingestResult = await localRagServer.handleIngestFile({ filePath: testFile })
+    const ingestData = JSON.parse(ingestResult.content[0].text) as {
+      chunkCount: number
+      fileTitle: string | null
+    }
+    expect(ingestData.chunkCount).toBeGreaterThan(0)
+    expect(ingestData.fileTitle).toBe(expectedTitle)
+
+    const vectorStore = (
+      localRagServer as unknown as {
+        vectorStore: {
+          getChunksByFilePath(
+            filePath: string
+          ): Promise<Array<{ text: string; fileTitle: string | null }>>
+        }
+      }
+    ).vectorStore
+    const persisted = await vectorStore.getChunksByFilePath(testFile)
+    const rowChunk = persisted.find((chunk) =>
+      expectedValues.every((value) => chunk.text.includes(value))
+    )
+    expect(rowChunk).toBeDefined()
+    expect(rowChunk?.fileTitle).toBe(expectedTitle)
+
+    const queryResult = await localRagServer.handleQueryDocuments({
+      query: 'Retry Policy Identifier 42',
+      limit: 10,
+    })
+    const queryRows = JSON.parse(queryResult.content[0].text) as Array<{
+      filePath: string
+      text: string
+      fileTitle: string | null
+    }>
+    expect(
+      queryRows.find(
+        (row) =>
+          row.filePath === testFile &&
+          row.fileTitle === expectedTitle &&
+          expectedValues.every((value) => row.text.includes(value))
+      )
+    ).toBeDefined()
   }, 60000)
 
   // AC interpretation: [Data protection] Prevent data loss when re-ingest results in 0 chunks
