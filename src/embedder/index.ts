@@ -34,6 +34,64 @@ export interface EmbedderConfig {
   dtype?: string
 }
 
+interface IndexedEmbeddingInput {
+  text: string
+  originalIndex: number
+  tokenLength: number
+}
+
+interface BatchEmbeddingPipeline {
+  (input: string[], options: unknown): Promise<{ data: Float32Array; dims: number[] }>
+  tokenizer: (
+    input: string[],
+    options: {
+      padding: boolean
+      truncation: boolean
+      return_tensor: boolean
+    }
+  ) => { input_ids: { length: number }[] }
+}
+
+// Keep estimated padding waste below one-third of dense self-attention work.
+const MAX_PADDING_AMPLIFICATION = 1.5
+
+function estimatePaddingAmplification(inputs: IndexedEmbeddingInput[]): number {
+  let maxTokenLength = 0
+  let individualWork = 0
+  for (const input of inputs) {
+    maxTokenLength = Math.max(maxTokenLength, input.tokenLength)
+    individualWork += input.tokenLength ** 2
+  }
+  return (inputs.length * maxTokenLength ** 2) / individualWork
+}
+
+function deferBatchOutliers(inputs: IndexedEmbeddingInput[]): {
+  batch: IndexedEmbeddingInput[]
+  deferred: IndexedEmbeddingInput[]
+} {
+  const batch = [...inputs]
+  const deferred: IndexedEmbeddingInput[] = []
+
+  while (batch.length > 1) {
+    if (estimatePaddingAmplification(batch) <= MAX_PADDING_AMPLIFICATION) {
+      break
+    }
+
+    let longestIndex = 0
+    for (let index = 1; index < batch.length; index++) {
+      if (batch[index]!.tokenLength > batch[longestIndex]!.tokenLength) {
+        longestIndex = index
+      }
+    }
+
+    const longest = batch[longestIndex]!
+    deferred.push(longest)
+    batch.splice(longestIndex, 1)
+  }
+
+  return { batch, deferred }
+}
+
 // ============================================
 // Error Classes
 // ============================================
@@ -257,15 +315,15 @@ export class Embedder {
       // inference is not parallelized by Promise.all). Passing the whole batch
       // lets the runtime batch the matmuls. Mean-pooling honors the attention
       // mask, so per-row vectors match the single-text result.
-      const modelCall = this.model as (
-        input: string[],
-        options: unknown
-      ) => Promise<{ data: Float32Array; dims: number[] }>
+      const modelCall = this.model as BatchEmbeddingPipeline
+      const embeddings: (number[] | undefined)[] = Array.from({ length: texts.length })
+      const deferred: IndexedEmbeddingInput[] = []
 
-      const embeddings: number[][] = []
-      for (let i = 0; i < texts.length; i += this.config.batchSize) {
-        const batch = texts.slice(i, i + this.config.batchSize)
-        const output = await modelCall(batch, options)
+      const embedInputs = async (inputs: IndexedEmbeddingInput[]): Promise<void> => {
+        const output = await modelCall(
+          inputs.map((input) => input.text),
+          options
+        )
 
         // Validate the output shape before slicing so a runtime/model contract
         // change surfaces as a clear error rather than silently wrong vectors.
@@ -275,17 +333,53 @@ export class Embedder {
           !(output.data instanceof Float32Array) ||
           typeof dim !== 'number' ||
           dim <= 0 ||
-          output.data.length !== batch.length * dim
+          output.data.length !== inputs.length * dim
         ) {
           throw new EmbeddingError('Unexpected embedder batch output shape')
         }
 
-        for (let row = 0; row < batch.length; row++) {
-          embeddings.push(Array.from(output.data.subarray(row * dim, (row + 1) * dim)))
+        for (let row = 0; row < inputs.length; row++) {
+          const input = inputs[row]!
+          embeddings[input.originalIndex] = Array.from(
+            output.data.subarray(row * dim, (row + 1) * dim)
+          )
         }
       }
 
-      return embeddings
+      for (let i = 0; i < texts.length; i += this.config.batchSize) {
+        const batchTexts = texts.slice(i, i + this.config.batchSize)
+        const tokenized = modelCall.tokenizer(batchTexts, {
+          padding: false,
+          truncation: true,
+          return_tensor: false,
+        })
+        if (
+          !tokenized ||
+          !Array.isArray(tokenized.input_ids) ||
+          tokenized.input_ids.length !== batchTexts.length
+        ) {
+          throw new EmbeddingError('Unexpected embedder tokenizer output shape')
+        }
+
+        const indexedInputs = batchTexts.map((text, batchIndex) => ({
+          text,
+          originalIndex: i + batchIndex,
+          tokenLength: tokenized.input_ids[batchIndex]!.length,
+        }))
+        const selected = deferBatchOutliers(indexedInputs)
+        deferred.push(...selected.deferred)
+        await embedInputs(selected.batch)
+      }
+
+      for (const input of deferred) {
+        await embedInputs([input])
+      }
+
+      if (embeddings.some((embedding) => embedding === undefined)) {
+        throw new EmbeddingError('Missing embedder batch output row')
+      }
+
+      return embeddings as number[][]
     } catch (error) {
       if (error instanceof EmbeddingError) {
         throw error
