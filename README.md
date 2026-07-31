@@ -39,7 +39,45 @@ No API key, Docker, Python, or external database is required.
 Set `BASE_DIR` to that directory. It is also the security boundary for file operations. Replace
 `/absolute/path/to/your/documents` below with the directory's absolute path.
 
-Add the MCP server to your AI coding tool:
+mcp-local-rag uses the standard MCP protocol over a local stdio server, so it works with AI
+coding tools and other MCP hosts that support local MCP servers.
+
+Use one of the examples below, or register `npx -y mcp-local-rag` and set `BASE_DIR` using your
+client's MCP configuration format.
+
+**For Claude Code** — Run this command:
+
+```bash
+claude mcp add local-rag --scope user --env BASE_DIR=/absolute/path/to/your/documents -- npx -y mcp-local-rag
+```
+
+**For Codex** — Add to `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.local-rag]
+command = "npx"
+args = ["-y", "mcp-local-rag"]
+
+[mcp_servers.local-rag.env]
+BASE_DIR = "/absolute/path/to/your/documents"
+```
+
+**For OpenCode** — Add to `~/.config/opencode/opencode.json` (or `opencode.jsonc`):
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "local-rag": {
+      "type": "local",
+      "command": ["npx", "-y", "mcp-local-rag"],
+      "environment": {
+        "BASE_DIR": "/absolute/path/to/your/documents"
+      }
+    }
+  }
+}
+```
 
 **For Cursor** — Add to `~/.cursor/mcp.json`:
 
@@ -55,23 +93,6 @@ Add the MCP server to your AI coding tool:
     }
   }
 }
-```
-
-**For Codex** — Add to `~/.codex/config.toml`:
-
-```toml
-[mcp_servers.local-rag]
-command = "npx"
-args = ["-y", "mcp-local-rag"]
-
-[mcp_servers.local-rag.env]
-BASE_DIR = "/absolute/path/to/your/documents"
-```
-
-**For Claude Code** — Run this command:
-
-```bash
-claude mcp add local-rag --scope user --env BASE_DIR=/absolute/path/to/your/documents -- npx -y mcp-local-rag
 ```
 
 Restart the client, then ask it to build the index:
