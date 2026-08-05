@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/banner.jpg" alt="MCP Local RAG — Search below the surface." width="600" />
+  <img src="assets/banner.jpg" alt="MCP Local RAG: Search below the surface." width="600" />
 </p>
 
 # MCP Local RAG
@@ -18,13 +18,13 @@ terms such as API names, class names, and error codes.
 
 ## Features
 
-- **Runs locally** — document parsing, embeddings, storage, and search run on your machine.
+- **Runs locally:** Document parsing, embeddings, storage, and search run on your machine.
   After the initial model download, text ingestion and search work offline.
-- **Hybrid search** — semantic retrieval finds related concepts, while keyword matching boosts
+- **Hybrid search:** Semantic retrieval finds related concepts, while keyword matching boosts
   exact technical terms.
-- **Semantic chunking** — documents are split at topic boundaries instead of fixed character
+- **Semantic chunking:** Documents are split at topic boundaries instead of fixed character
   counts. Markdown code blocks stay intact.
-- **MCP and CLI** — use the same index from an AI coding tool or directly from the terminal.
+- **MCP and CLI:** Use the same index from an AI coding tool or directly from the terminal.
 
 No API key, Docker, Python, or external database is required.
 
@@ -45,13 +45,13 @@ coding tools and other MCP hosts that support local MCP servers.
 Use one of the examples below, or register `npx -y mcp-local-rag` and set `BASE_DIR` using your
 client's MCP configuration format.
 
-**For Claude Code** — Run this command:
+**For Claude Code:** Run this command:
 
 ```bash
 claude mcp add local-rag --scope user --env BASE_DIR=/absolute/path/to/your/documents -- npx -y mcp-local-rag
 ```
 
-**For Codex** — Add to `~/.codex/config.toml`:
+**For Codex:** Add to `~/.codex/config.toml`:
 
 ```toml
 [mcp_servers.local-rag]
@@ -62,7 +62,7 @@ args = ["-y", "mcp-local-rag"]
 BASE_DIR = "/absolute/path/to/your/documents"
 ```
 
-**For OpenCode** — Add to `~/.config/opencode/opencode.json` (or `opencode.jsonc`):
+**For OpenCode:** Add to `~/.config/opencode/opencode.json` (or `opencode.jsonc`):
 
 ```json
 {
@@ -79,7 +79,7 @@ BASE_DIR = "/absolute/path/to/your/documents"
 }
 ```
 
-**For Cursor** — Add to `~/.cursor/mcp.json`:
+**For Cursor:** Add to `~/.cursor/mcp.json`:
 
 ```json
 {
@@ -292,8 +292,8 @@ weight can improve exact-term ranking:
 }
 ```
 
-- `0.7` — slightly stronger exact-term reranking than the default
-- `1.0` — maximum keyword boost
+- `0.7`: slightly stronger exact-term reranking than the default
+- `1.0`: maximum keyword boost
 
 ## How It Works
 
@@ -332,14 +332,14 @@ flags, with CLI flags taking precedence.
 | Environment Variable | CLI Flag | Default | Description |
 |---------------------|----------|---------|-------------|
 | `BASE_DIR` | `--base-dir` | Current directory | One document root; the CLI flag is repeatable on `ingest` and `list` |
-| `BASE_DIRS` | — | (unset) | JSON array of document roots; takes precedence over `BASE_DIR` |
+| `BASE_DIRS` | N/A | (unset) | JSON array of document roots; takes precedence over `BASE_DIR` |
 | `DB_PATH` | `--db-path` | `./lancedb/` | Vector database location |
 | `CACHE_DIR` | `--cache-dir` | `./models/` | Model cache directory |
 | `MODEL_NAME` | `--model-name` | `Xenova/all-MiniLM-L6-v2` | Hugging Face embedding model |
 | `MAX_FILE_SIZE` | `--max-file-size` | `104857600` (100MB) | Maximum file size in bytes |
 | `CHUNK_MIN_LENGTH` | `--chunk-min-length` | `50` | Minimum chunk length in characters (1–10000) |
-| `RAG_DEVICE` | — | `cpu` | ONNX Runtime execution device |
-| `RAG_DTYPE` | — | `fp32` | Embedding dtype supplied by the selected model |
+| `RAG_DEVICE` | N/A | `cpu` | ONNX Runtime execution device |
+| `RAG_DTYPE` | N/A | `fp32` | Embedding dtype supplied by the selected model |
 
 ### Document Roots (`BASE_DIR` and `BASE_DIRS`)
 
@@ -440,7 +440,7 @@ MIT License. Free for personal and commercial use.
 
 ## Blog Posts
 
-- [Building a Local RAG for Agentic Coding](https://www.norsica.jp/blog/local-rag-agentic-coding) — Technical deep-dive into the semantic chunking and hybrid search design.
+- [Building a Local RAG for Agentic Coding](https://www.norsica.jp/blog/local-rag-agentic-coding): Technical deep-dive into the semantic chunking and hybrid search design.
 
 ## Acknowledgments
 
