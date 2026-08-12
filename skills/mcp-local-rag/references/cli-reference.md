@@ -60,12 +60,12 @@ The CLI accepts only `fast` or `quality` for `--visual-quality`. The MCP `ingest
 ### sync
 
 ```bash
-npx mcp-local-rag [global-options] sync [path]
+npx mcp-local-rag [global-options] sync [options] [path]
 ```
 
-Reconcile the index with the files on disk: ingest new and changed files, leave unchanged files alone, and remove index entries for files that are gone. `-h, --help` is the only option — there is no `--visual` on `sync`, so a changed PDF is re-ingested as text.
+Reconcile the index with the files on disk: ingest new and changed files, leave unchanged files alone, and remove index entries for files that are gone. `--base-dir <path>` is repeatable. There is no `--visual` on `sync`, so a changed PDF is re-ingested as text.
 
-The positional `path` is optional and must sit inside a configured base directory; omit it to synchronize every configured root. A directory is scanned, while a single file is synchronized on its own and its siblings are left untouched. `sync` takes no `--base-dir`: roots come from `BASE_DIRS` / `BASE_DIR` (default: cwd).
+The positional `path` is optional and must sit inside a configured base directory; omit it to synchronize every configured root. A directory is scanned, while a single file is synchronized on its own and its siblings are left untouched. Without `--base-dir`, roots come from `BASE_DIRS` / `BASE_DIR` (default: cwd).
 
 Output: one JSON object to stdout on success. Each upserted and pruned path is named on stderr as it happens, alongside warnings and errors; unchanged files stay silent, so the output is proportional to what changed.
 
