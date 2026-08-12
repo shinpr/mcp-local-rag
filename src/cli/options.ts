@@ -150,7 +150,7 @@ Options:
 
 Commands:
   ingest <path>          Ingest files into the vector database
-  sync [options] [path]  Incrementally synchronize indexed files with disk
+  sync [path]            Incrementally synchronize indexed files with disk
   query <text>           Search ingested documents
   read-neighbors         Read N chunks before and after a target chunk within the same document
   list                   List files and ingestion status

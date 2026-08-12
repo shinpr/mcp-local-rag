@@ -376,10 +376,12 @@ describe('CLI sync', () => {
             )
         )
     )
+    const envOnlyContent = `environment-only root ${'e'.repeat(200)}`
     const envOnlyPath = await writeFixtureFile(
       join(fixture.roots[2]!, 'environment-only.md'),
-      `environment-only root ${'e'.repeat(200)}`
+      envOnlyContent
     )
+    await seedRows(fixture, envOnlyPath, sha256(envOnlyContent), 1)
 
     const outcome = await runCli(fixture, [
       '--base-dir',
@@ -394,11 +396,12 @@ describe('CLI sync', () => {
     expect(calls.scanArgs.map(([root]) => root)).toEqual(
       fixture.roots.slice(0, 2).map((root) => `${root}${sep}`)
     )
-    const storedPaths = [
-      ...new Set((await storedManifest(fixture)).map((row) => row.filePath)),
-    ].sort()
-    expect(storedPaths).toEqual(selectedPaths.sort())
-    expect(storedPaths).not.toContain(envOnlyPath)
+    const manifest = await storedManifest(fixture)
+    const storedPaths = [...new Set(manifest.map((row) => row.filePath))].sort()
+    expect(storedPaths).toEqual([...selectedPaths, envOnlyPath].sort())
+    expect(manifest.filter((row) => row.filePath === envOnlyPath)).toEqual([
+      { filePath: envOnlyPath, contentHash: sha256(envOnlyContent) },
+    ])
   })
 
   it.each(['before', 'after'] as const)(

@@ -279,7 +279,7 @@ All ingest/list/delete/read-neighbor/sync operations are confined to one or more
 |---------|-----|------|
 | `BASE_DIR` | Single path string env var | Single-root setups (legacy, still supported) |
 | `BASE_DIRS` | JSON array env var: `'["/a","/b"]'` | Multi-root setups via env (MCP and CLI) |
-| `--base-dir <path>` | Repeatable CLI flag on `ingest` and `list` | Multi-root setups via CLI; CLI roots replace env roots |
+| `--base-dir <path>` | Repeatable CLI flag on `ingest`, `list`, and `sync` | Multi-root setups via CLI; CLI roots replace env roots |
 
 **Resolution order**: CLI `--base-dir` > `BASE_DIRS` > `BASE_DIR` > `process.cwd()`.
 
