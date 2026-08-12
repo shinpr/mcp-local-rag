@@ -345,20 +345,122 @@ describe('CLI sync', () => {
   })
 
   // --------------------------------------------
-  // Argument parsing: no visual option is exposed
+  // Argument parsing: repeatable roots, one path, no visual option
   // --------------------------------------------
 
-  it('shows help with no visual option and exits 0 when --help is passed', async () => {
+  it('shows repeatable base-directory help with no visual option and exits 0', async () => {
     const fixture = await makeFixture('help')
 
     const outcome = await runCli(fixture, ['--help'])
 
     expect(outcome.exitError?.message).toBe('process.exit(0)')
     const help = outcome.stderr.join('\n')
-    expect(help).toContain('sync')
+    expect(help).toContain('Usage: mcp-local-rag [global-options] sync [options] [path]')
+    expect(help).toContain('--base-dir <path>')
+    expect(help).toContain('repeatable')
     expect(help).toContain('-h, --help')
     expect(help).not.toContain('--visual')
     expect(help).not.toContain('--dry-run')
+  })
+
+  it('uses repeated CLI roots in order and replaces the environment roots', async () => {
+    const fixture = await makeFixture('cli-roots-replace-env', 3)
+    const selectedPaths = await Promise.all(
+      fixture.roots
+        .slice(0, 2)
+        .map(
+          async (root, index) =>
+            await writeFixtureFile(
+              join(root, `selected-${index + 1}.md`),
+              `selected CLI root ${index + 1} ${'s'.repeat(200)}`
+            )
+        )
+    )
+    const envOnlyPath = await writeFixtureFile(
+      join(fixture.roots[2]!, 'environment-only.md'),
+      `environment-only root ${'e'.repeat(200)}`
+    )
+
+    const outcome = await runCli(fixture, [
+      '--base-dir',
+      fixture.roots[0]!,
+      '--base-dir',
+      fixture.roots[1]!,
+    ])
+
+    expect(outcome.exitCode).toBeUndefined()
+    expect(outcome.exitError).toBeUndefined()
+    expect(reportedCounters(outcome)).toEqual({ upserted: 2, skipped: 0, empty: 0, pruned: 0 })
+    expect(calls.scanArgs.map(([root]) => root)).toEqual(
+      fixture.roots.slice(0, 2).map((root) => `${root}${sep}`)
+    )
+    const storedPaths = [
+      ...new Set((await storedManifest(fixture)).map((row) => row.filePath)),
+    ].sort()
+    expect(storedPaths).toEqual(selectedPaths.sort())
+    expect(storedPaths).not.toContain(envOnlyPath)
+  })
+
+  it.each(['before', 'after'] as const)(
+    'accepts --base-dir %s the optional path',
+    async (position) => {
+      const fixture = await makeFixture(`cli-root-${position}-path`, 2)
+      const selectedRoot = fixture.roots[1]!
+      const targetPath = await writeFixtureFile(
+        join(selectedRoot, 'target.md'),
+        `target with root ${position} the path ${'t'.repeat(200)}`
+      )
+      const args =
+        position === 'before'
+          ? ['--base-dir', selectedRoot, targetPath]
+          : [targetPath, '--base-dir', selectedRoot]
+
+      const outcome = await runCli(fixture, args)
+
+      expect(outcome.exitCode).toBeUndefined()
+      expect(outcome.exitError).toBeUndefined()
+      expect(reportedCounters(outcome)).toEqual({ upserted: 1, skipped: 0, empty: 0, pruned: 0 })
+      expect(calls.scanArgs).toEqual([])
+      expect([...new Set((await storedManifest(fixture)).map((row) => row.filePath))]).toEqual([
+        targetPath,
+      ])
+    }
+  )
+
+  it('rejects a sensitive CLI root before scanning or embedding', async () => {
+    const fixture = await makeFixture('sensitive-cli-root')
+
+    const outcome = await runCli(fixture, ['--base-dir', '/etc'])
+
+    expect(outcome.exitError?.message).toBe('process.exit(1)')
+    expect(outcome.stderr).toEqual(['Refusing to use sensitive system path for --base-dir: /etc'])
+    expect(outcome.stdout).toBe('')
+    expect(calls.scanArgs).toEqual([])
+    expect(calls.createEmbedder).toBe(0)
+    expect(calls.optimize).toBe(0)
+  })
+
+  it('reports the shared missing-value error for --base-dir', async () => {
+    const fixture = await makeFixture('base-dir-missing')
+
+    const outcome = await runCli(fixture, ['--base-dir'])
+
+    expect(outcome.exitError?.message).toBe('process.exit(1)')
+    expect(outcome.stderr).toEqual(['Missing value for --base-dir'])
+    expect(calls.scanArgs).toEqual([])
+    expect(calls.createEmbedder).toBe(0)
+  })
+
+  it('keeps --base-dir=<path> on the unknown-option path', async () => {
+    const fixture = await makeFixture('base-dir-equals')
+    const option = `--base-dir=${fixture.roots[0]}`
+
+    const outcome = await runCli(fixture, [option])
+
+    expect(outcome.exitError?.message).toBe('process.exit(1)')
+    expect(outcome.stderr[0]).toBe(`Unknown option: ${option}`)
+    expect(calls.scanArgs).toEqual([])
+    expect(calls.createEmbedder).toBe(0)
   })
 
   it('rejects --visual with a non-zero exit and mutates nothing', async () => {
@@ -388,7 +490,7 @@ describe('CLI sync', () => {
     const outsidePath = join(TMP_ROOT, 'outside-root', 'elsewhere')
     await mkdir(outsidePath, { recursive: true })
 
-    const outcome = await runCli(fixture, [outsidePath])
+    const outcome = await runCli(fixture, ['--base-dir', fixture.roots[0]!, outsidePath])
 
     expect(outcome.exitCode).toBe(1)
     expect(outcome.stdout).toBe('')
@@ -952,7 +1054,7 @@ describe('CLI sync', () => {
       const insidePath = await writeFixtureFile(join(fixture.rootDir, 'a.md'), 'a'.repeat(200))
       await seedRows(fixture, insidePath, 'stale-hash')
 
-      const outcome = await runCli(fixture, [requestedPath])
+      const outcome = await runCli(fixture, [requestedPath, '--base-dir', fixture.rootDir])
 
       expect(outcome.exitCode).toBe(1)
       expect(outcome.stdout).toBe('')

@@ -65,8 +65,10 @@ describe('CLI entry routing', () => {
     const { status, stderr } = runCli(['sync', '--help'])
 
     expect(status).toBe(0)
-    expect(stderr).toContain('Usage: mcp-local-rag [global-options] sync [path]')
-    expect(stderr.split('Usage: mcp-local-rag [global-options] sync [path]')).toHaveLength(2)
+    expect(stderr).toContain('Usage: mcp-local-rag [global-options] sync [options] [path]')
+    expect(
+      stderr.split('Usage: mcp-local-rag [global-options] sync [options] [path]')
+    ).toHaveLength(2)
   })
 
   it('applies global options placed before sync to the sync run', () => {

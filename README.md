@@ -331,7 +331,7 @@ flags, with CLI flags taking precedence.
 
 | Environment Variable | CLI Flag | Default | Description |
 |---------------------|----------|---------|-------------|
-| `BASE_DIR` | `--base-dir` | Current directory | One document root; the CLI flag is repeatable on `ingest` and `list` |
+| `BASE_DIR` | `--base-dir` | Current directory | One document root; the CLI flag is repeatable on `ingest`, `list`, and `sync` |
 | `BASE_DIRS` | N/A | (unset) | JSON array of document roots; takes precedence over `BASE_DIR` |
 | `DB_PATH` | `--db-path` | `./lancedb/` | Vector database location |
 | `CACHE_DIR` | `--cache-dir` | `./models/` | Model cache directory |
@@ -352,7 +352,7 @@ export BASE_DIRS='["/Users/me/Documents/work","/Users/me/Projects/specs"]'
 
 Root configuration is resolved in this order:
 
-1. CLI `--base-dir <path>` flags (repeatable on `ingest` and `list`)
+1. CLI `--base-dir <path>` flags (repeatable on `ingest`, `list`, and `sync`)
 2. `BASE_DIRS`
 3. `BASE_DIR`
 4. Current directory
@@ -364,6 +364,7 @@ remains available in MCP so the client can report the configuration error.
 ```bash
 npx mcp-local-rag ingest --base-dir /Users/me/work --base-dir /Users/me/specs /Users/me/work/readme.md
 npx mcp-local-rag list --base-dir /Users/me/work --base-dir /Users/me/specs
+npx mcp-local-rag sync --base-dir /Users/me/work --base-dir /Users/me/specs
 BASE_DIRS='["/Users/me/work","/Users/me/specs"]' npx mcp-local-rag list
 ```
 

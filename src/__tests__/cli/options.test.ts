@@ -436,7 +436,7 @@ describe('ROOT_HELP_TEXT command list', () => {
 
     expect(ingestIndex).toBeGreaterThan(-1)
     expect(lines[ingestIndex + 1]).toBe(
-      '  sync [path]            Incrementally synchronize indexed files with disk'
+      '  sync [options] [path]  Incrementally synchronize indexed files with disk'
     )
   })
 
