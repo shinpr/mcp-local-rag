@@ -32,13 +32,13 @@ import {
 import { createEmbedder, createVectorStore, formatCliError } from './common.js'
 import { ingestSingleFile, resolveConfig } from './ingest.js'
 import type { GlobalOptions } from './options.js'
-import { resolveGlobalConfig } from './options.js'
+import { consumeBaseDirArg, resolveGlobalConfig } from './options.js'
 
 // ============================================
 // Help
 // ============================================
 
-const HELP_TEXT = `Usage: mcp-local-rag [global-options] sync [path]
+const HELP_TEXT = `Usage: mcp-local-rag [global-options] sync [options] [path]
 
 Reconcile the index with the files on disk: ingest new and changed files, leave
 unchanged files alone, and remove index entries for files that are gone.
@@ -51,9 +51,10 @@ Arguments:
                          (default: every configured base directory)
 
 Options:
+  --base-dir <path>      Document root (repeatable; overrides environment roots)
   -h, --help             Show this help
 
-Base directories come from BASE_DIRS / BASE_DIR (default: current directory).
+Without --base-dir, roots come from BASE_DIRS / BASE_DIR (default: current directory).
 
 Global options (must appear before "sync"):
   --db-path <path>       LanceDB database path
@@ -66,35 +67,53 @@ Global options (must appear before "sync"):
 
 interface SyncArgs {
   help: boolean
+  baseDirs: string[]
   path?: string
 }
 
 /**
- * Parse sync-specific CLI arguments: at most one positional path plus -h/--help.
- * Deliberately accepts no other flag — there is no visual, dry-run, or force
- * mode — so an unknown flag prints the usage and exits 1.
+ * Parse sync-specific CLI arguments: repeatable roots, at most one positional
+ * path, and -h/--help. Unknown flags still print the usage and exit 1.
  */
 function parseArgs(args: string[]): SyncArgs {
   let help = false
+  const baseDirs: string[] = []
   let path: string | undefined
 
-  for (const arg of args) {
-    if (arg === '-h' || arg === '--help') {
-      help = true
-    } else if (arg.startsWith('-')) {
-      console.error(`Unknown option: ${arg}`)
-      console.error(HELP_TEXT)
-      process.exit(1)
-    } else if (path !== undefined) {
-      console.error(`Unexpected argument: ${arg}`)
-      console.error('Only one path is accepted. Omit it to sync every configured base directory.')
-      process.exit(1)
-    } else {
-      path = arg
+  let index = 0
+  while (index < args.length) {
+    const arg = args[index]!
+    switch (arg) {
+      case '-h':
+      case '--help':
+        help = true
+        index++
+        break
+      case '--base-dir': {
+        const valueIndex = consumeBaseDirArg(args, index, baseDirs)
+        index = valueIndex + 1
+        break
+      }
+      default:
+        if (arg.startsWith('-')) {
+          console.error(`Unknown option: ${arg}`)
+          console.error(HELP_TEXT)
+          process.exit(1)
+        }
+        if (path !== undefined) {
+          console.error(`Unexpected argument: ${arg}`)
+          console.error(
+            'Only one path is accepted. Omit it to sync every configured base directory.'
+          )
+          process.exit(1)
+        }
+        path = arg
+        index++
+        break
     }
   }
 
-  const parsed: SyncArgs = { help }
+  const parsed: SyncArgs = { help, baseDirs }
   if (path !== undefined) parsed.path = path
   return parsed
 }
@@ -147,9 +166,10 @@ export async function runSync(args: string[], globalOptions: GlobalOptions = {})
   }
 
   const globalConfig = resolveGlobalConfig(globalOptions)
-  // Shared with `ingest`: base-dir precedence (BASE_DIRS / BASE_DIR / cwd) plus
-  // MAX_FILE_SIZE and CHUNK_MIN_LENGTH resolution and validation.
-  const config = await resolveConfig(globalConfig)
+  // Shared with `ingest`: CLI roots replace BASE_DIRS / BASE_DIR / cwd; an empty
+  // array preserves that environment fallback. Size/chunk settings share the
+  // same resolution and validation path.
+  const config = await resolveConfig(globalConfig, { baseDirs: parsed.baseDirs })
 
   for (const warning of config.baseDirsWarnings) {
     console.error(warning.message)
