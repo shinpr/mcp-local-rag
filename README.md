@@ -22,6 +22,8 @@ terms such as API names, class names, and error codes.
   After the initial model download, text ingestion and search work offline.
 - **Hybrid search:** Semantic retrieval finds related concepts, while keyword matching boosts
   exact technical terms.
+- **Configurable embeddings:** Choose a Hugging Face embedding model that fits the language and
+  domain of your documents.
 - **Semantic chunking:** Documents are split at topic boundaries instead of fixed character
   counts. Markdown code blocks stay intact.
 - **MCP and CLI:** Use the same index from an AI coding tool or directly from the terminal.
@@ -372,6 +374,9 @@ BASE_DIRS='["/Users/me/work","/Users/me/specs"]' npx mcp-local-rag list
 
 `DB_PATH` and `CACHE_DIR` are relative to the process working directory by default. Set absolute
 paths when the MCP client may start the server from different project directories.
+
+Set `MODEL_NAME` or pass `--model-name` to choose a Hugging Face embedding model that fits the
+language and domain of your documents.
 
 Changing `MODEL_NAME`, `RAG_DEVICE`, or `RAG_DTYPE` can make existing vectors incompatible.
 Use a new `DB_PATH` or delete the existing index and re-ingest after changing the embedding
