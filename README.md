@@ -9,6 +9,15 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![MCP Registry](https://img.shields.io/badge/MCP-Registry-green.svg)](https://registry.modelcontextprotocol.io/)
 
+<p align="center">
+  <strong>English</strong> |
+  <a href="README.zh-CN.md">简体中文</a> |
+  <a href="README.de.md">Deutsch</a> |
+  <a href="README.es.md">Español</a> |
+  <a href="README.pt-BR.md">Português (Brasil)</a> |
+  <a href="README.fr.md">Français</a>
+</p>
+
 Search private documents from an MCP client or the terminal without sending them to an
 embedding API.
 
@@ -341,7 +350,7 @@ flags, with CLI flags taking precedence.
 | `MAX_FILE_SIZE` | `--max-file-size` | `104857600` (100MB) | Maximum file size in bytes |
 | `CHUNK_MIN_LENGTH` | `--chunk-min-length` | `50` | Minimum chunk length in characters (1–10000) |
 | `RAG_DEVICE` | N/A | `cpu` | ONNX Runtime execution device |
-| `RAG_DTYPE` | N/A | `fp32` | Embedding dtype supplied by the selected model |
+| `RAG_DTYPE` | N/A | `fp32` | Embedding dtype passed to the selected model |
 
 ### Document Roots (`BASE_DIR` and `BASE_DIRS`)
 
@@ -378,14 +387,15 @@ paths when the MCP client may start the server from different project directorie
 Set `MODEL_NAME` or pass `--model-name` to choose a Hugging Face embedding model that fits the
 language and domain of your documents.
 
+mcp-local-rag generates embeddings with mean pooling and L2 normalization. When choosing a
+model, check whether these settings match its recommended inference setup, since the pooling
+method can affect retrieval quality.
+
 Changing `MODEL_NAME`, `RAG_DEVICE`, or `RAG_DTYPE` can make existing vectors incompatible.
 Use a new `DB_PATH` or delete the existing index and re-ingest after changing the embedding
 configuration.
 
-Model examples:
-
-- Multilingual documents: `onnx-community/embeddinggemma-300m-ONNX`
-- Scientific papers: `sentence-transformers/allenai-specter`
+An example model for English documents is `Xenova/bge-small-en-v1.5`.
 
 ## Security and Operation
 
