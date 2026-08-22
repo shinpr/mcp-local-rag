@@ -28,6 +28,10 @@ import {
 
 // PNG magic bytes per RFC 2083 §3.1.
 const PNG_MAGIC = [0x89, 0x50, 0x4e, 0x47] as const
+const PNG_1X1_BASE64 =
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGBgAAAABQABpfZFQAAAAABJRU5ErkJggg=='
+const JPEG_1X1_BASE64 =
+  '/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAMCAgICAgMCAgIDAwMDBAYEBAQEBAgGBgUGCQgKCgkICQkKDA8MCgsOCwkJDRENDg8QEBEQCgwSExIQEw8QEBD/wAALCAABAAEBAREA/8QAFAABAAAAAAAAAAAAAAAAAAAACf/EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAD8AVN//2Q=='
 
 /**
  * Build a minimal single-page PDF in memory and return its bytes. The page
@@ -185,5 +189,58 @@ describe('renderPdfPage', () => {
     expect(validateVisualAttachment({ ...valid, mimeType: 'image/jpeg' })).toBe(false)
     expect(validateVisualAttachment({ ...valid, pixelWidth: valid.pixelWidth + 1 })).toBe(false)
     expect(validateVisualAttachment({ ...valid, bbox: [0, 0.8, 1, 0.2] })).toBe(false)
+  })
+
+  it('rejects header-only and truncated PNG/JPEG renditions before persistence', () => {
+    const region = {
+      pageNum: 1,
+      detectionIndex: 0,
+      bbox: [0, 0, 1, 1] as [number, number, number, number],
+      normalizedBbox: [0, 0, 1, 1] as [number, number, number, number],
+      evidence: 'vector' as const,
+    }
+    const png = Buffer.from(PNG_1X1_BASE64, 'base64')
+    const jpeg = Buffer.from(JPEG_1X1_BASE64, 'base64')
+    const jpegSosOffset = jpeg.findIndex(
+      (value, index) => value === 0xff && jpeg[index + 1] === 0xda
+    )
+    expect(jpegSosOffset).toBeGreaterThan(0)
+
+    const malformedRenditions = [
+      { bytes: png.subarray(0, 33), mimeType: 'image/png' as const },
+      { bytes: png.subarray(0, -12), mimeType: 'image/png' as const },
+      { bytes: jpeg.subarray(0, jpegSosOffset), mimeType: 'image/jpeg' as const },
+      { bytes: jpeg.subarray(0, -2), mimeType: 'image/jpeg' as const },
+    ]
+
+    for (const [visualIndex, rendition] of malformedRenditions.entries()) {
+      expect(() =>
+        createVisualAttachment(region, visualIndex, {
+          ...rendition,
+          pixelWidth: 1,
+          pixelHeight: 1,
+        })
+      ).toThrow(VlmError)
+    }
+  })
+
+  it('accepts bounded JPEG scan stuffing and restart markers', () => {
+    const data = Buffer.from([
+      0xff, 0xd8, 0xff, 0xc0, 0x00, 0x0b, 0x08, 0x00, 0x01, 0x00, 0x01, 0x01, 0x01, 0x11, 0x00,
+      0xff, 0xda, 0x00, 0x08, 0x01, 0x01, 0x00, 0x00, 0x3f, 0x00, 0x12, 0xff, 0x00, 0x34, 0xff,
+      0xd0, 0x56, 0xff, 0xd9,
+    ]).toString('base64')
+
+    expect(
+      validateVisualAttachment({
+        pageNum: 1,
+        visualIndex: 0,
+        bbox: [0, 0, 1, 1],
+        mimeType: 'image/jpeg',
+        pixelWidth: 1,
+        pixelHeight: 1,
+        data,
+      })
+    ).toBe(true)
   })
 })

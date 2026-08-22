@@ -2745,6 +2745,13 @@ describe('PDF visual attachment persistence and deferred hydration', () => {
       const malformedIhdrType = Buffer.from(pngBytes)
       malformedIhdrType.write('JHDR', 12, 'ascii')
       const truncatedIhdr = pngBytes.subarray(0, 32)
+      const pngHeaderOnly = pngBytes.subarray(0, 33)
+      const pngWithoutIend = pngBytes.subarray(0, -12)
+      const jpegBytes = Buffer.from(JPEG_1X1_BASE64, 'base64')
+      const jpegSosOffset = jpegBytes.findIndex(
+        (value, index) => value === 0xff && jpegBytes[index + 1] === 0xda
+      )
+      expect(jpegSosOffset).toBeGreaterThan(0)
       const jpegGarbageBeforeSof = Buffer.from([
         0xff, 0xd8, 0x00, 0xff, 0xc0, 0x00, 0x0b, 0x08, 0x00, 0x01, 0x00, 0x01, 0x01, 0x01, 0x11,
         0x00,
@@ -2753,6 +2760,8 @@ describe('PDF visual attachment persistence and deferred hydration', () => {
         0xff, 0xd8, 0xff, 0xc0, 0x00, 0x07, 0x08, 0x00, 0x01, 0x00, 0x01,
       ])
       const jpegTruncatedSegment = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x00])
+      const jpegHeaderOnly = jpegBytes.subarray(0, jpegSosOffset)
+      const jpegWithoutEoi = jpegBytes.subarray(0, -2)
       const pngAttachment = visualAttachment(1)
       const jpegAttachment = {
         ...visualAttachment(2),
@@ -2764,6 +2773,8 @@ describe('PDF visual attachment persistence and deferred hydration', () => {
         malformedIhdrLength,
         malformedIhdrType,
         truncatedIhdr,
+        pngHeaderOnly,
+        pngWithoutIend,
       ].map((data, index) => ({
         ...visualAttachment(index + 3),
         data: data.toString('base64'),
@@ -2772,8 +2783,10 @@ describe('PDF visual attachment persistence and deferred hydration', () => {
         jpegGarbageBeforeSof,
         jpegShortSof,
         jpegTruncatedSegment,
+        jpegHeaderOnly,
+        jpegWithoutEoi,
       ].map((data, index) => ({
-        ...visualAttachment(index + 7),
+        ...visualAttachment(index + 9),
         mimeType: 'image/jpeg' as const,
         data: data.toString('base64'),
       }))
@@ -2807,7 +2820,7 @@ describe('PDF visual attachment persistence and deferred hydration', () => {
           attachments: [pngAttachment, jpegAttachment],
         },
       ])
-      expect(hydration.omittedCount).toBe(7)
+      expect(hydration.omittedCount).toBe(11)
       expect(hydration.invalidIdentities).toEqual([
         { filePath: '/test/structural.pdf', chunkIndex: 4 },
       ])

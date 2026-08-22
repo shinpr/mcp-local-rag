@@ -1,6 +1,7 @@
 import type { Document as MupdfDocument } from 'mupdf'
 import * as mupdf from 'mupdf'
 
+import { BOUNDED_IMAGE_MAX_BYTES, parseBoundedImageStructure } from '../utils/image-structure.js'
 import type {
   DetectedVisualRegion,
   ImageRendition,
@@ -19,9 +20,8 @@ const CAPTION_LONG_EDGE_MAX = 4096
 const CAPTION_PIXEL_MAX = 16_777_216
 const RENDITION_LONG_EDGE_MAX = 1024
 const RENDITION_TARGET_BYTES = 256 * 1024
-const RENDITION_MAX_BYTES = 512 * 1024
+const RENDITION_MAX_BYTES = BOUNDED_IMAGE_MAX_BYTES
 const RENDITION_MAX_BASE64_LENGTH = Math.ceil(RENDITION_MAX_BYTES / 3) * 4
-const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a] as const
 const JPEG_QUALITIES = [82, 72, 62, 52] as const
 const RENDITION_EDGES = [1024, 896, 768, 640, 512] as const
 
@@ -169,46 +169,6 @@ export async function renderPdfRendition(
   }
 }
 
-function pngHeader(bytes: Uint8Array): { width: number; height: number } | null {
-  if (bytes.byteLength < 24 || !PNG_SIGNATURE.every((value, index) => bytes[index] === value)) {
-    return null
-  }
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
-  const width = view.getUint32(16)
-  const height = view.getUint32(20)
-  return width > 0 && height > 0 ? { width, height } : null
-}
-
-function jpegHeader(bytes: Uint8Array): { width: number; height: number } | null {
-  if (bytes.byteLength < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8) return null
-  let offset = 2
-  while (offset + 3 < bytes.byteLength) {
-    if (bytes[offset] !== 0xff) {
-      offset += 1
-      continue
-    }
-    while (bytes[offset] === 0xff) offset += 1
-    const marker = bytes[offset] as number
-    offset += 1
-    if (marker === 0xd9 || marker === 0xda) break
-    if (offset + 1 >= bytes.byteLength) return null
-    const length = ((bytes[offset] as number) << 8) | (bytes[offset + 1] as number)
-    if (length < 2 || offset + length > bytes.byteLength) return null
-    const isStartOfFrame =
-      (marker >= 0xc0 && marker <= 0xc3) ||
-      (marker >= 0xc5 && marker <= 0xc7) ||
-      (marker >= 0xc9 && marker <= 0xcb) ||
-      (marker >= 0xcd && marker <= 0xcf)
-    if (isStartOfFrame && length >= 7) {
-      const height = ((bytes[offset + 3] as number) << 8) | (bytes[offset + 4] as number)
-      const width = ((bytes[offset + 5] as number) << 8) | (bytes[offset + 6] as number)
-      return width > 0 && height > 0 ? { width, height } : null
-    }
-    offset += length
-  }
-  return null
-}
-
 function validNormalizedBbox(value: unknown): value is VisualBBox {
   if (!Array.isArray(value) || value.length !== 4 || !value.every(Number.isFinite)) return false
   const [x0, y0, x1, y1] = value as VisualBBox
@@ -250,7 +210,7 @@ export function validateVisualAttachment(value: unknown): value is VisualAttachm
   }
   const bytes = decodeStrictBase64(attachment.data)
   if (!bytes || bytes.byteLength > RENDITION_MAX_BYTES) return false
-  const header = attachment.mimeType === 'image/png' ? pngHeader(bytes) : jpegHeader(bytes)
+  const header = parseBoundedImageStructure(bytes, attachment.mimeType)
   return (
     header !== null &&
     header.width === attachment.pixelWidth &&
@@ -258,18 +218,12 @@ export function validateVisualAttachment(value: unknown): value is VisualAttachm
   )
 }
 
-function renditionHeader(rendition: ImageRendition): { width: number; height: number } | null {
-  return rendition.mimeType === 'image/png'
-    ? pngHeader(rendition.bytes)
-    : jpegHeader(rendition.bytes)
-}
-
 export function createVisualAttachment(
   region: DetectedVisualRegion,
   visualIndex: number,
   rendition: ImageRendition
 ): VisualAttachment {
-  const header = renditionHeader(rendition)
+  const header = parseBoundedImageStructure(rendition.bytes, rendition.mimeType)
   const source = cropDimensions(region.bbox)
   const sourceRatio = source.width / source.height
   const pixelRatio = rendition.pixelWidth / rendition.pixelHeight
