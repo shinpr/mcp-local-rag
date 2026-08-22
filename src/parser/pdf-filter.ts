@@ -26,6 +26,14 @@ interface TextItemWithPosition {
   blockOrdinal?: number
   lineOrdinal?: number
   bbox?: [number, number, number, number]
+  columnBand?: PdfColumnBand
+}
+
+export interface PdfColumnBand {
+  sectionIndex: number
+  bandIndex: number
+  bbox: [number, number, number, number]
+  pageWidth: number
 }
 
 /**
@@ -46,6 +54,7 @@ export interface FilteredTextFragment {
   text: string
   pageTextStart: number
   pageTextEnd: number
+  columnBand?: PdfColumnBand
 }
 
 export interface FilteredPageLayout {
@@ -101,6 +110,7 @@ function buildPageLayout(
       lineOrdinal,
       fragmentOrdinal,
       bbox: item.bbox ?? [item.x, item.y, item.x, item.y],
+      ...(item.columnBand ? { columnBand: item.columnBand } : {}),
       rawStart,
       rawEnd,
     })
@@ -127,6 +137,7 @@ function buildPageLayout(
       text: text.slice(pageTextStart, pageTextEnd),
       pageTextStart,
       pageTextEnd,
+      ...(fragment.columnBand ? { columnBand: fragment.columnBand } : {}),
     })
   }
 

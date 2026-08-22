@@ -103,6 +103,15 @@ describe('parsePdfPages real MuPDF reading order', () => {
       expect((fragments[0]?.bbox[2] ?? 0) - (fragments[0]?.bbox[0] ?? 0)).toBeGreaterThan(612 * 0.6)
       expect(fragments.slice(1, 4).every((fragment) => fragment.bbox[0] < 200)).toBe(true)
       expect(fragments.slice(4).every((fragment) => fragment.bbox[0] > 300)).toBe(true)
+      expect(fragments.slice(1, 4).every((fragment) => fragment.columnBand?.bandIndex === 0)).toBe(
+        true
+      )
+      expect(fragments.slice(4).every((fragment) => fragment.columnBand?.bandIndex === 1)).toBe(
+        true
+      )
+      expect(fragments.slice(1).every((fragment) => fragment.columnBand?.pageWidth === 612)).toBe(
+        true
+      )
 
       const leftFirst = fragments[1]
       const leftSecond = fragments[2]

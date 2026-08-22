@@ -14,6 +14,7 @@ import {
   type FilteredTextFragment,
   filterPageBoundaryLayouts,
   type PageData,
+  type PdfColumnBand,
 } from './pdf-filter.js'
 
 interface StextBbox {
@@ -74,7 +75,9 @@ type PositionedTextItem = PageData['items'][number]
 
 interface ColumnBand {
   x0: number
+  y0: number
   x1: number
+  y1: number
   items: Array<{ item: PositionedTextItem; nativeIndex: number }>
 }
 
@@ -82,7 +85,11 @@ function itemBounds(item: PositionedTextItem): [number, number, number, number] 
   return item.bbox ?? [item.x, item.y, item.x, item.y]
 }
 
-function orderColumnSection(items: PositionedTextItem[], pageWidth: number): PositionedTextItem[] {
+function orderColumnSection(
+  items: PositionedTextItem[],
+  pageWidth: number,
+  sectionIndex: number
+): PositionedTextItem[] {
   if (items.length < 4) return items
   const bandGap = pageWidth * 0.02
   const positioned = items
@@ -95,14 +102,16 @@ function orderColumnSection(items: PositionedTextItem[], pageWidth: number): Pos
   const bands: ColumnBand[] = []
 
   for (const entry of positioned) {
-    const [x0, , x1] = itemBounds(entry.item)
+    const [x0, y0, x1, y1] = itemBounds(entry.item)
     const band = bands.at(-1)
     if (band && x0 <= band.x1 + bandGap) {
       band.x0 = Math.min(band.x0, x0)
+      band.y0 = Math.min(band.y0, y0)
       band.x1 = Math.max(band.x1, x1)
+      band.y1 = Math.max(band.y1, y1)
       band.items.push(entry)
     } else {
-      bands.push({ x0, x1, items: [entry] })
+      bands.push({ x0, y0, x1, y1, items: [entry] })
     }
   }
 
@@ -114,9 +123,17 @@ function orderColumnSection(items: PositionedTextItem[], pageWidth: number): Pos
     return items
   }
 
-  return qualifyingBands.flatMap((band) =>
-    band.items.sort((left, right) => left.nativeIndex - right.nativeIndex).map(({ item }) => item)
-  )
+  return qualifyingBands.flatMap((band, bandIndex) => {
+    const columnBand: PdfColumnBand = {
+      sectionIndex,
+      bandIndex,
+      bbox: [band.x0, band.y0, band.x1, band.y1],
+      pageWidth,
+    }
+    return band.items
+      .sort((left, right) => left.nativeIndex - right.nativeIndex)
+      .map(({ item }) => ({ ...item, columnBand }))
+  })
 }
 
 function applyColumnBandFallback(
@@ -128,17 +145,19 @@ function applyColumnBandFallback(
   const spanningWidth = pageWidth * 0.6
   const ordered: PositionedTextItem[] = []
   let section: PositionedTextItem[] = []
+  let sectionIndex = 0
 
   for (const item of items) {
     const [x0, , x1] = itemBounds(item)
     if (x1 - x0 > spanningWidth) {
-      ordered.push(...orderColumnSection(section, pageWidth), item)
+      ordered.push(...orderColumnSection(section, pageWidth, sectionIndex), item)
       section = []
+      sectionIndex += 1
     } else {
       section.push(item)
     }
   }
-  ordered.push(...orderColumnSection(section, pageWidth))
+  ordered.push(...orderColumnSection(section, pageWidth, sectionIndex))
   return ordered
 }
 

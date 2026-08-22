@@ -67,6 +67,20 @@ function fragment(
   }
 }
 
+function bandedFragment(
+  text: string,
+  lineOrdinal: number,
+  bbox: [number, number, number, number],
+  bandIndex: number,
+  bandBbox: [number, number, number, number],
+  sectionIndex = 0
+): FilteredTextFragment {
+  return {
+    ...fragment(text, 1, lineOrdinal, bbox),
+    columnBand: { sectionIndex, bandIndex, bbox: bandBbox, pageWidth: 100 },
+  }
+}
+
 const MOCKED_PATHS = [
   '../../pdf-visual/index.js',
   '../../pdf-visual/detector.js',
@@ -178,6 +192,105 @@ describe('ordered visual document', () => {
         sourceFragment.text
       )
     }
+  })
+
+  it('selects the leftmost band for a gutter region equally distant from both band centers', () => {
+    const leftBand: [number, number, number, number] = [0, 0, 40, 50]
+    const rightBand: [number, number, number, number] = [60, 0, 100, 50]
+    const pages = [
+      {
+        pageNum: 1,
+        text: 'Left top.\nLeft bottom.\nRight top.\nRight bottom.',
+        textFragments: [
+          bandedFragment('Left top.', 0, [0, 0, 40, 10], 0, leftBand),
+          bandedFragment('Left bottom.', 2, [0, 40, 40, 50], 0, leftBand),
+          bandedFragment('Right top.', 1, [60, 0, 100, 10], 1, rightBand),
+          bandedFragment('Right bottom.', 3, [60, 40, 100, 50], 1, rightBand),
+        ],
+      },
+    ]
+
+    const ordered = buildOrderedVisualDocument(pages, [
+      { ...region, bbox: [45, 15, 55, 25], caption: 'Gutter caption.' },
+    ])
+
+    expect(ordered.text.split('\n\n')).toEqual([
+      'Left top.',
+      '[Visual content on page 1, visual 0: Gutter caption.]',
+      'Left bottom.',
+      'Right top.',
+      'Right bottom.',
+    ])
+  })
+
+  it('selects the band with greater horizontal overlap before vertical placement', () => {
+    const leftBand: [number, number, number, number] = [0, 0, 48, 50]
+    const rightBand: [number, number, number, number] = [52, 0, 100, 50]
+    const pages = [
+      {
+        pageNum: 1,
+        text: 'Left top.\nLeft bottom.\nRight top.\nRight bottom.',
+        textFragments: [
+          bandedFragment('Left top.', 0, [0, 0, 48, 10], 0, leftBand),
+          bandedFragment('Left bottom.', 2, [0, 40, 48, 50], 0, leftBand),
+          bandedFragment('Right top.', 1, [52, 0, 100, 10], 1, rightBand),
+          bandedFragment('Right bottom.', 3, [52, 40, 100, 50], 1, rightBand),
+        ],
+      },
+    ]
+
+    const ordered = buildOrderedVisualDocument(pages, [
+      { ...region, bbox: [35, 15, 55, 25], caption: 'Overlap caption.' },
+    ])
+
+    expect(ordered.text.split('\n\n')).toEqual([
+      'Left top.',
+      '[Visual content on page 1, visual 0: Overlap caption.]',
+      'Left bottom.',
+      'Right top.',
+      'Right bottom.',
+    ])
+  })
+
+  it('selects a band in the matching vertical section when band indices repeat', () => {
+    const firstLeftBand: [number, number, number, number] = [0, 0, 40, 50]
+    const firstRightBand: [number, number, number, number] = [60, 0, 100, 50]
+    const secondLeftBand: [number, number, number, number] = [0, 100, 40, 150]
+    const secondRightBand: [number, number, number, number] = [60, 100, 100, 150]
+    const pages = [
+      {
+        pageNum: 1,
+        text: 'First left top.\nFirst left bottom.\nFirst right top.\nFirst right bottom.\nSection divider.\nSecond left top.\nSecond left bottom.\nSecond right top.\nSecond right bottom.',
+        textFragments: [
+          bandedFragment('First left top.', 0, [0, 0, 40, 10], 0, firstLeftBand, 0),
+          bandedFragment('First left bottom.', 1, [0, 40, 40, 50], 0, firstLeftBand, 0),
+          bandedFragment('First right top.', 2, [60, 0, 100, 10], 1, firstRightBand, 0),
+          bandedFragment('First right bottom.', 3, [60, 40, 100, 50], 1, firstRightBand, 0),
+          fragment('Section divider.', 1, 4, [0, 70, 100, 80]),
+          bandedFragment('Second left top.', 5, [0, 100, 40, 110], 0, secondLeftBand, 1),
+          bandedFragment('Second left bottom.', 6, [0, 140, 40, 150], 0, secondLeftBand, 1),
+          bandedFragment('Second right top.', 7, [60, 100, 100, 110], 1, secondRightBand, 1),
+          bandedFragment('Second right bottom.', 8, [60, 140, 100, 150], 1, secondRightBand, 1),
+        ],
+      },
+    ]
+
+    const ordered = buildOrderedVisualDocument(pages, [
+      { ...region, bbox: [10, 115, 30, 125], caption: 'Second-section caption.' },
+    ])
+
+    expect(ordered.text.split('\n\n')).toEqual([
+      'First left top.',
+      'First left bottom.',
+      'First right top.',
+      'First right bottom.',
+      'Section divider.',
+      'Second left top.',
+      '[Visual content on page 1, visual 0: Second-section caption.]',
+      'Second left bottom.',
+      'Second right top.',
+      'Second right bottom.',
+    ])
   })
 
   it('maps captioned and nearest-text attachments to one ordered zero-to-many owner array', () => {

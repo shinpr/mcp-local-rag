@@ -319,6 +319,18 @@ describe('parsePdfPages return shape', () => {
       { blockOrdinal: 1, lineOrdinal: 3, text: 'Right two' },
       { blockOrdinal: 1, lineOrdinal: 5, text: 'Right three' },
     ])
+    const fragments = result.pages[0]?.textFragments ?? []
+    expect(fragments[0]).not.toHaveProperty('columnBand')
+    expect(fragments.slice(1, 4).map((fragment) => fragment.columnBand)).toEqual([
+      { sectionIndex: 1, bandIndex: 0, bbox: [100, 150, 300, 270], pageWidth: 1000 },
+      { sectionIndex: 1, bandIndex: 0, bbox: [100, 150, 300, 270], pageWidth: 1000 },
+      { sectionIndex: 1, bandIndex: 0, bbox: [100, 150, 300, 270], pageWidth: 1000 },
+    ])
+    expect(fragments.slice(4).map((fragment) => fragment.columnBand)).toEqual([
+      { sectionIndex: 1, bandIndex: 1, bbox: [600, 150, 800, 270], pageWidth: 1000 },
+      { sectionIndex: 1, bandIndex: 1, bbox: [600, 150, 800, 270], pageWidth: 1000 },
+      { sectionIndex: 1, bandIndex: 1, bbox: [600, 150, 800, 270], pageWidth: 1000 },
+    ])
     result.doc.destroy()
   })
 
@@ -346,6 +358,7 @@ describe('parsePdfPages return shape', () => {
       'Right singleton',
       'Left two',
     ])
+    expect(result.pages[0]?.textFragments.every((fragment) => !fragment.columnBand)).toBe(true)
     result.doc.destroy()
   })
 })

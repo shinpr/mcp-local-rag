@@ -3,7 +3,7 @@ import { basename } from 'node:path'
 import type { AtomicTextRange, SemanticChunker, TextChunk } from '../chunker/index.js'
 import type { EmbedderInterface } from '../chunker/semantic-chunker.js'
 import type { DocumentParser } from '../parser/index.js'
-import type { FilteredTextFragment } from '../parser/pdf-filter.js'
+import type { FilteredTextFragment, PdfColumnBand } from '../parser/pdf-filter.js'
 import { extractPdfTitle } from '../parser/title-extractor.js'
 import type {
   DetectedVisualRegion,
@@ -72,6 +72,10 @@ function horizontalOverlap(left: readonly number[], right: readonly number[]): b
   return Math.min(left[2] ?? 0, right[2] ?? 0) >= Math.max(left[0] ?? 0, right[0] ?? 0)
 }
 
+function axisOverlap(start1: number, end1: number, start2: number, end2: number): number {
+  return Math.max(0, Math.min(end1, end2) - Math.max(start1, start2))
+}
+
 function xCenter(bbox: readonly number[]): number {
   return ((bbox[0] ?? 0) + (bbox[2] ?? 0)) / 2
 }
@@ -80,16 +84,79 @@ function yCenter(bbox: readonly number[]): number {
   return ((bbox[1] ?? 0) + (bbox[3] ?? 0)) / 2
 }
 
+interface AvailableColumnBand extends PdfColumnBand {
+  fragments: Array<{ fragment: FilteredTextFragment; index: number }>
+}
+
+function selectColumnBand(
+  fragments: readonly FilteredTextFragment[],
+  region: DetectedVisualRegion
+): AvailableColumnBand | null {
+  const bands = new Map<string, AvailableColumnBand>()
+  for (let index = 0; index < fragments.length; index += 1) {
+    const fragment = fragments[index]
+    const metadata = fragment?.columnBand
+    if (!fragment || !metadata) continue
+    const key = `${metadata.sectionIndex}:${metadata.bandIndex}`
+    const existing = bands.get(key)
+    if (existing) {
+      existing.fragments.push({ fragment, index })
+    } else {
+      bands.set(key, { ...metadata, fragments: [{ fragment, index }] })
+    }
+  }
+  if (bands.size === 0) return null
+
+  const regionWidth = region.bbox[2] - region.bbox[0]
+  const firstBand = bands.values().next().value as AvailableColumnBand | undefined
+  if (firstBand && regionWidth > firstBand.pageWidth * 0.6) return null
+
+  const sections = new Map<number, AvailableColumnBand[]>()
+  for (const band of bands.values()) {
+    const section = sections.get(band.sectionIndex) ?? []
+    section.push(band)
+    sections.set(band.sectionIndex, section)
+  }
+  const selectedSection = [...sections.entries()]
+    .map(([sectionIndex, sectionBands]) => {
+      const y0 = Math.min(...sectionBands.map((band) => band.bbox[1]))
+      const y1 = Math.max(...sectionBands.map((band) => band.bbox[3]))
+      return { sectionIndex, sectionBands, y0, y1 }
+    })
+    .sort(
+      (left, right) =>
+        axisOverlap(region.bbox[1], region.bbox[3], right.y0, right.y1) -
+          axisOverlap(region.bbox[1], region.bbox[3], left.y0, left.y1) ||
+        Math.abs(yCenter([0, left.y0, 0, left.y1]) - yCenter(region.bbox)) -
+          Math.abs(yCenter([0, right.y0, 0, right.y1]) - yCenter(region.bbox)) ||
+        left.sectionIndex - right.sectionIndex
+    )[0]
+  if (!selectedSection) return null
+
+  return selectedSection.sectionBands.sort(
+    (left, right) =>
+      axisOverlap(region.bbox[0], region.bbox[2], right.bbox[0], right.bbox[2]) -
+        axisOverlap(region.bbox[0], region.bbox[2], left.bbox[0], left.bbox[2]) ||
+      Math.abs(xCenter(left.bbox) - xCenter(region.bbox)) -
+        Math.abs(xCenter(right.bbox) - xCenter(region.bbox)) ||
+      left.bbox[0] - right.bbox[0] ||
+      left.bandIndex - right.bandIndex
+  )[0] as AvailableColumnBand
+}
+
 function findInsertionIndex(
   fragments: readonly FilteredTextFragment[],
   region: DetectedVisualRegion
 ): number {
   if (fragments.length === 0) return 0
-  let candidates = fragments
-    .map((fragment, index) => ({ fragment, index }))
-    .filter(({ fragment }) => horizontalOverlap(fragment.bbox, region.bbox))
+  const selectedBand = selectColumnBand(fragments, region)
+  let candidates = selectedBand
+    ? selectedBand.fragments
+    : fragments
+        .map((fragment, index) => ({ fragment, index }))
+        .filter(({ fragment }) => horizontalOverlap(fragment.bbox, region.bbox))
 
-  if (candidates.length === 0) {
+  if (!selectedBand && candidates.length === 0) {
     const regionCenter = xCenter(region.bbox)
     const minimumDistance = Math.min(
       ...fragments.map((fragment) => Math.abs(xCenter(fragment.bbox) - regionCenter))
