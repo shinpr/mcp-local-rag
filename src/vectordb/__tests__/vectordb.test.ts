@@ -2395,6 +2395,8 @@ describe('VectorStore', () => {
 describe('PDF visual attachment persistence and deferred hydration', () => {
   const PNG_1X1_BASE64 =
     'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGBgAAAABQABpfZFQAAAAABJRU5ErkJggg=='
+  const JPEG_1X1_BASE64 =
+    '/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAMCAgICAgMCAgIDAwMDBAYEBAQEBAgGBgUGCQgKCgkICQkKDA8MCgsOCwkJDRENDg8QEBEQCgwSExIQEw8QEBD/wAALCAABAAEBAREA/8QAFAABAAAAAAAAAAAAAAAAAAAACf/EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAD8AVN//2Q=='
 
   function createNormalizedVector(seed: number): number[] {
     const vector = new Array(384).fill(0).map((_, index) => Math.sin(seed + index))
@@ -2727,6 +2729,87 @@ describe('PDF visual attachment persistence and deferred hydration', () => {
       expect(hydration.invalidIdentities).toEqual([
         { filePath: '/test/mixed.pdf', chunkIndex: 1 },
         { filePath: '/test/malformed.pdf', chunkIndex: 2 },
+      ])
+    })
+  })
+
+  it('rejects structurally incomplete PNG and JPEG payloads while preserving valid siblings', async () => {
+    await withTempDb('visual-hydration-image-structure', async (store) => {
+      const pngBytes = Buffer.from(PNG_1X1_BASE64, 'base64')
+      const png24ByteCounterfeit = Buffer.alloc(24)
+      pngBytes.copy(png24ByteCounterfeit, 0, 0, 8)
+      png24ByteCounterfeit.writeUInt32BE(1, 16)
+      png24ByteCounterfeit.writeUInt32BE(1, 20)
+      const malformedIhdrLength = Buffer.from(pngBytes)
+      malformedIhdrLength.writeUInt32BE(12, 8)
+      const malformedIhdrType = Buffer.from(pngBytes)
+      malformedIhdrType.write('JHDR', 12, 'ascii')
+      const truncatedIhdr = pngBytes.subarray(0, 32)
+      const jpegGarbageBeforeSof = Buffer.from([
+        0xff, 0xd8, 0x00, 0xff, 0xc0, 0x00, 0x0b, 0x08, 0x00, 0x01, 0x00, 0x01, 0x01, 0x01, 0x11,
+        0x00,
+      ])
+      const jpegShortSof = Buffer.from([
+        0xff, 0xd8, 0xff, 0xc0, 0x00, 0x07, 0x08, 0x00, 0x01, 0x00, 0x01,
+      ])
+      const jpegTruncatedSegment = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x00])
+      const pngAttachment = visualAttachment(1)
+      const jpegAttachment = {
+        ...visualAttachment(2),
+        mimeType: 'image/jpeg' as const,
+        data: JPEG_1X1_BASE64,
+      }
+      const malformedPngAttachments = [
+        png24ByteCounterfeit,
+        malformedIhdrLength,
+        malformedIhdrType,
+        truncatedIhdr,
+      ].map((data, index) => ({
+        ...visualAttachment(index + 3),
+        data: data.toString('base64'),
+      }))
+      const malformedJpegAttachments = [
+        jpegGarbageBeforeSof,
+        jpegShortSof,
+        jpegTruncatedSegment,
+      ].map((data, index) => ({
+        ...visualAttachment(index + 7),
+        mimeType: 'image/jpeg' as const,
+        data: data.toString('base64'),
+      }))
+
+      await store.insertChunks([
+        {
+          ...createTestChunk(
+            'structural image validation',
+            '/test/structural.pdf',
+            4,
+            createNormalizedVector(1)
+          ),
+          visualAttachments: JSON.stringify([
+            ...malformedPngAttachments,
+            ...malformedJpegAttachments,
+            jpegAttachment,
+            pngAttachment,
+          ]),
+          imageStorageVersion: 'pdf-images-v1',
+        },
+      ])
+
+      const hydration = await store.hydrateVisualAttachments([
+        { filePath: '/test/structural.pdf', chunkIndex: 4 },
+      ])
+
+      expect(hydration.rows).toEqual([
+        {
+          filePath: '/test/structural.pdf',
+          chunkIndex: 4,
+          attachments: [pngAttachment, jpegAttachment],
+        },
+      ])
+      expect(hydration.omittedCount).toBe(7)
+      expect(hydration.invalidIdentities).toEqual([
+        { filePath: '/test/structural.pdf', chunkIndex: 4 },
       ])
     })
   })

@@ -319,6 +319,16 @@ const VISUAL_RENDITION_LONG_EDGE_MAX = 1024
 const VISUAL_RENDITION_MAX_BYTES = 512 * 1024
 const VISUAL_RENDITION_MAX_BASE64_LENGTH = Math.ceil(VISUAL_RENDITION_MAX_BYTES / 3) * 4
 const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a] as const
+const PNG_IHDR_TYPE = [0x49, 0x48, 0x44, 0x52] as const
+const PNG_IHDR_DATA_LENGTH = 13
+const PNG_IHDR_TOTAL_END = 8 + 4 + 4 + PNG_IHDR_DATA_LENGTH + 4
+const PNG_VALID_BIT_DEPTHS_BY_COLOR_TYPE: Readonly<Record<number, readonly number[]>> = {
+  0: [1, 2, 4, 8, 16],
+  2: [8, 16],
+  3: [1, 2, 4, 8],
+  4: [8, 16],
+  6: [8, 16],
+}
 
 function decodeStrictBase64(value: unknown): Uint8Array | null {
   if (
@@ -335,27 +345,44 @@ function decodeStrictBase64(value: unknown): Uint8Array | null {
 }
 
 function pngDimensions(bytes: Uint8Array): { width: number; height: number } | null {
-  if (!PNG_SIGNATURE.every((value, index) => bytes[index] === value) || bytes.byteLength < 24) {
+  if (
+    bytes.byteLength < PNG_IHDR_TOTAL_END ||
+    !PNG_SIGNATURE.every((value, index) => bytes[index] === value) ||
+    !PNG_IHDR_TYPE.every((value, index) => bytes[index + 12] === value)
+  ) {
     return null
   }
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+  if (view.getUint32(8) !== PNG_IHDR_DATA_LENGTH) return null
   const width = view.getUint32(16)
   const height = view.getUint32(20)
-  return width > 0 && height > 0 ? { width, height } : null
+  const bitDepth = bytes[24] as number
+  const colorType = bytes[25] as number
+  const compressionMethod = bytes[26] as number
+  const filterMethod = bytes[27] as number
+  const interlaceMethod = bytes[28] as number
+  return width > 0 &&
+    height > 0 &&
+    PNG_VALID_BIT_DEPTHS_BY_COLOR_TYPE[colorType]?.includes(bitDepth) === true &&
+    compressionMethod === 0 &&
+    filterMethod === 0 &&
+    (interlaceMethod === 0 || interlaceMethod === 1)
+    ? { width, height }
+    : null
 }
 
 function jpegDimensions(bytes: Uint8Array): { width: number; height: number } | null {
   if (bytes.byteLength < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8) return null
   let offset = 2
-  while (offset + 3 < bytes.byteLength) {
-    if (bytes[offset] !== 0xff) {
-      offset += 1
-      continue
-    }
-    while (bytes[offset] === 0xff) offset += 1
+  while (offset < bytes.byteLength) {
+    if (bytes[offset] !== 0xff) return null
+    while (offset < bytes.byteLength && bytes[offset] === 0xff) offset += 1
+    if (offset >= bytes.byteLength) return null
     const marker = bytes[offset] as number
     offset += 1
-    if (marker === 0xd9 || marker === 0xda) break
+    if (marker === 0x00 || marker === 0xd8 || (marker >= 0xd0 && marker <= 0xd7)) return null
+    if (marker === 0x01) continue
+    if (marker === 0xd9 || marker === 0xda) return null
     if (offset + 1 >= bytes.byteLength) return null
     const length = ((bytes[offset] as number) << 8) | (bytes[offset + 1] as number)
     if (length < 2 || offset + length > bytes.byteLength) return null
@@ -364,7 +391,10 @@ function jpegDimensions(bytes: Uint8Array): { width: number; height: number } | 
       (marker >= 0xc5 && marker <= 0xc7) ||
       (marker >= 0xc9 && marker <= 0xcb) ||
       (marker >= 0xcd && marker <= 0xcf)
-    if (isStartOfFrame && length >= 7) {
+    if (isStartOfFrame) {
+      if (length < 11) return null
+      const componentCount = bytes[offset + 7] as number
+      if (componentCount === 0 || length !== 8 + componentCount * 3) return null
       const height = ((bytes[offset + 3] as number) << 8) | (bytes[offset + 4] as number)
       const width = ((bytes[offset + 5] as number) << 8) | (bytes[offset + 6] as number)
       return width > 0 && height > 0 ? { width, height } : null

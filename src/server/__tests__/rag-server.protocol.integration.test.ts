@@ -88,7 +88,9 @@ const PNG_1X1_BASE64 =
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGBgAAAABQABpfZFQAAAAABJRU5ErkJggg=='
 const JPEG_1X1_BASE64 =
   '/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAMCAgICAgMCAgIDAwMDBAYEBAQEBAgGBgUGCQgKCgkICQkKDA8MCgsOCwkJDRENDg8QEBEQCgwSExIQEw8QEBD/wAALCAABAAEBAREA/8QAFAABAAAAAAAAAAAAAAAAAAAACf/EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAD8AVN//2Q=='
-const INVALID_PAYLOAD_MARKER = 'SECRET_INVALID_IMAGE_PAYLOAD'
+const COUNTERFEIT_PNG_BASE64 = Buffer.from([
+  0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1,
+]).toString('base64')
 const INLINE_CONFIG_WARNING = 'Protocol fixture configuration warning.'
 
 function inlineServerInternals(server: RAGServer): {
@@ -135,7 +137,7 @@ function inlineChunk(index: number, vector: number[], withAttachments: boolean):
             mimeType: 'image/png',
             pixelWidth: 1,
             pixelHeight: 1,
-            data: INVALID_PAYLOAD_MARKER,
+            data: COUNTERFEIT_PNG_BASE64,
           },
           {
             pageNum: 1,
@@ -306,7 +308,7 @@ describe('AC-008 / AC-009 / AC-011: inline images over the MCP SDK protocol', ()
       })
     )
     expect(content[7]).not.toEqual(
-      expect.objectContaining({ text: expect.stringContaining(INVALID_PAYLOAD_MARKER) })
+      expect.objectContaining({ text: expect.stringContaining(COUNTERFEIT_PNG_BASE64) })
     )
     expect(content[8]).toEqual(
       expect.objectContaining({
