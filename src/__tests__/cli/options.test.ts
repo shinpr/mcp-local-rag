@@ -3,6 +3,7 @@
 // Tests parseGlobalOptions and resolveGlobalConfig
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { parseArgs as parseIngestArgs } from '../../cli/ingest.js'
 import {
   parseGlobalOptions,
   ROOT_HELP_TEXT,
@@ -16,6 +17,35 @@ import {
 // so the help-text completeness check below reads it instead of a local literal —
 // that is what makes a future subcommand's missing help line fail this suite.
 import { SUBCOMMANDS } from '../../cli-main.js'
+
+describe('ingest --images option', () => {
+  let exitSpy: ReturnType<typeof vi.spyOn>
+
+  beforeEach(() => {
+    exitSpy = vi
+      .spyOn(process, 'exit')
+      .mockImplementation((code?: number | string | null | undefined) => {
+        throw new Error(`process.exit(${code})`)
+      })
+  })
+
+  afterEach(() => {
+    exitSpy.mockRestore()
+  })
+
+  it.each([
+    { flags: [], visual: undefined, images: undefined },
+    { flags: ['--visual'], visual: true, images: undefined },
+    { flags: ['--images'], visual: undefined, images: true },
+    { flags: ['--visual', '--images'], visual: true, images: true },
+  ])('parses visual=$visual images=$images independently', ({ flags, visual, images }) => {
+    const parsed = parseIngestArgs([...flags, '/docs/manual.pdf'])
+
+    expect(parsed.positional).toBe('/docs/manual.pdf')
+    expect(parsed.options.visual).toBe(visual)
+    expect(parsed.options.images).toBe(images)
+  })
+})
 
 describe('CLI global options', () => {
   let exitSpy: ReturnType<typeof vi.spyOn>

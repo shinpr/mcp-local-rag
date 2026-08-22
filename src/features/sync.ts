@@ -64,7 +64,10 @@ export interface SyncScanResult extends SyncScanCoverage {
 export interface SyncManifestRow {
   filePath: string
   contentHash?: string | null
+  imageStorageVersion?: SyncImageStorageVersion | null
 }
+
+export type SyncImageStorageVersion = 'none' | 'pdf-images-v1'
 
 /** One supported file found on disk, with the hash of its current bytes. */
 export interface SyncDiskFile {
@@ -92,6 +95,8 @@ export interface SyncUpsertAction {
   filePath: string
   /** Verbatim stored spellings of the same comparison key, excluding `filePath`. */
   staleStoredPaths: string[]
+  /** Image-storage state this replacement must write on every produced row. */
+  imageStorageVersion: SyncImageStorageVersion
 }
 
 /** Remove every stored spelling of one comparison key that left the disk. */
@@ -116,6 +121,8 @@ export interface SyncPlanInput {
   diskFiles: readonly SyncDiskFile[]
   dbRows: readonly SyncManifestRow[]
   coverage: SyncCoverage
+  /** `true` means image storage was requested; omission has sticky semantics. */
+  images?: boolean | undefined
 }
 
 /** The one controlled error a failed run exposes. */
@@ -156,7 +163,7 @@ export interface SyncExecutor {
    * store untouched: the executor relies on that to keep a zero-chunk file's
    * prior rows and hash intact.
    */
-  ingestFile(filePath: string): Promise<number>
+  ingestFile(filePath: string, images: boolean): Promise<number>
   /** Delete the rows of exactly one stored path spelling. */
   deleteExactPath(filePath: string): Promise<number>
   optimize(): Promise<void>
@@ -209,6 +216,8 @@ export interface RunSyncInput {
   platform: NodeJS.Platform
   /** Omitted means "every configured root". */
   requestedPath?: string | undefined
+  /** `true` requests PDF image storage; omission preserves enabled groups. */
+  images?: boolean | undefined
   collaborators: SyncCollaborators
 }
 
@@ -220,6 +229,23 @@ interface StoredGroup {
   /** Verbatim stored spellings of this key, deduped, in manifest order. */
   paths: string[]
   hashes: (string | null)[]
+  imageStorageVersions: SyncImageStorageVersion[]
+}
+
+function normalizeImageStorageVersion(
+  value: SyncImageStorageVersion | null | undefined
+): SyncImageStorageVersion {
+  return value === 'pdf-images-v1' ? 'pdf-images-v1' : 'none'
+}
+
+function resolveImageStorageVersion(
+  filePath: string,
+  stored: StoredGroup | undefined,
+  imagesRequested: boolean
+): SyncImageStorageVersion {
+  if (!filePath.toLowerCase().endsWith('.pdf')) return 'none'
+  if (imagesRequested) return 'pdf-images-v1'
+  return stored?.imageStorageVersions.includes('pdf-images-v1') === true ? 'pdf-images-v1' : 'none'
 }
 
 /**
@@ -234,8 +260,16 @@ interface StoredGroup {
  * it, the key is re-ingested and the other spellings become stale deletions, so
  * one run converges it back to a single spelling.
  */
-function isConverged(stored: StoredGroup, diskHash: string): boolean {
-  return stored.paths.length === 1 && stored.hashes.every((hash) => hash === diskHash)
+function isConverged(
+  stored: StoredGroup,
+  diskHash: string,
+  imageStorageVersion: SyncImageStorageVersion
+): boolean {
+  return (
+    stored.paths.length === 1 &&
+    stored.hashes.every((hash) => hash === diskHash) &&
+    stored.imageStorageVersions.every((version) => version === imageStorageVersion)
+  )
 }
 
 /**
@@ -275,18 +309,24 @@ export function planSync(input: SyncPlanInput): SyncPlan {
     const rowKey = keyOf(row.filePath)
     let group = storedByKey.get(rowKey)
     if (!group) {
-      group = { paths: [], hashes: [] }
+      group = { paths: [], hashes: [], imageStorageVersions: [] }
       storedByKey.set(rowKey, group)
     }
     if (!group.paths.includes(row.filePath)) group.paths.push(row.filePath)
     group.hashes.push(row.contentHash ?? null)
+    group.imageStorageVersions.push(normalizeImageStorageVersion(row.imageStorageVersion))
   }
 
   const upserts: SyncUpsertAction[] = []
   let skipped = 0
   for (const [fileKey, file] of diskByKey) {
     const group = storedByKey.get(fileKey)
-    if (group && isConverged(group, file.contentHash)) {
+    const imageStorageVersion = resolveImageStorageVersion(
+      file.filePath,
+      group,
+      input.images === true
+    )
+    if (group && isConverged(group, file.contentHash, imageStorageVersion)) {
       skipped += 1
       continue
     }
@@ -295,6 +335,7 @@ export function planSync(input: SyncPlanInput): SyncPlan {
       // `ingestFile` replaces its own spelling; any other spelling of the same
       // key would otherwise survive as a duplicate of the same file.
       staleStoredPaths: (group?.paths ?? []).filter((path) => path !== file.filePath),
+      imageStorageVersion,
     })
   }
 
@@ -421,7 +462,10 @@ export async function executeSyncPlan(
 
   for (const action of plan.upserts) {
     try {
-      const chunkCount = await executor.ingestFile(action.filePath)
+      const chunkCount = await executor.ingestFile(
+        action.filePath,
+        action.imageStorageVersion === 'pdf-images-v1'
+      )
       if (chunkCount === 0) {
         empty += 1
         continue
@@ -607,6 +651,7 @@ export async function runSync(input: RunSyncInput): Promise<SyncResult> {
     diskFiles: gathered.diskFiles,
     dbRows: gathered.dbRows,
     coverage: gathered.coverage,
+    ...(input.images === undefined ? {} : { images: input.images }),
   })
 
   const execution = await executeSyncPlan(plan, input.collaborators)

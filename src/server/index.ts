@@ -53,7 +53,7 @@ import {
   classifyRequestedPath,
 } from '../utils/scan.js'
 import { nonAbsolutePrefixes } from '../utils/scope-match.js'
-import { type VectorChunk, VectorStore } from '../vectordb/index.js'
+import { type ImageStorageVersion, type VectorChunk, VectorStore } from '../vectordb/index.js'
 import { DatabaseError } from '../vectordb/types.js'
 import {
   appendConfigWarnings,
@@ -230,6 +230,7 @@ export class RAGServer {
    */
   private readonly maxFileSize: number
   private readonly device: string | undefined
+  private readonly storeImages: boolean
   /**
    * The one current-or-latest sync job this process retains (SYNC-006). A new
    * `sync_start` replaces a terminal record, so the older id becomes unknown,
@@ -262,6 +263,7 @@ export class RAGServer {
     this.minChunkLength = config.chunkMinLength ?? DEFAULT_MIN_CHUNK_LENGTH
     this.maxFileSize = config.maxFileSize
     this.device = config.device
+    this.storeImages = config.storeImages ?? false
     this.excludePaths = [`${resolve(this.dbPath)}${sep}`, `${resolve(this.cacheDir)}${sep}`]
     this.server = new Server(
       { name: 'rag-mcp-server', version: packageVersion },
@@ -549,7 +551,7 @@ export class RAGServer {
    */
   async handleIngestFile(
     raw: unknown,
-    options: { skipOptimize?: boolean } = {}
+    options: { skipOptimize?: boolean; images?: boolean } = {}
   ): Promise<{ content: RagContentBlock[] }> {
     const args = parseIngestFileInput(raw)
     const isRawData = await isPathInRawDataDir(args.filePath, this.dbPath)
@@ -573,10 +575,15 @@ export class RAGServer {
     // For raw-data files (from ingest_data), read directly without validation
     // since the path is internally generated and content is already processed
     const isPdf = args.filePath.toLowerCase().endsWith('.pdf')
+    const images = isPdf && (options.images ?? this.storeImages)
     let text: string
     let title: string | null = null
     let chunks: Awaited<ReturnType<typeof buildChunksAndEmbeddings>>['chunks']
     let embeddings: Awaited<ReturnType<typeof buildChunksAndEmbeddings>>['embeddings']
+    let visualAttachments:
+      | Awaited<ReturnType<typeof prepareVisualPdfChunks>>['visualAttachments']
+      | undefined
+    const imageStorageVersion: ImageStorageVersion = images ? 'pdf-images-v1' : 'none'
     // Set only by the raw-data branch, which already reads the whole file, so
     // the contentHash below costs no second read there.
     const sourceBytes = isRawData ? await readFile(args.filePath) : undefined
@@ -596,7 +603,7 @@ export class RAGServer {
       title = meta?.title ?? null
       console.error(`Read raw-data file: ${args.filePath} (${text.length} characters)`)
       ;({ chunks, embeddings } = await buildChunksAndEmbeddings(text, this.chunker, this.embedder))
-    } else if (visualArg === true && isPdf) {
+    } else if (isPdf && (visualArg === true || images)) {
       // Visual dispatch delegates to `prepareVisualPdfChunks`, which owns
       // the dynamic `pdf-visual` import so the default path does not load
       // visual dependencies. This handler keeps its backup/rollback/
@@ -610,12 +617,15 @@ export class RAGServer {
           profile: visualQuality,
           cacheDir: this.cacheDir,
           device: this.device,
+          visual: visualArg === true,
+          images,
         }
       )
       chunks = visualResult.chunks
       embeddings = visualResult.embeddings
       text = visualResult.text
       title = visualResult.title
+      visualAttachments = visualResult.visualAttachments
     } else if (isPdf) {
       const result = await this.parser.parsePdf(args.filePath, this.embedder)
       text = result.content
@@ -661,6 +671,8 @@ export class RAGServer {
       fileSize: text.length,
       fileTitle: title || null,
       contentHash,
+      ...(visualAttachments === undefined ? {} : { visualAttachments }),
+      imageStorageVersion,
     })
 
     // Delete existing data
@@ -1178,8 +1190,8 @@ export class RAGServer {
         this.updateSyncJob(jobId, { total: hashedFiles })
         return await this.vectorStore.listChunkHashes()
       },
-      ingestFile: async (filePath: string) => {
-        const chunkCount = await this.ingestFileForSync(filePath)
+      ingestFile: async (filePath: string, images: boolean) => {
+        const chunkCount = await this.ingestFileForSync(filePath, images)
         ingestedFiles += 1
         this.updateSyncJob(jobId, { completed: ingestedFiles })
         return chunkCount
@@ -1201,6 +1213,7 @@ export class RAGServer {
       // resolve() (never realpath) so the requested path is spelled like the
       // stored DB keys; the core validates it against the configured roots.
       ...(requestedPath === undefined ? {} : { requestedPath: resolve(requestedPath) }),
+      ...(this.storeImages ? { images: true } : {}),
       collaborators,
     })
 
@@ -1235,9 +1248,9 @@ export class RAGServer {
    * — that path restores rows and then aborts the run, so no later `optimize()`
    * follows it.
    */
-  private async ingestFileForSync(filePath: string): Promise<number> {
+  private async ingestFileForSync(filePath: string, images: boolean): Promise<number> {
     try {
-      const response = await this.handleIngestFile({ filePath }, { skipOptimize: true })
+      const response = await this.handleIngestFile({ filePath }, { skipOptimize: true, images })
       const { chunkCount } = JSON.parse(response.content[0]?.text ?? '{}') as {
         chunkCount?: number
       }

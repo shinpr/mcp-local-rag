@@ -80,7 +80,9 @@ describe('planSync — content-hash decisions (SYNC-001)', () => {
       planInput({ diskFiles: [{ filePath: `${ROOT}/new.md`, contentHash: HASH_A }] })
     )
 
-    expect(plan.upserts).toEqual([{ filePath: `${ROOT}/new.md`, staleStoredPaths: [] }])
+    expect(plan.upserts).toEqual([
+      { filePath: `${ROOT}/new.md`, staleStoredPaths: [], imageStorageVersion: 'none' },
+    ])
     expect(plan.skipped).toBe(0)
   })
 
@@ -157,6 +159,81 @@ describe('planSync — content-hash decisions (SYNC-001)', () => {
     expect(upsertPaths(plan)).toEqual([`${ROOT}/changed.pdf`, `${ROOT}/added.md`])
     expect(plan.skipped).toBe(1)
     expect(plan.prunes).toEqual([])
+  })
+})
+
+describe('planSync — image-storage convergence', () => {
+  it('upserts an unchanged PDF when images are requested over disabled rows', () => {
+    const filePath = `${ROOT}/manual.pdf`
+
+    const plan = planSync(
+      planInput({
+        images: true,
+        diskFiles: [{ filePath, contentHash: HASH_A }],
+        dbRows: [{ filePath, contentHash: HASH_A, imageStorageVersion: 'none' }],
+      })
+    )
+
+    expect(plan).toEqual({
+      upserts: [{ filePath, staleStoredPaths: [], imageStorageVersion: 'pdf-images-v1' }],
+      skipped: 0,
+      prunes: [],
+    })
+  })
+
+  it('preserves a consistently enabled PDF when ordinary sync omits images', () => {
+    const filePath = `${ROOT}/manual.pdf`
+
+    const plan = planSync(
+      planInput({
+        diskFiles: [{ filePath, contentHash: HASH_A }],
+        dbRows: [
+          { filePath, contentHash: HASH_A, imageStorageVersion: 'pdf-images-v1' },
+          { filePath, contentHash: HASH_A, imageStorageVersion: 'pdf-images-v1' },
+        ],
+      })
+    )
+
+    expect(plan).toEqual({ upserts: [], skipped: 1, prunes: [] })
+  })
+
+  it('dirties mixed rows and converges them to enabled without silent attachment loss', () => {
+    const filePath = `${ROOT}/mixed.pdf`
+
+    const plan = planSync(
+      planInput({
+        diskFiles: [{ filePath, contentHash: HASH_A }],
+        dbRows: [
+          { filePath, contentHash: HASH_A, imageStorageVersion: 'none' },
+          { filePath, contentHash: HASH_A, imageStorageVersion: 'pdf-images-v1' },
+        ],
+      })
+    )
+
+    expect(plan.upserts).toEqual([
+      { filePath, staleStoredPaths: [], imageStorageVersion: 'pdf-images-v1' },
+    ])
+  })
+
+  it('uses disabled state for a new PDF when images are omitted', () => {
+    const filePath = `${ROOT}/new.pdf`
+
+    const plan = planSync(planInput({ diskFiles: [{ filePath, contentHash: HASH_A }] }))
+
+    expect(plan.upserts).toEqual([{ filePath, staleStoredPaths: [], imageStorageVersion: 'none' }])
+  })
+
+  it('keeps non-PDF rows disabled even when images are requested', () => {
+    const filePath = `${ROOT}/notes.md`
+
+    const plan = planSync(
+      planInput({
+        images: true,
+        diskFiles: [{ filePath, contentHash: HASH_A }],
+      })
+    )
+
+    expect(plan.upserts).toEqual([{ filePath, staleStoredPaths: [], imageStorageVersion: 'none' }])
   })
 })
 
@@ -445,7 +522,11 @@ describe('planSync — Windows comparison keys', () => {
 
     expect(plan).toEqual({
       upserts: [
-        { filePath: 'C:\\Root\\Sub\\Live.md', staleStoredPaths: ['c:\\root\\sub\\live.md'] },
+        {
+          filePath: 'C:\\Root\\Sub\\Live.md',
+          staleStoredPaths: ['c:\\root\\sub\\live.md'],
+          imageStorageVersion: 'none',
+        },
       ],
       skipped: 0,
       prunes: [],
@@ -470,6 +551,7 @@ describe('planSync — Windows comparison keys', () => {
       {
         filePath: 'C:\\Root\\Sub\\Live.md',
         staleStoredPaths: ['c:\\root\\sub\\live.md', 'C:\\ROOT\\SUB\\LIVE.MD'],
+        imageStorageVersion: 'none',
       },
     ])
     expect(plan.prunes).toEqual([])
@@ -571,9 +653,43 @@ function createExecutor(
 const upsertOf = (filePath: string, staleStoredPaths: string[] = []) => ({
   filePath,
   staleStoredPaths,
+  imageStorageVersion: 'none' as const,
 })
 
 describe('executeSyncPlan — mutation gating', () => {
+  it.each([
+    ['none', false],
+    ['pdf-images-v1', true],
+  ] as const)('passes resolved %s state to the ingest executor', async (version, images) => {
+    const received: Array<{ filePath: string; images: boolean }> = []
+    const executor: SyncExecutor = {
+      ingestFile: async (filePath, resolvedImages) => {
+        received.push({ filePath, images: resolvedImages })
+        return 1
+      },
+      deleteExactPath: async () => 0,
+      optimize: async () => {},
+    }
+
+    const result = await executeSyncPlan(
+      {
+        upserts: [
+          {
+            filePath: `${ROOT}/manual.pdf`,
+            staleStoredPaths: [],
+            imageStorageVersion: version,
+          },
+        ],
+        skipped: 0,
+        prunes: [],
+      },
+      executor
+    )
+
+    expect(received).toEqual([{ filePath: `${ROOT}/manual.pdf`, images }])
+    expect(result.error).toBeNull()
+  })
+
   it('touches no collaborator for a skip-only plan', async () => {
     const { executor, log } = createExecutor()
 

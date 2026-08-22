@@ -81,6 +81,18 @@ export function parseChunkMinLength(value: string | undefined): ParseResult<numb
   return { value: parsed }
 }
 
+/** Parse the independent PDF image-storage toggle. */
+export function parseStoreImages(value: string | undefined): ParseResult<boolean> {
+  const normalized = value?.trim().toLowerCase() ?? ''
+  if (normalized.length === 0) return { value: false }
+  if (['1', 'true', 'yes', 'on'].includes(normalized)) return { value: true }
+  if (['0', 'false', 'no', 'off'].includes(normalized)) return { value: false }
+  return {
+    value: false,
+    warning: `Invalid STORE_IMAGES value: "${value?.slice(0, 100)}". Expected one of 1, true, yes, on, 0, false, no, or off. Using false.`,
+  }
+}
+
 // ============================================
 // Server Startup
 // ============================================
@@ -173,6 +185,7 @@ export async function resolveServerConfig(
     rawBaseDirs: rawBaseDirsForServer,
     maxFileSize: Number.parseInt(env['MAX_FILE_SIZE'] || String(DEFAULT_MAX_FILE_SIZE), 10),
     device,
+    storeImages: false,
   }
 
   // Quality-filter settings: applied only when defined; invalid values warn.
@@ -181,6 +194,7 @@ export async function resolveServerConfig(
   const maxFiles = parseMaxFiles(env['RAG_MAX_FILES'])
   const hybridWeight = parseHybridWeight(env['RAG_HYBRID_WEIGHT'])
   const chunkMinLength = parseChunkMinLength(env['CHUNK_MIN_LENGTH'])
+  const storeImages = parseStoreImages(env['STORE_IMAGES'])
   if (maxDistance.value !== undefined) config.maxDistance = maxDistance.value
   if (maxDistance.warning) configWarnings.push(maxDistance.warning)
   if (grouping.value !== undefined) config.grouping = grouping.value
@@ -191,6 +205,8 @@ export async function resolveServerConfig(
   if (hybridWeight.warning) configWarnings.push(hybridWeight.warning)
   if (chunkMinLength.value !== undefined) config.chunkMinLength = chunkMinLength.value
   if (chunkMinLength.warning) configWarnings.push(chunkMinLength.warning)
+  config.storeImages = storeImages.value ?? false
+  if (storeImages.warning) configWarnings.push(storeImages.warning)
 
   // Set dtype only when defined, so config.dtype === undefined keeps meaning
   // "RAG_DTYPE unset" (the embedder then applies its fp32 default).

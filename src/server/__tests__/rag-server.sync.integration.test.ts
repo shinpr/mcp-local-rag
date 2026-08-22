@@ -22,6 +22,7 @@ import { createHash } from 'node:crypto'
 import { mkdirSync, rmSync, symlinkSync } from 'node:fs'
 import { chmod, mkdir, rm, symlink, writeFile } from 'node:fs/promises'
 import { join, resolve, sep } from 'node:path'
+import * as mupdf from 'mupdf'
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { withTestDevice } from '../../__tests__/test-device.js'
 import type { Embedder } from '../../embedder/index.js'
@@ -98,8 +99,29 @@ function unitVector(seed: number): number[] {
 }
 
 /** Independent hash oracle: `node:crypto` over the exact bytes written. */
-function sha256(content: string): string {
+function sha256(content: string | Uint8Array): string {
   return createHash('sha256').update(Buffer.from(content)).digest('hex')
+}
+
+function buildTextPdfBytes(text = `Sync image state fixture ${'content '.repeat(40)}`): Uint8Array {
+  const pdf = new mupdf.PDFDocument()
+  try {
+    const resources = pdf.newDictionary()
+    let contents = new mupdf.Buffer()
+    if (text.length > 0) {
+      const font = new mupdf.Font('Times-Roman')
+      const fontObject = pdf.addSimpleFont(font, 'Latin')
+      const fonts = pdf.newDictionary()
+      fonts.put('F1', fontObject)
+      resources.put('Font', fonts)
+      contents = new mupdf.Buffer(['BT', '/F1 14 Tf', '72 780 Td', `(${text}) Tj`, 'ET'].join('\n'))
+    }
+    const page = pdf.addPage([0, 0, 595, 842], 0, resources, contents)
+    pdf.insertPage(-1, page)
+    return pdf.saveToBuffer('compress').asUint8Array()
+  } finally {
+    pdf.destroy()
+  }
 }
 
 /** How many times `needle` appears in `haystack` (non-overlapping). */
@@ -165,7 +187,8 @@ async function seedRows(
   fixture: Fixture,
   filePath: string,
   contentHash: string | null,
-  chunkCount = 2
+  chunkCount = 2,
+  imageStorageVersion: 'none' | 'pdf-images-v1' = 'none'
 ): Promise<void> {
   const store = new VectorStore({ dbPath: fixture.dbPath, tableName: 'chunks' })
   await store.initialize()
@@ -181,6 +204,7 @@ async function seedRows(
         fileSize: 64,
         fileTitle: null,
         contentHash,
+        imageStorageVersion,
       })
     )
   } finally {
@@ -196,11 +220,13 @@ async function storedManifest(
   await store.initialize()
   try {
     const rows = await store.listChunkHashes()
-    return rows.sort(
-      (left, right) =>
-        left.filePath.localeCompare(right.filePath) ||
-        (left.contentHash ?? '').localeCompare(right.contentHash ?? '')
-    )
+    return rows
+      .map(({ filePath, contentHash }) => ({ filePath, contentHash }))
+      .sort(
+        (left, right) =>
+          left.filePath.localeCompare(right.filePath) ||
+          (left.contentHash ?? '').localeCompare(right.contentHash ?? '')
+      )
   } finally {
     await store.close()
   }
@@ -216,7 +242,7 @@ async function storedPaths(fixture: Fixture): Promise<string[]> {
  * external ~90MB download and is non-deterministic across devices, while row,
  * path, and job-state correctness is what these tests are about.
  */
-async function makeServer(fixture: Fixture): Promise<ServerInstance> {
+async function makeServer(fixture: Fixture, storeImages = false): Promise<ServerInstance> {
   const server = new RAGServer(
     withTestDevice({
       dbPath: fixture.dbPath,
@@ -226,6 +252,7 @@ async function makeServer(fixture: Fixture): Promise<ServerInstance> {
       cacheDir: fixture.cacheDir,
       baseDirs: fixture.roots,
       maxFileSize: 100 * 1024 * 1024,
+      storeImages,
     })
   )
   const embedder = (server as unknown as { embedder: Embedder }).embedder
@@ -238,6 +265,18 @@ async function makeServer(fixture: Fixture): Promise<ServerInstance> {
   vi.spyOn(embedder, 'embed').mockResolvedValue(unitVector(1))
   await server.initialize()
   return server
+}
+
+async function storedImageVersions(fixture: Fixture, filePath: string): Promise<string[]> {
+  const store = new VectorStore({ dbPath: fixture.dbPath, tableName: 'chunks' })
+  await store.initialize()
+  try {
+    return (await store.listChunkHashes())
+      .filter((row) => row.filePath === filePath)
+      .map((row) => row.imageStorageVersion)
+  } finally {
+    await store.close()
+  }
 }
 
 // ============================================
@@ -455,6 +494,68 @@ describe('MCP sync tools', () => {
     ).toEqual(new Set([sha256(changedContent)]))
     expect(manifest.filter((row) => row.filePath === emptyPath)).toEqual([])
     expect(manifest.filter((row) => row.filePath === gonePath)).toEqual([])
+  }, 60000)
+
+  it('preserves an enabled same-hash PDF when STORE_IMAGES is omitted', async () => {
+    const fixture = await makeFixture('images-sticky')
+    const filePath = join(fixture.roots[0] ?? '', 'manual.pdf')
+    const bytes = buildTextPdfBytes()
+    await writeFile(filePath, bytes)
+    await seedRows(fixture, filePath, sha256(bytes), 2, 'pdf-images-v1')
+
+    const server = await makeServer(fixture)
+    let terminal: SyncStatusResult
+    try {
+      terminal = lastSnapshot(await pollUntilTerminal(server, await syncStart(server)))
+    } finally {
+      await server.close()
+    }
+
+    expect(terminal.state).toBe('succeeded')
+    expect(terminal.summary).toEqual({ upserted: 0, skipped: 1, empty: 0, pruned: 0 })
+    expect(await storedImageVersions(fixture, filePath)).toEqual(['pdf-images-v1', 'pdf-images-v1'])
+  }, 45000)
+
+  it('upgrades an unchanged disabled PDF when STORE_IMAGES is enabled', async () => {
+    const fixture = await makeFixture('images-upgrade')
+    const filePath = join(fixture.roots[0] ?? '', 'manual.pdf')
+    const bytes = buildTextPdfBytes()
+    await writeFile(filePath, bytes)
+    await seedRows(fixture, filePath, sha256(bytes), 2, 'none')
+
+    const server = await makeServer(fixture, true)
+    let terminal: SyncStatusResult
+    try {
+      terminal = lastSnapshot(await pollUntilTerminal(server, await syncStart(server)))
+    } finally {
+      await server.close()
+    }
+
+    expect(terminal.state).toBe('succeeded')
+    expect(terminal.summary).toEqual({ upserted: 1, skipped: 0, empty: 0, pruned: 0 })
+    expect(new Set(await storedImageVersions(fixture, filePath))).toEqual(
+      new Set(['pdf-images-v1'])
+    )
+  }, 60000)
+
+  it('keeps prior rows when an image-state upgrade produces zero chunks', async () => {
+    const fixture = await makeFixture('images-zero-chunks')
+    const filePath = join(fixture.roots[0] ?? '', 'blank.pdf')
+    const bytes = buildTextPdfBytes('')
+    await writeFile(filePath, bytes)
+    await seedRows(fixture, filePath, sha256(bytes), 2, 'none')
+
+    const server = await makeServer(fixture, true)
+    let terminal: SyncStatusResult
+    try {
+      terminal = lastSnapshot(await pollUntilTerminal(server, await syncStart(server)))
+    } finally {
+      await server.close()
+    }
+
+    expect(terminal.state).toBe('succeeded')
+    expect(terminal.summary).toEqual({ upserted: 0, skipped: 0, empty: 1, pruned: 0 })
+    expect(await storedImageVersions(fixture, filePath)).toEqual(['none', 'none'])
   }, 60000)
 
   // --------------------------------------------

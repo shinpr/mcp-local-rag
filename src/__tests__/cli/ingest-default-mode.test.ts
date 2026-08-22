@@ -41,6 +41,8 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 const accessed = vi.hoisted(() => ({
   touched: false,
   prop: undefined as string | symbol | undefined,
+  barrelEvaluations: 0,
+  captionerEvaluations: 0,
 }))
 
 const mocks = vi.hoisted(() => {
@@ -91,8 +93,9 @@ const mocks = vi.hoisted(() => {
 // Factory definitions are kept as functions so they can be passed to both
 // `vi.doMock` (in beforeAll) and to local tests if needed.
 
-const pdfVisualFactory = () =>
-  new Proxy(
+const pdfVisualFactory = () => {
+  accessed.barrelEvaluations++
+  return new Proxy(
     {},
     {
       get(_target, prop) {
@@ -102,6 +105,23 @@ const pdfVisualFactory = () =>
       },
     }
   )
+}
+
+const captionerFactory = () => {
+  accessed.captionerEvaluations++
+  return {
+    createCaptioner: vi.fn(() => {
+      throw new Error('VLM captioner construction is forbidden in images-only mode')
+    }),
+  }
+}
+
+const detectorFactory = () => ({ detectVisualRegions: vi.fn(() => []) })
+
+const rendererFactory = () => ({
+  renderPdfRendition: vi.fn(),
+  createVisualAttachment: vi.fn(),
+})
 
 const parserFactory = () => ({
   DocumentParser: vi.fn().mockImplementation(function (this: Record<string, unknown>) {
@@ -159,6 +179,9 @@ const vectordbFactory = async (
 
 const MOCKED_PATHS = [
   '../../pdf-visual/index.js',
+  '../../pdf-visual/captioner.js',
+  '../../pdf-visual/detector.js',
+  '../../pdf-visual/renderer.js',
   '../../parser/index.js',
   '../../chunker/index.js',
   '../../embedder/index.js',
@@ -176,6 +199,7 @@ const MOCKED_PATHS = [
 
 type RAGServerCtor = typeof import('../../server/index.js').RAGServer
 type IngestSingleFile = typeof import('../../cli/ingest.js').ingestSingleFile
+type RunIngest = typeof import('../../cli/ingest.js').runIngest
 type DocumentParserCtor = typeof import('../../parser/index.js').DocumentParser
 type SemanticChunkerCtor = typeof import('../../chunker/index.js').SemanticChunker
 type EmbedderCtor = typeof import('../../embedder/index.js').Embedder
@@ -183,6 +207,7 @@ type VectorStoreCtor = typeof import('../../vectordb/index.js').VectorStore
 
 let RAGServer: RAGServerCtor
 let ingestSingleFile: IngestSingleFile
+let runIngest: RunIngest
 let DocumentParser: DocumentParserCtor
 let SemanticChunker: SemanticChunkerCtor
 let Embedder: EmbedderCtor
@@ -236,6 +261,9 @@ describe('VLM PDF Enrichment - Default Mode (no --visual)', () => {
 
     vi.resetModules()
     vi.doMock('../../pdf-visual/index.js', pdfVisualFactory)
+    vi.doMock('../../pdf-visual/captioner.js', captionerFactory)
+    vi.doMock('../../pdf-visual/detector.js', detectorFactory)
+    vi.doMock('../../pdf-visual/renderer.js', rendererFactory)
     vi.doMock('../../parser/index.js', parserFactory)
     vi.doMock('../../chunker/index.js', chunkerFactory)
     vi.doMock('../../embedder/index.js', embedderFactory)
@@ -244,6 +272,7 @@ describe('VLM PDF Enrichment - Default Mode (no --visual)', () => {
     RAGServer = serverMod.RAGServer
     const cliMod = await import('../../cli/ingest.js')
     ingestSingleFile = cliMod.ingestSingleFile
+    runIngest = cliMod.runIngest
     const parserMod = await import('../../parser/index.js')
     DocumentParser = parserMod.DocumentParser
     const chunkerMod = await import('../../chunker/index.js')
@@ -279,6 +308,8 @@ describe('VLM PDF Enrichment - Default Mode (no --visual)', () => {
     rmSync(GENERIC_PDF_DIR, { recursive: true, force: true })
     accessed.touched = false
     accessed.prop = undefined
+    accessed.barrelEvaluations = 0
+    accessed.captionerEvaluations = 0
     // Unregister the mocks installed in beforeAll so they cannot leak to
     // sibling files via the shared module registry under `isolate: false`.
     for (const p of MOCKED_PATHS) vi.doUnmock(p)
@@ -426,6 +457,65 @@ describe('VLM PDF Enrichment - Default Mode (no --visual)', () => {
       expect(accessed.touched).toBe(false)
       expect(mocks.parsePdf).toHaveBeenCalledTimes(1)
       expect(mocks.parsePdfPages).toHaveBeenCalledTimes(0)
+    })
+
+    it('runIngest: --images completes without evaluating the VLM barrel or captioner module', async () => {
+      const doc = { destroy: vi.fn() }
+      mocks.parsePdfPages.mockResolvedValue({
+        doc,
+        metadataTitle: GENERIC_PDF_TITLE,
+        pages: [
+          {
+            pageNum: 1,
+            text: GENERIC_PDF_CONTENT,
+            textFragments: [
+              {
+                pageNum: 1,
+                blockOrdinal: 0,
+                lineOrdinal: 0,
+                fragmentOrdinal: 0,
+                bbox: [40, 40, 400, 80],
+                text: GENERIC_PDF_CONTENT,
+                pageTextStart: 0,
+                pageTextEnd: GENERIC_PDF_CONTENT.length,
+              },
+            ],
+            stextJson: { blocks: [] },
+          },
+        ],
+      })
+      mocks.chunkText.mockResolvedValue([
+        {
+          text: GENERIC_PDF_CONTENT,
+          index: 0,
+          sourceStart: 0,
+          sourceEnd: GENERIC_PDF_CONTENT.length,
+        },
+      ])
+      mocks.embedBatch.mockResolvedValue([[0.1, 0.2]])
+      const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+
+      try {
+        await runIngest(['--images', '--base-dir', GENERIC_PDF_DIR, GENERIC_PDF_PATH], {
+          dbPath: resolve(GENERIC_PDF_DIR, 'db'),
+          cacheDir: resolve(GENERIC_PDF_DIR, 'cache'),
+          modelName: 'mock-model',
+        })
+      } finally {
+        consoleError.mockRestore()
+      }
+
+      expect(accessed.barrelEvaluations).toBe(0)
+      expect(accessed.captionerEvaluations).toBe(0)
+      expect(accessed.touched).toBe(false)
+      expect(doc.destroy).toHaveBeenCalledTimes(1)
+      expect(mocks.parsePdfPages).toHaveBeenCalledTimes(1)
+      expect(mocks.insertChunks).toHaveBeenCalledWith([
+        expect.objectContaining({
+          imageStorageVersion: 'pdf-images-v1',
+          visualAttachments: null,
+        }),
+      ])
     })
   })
 })

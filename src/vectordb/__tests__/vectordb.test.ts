@@ -1568,9 +1568,9 @@ describe('VectorStore', () => {
           ])
 
           expect(sortEntries(await store.listChunkHashes())).toEqual([
-            { filePath: '/test/B.md', contentHash: HASH_TWO },
-            { filePath: '/test/a.md', contentHash: HASH_ONE },
-            { filePath: '/test/a.md', contentHash: HASH_ONE },
+            { filePath: '/test/B.md', contentHash: HASH_TWO, imageStorageVersion: 'none' },
+            { filePath: '/test/a.md', contentHash: HASH_ONE, imageStorageVersion: 'none' },
+            { filePath: '/test/a.md', contentHash: HASH_ONE, imageStorageVersion: 'none' },
           ])
         })
       })
@@ -1586,8 +1586,8 @@ describe('VectorStore', () => {
           ])
 
           expect(sortEntries(await store.listChunkHashes())).toEqual([
-            { filePath: '/test/hashed.md', contentHash: HASH_ONE },
-            { filePath: '/test/hashless.md', contentHash: null },
+            { filePath: '/test/hashed.md', contentHash: HASH_ONE, imageStorageVersion: 'none' },
+            { filePath: '/test/hashless.md', contentHash: null, imageStorageVersion: 'none' },
           ])
         })
       })
@@ -1608,9 +1608,9 @@ describe('VectorStore', () => {
           ])
 
           expect(sortEntries(await store.listChunkHashes())).toEqual([
-            { filePath, contentHash: null },
-            { filePath, contentHash: HASH_TWO },
-            { filePath, contentHash: HASH_ONE },
+            { filePath, contentHash: null, imageStorageVersion: 'none' },
+            { filePath, contentHash: HASH_TWO, imageStorageVersion: 'none' },
+            { filePath, contentHash: HASH_ONE, imageStorageVersion: 'none' },
           ])
         })
       })

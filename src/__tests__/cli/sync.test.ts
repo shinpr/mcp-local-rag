@@ -19,6 +19,7 @@ import { createHash } from 'node:crypto'
 import { lstatSync, mkdirSync, rmSync, symlinkSync } from 'node:fs'
 import { chmod, mkdir, rm, symlink, writeFile } from 'node:fs/promises'
 import { join, resolve, sep } from 'node:path'
+import * as mupdf from 'mupdf'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // ============================================
@@ -163,8 +164,29 @@ function fifoSupported(): boolean {
 }
 
 /** Independent hash oracle: `node:crypto` over the exact bytes written. */
-function sha256(content: string): string {
+function sha256(content: string | Uint8Array): string {
   return createHash('sha256').update(Buffer.from(content)).digest('hex')
+}
+
+function buildTextPdfBytes(): Uint8Array {
+  const pdf = new mupdf.PDFDocument()
+  try {
+    const font = new mupdf.Font('Times-Roman')
+    const fontObject = pdf.addSimpleFont(font, 'Latin')
+    const resources = pdf.newDictionary()
+    const fonts = pdf.newDictionary()
+    fonts.put('F1', fontObject)
+    resources.put('Font', fonts)
+    const text = `CLI sync image state fixture ${'content '.repeat(40)}`
+    const contents = new mupdf.Buffer(
+      ['BT', '/F1 14 Tf', '72 780 Td', `(${text}) Tj`, 'ET'].join('\n')
+    )
+    const page = pdf.addPage([0, 0, 595, 842], 0, resources, contents)
+    pdf.insertPage(-1, page)
+    return pdf.saveToBuffer('compress').asUint8Array()
+  } finally {
+    pdf.destroy()
+  }
 }
 
 /** How many times `needle` appears in `haystack` (non-overlapping). */
@@ -205,7 +227,8 @@ async function seedRows(
   fixture: Fixture,
   filePath: string,
   contentHash: string | null,
-  chunkCount = 2
+  chunkCount = 2,
+  imageStorageVersion: 'none' | 'pdf-images-v1' = 'none'
 ): Promise<void> {
   const store = new VectorStore({ dbPath: fixture.dbPath, tableName: 'chunks' })
   await store.initialize()
@@ -221,8 +244,21 @@ async function seedRows(
         fileSize: 64,
         fileTitle: null,
         contentHash,
+        imageStorageVersion,
       })
     )
+  } finally {
+    await store.close()
+  }
+}
+
+async function storedImageVersions(fixture: Fixture, filePath: string): Promise<string[]> {
+  const store = new VectorStore({ dbPath: fixture.dbPath, tableName: 'chunks' })
+  await store.initialize()
+  try {
+    return (await store.listChunkHashes())
+      .filter((row) => row.filePath === filePath)
+      .map((row) => row.imageStorageVersion)
   } finally {
     await store.close()
   }
@@ -236,11 +272,13 @@ async function storedManifest(
   await store.initialize()
   try {
     const rows = await store.listChunkHashes()
-    return rows.sort(
-      (left, right) =>
-        left.filePath.localeCompare(right.filePath) ||
-        (left.contentHash ?? '').localeCompare(right.contentHash ?? '')
-    )
+    return rows
+      .map(({ filePath, contentHash }) => ({ filePath, contentHash }))
+      .sort(
+        (left, right) =>
+          left.filePath.localeCompare(right.filePath) ||
+          (left.contentHash ?? '').localeCompare(right.contentHash ?? '')
+      )
   } finally {
     await store.close()
   }
@@ -345,10 +383,10 @@ describe('CLI sync', () => {
   })
 
   // --------------------------------------------
-  // Argument parsing: repeatable roots, one path, no visual option
+  // Argument parsing: repeatable roots, one path, independent images option
   // --------------------------------------------
 
-  it('shows repeatable base-directory help with no visual option and exits 0', async () => {
+  it('shows repeatable base-directory and images help with no visual option and exits 0', async () => {
     const fixture = await makeFixture('help')
 
     const outcome = await runCli(fixture, ['--help'])
@@ -358,10 +396,54 @@ describe('CLI sync', () => {
     expect(help).toContain('Usage: mcp-local-rag [global-options] sync [options] [path]')
     expect(help).toContain('--base-dir <path>')
     expect(help).toContain('repeatable')
+    expect(help).toContain('--images')
     expect(help).toContain('-h, --help')
     expect(help).not.toContain('--visual')
     expect(help).not.toContain('--dry-run')
   })
+
+  it('accepts --images as a no-value boolean flag', async () => {
+    const fixture = await makeFixture('images-flag')
+
+    const outcome = await runCli(fixture, ['--images'])
+
+    expect(outcome.exitCode).toBeUndefined()
+    expect(outcome.exitError).toBeUndefined()
+    expect(reportedCounters(outcome)).toEqual({ upserted: 0, skipped: 0, empty: 0, pruned: 0 })
+    expect(calls.createEmbedder).toBe(0)
+  })
+
+  it('upgrades an unchanged disabled PDF when --images is requested', async () => {
+    const fixture = await makeFixture('images-upgrade')
+    const filePath = join(fixture.roots[0] ?? '', 'manual.pdf')
+    const bytes = buildTextPdfBytes()
+    await writeFile(filePath, bytes)
+    await seedRows(fixture, filePath, sha256(bytes), 2, 'none')
+
+    const outcome = await runCli(fixture, ['--images'])
+
+    expect(outcome.exitCode).toBeUndefined()
+    expect(outcome.exitError).toBeUndefined()
+    expect(reportedCounters(outcome)).toEqual({ upserted: 1, skipped: 0, empty: 0, pruned: 0 })
+    expect(new Set(await storedImageVersions(fixture, filePath))).toEqual(
+      new Set(['pdf-images-v1'])
+    )
+  }, 60000)
+
+  it('preserves an enabled same-hash PDF when --images is omitted', async () => {
+    const fixture = await makeFixture('images-sticky')
+    const filePath = join(fixture.roots[0] ?? '', 'manual.pdf')
+    const bytes = buildTextPdfBytes()
+    await writeFile(filePath, bytes)
+    await seedRows(fixture, filePath, sha256(bytes), 2, 'pdf-images-v1')
+
+    const outcome = await runCli(fixture, [])
+
+    expect(outcome.exitCode).toBeUndefined()
+    expect(outcome.exitError).toBeUndefined()
+    expect(reportedCounters(outcome)).toEqual({ upserted: 0, skipped: 1, empty: 0, pruned: 0 })
+    expect(await storedImageVersions(fixture, filePath)).toEqual(['pdf-images-v1', 'pdf-images-v1'])
+  }, 45000)
 
   it('uses repeated CLI roots in order and replaces the environment roots', async () => {
     const fixture = await makeFixture('cli-roots-replace-env', 3)

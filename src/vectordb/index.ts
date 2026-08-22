@@ -10,6 +10,7 @@ import {
   FTS_CLEANUP_THRESHOLD_MS,
   FTS_INDEX_NAME,
   HYBRID_SEARCH_CANDIDATE_MULTIPLIER,
+  type ImageStorageVersion,
   normalizeImageStorageVersion,
   normalizeVisualAttachments,
   type SearchOptions,
@@ -492,8 +493,8 @@ export class VectorStore {
   }
 
   /**
-   * Per-chunk `(filePath, contentHash)` projection — the manifest incremental
-   * sync reconciles the disk against.
+   * Per-chunk `(filePath, contentHash, imageStorageVersion)` projection — the
+   * manifest incremental sync reconciles the disk against.
    *
    * One entry per stored row rather than one per file, because a file whose
    * rows disagree on the hash (or carry none) must be detectable as dirty.
@@ -502,17 +503,31 @@ export class VectorStore {
    * create-path seeds for Arrow schema inference — is normalized to `null` so a
    * hashless row can never read as a real hash, mirroring `toVectorChunk`.
    *
-   * Projects only the two columns so a manifest load does not materialize the
-   * embedding vectors. Lazy-table null returns `[]` (mirrors {@link listFiles}).
+   * Projects only the three convergence columns so a manifest load does not
+   * materialize embedding vectors or attachment payloads. Lazy-table null
+   * returns `[]` (mirrors {@link listFiles}).
    */
-  async listChunkHashes(): Promise<{ filePath: string; contentHash: string | null }[]> {
+  async listChunkHashes(): Promise<
+    {
+      filePath: string
+      contentHash: string | null
+      imageStorageVersion: ImageStorageVersion
+    }[]
+  > {
     if (!this.table) {
       return []
     }
 
     try {
-      const records = await this.table.query().select(['filePath', 'contentHash']).toArray()
-      const entries: { filePath: string; contentHash: string | null }[] = []
+      const records = await this.table
+        .query()
+        .select(['filePath', 'contentHash', 'imageStorageVersion'])
+        .toArray()
+      const entries: {
+        filePath: string
+        contentHash: string | null
+        imageStorageVersion: ImageStorageVersion
+      }[] = []
       for (const record of records) {
         const filePath: unknown = record.filePath
         const contentHash: unknown = record.contentHash
@@ -523,6 +538,7 @@ export class VectorStore {
           filePath,
           contentHash:
             typeof contentHash === 'string' && contentHash.length > 0 ? contentHash : null,
+          imageStorageVersion: normalizeImageStorageVersion(record.imageStorageVersion),
         })
       }
       return entries
