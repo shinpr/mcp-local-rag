@@ -108,6 +108,17 @@ function lineTo(x: number, y: number): PathCommand {
   return (walker) => walker.lineTo?.(x, y)
 }
 
+function curveTo(
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+  x3: number,
+  y3: number
+): PathCommand {
+  return (walker) => walker.curveTo?.(x1, y1, x2, y2, x3, y3)
+}
+
 function closePath(): PathCommand {
   return (walker) => walker.closePath?.()
 }
@@ -230,6 +241,151 @@ describe('detectVisualRegions', () => {
     expect(path.getBounds).not.toHaveBeenCalled()
     expect(regions).toHaveLength(1)
     expect(regions[0]?.bbox).toEqual([88, 88, 262, 262])
+  })
+
+  it.each([
+    ['completed walk with zero local evidence', []],
+    ['walk failure before local evidence', [throwWalk('pre-evidence failure')]],
+  ])('uses a filtered fallback for a stroke after %s', (_name, commands) => {
+    const path = fakePath(commands, [200, 200, 650, 650])
+    const { doc } = fakeDoc([(callbacks) => stroke(callbacks, path)])
+
+    const regions = detectVisualRegions(
+      [page(1, [{ type: 'image', bbox: bbox(100, 100, 500, 500) }])],
+      doc
+    )
+
+    expect(path.getBounds).toHaveBeenCalledTimes(1)
+    expect(regions).toHaveLength(1)
+    expect(regions[0]?.evidence).toBe('mixed')
+    expect(regions[0]?.bbox[2]).toBeGreaterThan(650)
+  })
+
+  it('keeps partial stroke evidence and omits the enclosing fallback after a walk failure', () => {
+    const path = fakePath(
+      [
+        moveTo(100, 100),
+        lineTo(400, 100),
+        moveTo(100, 300),
+        lineTo(400, 300),
+        moveTo(150, 50),
+        lineTo(150, 350),
+        moveTo(350, 50),
+        lineTo(350, 350),
+        throwWalk('partial stroke failure'),
+      ],
+      [0, 0, 1000, 1000]
+    )
+    const { doc } = fakeDoc([(callbacks) => stroke(callbacks, path)])
+
+    const regions = detectVisualRegions([page(1)], doc)
+
+    expect(path.getBounds).not.toHaveBeenCalled()
+    expect(regions).toHaveLength(1)
+    expect(regions[0]?.bbox).toEqual([76, 26, 424, 374])
+  })
+
+  it('rejects stroke, fill, and shade evidence below the alpha threshold', () => {
+    const filledPath = fakePath(
+      [moveTo(100, 100), lineTo(400, 100), lineTo(400, 400), lineTo(100, 400), closePath()],
+      [100, 100, 400, 400]
+    )
+    const strokedPath = fakePath(
+      [moveTo(500, 100), lineTo(800, 100), lineTo(800, 400), closePath()],
+      [500, 100, 800, 400]
+    )
+    const shade = { getBounds: vi.fn().mockReturnValue([100, 500, 400, 800]) }
+    const { doc } = fakeDoc([
+      (callbacks) => {
+        fill(callbacks, filledPath, 0.09)
+        stroke(callbacks, strokedPath, 0.09)
+        callbacks.fillShade?.(shade, IDENTITY, 0.09)
+      },
+    ])
+
+    expect(detectVisualRegions([page(1)], doc)).toEqual([])
+    expect(filledPath.walk).not.toHaveBeenCalled()
+    expect(strokedPath.walk).not.toHaveBeenCalled()
+    expect(shade.getBounds).not.toHaveBeenCalled()
+  })
+
+  it('qualifies one filled area meeting the dimension and area thresholds', () => {
+    const path = fakePath(
+      [moveTo(100, 100), lineTo(300, 100), lineTo(300, 300), lineTo(100, 300), closePath()],
+      [100, 100, 300, 300]
+    )
+    const { doc } = fakeDoc([(callbacks) => fill(callbacks, path)])
+
+    const regions = detectVisualRegions([page(1)], doc)
+
+    expect(regions).toHaveLength(1)
+    expect(regions[0]?.evidence).toBe('vector')
+  })
+
+  it.each(['fill', 'shade'] as const)(
+    'rejects one %s background covering at least 85%% of the page',
+    (kind) => {
+      const { doc } = fakeDoc([
+        (callbacks) => {
+          if (kind === 'fill') {
+            fill(
+              callbacks,
+              fakePath(
+                [moveTo(0, 0), lineTo(1000, 0), lineTo(1000, 850), lineTo(0, 850), closePath()],
+                [0, 0, 1000, 850]
+              )
+            )
+          } else {
+            callbacks.fillShade?.({ getBounds: () => [0, 0, 1000, 850] }, IDENTITY, 1)
+          }
+        },
+      ])
+
+      expect(detectVisualRegions([page(1)], doc)).toEqual([])
+    }
+  )
+
+  it('skips only the over-budget page and emits a controlled warning', () => {
+    const commands: PathCommand[] = [moveTo(100, 100)]
+    for (let index = 0; index < 600; index += 1) {
+      commands.push(lineTo(index % 2 === 0 ? 400 : 100, 100 + Math.floor(index / 2) * 0.1))
+    }
+    const overloaded = fakePath(commands, [0, 0, 1000, 1000])
+    const healthy = fakePath(
+      [moveTo(600, 600), lineTo(900, 600), lineTo(900, 900), lineTo(600, 900), closePath()],
+      [600, 600, 900, 900]
+    )
+    const { doc } = fakeDoc([
+      (callbacks) => stroke(callbacks, overloaded),
+      (callbacks) => fill(callbacks, healthy),
+    ])
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    try {
+      const regions = detectVisualRegions([page(1), page(2)], doc)
+
+      expect(regions.map((region) => region.pageNum)).toEqual([2])
+      expect(warn.mock.calls.flat().join(' ')).toMatch(/work budget exceeded.*page 1/i)
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  it('bounds retained curve points before a pathological path can be aggregated', () => {
+    const commands: PathCommand[] = [moveTo(0, 0)]
+    for (let index = 0; index < 400; index += 1) {
+      commands.push(curveTo(index, 10, index + 1, 20, index + 2, 30))
+    }
+    const path = fakePath(commands, [0, 0, 500, 500])
+    const { doc } = fakeDoc([(callbacks) => fill(callbacks, path)])
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    try {
+      expect(detectVisualRegions([page(1)], doc)).toEqual([])
+      expect(warn.mock.calls.flat().join(' ')).toMatch(/work budget exceeded.*page 1/i)
+    } finally {
+      warn.mockRestore()
+    }
   })
 
   it('qualifies a nearby three-bar filled-only figure below the single-fill threshold', () => {

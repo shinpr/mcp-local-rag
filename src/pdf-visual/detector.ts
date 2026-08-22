@@ -19,6 +19,7 @@ const MIN_SEGMENT_SPAN = 20
 const MIN_ALPHA = 0.1
 const CROP_PADDING_RATIO = 0.08
 const MIN_CROP_PADDING = 12
+const MAX_PAGE_VISUAL_WORK = 1024
 
 interface DetectorPage {
   pageNum: number
@@ -46,6 +47,22 @@ interface PendingRegion {
   normalizedBbox: VisualBBox
   evidence: VisualEvidence
   evidenceOrder: number
+}
+
+class VisualWorkBudgetExceeded extends Error {}
+
+interface VisualWorkBudget {
+  consume(amount?: number): void
+}
+
+function createVisualWorkBudget(): VisualWorkBudget {
+  let consumed = 0
+  return {
+    consume(amount = 1) {
+      consumed += amount
+      if (consumed > MAX_PAGE_VISUAL_WORK) throw new VisualWorkBudgetExceeded()
+    },
+  }
 }
 
 function areaOf(rect: VisualBBox): number {
@@ -104,12 +121,17 @@ function transformPoint([x, y]: Point, [a, b, c, d, e, f]: mupdf.Matrix): Point 
 
 function rectFromPoints(points: Point[]): VisualBBox | null {
   if (points.length === 0) return null
-  return [
-    Math.min(...points.map((point) => point[0])),
-    Math.min(...points.map((point) => point[1])),
-    Math.max(...points.map((point) => point[0])),
-    Math.max(...points.map((point) => point[1])),
-  ]
+  const first = points[0] as Point
+  let [x0, y0] = first
+  let [x1, y1] = first
+  for (let index = 1; index < points.length; index += 1) {
+    const [x, y] = points[index] as Point
+    x0 = Math.min(x0, x)
+    y0 = Math.min(y0, y)
+    x1 = Math.max(x1, x)
+    y1 = Math.max(y1, y)
+  }
+  return [x0, y0, x1, y1]
 }
 
 function blockRect(block: unknown): VisualBBox | null {
@@ -143,7 +165,8 @@ function isLikelyCornerLogo(rect: VisualBBox, pageBounds: VisualBBox, areaRatio:
 function collectRasterEvidence(
   stextJson: unknown,
   pageBounds: VisualBBox,
-  nextOrder: () => number
+  nextOrder: () => number,
+  budget: VisualWorkBudget
 ): RegionEvidence[] {
   const pageArea = areaOf(pageBounds)
   const evidence: RegionEvidence[] = []
@@ -155,6 +178,7 @@ function collectRasterEvidence(
     ) {
       continue
     }
+    budget.consume()
     const rawRect = blockRect(block)
     const rect = rawRect ? normalizeRect(rawRect, pageBounds) : null
     if (!rect) continue
@@ -170,6 +194,7 @@ function collectRasterEvidence(
     ) {
       continue
     }
+    budget.consume()
     evidence.push({ kind: 'raster', rect, order: nextOrder() })
   }
   return evidence
@@ -182,7 +207,8 @@ function collectPathEvidence(
   kind: 'stroke' | 'fill',
   pageBounds: VisualBBox,
   pageArea: number,
-  nextOrder: () => number
+  nextOrder: () => number,
+  budget: VisualWorkBudget
 ): RegionEvidence[] {
   const evidence: RegionEvidence[] = []
   let start: Point | null = null
@@ -203,6 +229,7 @@ function collectPathEvidence(
     if (!rect) return
     const span = Math.max(Math.abs(to[0] - from[0]), Math.abs(to[1] - from[1]))
     if (span < MIN_SEGMENT_SPAN) return
+    budget.consume()
     evidence.push({ kind, rect, order: nextOrder(), segment: { start: from, end: to } })
   }
 
@@ -214,6 +241,7 @@ function collectPathEvidence(
       (areaOf(rect) > 0 || Math.max(rect[2] - rect[0], rect[3] - rect[1]) >= MIN_SEGMENT_SPAN)
     ) {
       if (kind !== 'fill' || areaOf(rect) / pageArea < MAX_BACKGROUND_AREA_RATIO) {
+        budget.consume()
         evidence.push({ kind, rect, order: nextOrder() })
       }
     }
@@ -226,6 +254,7 @@ function collectPathEvidence(
   try {
     path.walk({
       moveTo(x, y) {
+        budget.consume()
         if (points.length > 0) finishSubpath()
         const point = transformPoint([x, y], ctm)
         start = point
@@ -233,6 +262,7 @@ function collectPathEvidence(
         points = [point]
       },
       lineTo(x, y) {
+        budget.consume()
         const point = transformPoint([x, y], ctm)
         if (current) emitSegment(current, point)
         if (!start) start = point
@@ -240,6 +270,7 @@ function collectPathEvidence(
         points.push(point)
       },
       curveTo(x1, y1, x2, y2, x3, y3) {
+        budget.consume(3)
         const transformed = [
           transformPoint([x1, y1], ctm),
           transformPoint([x2, y2], ctm),
@@ -250,11 +281,13 @@ function collectPathEvidence(
         points.push(...transformed)
       },
       closePath() {
+        budget.consume()
         if (current && start) emitSegment(current, start)
         finishSubpath()
       },
     })
-  } catch {
+  } catch (error) {
+    if (error instanceof VisualWorkBudgetExceeded) throw error
     walkFailed = true
   }
 
@@ -262,6 +295,7 @@ function collectPathEvidence(
   if (evidence.length > 0) return evidence
 
   try {
+    budget.consume()
     const getBounds = path.getBounds as unknown as (
       stroke: mupdf.StrokeState | null,
       matrix: mupdf.Matrix
@@ -275,8 +309,11 @@ function collectPathEvidence(
           ratio < MAX_BACKGROUND_AREA_RATIO
         : dimensionsQualify(fallback, pageArea, MIN_VECTOR_AREA_RATIO) &&
           ratio < MAX_BACKGROUND_AREA_RATIO
-    return qualifies ? [{ kind, rect: fallback, order: nextOrder() }] : []
-  } catch {
+    if (!qualifies) return []
+    budget.consume()
+    return [{ kind, rect: fallback, order: nextOrder() }]
+  } catch (error) {
+    if (error instanceof VisualWorkBudgetExceeded) throw error
     return []
   }
 }
@@ -285,32 +322,54 @@ function collectVectorEvidence(
   page: mupdf.Page,
   pageNum: number,
   pageBounds: VisualBBox,
-  nextOrder: () => number
+  nextOrder: () => number,
+  budget: VisualWorkBudget
 ): RegionEvidence[] {
   const pageArea = areaOf(pageBounds)
   const evidence: RegionEvidence[] = []
   const device = new mupdf.Device({
     strokePath(path, strokeState, ctm, _colorSpace, _color, alpha) {
       if (!Number.isFinite(alpha) || alpha < MIN_ALPHA) return
-      evidence.push(
-        ...collectPathEvidence(path, strokeState, ctm, 'stroke', pageBounds, pageArea, nextOrder)
-      )
+      for (const item of collectPathEvidence(
+        path,
+        strokeState,
+        ctm,
+        'stroke',
+        pageBounds,
+        pageArea,
+        nextOrder,
+        budget
+      )) {
+        evidence.push(item)
+      }
     },
     fillPath(path, _evenOdd, ctm, _colorSpace, _color, alpha) {
       if (!Number.isFinite(alpha) || alpha < MIN_ALPHA) return
-      evidence.push(
-        ...collectPathEvidence(path, null, ctm, 'fill', pageBounds, pageArea, nextOrder)
-      )
+      for (const item of collectPathEvidence(
+        path,
+        null,
+        ctm,
+        'fill',
+        pageBounds,
+        pageArea,
+        nextOrder,
+        budget
+      )) {
+        evidence.push(item)
+      }
     },
     fillShade(shade, ctm, alpha) {
       if (!Number.isFinite(alpha) || alpha < MIN_ALPHA) return
       try {
+        budget.consume()
         const rect = normalizeRect(mupdf.Rect.transform(shade.getBounds(), ctm), pageBounds)
         if (!rect) return
         const ratio = areaOf(rect) / pageArea
         if (ratio >= MAX_BACKGROUND_AREA_RATIO) return
+        budget.consume()
         evidence.push({ kind: 'shade', rect, order: nextOrder() })
-      } catch {
+      } catch (error) {
+        if (error instanceof VisualWorkBudgetExceeded) throw error
         console.warn(`detector: shade bounds failed on page ${pageNum}`)
       }
     },
@@ -318,7 +377,8 @@ function collectVectorEvidence(
 
   try {
     page.run(device, mupdf.Matrix.identity)
-  } catch {
+  } catch (error) {
+    if (error instanceof VisualWorkBudgetExceeded) throw error
     console.warn(`detector: vector scan failed on page ${pageNum}`)
   } finally {
     device.close()
@@ -464,11 +524,12 @@ function detectPageRegions(
 ): PendingRegion[] {
   const pageArea = areaOf(pageBounds)
   if (pageArea <= 0) return []
+  const budget = createVisualWorkBudget()
   let evidenceOrder = 0
   const nextOrder = () => evidenceOrder++
   const evidence = [
-    ...collectRasterEvidence(pageRecord.stextJson, pageBounds, nextOrder),
-    ...collectVectorEvidence(page, pageRecord.pageNum, pageBounds, nextOrder),
+    ...collectRasterEvidence(pageRecord.stextJson, pageBounds, nextOrder, budget),
+    ...collectVectorEvidence(page, pageRecord.pageNum, pageBounds, nextOrder, budget),
   ]
 
   const regions: PendingRegion[] = []
@@ -506,8 +567,12 @@ export function detectVisualRegions(
       const bounds = normalizeRect(rawBounds, rawBounds)
       if (!bounds || areaOf(bounds) <= 0) continue
       pending.push(...detectPageRegions(pageRecord, page, bounds))
-    } catch {
-      console.warn(`detector: page scan failed on page ${pageRecord.pageNum}`)
+    } catch (error) {
+      if (error instanceof VisualWorkBudgetExceeded) {
+        console.warn(`detector: visual work budget exceeded on page ${pageRecord.pageNum}`)
+      } else {
+        console.warn(`detector: page scan failed on page ${pageRecord.pageNum}`)
+      }
     } finally {
       page?.destroy?.()
     }

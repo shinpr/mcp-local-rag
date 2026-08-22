@@ -350,4 +350,22 @@ describe('prepareVisualPdfChunks option matrix', () => {
     expect(result.visualAttachments).toEqual(new Map())
     expect(mocks.createCaptioner).not.toHaveBeenCalled()
   })
+
+  it('preserves text ingestion when visual detection skips an over-budget page', async () => {
+    const { chunker, embedder, parser } = dependencies()
+    mocks.detectVisualRegions.mockReturnValueOnce([])
+
+    const result = await prepareVisualPdfChunks('/tmp/input.pdf', parser, chunker, embedder, {
+      profile: 'fast',
+      cacheDir: '/tmp/cache',
+      visual: false,
+      images: true,
+    })
+
+    expect(result.text).toBe('Body sentence.')
+    expect(result.chunks).toHaveLength(1)
+    expect(result.visualAttachments).toEqual(new Map())
+    expect(mocks.renderPdfRendition).not.toHaveBeenCalled()
+    expect(mocks.createCaptioner).not.toHaveBeenCalled()
+  })
 })

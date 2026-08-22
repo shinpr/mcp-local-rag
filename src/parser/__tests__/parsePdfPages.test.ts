@@ -53,6 +53,31 @@ const MOCKED_PATHS = ['mupdf', '../pdf-filter.js'] as const
 
 let DocumentParser: typeof import('../index.js').DocumentParser
 
+function makePageHandles(json: unknown, bounds = [0, 0, 612, 792]) {
+  const pageDestroy = vi.fn()
+  const stextDestroy = vi.fn()
+  const page = {
+    getBounds: vi.fn().mockReturnValue(bounds),
+    toStructuredText: vi.fn().mockReturnValue({
+      destroy: stextDestroy,
+      asJSON: vi.fn().mockReturnValue(JSON.stringify(json)),
+    }),
+    destroy: pageDestroy,
+  }
+  return { page, pageDestroy, stextDestroy }
+}
+
+function mockDocument(pages: unknown[]) {
+  return {
+    countPages: vi.fn().mockReturnValue(pages.length),
+    loadPage: vi.fn().mockImplementation((index: number) => pages[index]),
+    getMetaData: vi
+      .fn()
+      .mockImplementation((key: string) => (key === 'info:Title' ? 'Synthetic Title' : '')),
+    destroy: vi.fn(),
+  }
+}
+
 // ============================================
 // Test suite
 // ============================================
@@ -148,29 +173,9 @@ describe('parsePdfPages return shape', () => {
       ],
     }
 
-    const makePage = (json: unknown) => {
-      const pageDestroy = vi.fn()
-      const stextDestroy = vi.fn()
-      const page = {
-        getBounds: vi.fn().mockReturnValue([0, 0, 612, 792]),
-        toStructuredText: vi.fn().mockReturnValue({
-          destroy: stextDestroy,
-          asJSON: vi.fn().mockReturnValue(JSON.stringify(json)),
-        }),
-        destroy: pageDestroy,
-      }
-      return { page, pageDestroy, stextDestroy }
-    }
-    const mockPageHandles = [makePage(page1Stext), makePage(page2Stext)]
+    const mockPageHandles = [makePageHandles(page1Stext), makePageHandles(page2Stext)]
 
-    const mockDoc = {
-      countPages: vi.fn().mockReturnValue(2),
-      loadPage: vi.fn().mockImplementation((i: number) => mockPageHandles[i]?.page),
-      getMetaData: vi
-        .fn()
-        .mockImplementation((key: string) => (key === 'info:Title' ? 'Synthetic Title' : '')),
-      destroy: vi.fn(),
-    }
+    const mockDoc = mockDocument(mockPageHandles.map(({ page }) => page))
     mockOpenDocument.mockReturnValue(mockDoc)
 
     const result = await parser.parsePdfPages(filePath, mockEmbedder)
@@ -253,5 +258,94 @@ describe('parsePdfPages return shape', () => {
       expect(handles.stextDestroy).toHaveBeenCalledTimes(1)
       expect(handles.pageDestroy).toHaveBeenCalledTimes(1)
     }
+  })
+
+  it('reorders complete column bands and preserves native provenance within each band', async () => {
+    const heading = {
+      text: 'Spanning heading',
+      x: 50,
+      y: 80,
+      bbox: { x: 50, y: 60, w: 800, h: 24 },
+      font: { size: 24 },
+    }
+    const bodyLines = [
+      ['Left one', 100, 150],
+      ['Right one', 600, 150],
+      ['Left two', 100, 200],
+      ['Right two', 600, 200],
+      ['Left three', 100, 250],
+      ['Right three', 600, 250],
+    ].map(([text, x, y]) => ({
+      text: text as string,
+      x: x as number,
+      y: y as number,
+      bbox: { x: x as number, y: y as number, w: 200, h: 20 },
+      font: { size: 12 },
+    }))
+    const handles = makePageHandles(
+      {
+        blocks: [
+          { type: 'text', lines: [heading] },
+          { type: 'text', lines: bodyLines },
+        ],
+      },
+      [0, 0, 1000, 1000]
+    )
+    mockOpenDocument.mockReturnValue(mockDocument([handles.page]))
+
+    const result = await parser.parsePdfPages(join(testDir, 'test.pdf'), mockEmbedder)
+
+    expect(result.pages[0]?.text.split('\n')).toEqual([
+      'Spanning heading',
+      'Left one',
+      'Left two',
+      'Left three',
+      'Right one',
+      'Right two',
+      'Right three',
+    ])
+    expect(
+      result.pages[0]?.textFragments.map(({ blockOrdinal, lineOrdinal, text }) => ({
+        blockOrdinal,
+        lineOrdinal,
+        text,
+      }))
+    ).toEqual([
+      { blockOrdinal: 0, lineOrdinal: 0, text: 'Spanning heading' },
+      { blockOrdinal: 1, lineOrdinal: 0, text: 'Left one' },
+      { blockOrdinal: 1, lineOrdinal: 2, text: 'Left two' },
+      { blockOrdinal: 1, lineOrdinal: 4, text: 'Left three' },
+      { blockOrdinal: 1, lineOrdinal: 1, text: 'Right one' },
+      { blockOrdinal: 1, lineOrdinal: 3, text: 'Right two' },
+      { blockOrdinal: 1, lineOrdinal: 5, text: 'Right three' },
+    ])
+    result.doc.destroy()
+  })
+
+  it('preserves native order when a section has fewer than two complete column bands', async () => {
+    const lines = [
+      ['Spanning heading', 50, 60, 800],
+      ['Left one', 100, 150, 200],
+      ['Right singleton', 600, 150, 200],
+      ['Left two', 100, 200, 200],
+    ].map(([text, x, y, width], lineOrdinal) => ({
+      text: text as string,
+      x: x as number,
+      y: y as number,
+      bbox: { x: x as number, y: y as number, w: width as number, h: 20 },
+      font: { size: lineOrdinal === 0 ? 24 : 12 },
+    }))
+    const handles = makePageHandles({ blocks: [{ type: 'text', lines }] }, [0, 0, 1000, 1000])
+    mockOpenDocument.mockReturnValue(mockDocument([handles.page]))
+
+    const result = await parser.parsePdfPages(join(testDir, 'test.pdf'), mockEmbedder)
+
+    expect(result.pages[0]?.text.split('\n')).toEqual([
+      'Spanning heading',
+      'Left one',
+      'Right singleton',
+      'Left two',
+    ])
+    result.doc.destroy()
   })
 })

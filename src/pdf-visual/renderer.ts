@@ -58,15 +58,19 @@ function renderCrop<T>(
   const width = Math.max(1, Math.floor(sourceWidth * scale))
   const height = Math.max(1, Math.floor(sourceHeight * scale))
   const pixmap = new mupdf.Pixmap(mupdf.ColorSpace.DeviceRGB, [0, 0, width, height], false)
-  const matrix: mupdf.Matrix = [scale, 0, 0, scale, -cropRect[0] * scale, -cropRect[1] * scale]
-  const device = new mupdf.DrawDevice(matrix, pixmap)
+  let device: mupdf.DrawDevice | null = null
   try {
+    const matrix: mupdf.Matrix = [scale, 0, 0, scale, -cropRect[0] * scale, -cropRect[1] * scale]
+    device = new mupdf.DrawDevice(matrix, pixmap)
     pixmap.clear(255)
     page.run(device, mupdf.Matrix.identity)
     return consume(pixmap)
   } finally {
-    device.close()
-    pixmap.destroy?.()
+    try {
+      device?.close()
+    } finally {
+      pixmap.destroy?.()
+    }
   }
 }
 

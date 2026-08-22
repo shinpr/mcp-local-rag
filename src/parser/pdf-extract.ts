@@ -70,6 +70,78 @@ interface ExtractedPdf {
   page1FontHint: { text: string; fontSize: number } | undefined
 }
 
+type PositionedTextItem = PageData['items'][number]
+
+interface ColumnBand {
+  x0: number
+  x1: number
+  items: Array<{ item: PositionedTextItem; nativeIndex: number }>
+}
+
+function itemBounds(item: PositionedTextItem): [number, number, number, number] {
+  return item.bbox ?? [item.x, item.y, item.x, item.y]
+}
+
+function orderColumnSection(items: PositionedTextItem[], pageWidth: number): PositionedTextItem[] {
+  if (items.length < 4) return items
+  const bandGap = pageWidth * 0.02
+  const positioned = items
+    .map((item, nativeIndex) => ({ item, nativeIndex }))
+    .sort((left, right) => {
+      const leftBounds = itemBounds(left.item)
+      const rightBounds = itemBounds(right.item)
+      return leftBounds[0] - rightBounds[0] || left.nativeIndex - right.nativeIndex
+    })
+  const bands: ColumnBand[] = []
+
+  for (const entry of positioned) {
+    const [x0, , x1] = itemBounds(entry.item)
+    const band = bands.at(-1)
+    if (band && x0 <= band.x1 + bandGap) {
+      band.x0 = Math.min(band.x0, x0)
+      band.x1 = Math.max(band.x1, x1)
+      band.items.push(entry)
+    } else {
+      bands.push({ x0, x1, items: [entry] })
+    }
+  }
+
+  const qualifyingBands = bands.filter((band) => band.items.length >= 2)
+  if (
+    qualifyingBands.length < 2 ||
+    qualifyingBands.reduce((count, band) => count + band.items.length, 0) !== items.length
+  ) {
+    return items
+  }
+
+  return qualifyingBands.flatMap((band) =>
+    band.items.sort((left, right) => left.nativeIndex - right.nativeIndex).map(({ item }) => item)
+  )
+}
+
+function applyColumnBandFallback(
+  items: PositionedTextItem[],
+  pageBounds: readonly number[]
+): PositionedTextItem[] {
+  const pageWidth = (pageBounds[2] ?? 0) - (pageBounds[0] ?? 0)
+  if (!Number.isFinite(pageWidth) || pageWidth <= 0) return items
+  const spanningWidth = pageWidth * 0.6
+  const ordered: PositionedTextItem[] = []
+  let section: PositionedTextItem[] = []
+
+  for (const item of items) {
+    const [x0, , x1] = itemBounds(item)
+    if (x1 - x0 > spanningWidth) {
+      ordered.push(...orderColumnSection(section, pageWidth), item)
+      section = []
+    } else {
+      section.push(item)
+    }
+  }
+  ordered.push(...orderColumnSection(section, pageWidth))
+  return ordered
+}
+
 /**
  * Per-page extraction shared by `parsePdf` and `parsePdfPages`.
  *
@@ -138,7 +210,11 @@ export async function extractPdfPages(
         }
       }
 
-      pageDataList.push({ pageNum: i + 1, items, pageHeight })
+      pageDataList.push({
+        pageNum: i + 1,
+        items: applyColumnBandFallback(items, bounds),
+        pageHeight,
+      })
       stextJsonList.push(json)
     } finally {
       page.destroy?.()
