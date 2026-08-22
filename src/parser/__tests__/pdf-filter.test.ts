@@ -5,6 +5,7 @@ import {
   detectBlockAttributeCandidates,
   detectSentencePatterns,
   type EmbedderInterface,
+  filterPageBoundaryLayouts,
   filterPageBoundarySentences,
   joinFilteredPages,
   type PageData,
@@ -701,6 +702,146 @@ describe('pdf-filter', () => {
       expect(joined).toContain('Unique A')
       expect(joined).toContain('Content A')
       expect(joined).toContain('End A')
+    })
+  })
+
+  describe('filterPageBoundaryLayouts', () => {
+    it('preserves native heading and complete-column order with exact fragment ranges', async () => {
+      const pages: PageData[] = [
+        {
+          pageNum: 1,
+          pageHeight: 800,
+          items: [
+            {
+              text: 'Heading',
+              x: 40,
+              y: 760,
+              fontSize: 24,
+              hasEOL: true,
+              blockOrdinal: 0,
+              lineOrdinal: 0,
+              bbox: [40, 20, 560, 50],
+            },
+            {
+              text: 'Left one',
+              x: 40,
+              y: 700,
+              fontSize: 12,
+              hasEOL: true,
+              blockOrdinal: 1,
+              lineOrdinal: 0,
+              bbox: [40, 80, 250, 100],
+            },
+            {
+              text: 'Left two',
+              x: 40,
+              y: 660,
+              fontSize: 12,
+              hasEOL: true,
+              blockOrdinal: 1,
+              lineOrdinal: 1,
+              bbox: [40, 120, 250, 140],
+            },
+            {
+              text: 'Right one',
+              x: 320,
+              y: 700,
+              fontSize: 12,
+              hasEOL: true,
+              blockOrdinal: 2,
+              lineOrdinal: 0,
+              bbox: [320, 80, 560, 100],
+            },
+            {
+              text: 'Right two',
+              x: 320,
+              y: 660,
+              fontSize: 12,
+              hasEOL: true,
+              blockOrdinal: 2,
+              lineOrdinal: 1,
+              bbox: [320, 120, 560, 140],
+            },
+          ],
+        },
+      ]
+      const embedder: EmbedderInterface = { embedBatch: vi.fn() }
+
+      const [layout] = await filterPageBoundaryLayouts(pages, embedder)
+
+      expect(layout?.text).toBe('Heading\nLeft one\nLeft two\nRight one\nRight two')
+      expect(layout?.textFragments.map((fragment) => fragment.text)).toEqual([
+        'Heading',
+        'Left one',
+        'Left two',
+        'Right one',
+        'Right two',
+      ])
+      expect(
+        layout?.textFragments.map((fragment) =>
+          layout.text.slice(fragment.pageTextStart, fragment.pageTextEnd)
+        )
+      ).toEqual(layout?.textFragments.map((fragment) => fragment.text))
+      expect(layout?.textFragments[2]).toMatchObject({
+        pageNum: 1,
+        blockOrdinal: 1,
+        lineOrdinal: 1,
+        fragmentOrdinal: 0,
+        bbox: [40, 120, 250, 140],
+      })
+      expect(embedder.embedBatch).not.toHaveBeenCalled()
+    })
+
+    it('removes detected boundaries while ranges still slice the filtered page text', async () => {
+      const pages: PageData[] = Array.from({ length: 3 }, (_, pageIndex) => ({
+        pageNum: pageIndex + 1,
+        items: [
+          {
+            text: `Header ${pageIndex + 1}.`,
+            x: 0,
+            y: 800,
+            fontSize: 12,
+            hasEOL: true,
+            blockOrdinal: 0,
+            lineOrdinal: 0,
+            bbox: [0, 0, 100, 20] as [number, number, number, number],
+          },
+          {
+            text: `Body ${pageIndex + 1}.`,
+            x: 0,
+            y: 760,
+            fontSize: 12,
+            hasEOL: true,
+            blockOrdinal: 1,
+            lineOrdinal: 0,
+            bbox: [0, 40, 100, 60] as [number, number, number, number],
+          },
+        ],
+      }))
+      const embedder: EmbedderInterface = {
+        embedBatch: vi
+          .fn()
+          .mockResolvedValueOnce([
+            [1, 0],
+            [0.99, 0.01],
+            [0.98, 0.02],
+          ])
+          .mockResolvedValueOnce([
+            [1, 0],
+            [0, 1],
+            [-1, 0],
+          ]),
+      }
+
+      const layouts = await filterPageBoundaryLayouts(pages, embedder, { minPages: 3 })
+
+      expect(layouts.map((layout) => layout.text)).toEqual(['Body 1.', 'Body 2.', 'Body 3.'])
+      for (const layout of layouts) {
+        expect(layout.textFragments).toHaveLength(1)
+        const [fragment] = layout.textFragments
+        expect(fragment?.text).toBe(layout.text.slice(fragment.pageTextStart, fragment.pageTextEnd))
+        expect(fragment).toMatchObject({ blockOrdinal: 1, lineOrdinal: 0 })
+      }
     })
   })
 })

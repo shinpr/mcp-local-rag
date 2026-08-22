@@ -11,7 +11,7 @@ import { withTrailingSeparator } from '../utils/base-dirs.js'
 import { AppError, isAppError } from '../utils/errors.js'
 import { convertDocxDocumentToText, extractDocxCoreTitle } from './docx-parser.js'
 import { extractPdfPages } from './pdf-extract.js'
-import type { EmbedderInterface } from './pdf-filter.js'
+import type { EmbedderInterface, FilteredTextFragment } from './pdf-filter.js'
 import {
   extractDocxTitle,
   extractMarkdownTitle,
@@ -406,7 +406,7 @@ export class DocumentParser {
    *
    * @param filePath - PDF file path (validated against BASE_DIR and size limit)
    * @param embedder - Embedder for semantic header/footer detection
-   * @returns Open mupdf `Document`, `metadataTitle`, and per-page records.
+   * @returns Open mupdf `Document`, `metadataTitle`, and per-page text/layout records.
    *          `page1FontHint` (largest-font line on page 1) is present only on `pages[0]`.
    * @throws ValidationError - Path traversal, size exceeded
    * @throws FileOperationError - File read or parse failed (after destroying `doc` internally)
@@ -420,6 +420,7 @@ export class DocumentParser {
     pages: Array<{
       pageNum: number
       text: string
+      textFragments: FilteredTextFragment[]
       stextJson: unknown
       page1FontHint?: { text: string; fontSize: number }
     }>
@@ -450,12 +451,14 @@ export class DocumentParser {
           ? {
               pageNum: p.pageNum,
               text: p.text,
+              textFragments: p.textFragments,
               stextJson: p.stextJson,
               page1FontHint,
             }
           : {
               pageNum: p.pageNum,
               text: p.text,
+              textFragments: p.textFragments,
               stextJson: p.stextJson,
             }
       )

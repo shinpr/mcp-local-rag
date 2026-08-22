@@ -4,7 +4,7 @@
 // docs/design/vlm-pdf-enrichment-design.md §Component `parser.parsePdfPages`
 // and §Field Propagation Map:
 //
-//   { doc, metadataTitle, pages: Array<{ pageNum, text, stextJson,
+//   { doc, metadataTitle, pages: Array<{ pageNum, text, textFragments, stextJson,
 //                                        page1FontHint?: { text, fontSize } }> }
 //
 // Specifically:
@@ -113,8 +113,20 @@ describe('parsePdfPages return shape', () => {
         {
           type: 'text',
           lines: [
-            { text: 'Synthetic Heading', x: 72, y: 100, font: { size: 24 } },
-            { text: 'page 1 body', x: 72, y: 140, font: { size: 12 } },
+            {
+              text: 'Synthetic Heading',
+              x: 72,
+              y: 100,
+              bbox: { x: 72, y: 82, w: 250, h: 24 },
+              font: { size: 24 },
+            },
+            {
+              text: 'page 1 body',
+              x: 72,
+              y: 140,
+              bbox: { x: 72, y: 128, w: 180, h: 14 },
+              font: { size: 12 },
+            },
           ],
         },
       ],
@@ -123,22 +135,37 @@ describe('parsePdfPages return shape', () => {
       blocks: [
         {
           type: 'text',
-          lines: [{ text: 'page 2 body', x: 72, y: 100, font: { size: 12 } }],
+          lines: [
+            {
+              text: 'page 2 body',
+              x: 72,
+              y: 100,
+              bbox: { x: 72, y: 88, w: 180, h: 14 },
+              font: { size: 12 },
+            },
+          ],
         },
       ],
     }
 
-    const makePage = (json: unknown) => ({
-      getBounds: vi.fn().mockReturnValue([0, 0, 612, 792]),
-      toStructuredText: vi.fn().mockReturnValue({
-        asJSON: vi.fn().mockReturnValue(JSON.stringify(json)),
-      }),
-    })
-    const mockPages = [makePage(page1Stext), makePage(page2Stext)]
+    const makePage = (json: unknown) => {
+      const pageDestroy = vi.fn()
+      const stextDestroy = vi.fn()
+      const page = {
+        getBounds: vi.fn().mockReturnValue([0, 0, 612, 792]),
+        toStructuredText: vi.fn().mockReturnValue({
+          destroy: stextDestroy,
+          asJSON: vi.fn().mockReturnValue(JSON.stringify(json)),
+        }),
+        destroy: pageDestroy,
+      }
+      return { page, pageDestroy, stextDestroy }
+    }
+    const mockPageHandles = [makePage(page1Stext), makePage(page2Stext)]
 
     const mockDoc = {
       countPages: vi.fn().mockReturnValue(2),
-      loadPage: vi.fn().mockImplementation((i: number) => mockPages[i]),
+      loadPage: vi.fn().mockImplementation((i: number) => mockPageHandles[i]?.page),
       getMetaData: vi
         .fn()
         .mockImplementation((key: string) => (key === 'info:Title' ? 'Synthetic Title' : '')),
@@ -170,6 +197,28 @@ describe('parsePdfPages return shape', () => {
     expect(result.pages[0]?.text).toBe('Synthetic Heading\npage 1 body')
     expect(typeof result.pages[0]?.stextJson).toBe('object')
     expect(result.pages[0]?.stextJson).not.toBeNull()
+    expect(result.pages[0]?.textFragments).toEqual([
+      {
+        pageNum: 1,
+        blockOrdinal: 0,
+        lineOrdinal: 0,
+        fragmentOrdinal: 0,
+        bbox: [72, 82, 322, 106],
+        text: 'Synthetic Heading',
+        pageTextStart: 0,
+        pageTextEnd: 17,
+      },
+      {
+        pageNum: 1,
+        blockOrdinal: 0,
+        lineOrdinal: 1,
+        fragmentOrdinal: 0,
+        bbox: [72, 128, 252, 142],
+        text: 'page 1 body',
+        pageTextStart: 18,
+        pageTextEnd: 29,
+      },
+    ])
     expect(result.pages[0]?.page1FontHint).toEqual({
       text: 'Synthetic Heading',
       fontSize: 24,
@@ -181,11 +230,28 @@ describe('parsePdfPages return shape', () => {
     expect(result.pages[1]?.text).toBe('page 2 body')
     expect(typeof result.pages[1]?.stextJson).toBe('object')
     expect(result.pages[1]?.stextJson).not.toBeNull()
+    expect(result.pages[1]?.textFragments).toEqual([
+      {
+        pageNum: 2,
+        blockOrdinal: 0,
+        lineOrdinal: 0,
+        fragmentOrdinal: 0,
+        bbox: [72, 88, 252, 102],
+        text: 'page 2 body',
+        pageTextStart: 0,
+        pageTextEnd: 11,
+      },
+    ])
 
     // Negative assertion: `page1FontHint` is a page-1-only field per
     // DD §Field Propagation Map. Verify the KEY itself is absent on pages[1]
     // (not merely undefined-via-typeof) so a future regression that always
     // sets the field would be caught.
     expect(Object.hasOwn(result.pages[1] as object, 'page1FontHint')).toBe(false)
+
+    for (const handles of mockPageHandles) {
+      expect(handles.stextDestroy).toHaveBeenCalledTimes(1)
+      expect(handles.pageDestroy).toHaveBeenCalledTimes(1)
+    }
   })
 })

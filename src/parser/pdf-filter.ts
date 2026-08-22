@@ -23,6 +23,9 @@ interface TextItemWithPosition {
   hasEOL: boolean
   fontName?: string
   fontWeight?: string
+  blockOrdinal?: number
+  lineOrdinal?: number
+  bbox?: [number, number, number, number]
 }
 
 /**
@@ -34,6 +37,22 @@ export interface PageData {
   pageHeight?: number
 }
 
+export interface FilteredTextFragment {
+  pageNum: number
+  blockOrdinal: number
+  lineOrdinal: number
+  fragmentOrdinal: number
+  bbox: [number, number, number, number]
+  text: string
+  pageTextStart: number
+  pageTextEnd: number
+}
+
+export interface FilteredPageLayout {
+  text: string
+  textFragments: FilteredTextFragment[]
+}
+
 // ============================================
 // Text Joining
 // ============================================
@@ -41,31 +60,81 @@ export interface PageData {
 /**
  * Join page items into text
  *
- * Groups items by Y coordinate (same Y = same line),
- * sorts each group by X coordinate (left to right),
- * then joins groups with newlines (top to bottom).
+ * Preserves the native item stream. `hasEOL` distinguishes fragments on the
+ * same native line from the next line; geometry is retained as placement
+ * metadata and is not used as a global reading-order comparator.
  */
-function joinPageItems(items: TextItemWithPosition[]): string {
-  // Group by Y coordinate (rounded to handle minor variations)
-  const yGroups = new Map<number, TextItemWithPosition[]>()
-  for (const item of items) {
-    const y = Math.round(item.y)
-    const group = yGroups.get(y) || []
-    group.push(item)
-    yGroups.set(y, group)
+function buildPageLayout(
+  pageNum: number,
+  items: TextItemWithPosition[],
+  separatorMode: 'native' | 'space' = 'native'
+): FilteredPageLayout {
+  let rawText = ''
+  let previousItem: TextItemWithPosition | undefined
+  const rawFragments: Array<
+    Omit<FilteredTextFragment, 'text' | 'pageTextStart' | 'pageTextEnd'> & {
+      rawStart: number
+      rawEnd: number
+    }
+  > = []
+  const fragmentCounts = new Map<string, number>()
+
+  for (let itemIndex = 0; itemIndex < items.length; itemIndex++) {
+    const item = items[itemIndex]
+    if (!item || item.text.trim().length === 0) continue
+
+    if (previousItem) {
+      rawText += separatorMode === 'space' || !previousItem.hasEOL ? ' ' : '\n'
+    }
+
+    const rawStart = rawText.length
+    rawText += item.text
+    const rawEnd = rawText.length
+    const blockOrdinal = item.blockOrdinal ?? 0
+    const lineOrdinal = item.lineOrdinal ?? itemIndex
+    const lineKey = `${blockOrdinal}:${lineOrdinal}`
+    const fragmentOrdinal = fragmentCounts.get(lineKey) ?? 0
+    fragmentCounts.set(lineKey, fragmentOrdinal + 1)
+    rawFragments.push({
+      pageNum,
+      blockOrdinal,
+      lineOrdinal,
+      fragmentOrdinal,
+      bbox: item.bbox ?? [item.x, item.y, item.x, item.y],
+      rawStart,
+      rawEnd,
+    })
+    previousItem = item
   }
 
-  // Sort groups by Y descending (top to bottom), items by X ascending (left to right)
-  return [...yGroups.entries()]
-    .sort((a, b) => b[0] - a[0])
-    .map(([_, group]) =>
-      group
-        .sort((a, b) => a.x - b.x)
-        .map((i) => i.text)
-        .join(' ')
-    )
-    .join('\n')
-    .trim()
+  const leadingWhitespace = rawText.length - rawText.trimStart().length
+  const trailingBoundary = rawText.trimEnd().length
+  const text = rawText.slice(leadingWhitespace, trailingBoundary)
+  const textFragments: FilteredTextFragment[] = []
+
+  for (const fragment of rawFragments) {
+    const clippedStart = Math.max(fragment.rawStart, leadingWhitespace)
+    const clippedEnd = Math.min(fragment.rawEnd, trailingBoundary)
+    if (clippedStart >= clippedEnd) continue
+    const pageTextStart = clippedStart - leadingWhitespace
+    const pageTextEnd = clippedEnd - leadingWhitespace
+    textFragments.push({
+      pageNum: fragment.pageNum,
+      blockOrdinal: fragment.blockOrdinal,
+      lineOrdinal: fragment.lineOrdinal,
+      fragmentOrdinal: fragment.fragmentOrdinal,
+      bbox: fragment.bbox,
+      text: text.slice(pageTextStart, pageTextEnd),
+      pageTextStart,
+      pageTextEnd,
+    })
+  }
+
+  return { text, textFragments }
+}
+
+function joinPageItems(items: TextItemWithPosition[]): string {
+  return buildPageLayout(0, items).text
 }
 
 /**
@@ -593,11 +662,22 @@ export async function filterPageBoundarySentences(
   embedder: EmbedderInterface,
   config: Partial<SentencePatternConfig> = {}
 ): Promise<string[]> {
+  return (await filterPageBoundaryLayouts(pages, embedder, config)).map((page) => page.text)
+}
+
+/**
+ * Filter page boundaries while retaining native provenance for every survivor.
+ */
+export async function filterPageBoundaryLayouts(
+  pages: PageData[],
+  embedder: EmbedderInterface,
+  config: Partial<SentencePatternConfig> = {}
+): Promise<FilteredPageLayout[]> {
   const cfg = { ...DEFAULT_SENTENCE_PATTERN_CONFIG, ...config }
 
   // Need minimum pages to detect patterns
   if (pages.length < cfg.minPages) {
-    return pages.map((page) => joinFilteredPages([page]))
+    return pages.map((page) => buildPageLayout(page.pageNum, page.items))
   }
 
   // Detect block attribute candidates for boosted threshold
@@ -608,7 +688,7 @@ export async function filterPageBoundarySentences(
 
   // If no patterns detected, return normally joined text per page
   if (!patterns.removeFirstSentence && !patterns.removeLastSentence) {
-    return pages.map((page) => joinFilteredPages([page]))
+    return pages.map((page) => buildPageLayout(page.pageNum, page.items))
   }
 
   // Split each page into sentences with Y coordinate (merged by Y)
@@ -616,21 +696,16 @@ export async function filterPageBoundarySentences(
     splitItemsIntoSentencesWithY(page.items)
   )
 
-  // Remove detected patterns from page sentences
-  const cleanedPageSentences = pageSentences.map((sentences) => {
-    let cleaned = [...sentences]
-
-    if (patterns.removeFirstSentence && cleaned.length > 0) {
-      cleaned = cleaned.slice(1)
+  return pages.map((page, pageIndex) => {
+    const sentences = pageSentences[pageIndex] ?? []
+    const removedYs = new Set<number>()
+    if (patterns.removeFirstSentence && sentences[0]) {
+      removedYs.add(Math.round(sentences[0].y))
     }
-
-    if (patterns.removeLastSentence && cleaned.length > 0) {
-      cleaned = cleaned.slice(0, -1)
+    if (patterns.removeLastSentence && sentences.length > 0) {
+      removedYs.add(Math.round(sentences[sentences.length - 1]!.y))
     }
-
-    return cleaned
+    const survivingItems = page.items.filter((item) => !removedYs.has(Math.round(item.y)))
+    return buildPageLayout(page.pageNum, survivingItems, 'space')
   })
-
-  // Return per-page filtered text
-  return cleanedPageSentences.map((sentences) => sentences.map((s) => s.text).join(' '))
 }

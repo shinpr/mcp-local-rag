@@ -4,7 +4,7 @@
 //
 // Boundaries exercised here:
 //   - parsePdf: foreign `EmbeddingError` from the embedder (surfaced via the
-//     mocked `filterPageBoundarySentences` inside `extractPdfPages`) propagates
+//     mocked `filterPageBoundaryLayouts` inside `extractPdfPages`) propagates
 //     as-is; a genuine non-`AppError` mupdf/IO failure still wraps as
 //     `FileOperationError` with `.cause` identity preserved.
 //   - parsePdfPages: same foreign-vs-genuine split; on the foreign path the
@@ -16,7 +16,7 @@
 // Mocking strategy mirrors `parsePdf-destroy.test.ts`: `vi.hoisted` + `vi.doMock`
 // of `mupdf`, `../pdf-filter.js`, `../title-extractor.js`, `../../chunker/index.js`
 // installed in `beforeAll` and removed in `afterAll`. Foreign-error injection
-// points: `mockFilterPageBoundarySentences` (reaches the outer catch via
+// points: `mockFilterPageBoundaryLayouts` (reaches the outer catch via
 // `extractPdfPages`) and `mockChunkText` (reaches the title inner catch).
 
 import { mkdir, rm, writeFile } from 'node:fs/promises'
@@ -28,10 +28,10 @@ import type { EmbedderInterface } from '../pdf-filter.js'
 // Mocks
 // ============================================
 
-const { mockOpenDocument, mockFilterPageBoundarySentences, mockExtractPdfTitle, mockChunkText } =
+const { mockOpenDocument, mockFilterPageBoundaryLayouts, mockExtractPdfTitle, mockChunkText } =
   vi.hoisted(() => ({
     mockOpenDocument: vi.fn(),
-    mockFilterPageBoundarySentences: vi.fn(),
+    mockFilterPageBoundaryLayouts: vi.fn(),
     mockExtractPdfTitle: vi.fn(),
     mockChunkText: vi.fn(),
   }))
@@ -46,7 +46,7 @@ const pdfFilterFactory = async (
   const original = await importOriginal()
   return {
     ...original,
-    filterPageBoundarySentences: mockFilterPageBoundarySentences,
+    filterPageBoundaryLayouts: mockFilterPageBoundaryLayouts,
   }
 }
 
@@ -110,7 +110,7 @@ describe('parser PDF foreign-error reclassification (AC-002 / AC-003)', () => {
   /**
    * Build a mupdf mock document. `destroyFn` is exposed so each test can
    * assert disposal directly. The page bodies are minimal — the foreign /
-   * genuine error is injected via `mockFilterPageBoundarySentences`, not the
+   * genuine error is injected via `mockFilterPageBoundaryLayouts`, not the
    * page loop itself.
    */
   function setupMupdfMock(options?: { metadataTitle?: string }): {
@@ -150,9 +150,12 @@ describe('parser PDF foreign-error reclassification (AC-002 / AC-003)', () => {
 
     // Default happy-path behavior for the filter and title extractor; each
     // test overrides the relevant mock to inject its failure class.
-    mockFilterPageBoundarySentences.mockImplementation(
+    mockFilterPageBoundaryLayouts.mockImplementation(
       async (pageDataArr: Array<{ items: Array<{ text: string }> }>) =>
-        pageDataArr.map((p) => p.items.map((item) => item.text).join('\n'))
+        pageDataArr.map((p) => ({
+          text: p.items.map((item) => item.text).join('\n'),
+          textFragments: [],
+        }))
     )
     mockExtractPdfTitle.mockImplementation(
       (
@@ -179,7 +182,7 @@ describe('parser PDF foreign-error reclassification (AC-002 / AC-003)', () => {
     const filePath = join(testDir, 'test.pdf')
     setupMupdfMock()
     const foreign = new EmbeddingError('Embedding failed for dtype int8')
-    mockFilterPageBoundarySentences.mockRejectedValue(foreign)
+    mockFilterPageBoundaryLayouts.mockRejectedValue(foreign)
 
     let thrown: unknown
     try {
@@ -200,7 +203,7 @@ describe('parser PDF foreign-error reclassification (AC-002 / AC-003)', () => {
     const filePath = join(testDir, 'test.pdf')
     setupMupdfMock()
     const genuine = new Error('Simulated mupdf decode failure')
-    mockFilterPageBoundarySentences.mockRejectedValue(genuine)
+    mockFilterPageBoundaryLayouts.mockRejectedValue(genuine)
 
     let thrown: unknown
     try {
@@ -219,7 +222,7 @@ describe('parser PDF foreign-error reclassification (AC-002 / AC-003)', () => {
   it('parsePdf still disposes doc on the foreign-error rethrow path (finally runs)', async () => {
     const filePath = join(testDir, 'test.pdf')
     const { destroyFn } = setupMupdfMock()
-    mockFilterPageBoundarySentences.mockRejectedValue(new EmbeddingError('boom'))
+    mockFilterPageBoundaryLayouts.mockRejectedValue(new EmbeddingError('boom'))
 
     await expect(parser.parsePdf(filePath, mockEmbedder)).rejects.toBeInstanceOf(EmbeddingError)
     expect(destroyFn).toHaveBeenCalledTimes(1)
@@ -233,7 +236,7 @@ describe('parser PDF foreign-error reclassification (AC-002 / AC-003)', () => {
     const filePath = join(testDir, 'test.pdf')
     setupMupdfMock()
     const foreign = new EmbeddingError('Embedding failed during page extraction')
-    mockFilterPageBoundarySentences.mockRejectedValue(foreign)
+    mockFilterPageBoundaryLayouts.mockRejectedValue(foreign)
 
     let thrown: unknown
     try {
@@ -251,7 +254,7 @@ describe('parser PDF foreign-error reclassification (AC-002 / AC-003)', () => {
     const filePath = join(testDir, 'test.pdf')
     setupMupdfMock()
     const genuine = new Error('Simulated mupdf page failure')
-    mockFilterPageBoundarySentences.mockRejectedValue(genuine)
+    mockFilterPageBoundaryLayouts.mockRejectedValue(genuine)
 
     let thrown: unknown
     try {
@@ -270,7 +273,7 @@ describe('parser PDF foreign-error reclassification (AC-002 / AC-003)', () => {
   it('parsePdfPages disposes doc exactly once before rethrowing a foreign EmbeddingError', async () => {
     const filePath = join(testDir, 'test.pdf')
     const { destroyFn } = setupMupdfMock()
-    mockFilterPageBoundarySentences.mockRejectedValue(new EmbeddingError('boom'))
+    mockFilterPageBoundaryLayouts.mockRejectedValue(new EmbeddingError('boom'))
 
     await expect(parser.parsePdfPages(filePath, mockEmbedder)).rejects.toBeInstanceOf(
       EmbeddingError

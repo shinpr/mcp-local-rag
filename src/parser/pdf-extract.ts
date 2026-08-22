@@ -9,7 +9,19 @@
 //     visual-candidate detector.
 
 import type { Document as MupdfDocument } from 'mupdf'
-import { type EmbedderInterface, filterPageBoundarySentences, type PageData } from './pdf-filter.js'
+import {
+  type EmbedderInterface,
+  type FilteredTextFragment,
+  filterPageBoundaryLayouts,
+  type PageData,
+} from './pdf-filter.js'
+
+interface StextBbox {
+  x: number
+  y: number
+  w: number
+  h: number
+}
 
 /**
  * Shape of mupdf's structured-text JSON used by the per-page loop.
@@ -19,25 +31,26 @@ import { type EmbedderInterface, filterPageBoundarySentences, type PageData } fr
 interface StextJson {
   blocks: Array<{
     type: string
-    lines: Array<{
+    lines?: Array<{
       text: string
       x: number
       y: number
-      font: { size: number; name: string; weight: string }
+      bbox?: StextBbox
+      font: { size: number; name?: string; weight?: string }
     }>
   }>
 }
 
 /**
  * Per-page record produced by `extractPdfPages`. `text` is the page's text
- * AFTER `filterPageBoundarySentences` has removed semantically-similar
- * header/footer lines; `stextJson` is the raw mupdf structured-text JSON
- * for the page (preserved so downstream callers — e.g. the visual-candidate
- * detector — can inspect block-level structure).
+ * after semantic header/footer filtering. `textFragments` carries every
+ * survivor's native provenance and exact range in `text`; `stextJson` is the
+ * copied raw mupdf structured-text JSON for downstream visual detection.
  */
 interface ExtractedPage {
   pageNum: number
   text: string
+  textFragments: FilteredTextFragment[]
   stextJson: StextJson
 }
 
@@ -88,43 +101,52 @@ export async function extractPdfPages(
   const stextJsonList: StextJson[] = []
   for (let i = 0; i < numPages; i++) {
     const page = doc.loadPage(i)
-    const bounds = page.getBounds() // [x0, y0, x1, y1]
-    const pageHeight = bounds[3] - bounds[1]
-    const stext = page.toStructuredText(stextOptions)
-    const json = JSON.parse(stext.asJSON()) as StextJson
-
-    const items: Array<{
-      text: string
-      x: number
-      y: number
-      fontSize: number
-      hasEOL: boolean
-      fontName?: string
-      fontWeight?: string
-    }> = []
-    for (const block of json.blocks) {
-      if (block.type !== 'text') continue
-      for (const line of block.lines) {
-        items.push({
-          text: line.text.replace(/\t/g, ' '),
-          x: line.x,
-          // Invert Y: mupdf uses top-down (0=top), downstream code expects bottom-up (large Y = top)
-          y: pageHeight - line.y,
-          fontSize: line.font.size,
-          hasEOL: true,
-          fontName: line.font.name,
-          fontWeight: line.font.weight,
-        })
+    try {
+      const bounds = page.getBounds() // [x0, y0, x1, y1]
+      const pageHeight = bounds[3] - bounds[1]
+      let json: StextJson
+      const stext = page.toStructuredText(stextOptions)
+      try {
+        json = JSON.parse(stext.asJSON()) as StextJson
+      } finally {
+        stext.destroy?.()
       }
-    }
 
-    pageDataList.push({ pageNum: i + 1, items, pageHeight })
-    stextJsonList.push(json)
+      const items: PageData['items'] = []
+      for (let blockOrdinal = 0; blockOrdinal < json.blocks.length; blockOrdinal++) {
+        const block = json.blocks[blockOrdinal]
+        if (block?.type !== 'text' || !block.lines) continue
+        for (let lineOrdinal = 0; lineOrdinal < block.lines.length; lineOrdinal++) {
+          const line = block.lines[lineOrdinal]
+          if (!line) continue
+          const bbox = line.bbox
+          items.push({
+            text: line.text.replace(/\t/g, ' '),
+            x: line.x,
+            // Invert Y only for the legacy boundary detector; bbox remains in MuPDF coordinates.
+            y: pageHeight - line.y,
+            fontSize: line.font.size,
+            hasEOL: true,
+            ...(line.font.name !== undefined ? { fontName: line.font.name } : {}),
+            ...(line.font.weight !== undefined ? { fontWeight: line.font.weight } : {}),
+            blockOrdinal,
+            lineOrdinal,
+            bbox: bbox
+              ? [bbox.x, bbox.y, bbox.x + bbox.w, bbox.y + bbox.h]
+              : [line.x, line.y, line.x, line.y],
+          })
+        }
+      }
+
+      pageDataList.push({ pageNum: i + 1, items, pageHeight })
+      stextJsonList.push(json)
+    } finally {
+      page.destroy?.()
+    }
   }
 
-  // Apply sentence-level header/footer filtering (returns per-page filtered text).
-  // This handles variable content like page numbers ("7 of 75") using semantic similarity.
-  const filteredPages = await filterPageBoundarySentences(pageDataList, embedder)
+  // Apply sentence-level header/footer filtering while retaining each survivor's layout data.
+  const filteredPages = await filterPageBoundaryLayouts(pageDataList, embedder)
 
   // Extract largest-font lines from page 1 for title hint.
   // Concatenate all consecutive lines with the largest font size (covers multi-line titles).
@@ -145,7 +167,8 @@ export async function extractPdfPages(
 
   const pages: ExtractedPage[] = pageDataList.map((p, idx) => ({
     pageNum: p.pageNum,
-    text: filteredPages[idx] ?? '',
+    text: filteredPages[idx]?.text ?? '',
+    textFragments: filteredPages[idx]?.textFragments ?? [],
     stextJson: stextJsonList[idx] as StextJson,
   }))
 
