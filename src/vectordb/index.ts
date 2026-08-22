@@ -10,6 +10,8 @@ import {
   FTS_CLEANUP_THRESHOLD_MS,
   FTS_INDEX_NAME,
   HYBRID_SEARCH_CANDIDATE_MULTIPLIER,
+  normalizeImageStorageVersion,
+  normalizeVisualAttachments,
   type SearchOptions,
   type SearchResult,
   toChunkRow,
@@ -20,7 +22,13 @@ import {
 } from './types.js'
 
 // Re-export public API
-export type { GroupingMode, SearchResult, VectorChunk } from './types.js'
+export type {
+  GroupingMode,
+  ImageStorageVersion,
+  SearchResult,
+  VectorChunk,
+  VisualAttachment,
+} from './types.js'
 
 // ============================================
 // VectorStore Class
@@ -207,15 +215,16 @@ export class VectorStore {
         // LanceDB's createTable API accepts data as Record<string, unknown>[]
         // Note: LanceDB cannot infer Arrow type from null/absent values, so the
         // nullable string columns need a non-null sample value for schema
-        // inference. Empty string is the placeholder; the read converters
-        // normalize '' back to null (fileTitle) or an absent key (contentHash),
-        // matching what the migration path produces.
+        // inference. The read converters normalize each placeholder back to
+        // its logical no-value state, matching what migration produces.
         const records = chunks.map((chunk) => {
           const record = chunk as unknown as Record<string, unknown>
           return {
             ...record,
             fileTitle: record['fileTitle'] ?? '',
             contentHash: record['contentHash'] ?? '',
+            visualAttachments: normalizeVisualAttachments(record['visualAttachments']) ?? '[]',
+            imageStorageVersion: normalizeImageStorageVersion(record['imageStorageVersion']),
           }
         })
         this.table = await this.db.createTable(this.config.tableName, records)
@@ -225,7 +234,14 @@ export class VectorStore {
         await this.ensureFtsIndex()
       } else {
         // Add data to existing table
-        const records = chunks.map((chunk) => chunk as unknown as Record<string, unknown>)
+        const records = chunks.map((chunk) => {
+          const record = chunk as unknown as Record<string, unknown>
+          return {
+            ...record,
+            visualAttachments: normalizeVisualAttachments(record['visualAttachments']),
+            imageStorageVersion: normalizeImageStorageVersion(record['imageStorageVersion']),
+          }
+        })
         await this.table.add(records)
       }
 
@@ -303,6 +319,18 @@ export class VectorStore {
     if (!hasField('contentHash')) {
       await this.table.addColumns([{ name: 'contentHash', valueSql: 'cast(NULL as string)' }])
       console.error('VectorStore: Migrated schema - added contentHash column')
+    }
+
+    if (!hasField('visualAttachments')) {
+      await this.table.addColumns([{ name: 'visualAttachments', valueSql: 'cast(NULL as string)' }])
+      console.error('VectorStore: Migrated schema - added visualAttachments column')
+    }
+
+    if (!hasField('imageStorageVersion')) {
+      await this.table.addColumns([
+        { name: 'imageStorageVersion', valueSql: 'cast(NULL as string)' },
+      ])
+      console.error('VectorStore: Migrated schema - added imageStorageVersion column')
     }
   }
 

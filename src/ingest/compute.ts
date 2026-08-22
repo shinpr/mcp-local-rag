@@ -15,7 +15,7 @@ import { basename, extname } from 'node:path'
 import type { AtomicTextRange, SemanticChunker, TextChunk } from '../chunker/index.js'
 import type { EmbedderInterface } from '../chunker/semantic-chunker.js'
 import type { ParseResult } from '../parser/index.js'
-import type { VectorChunk } from '../vectordb/index.js'
+import type { ImageStorageVersion, VectorChunk, VisualAttachment } from '../vectordb/index.js'
 
 /**
  * Result of the shared chunk + embed computation.
@@ -117,14 +117,36 @@ export function buildVectorChunks(params: {
   fileSize: number
   fileTitle: string | null
   contentHash: string | null
+  visualAttachments?: ReadonlyMap<number, readonly VisualAttachment[]>
+  imageStorageVersion?: ImageStorageVersion
 }): VectorChunk[] {
-  const { filePath, chunks, embeddings, fileSize, fileTitle, contentHash } = params
+  const {
+    filePath,
+    chunks,
+    embeddings,
+    fileSize,
+    fileTitle,
+    contentHash,
+    visualAttachments = new Map(),
+    imageStorageVersion = 'none',
+  } = params
   const timestamp = new Date().toISOString()
   return chunks.map((chunk, index) => {
     const embedding = embeddings[index]
     if (!embedding) {
       throw new Error(`Missing embedding for chunk ${index}`)
     }
+    const attachments = [...(visualAttachments.get(chunk.index) ?? [])]
+      .sort((left, right) => left.visualIndex - right.visualIndex)
+      .map(({ pageNum, visualIndex, bbox, mimeType, pixelWidth, pixelHeight, data }) => ({
+        pageNum,
+        visualIndex,
+        bbox,
+        mimeType,
+        pixelWidth,
+        pixelHeight,
+        data,
+      }))
     return {
       id: randomUUID(),
       filePath,
@@ -138,6 +160,8 @@ export function buildVectorChunks(params: {
       },
       fileTitle,
       ...(contentHash === null ? {} : { contentHash }),
+      visualAttachments: attachments.length > 0 ? JSON.stringify(attachments) : null,
+      imageStorageVersion,
       timestamp,
     }
   })

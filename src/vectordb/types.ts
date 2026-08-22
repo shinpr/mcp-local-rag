@@ -77,6 +77,25 @@ export interface DocumentMetadata {
   fileType: string
 }
 
+/** Persisted PDF image-storage state for one chunk row. */
+export type ImageStorageVersion = 'none' | 'pdf-images-v1'
+
+/**
+ * Validated, bounded PDF rendition stored in a chunk's ordered attachment JSON.
+ * Coordinates are normalized [x0, y0, x1, y1] values in the inclusive 0..1
+ * page space, dimensions are positive integers with a maximum 1024 px long
+ * edge, and data is strict standard base64 for the declared PNG/JPEG MIME.
+ */
+export interface VisualAttachment {
+  pageNum: number
+  visualIndex: number
+  bbox: [number, number, number, number]
+  mimeType: 'image/png' | 'image/jpeg'
+  pixelWidth: number
+  pixelHeight: number
+  data: string
+}
+
 /**
  * Vector chunk
  */
@@ -97,6 +116,10 @@ export interface VectorChunk {
   fileTitle: string | null
   /** SHA-256 of the source file bytes; absent for chunks not ingested from a file. */
   contentHash?: string
+  /** Ordered `JSON.stringify(VisualAttachment[])`; null means no attachments. */
+  visualAttachments?: string | null
+  /** Logical image-storage state; legacy omitted values normalize to `none`. */
+  imageStorageVersion?: ImageStorageVersion
   /** Ingestion timestamp (ISO 8601 format) */
   timestamp: string
 }
@@ -218,8 +241,19 @@ export function toVectorChunk(raw: unknown): VectorChunk {
     throw new DatabaseError('Invalid chunk row shape from LanceDB')
   }
   const obj = raw as Record<string, unknown>
-  const { id, filePath, chunkIndex, text, vector, metadata, fileTitle, contentHash, timestamp } =
-    obj
+  const {
+    id,
+    filePath,
+    chunkIndex,
+    text,
+    vector,
+    metadata,
+    fileTitle,
+    contentHash,
+    visualAttachments,
+    imageStorageVersion,
+    timestamp,
+  } = obj
   if (
     typeof id !== 'string' ||
     typeof filePath !== 'string' ||
@@ -247,8 +281,20 @@ export function toVectorChunk(raw: unknown): VectorChunk {
     // for schema inference, and a '' that survived to a caller would read as a
     // real hash equal to nothing on disk.
     ...(typeof contentHash === 'string' && contentHash.length > 0 ? { contentHash } : {}),
+    visualAttachments: normalizeVisualAttachments(visualAttachments),
+    imageStorageVersion: normalizeImageStorageVersion(imageStorageVersion),
     timestamp,
   }
+}
+
+/** Normalize only the defined legacy no-image sentinels; keep malformed JSON observable. */
+export function normalizeVisualAttachments(value: unknown): string | null {
+  return typeof value === 'string' && value.length > 0 && value !== '[]' ? value : null
+}
+
+/** Normalize missing, nullable, empty, and unsupported legacy state to disabled. */
+export function normalizeImageStorageVersion(value: unknown): ImageStorageVersion {
+  return value === 'pdf-images-v1' ? 'pdf-images-v1' : 'none'
 }
 
 /**
