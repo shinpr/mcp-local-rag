@@ -18,6 +18,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest
 import { testModelCacheDir, withTestDevice } from '../../__tests__/test-device.js'
 import type { Embedder } from '../../embedder/index.js'
 import { BaseDirsConfigError } from '../../utils/base-dirs.js'
+import { generateRawDataPath } from '../../utils/raw-data-utils.js'
 import type { SearchResult, VectorStore } from '../../vectordb/index.js'
 import { RAGServer } from '../index.js'
 
@@ -516,7 +517,17 @@ describe('query_documents attachment warning isolation', () => {
       ],
     })
 
-    const result = await server.handleQueryDocuments({ query: 'preserved', limit: 2 })
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    let result: Awaited<ReturnType<RAGServer['handleQueryDocuments']>>
+    try {
+      result = await server.handleQueryDocuments({ query: 'preserved', limit: 2 })
+      expect(errorSpy).not.toHaveBeenCalled()
+      expect(warnSpy).not.toHaveBeenCalled()
+    } finally {
+      errorSpy.mockRestore()
+      warnSpy.mockRestore()
+    }
     const firstBlock = result.content[0]
     expect(firstBlock?.type).toBe('text')
     const parsed = JSON.parse(firstBlock?.type === 'text' ? firstBlock.text : 'null')
@@ -526,8 +537,22 @@ describe('query_documents attachment warning isolation', () => {
       'third preserved text',
       'fourth preserved text',
     ])
-    expect(result.content).toHaveLength(2)
-    expect(result.content.every((block) => block.type === 'text')).toBe(true)
+    expect(result.content).toHaveLength(4)
+    expect(result.content[1]).toEqual({
+      type: 'text',
+      text: JSON.stringify({
+        type: 'visual_attachment',
+        result: { filePath: '/test/first.pdf', chunkIndex: 3 },
+        pageNum: 1,
+        visualIndex: 2,
+        bbox: [0.1, 0.2, 0.8, 0.9],
+      }),
+    })
+    expect(result.content[2]).toEqual({
+      type: 'image',
+      data: PNG_1X1_BASE64,
+      mimeType: 'image/png',
+    })
     const warnings = result.content.filter(
       (block): block is Extract<(typeof result.content)[number], { type: 'text' }> =>
         block.type === 'text' && block.text.startsWith('Warning: Visual attachments')
@@ -539,6 +564,56 @@ describe('query_documents attachment warning isolation', () => {
     expect(warnings[0]?.text).toContain('/test/third.pdf')
     expect(warnings[0]?.text).not.toContain('/test/fourth.pdf')
     expect(warnings[0]?.text).not.toContain(PNG_1X1_BASE64)
+  })
+
+  it('includes an existing public source in the association result identity', async () => {
+    const source = 'clipboard://2026-08-23/visual-association'
+    const filePath = generateRawDataPath(dbPath, source)
+    const searchResult: SearchResult = {
+      ...searchResults[0],
+      filePath,
+    }
+    vi.spyOn(internals(server).embedder, 'embed').mockResolvedValue([0.1, 0.2])
+    vi.spyOn(internals(server).vectorStore, 'search').mockResolvedValue([searchResult])
+    vi.spyOn(internals(server).vectorStore, 'hydrateVisualAttachments').mockResolvedValue({
+      rows: [
+        {
+          filePath,
+          chunkIndex: searchResult.chunkIndex,
+          attachments: [
+            {
+              pageNum: 2,
+              visualIndex: 5,
+              bbox: [0.2, 0.3, 0.7, 0.8],
+              mimeType: 'image/png',
+              pixelWidth: 1,
+              pixelHeight: 1,
+              data: PNG_1X1_BASE64,
+            },
+          ],
+        },
+      ],
+      omittedCount: 0,
+      invalidIdentities: [],
+    })
+
+    const result = await server.handleQueryDocuments({ query: 'source identity', limit: 1 })
+
+    expect(result.content[1]).toEqual({
+      type: 'text',
+      text: JSON.stringify({
+        type: 'visual_attachment',
+        result: { filePath, chunkIndex: searchResult.chunkIndex, source },
+        pageNum: 2,
+        visualIndex: 5,
+        bbox: [0.2, 0.3, 0.7, 0.8],
+      }),
+    })
+    expect(result.content[2]).toEqual({
+      type: 'image',
+      data: PNG_1X1_BASE64,
+      mimeType: 'image/png',
+    })
   })
 
   it('keeps every text result and emits one controlled warning on total hydration failure', async () => {

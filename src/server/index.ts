@@ -62,6 +62,8 @@ import {
   formatErrorForClient,
   logError,
   type RagContentBlock,
+  type RagContentSequence,
+  type RagTextContentBlock,
   type ToMcpErrorContext,
   toMcpError,
 } from './error-utils.js'
@@ -125,7 +127,7 @@ const ATTACHMENT_WARNING_ANNOTATIONS = {
 function attachmentOmissionWarning(
   omittedCount: number,
   invalidIdentities: readonly { filePath: string; chunkIndex: number }[]
-): RagContentBlock {
+): RagTextContentBlock {
   const identities = invalidIdentities
     .slice(0, 3)
     .map(({ filePath, chunkIndex }) => JSON.stringify({ filePath, chunkIndex }))
@@ -137,7 +139,7 @@ function attachmentOmissionWarning(
   }
 }
 
-function attachmentHydrationFailureWarning(): RagContentBlock {
+function attachmentHydrationFailureWarning(): RagTextContentBlock {
   return {
     type: 'text',
     text: 'Warning: Visual attachments could not be loaded. Text search results are unchanged.',
@@ -371,6 +373,8 @@ export class RAGServer {
    * stays in exactly one place (design-doc-mandated countermeasure for the
    * "warning shape changes touch many handlers" risk).
    */
+  private withWarnings(content: RagTextContentBlock[]): RagTextContentBlock[]
+  private withWarnings(content: RagContentSequence): RagContentSequence
   private withWarnings(content: RagContentBlock[]): RagContentBlock[] {
     return appendConfigWarnings(content, this.configWarnings)
   }
@@ -384,7 +388,7 @@ export class RAGServer {
    * sync holds the guard the message names its job id and points at
    * `sync_status`, which is the only way for the caller to learn when to retry.
    */
-  private acquireMutation(): { content: RagContentBlock[]; isError: true } | null {
+  private acquireMutation(): { content: RagTextContentBlock[]; isError: true } | null {
     if (!this.mutationInFlight) {
       this.mutationInFlight = true
       return null
@@ -486,7 +490,7 @@ export class RAGServer {
   /**
    * query_documents tool handler
    */
-  async handleQueryDocuments(args: QueryDocumentsInput): Promise<{ content: RagContentBlock[] }> {
+  async handleQueryDocuments(args: QueryDocumentsInput): Promise<{ content: RagContentSequence }> {
     // query_documents operates over the LanceDB only (no baseDirs access), so
     // it stays callable in degraded mode (configError present). The warning
     // and error blocks attached via `withWarnings` / status remain the user-
@@ -527,9 +531,11 @@ export class RAGServer {
       return queryResult
     })
 
+    let hydratedRows: Awaited<ReturnType<VectorStore['hydrateVisualAttachments']>>['rows'] = []
     let attachmentWarning: RagContentBlock | null = null
     try {
       const hydration = await this.vectorStore.hydrateVisualAttachments(searchResults)
+      hydratedRows = hydration.rows
       if (hydration.omittedCount > 0) {
         attachmentWarning = attachmentOmissionWarning(
           hydration.omittedCount,
@@ -540,12 +546,41 @@ export class RAGServer {
       attachmentWarning = attachmentHydrationFailureWarning()
     }
 
-    const content: RagContentBlock[] = [
+    const content: RagContentSequence = [
       {
         type: 'text',
         text: JSON.stringify(results, null, 2),
       },
     ]
+
+    const attachmentsByIdentity = new Map(
+      hydratedRows.map((row) => [JSON.stringify([row.filePath, row.chunkIndex]), row.attachments])
+    )
+    for (const result of results) {
+      const attachments =
+        attachmentsByIdentity.get(JSON.stringify([result.filePath, result.chunkIndex])) ?? []
+      for (const attachment of attachments) {
+        content.push({
+          type: 'text',
+          text: JSON.stringify({
+            type: 'visual_attachment',
+            result: {
+              filePath: result.filePath,
+              chunkIndex: result.chunkIndex,
+              ...(result.source === undefined ? {} : { source: result.source }),
+            },
+            pageNum: attachment.pageNum,
+            visualIndex: attachment.visualIndex,
+            bbox: attachment.bbox,
+          }),
+        })
+        content.push({
+          type: 'image',
+          data: attachment.data,
+          mimeType: attachment.mimeType,
+        })
+      }
+    }
 
     if (attachmentWarning) content.push(attachmentWarning)
 
@@ -596,7 +631,7 @@ export class RAGServer {
   async handleIngestFile(
     raw: unknown,
     options: { skipOptimize?: boolean; images?: boolean } = {}
-  ): Promise<{ content: RagContentBlock[] }> {
+  ): Promise<{ content: RagTextContentBlock[] }> {
     const args = parseIngestFileInput(raw)
     const isRawData = await isPathInRawDataDir(args.filePath, this.dbPath)
     // Skip the configError gate only for paths structurally inside
@@ -784,7 +819,7 @@ export class RAGServer {
    * - Converts to Markdown for better chunking
    * - Saves as .md file
    */
-  async handleIngestData(args: IngestDataInput): Promise<{ content: RagContentBlock[] }> {
+  async handleIngestData(args: IngestDataInput): Promise<{ content: RagTextContentBlock[] }> {
     // ingest_data writes only to `dbPath`/raw-data — it never reads from a
     // configured `baseDir`. Keeping it callable in degraded mode means a user
     // with invalid BASE_DIRS can still capture raw-data via MCP while they
@@ -871,7 +906,7 @@ export class RAGServer {
    *   producing-root annotation.
    * - Excludes `dbPath` and `cacheDir` uniformly across every root.
    */
-  async handleListFiles(input: ListFilesInput = {}): Promise<{ content: RagContentBlock[] }> {
+  async handleListFiles(input: ListFilesInput = {}): Promise<{ content: RagTextContentBlock[] }> {
     // Root-dependent tool: fail fast on configError BEFORE any DB / FS access.
     // `assertConfigOk` throws `BaseDirsConfigError` (mapped to InvalidParams by
     // the central dispatcher); no local error-mapping catch here.
@@ -908,7 +943,7 @@ export class RAGServer {
     // clients see the warnings alongside the file list without needing
     // to inspect stderr. Config-level warnings (`configWarnings`) are
     // still appended via `withWarnings`.
-    const content: RagContentBlock[] = [{ type: 'text', text: JSON.stringify(result, null, 2) }]
+    const content: RagTextContentBlock[] = [{ type: 'text', text: JSON.stringify(result, null, 2) }]
     for (const warning of listed.warnings) {
       content.push({
         type: 'text',
@@ -933,7 +968,7 @@ export class RAGServer {
   /**
    * status tool handler
    */
-  async handleStatus(): Promise<{ content: RagContentBlock[] }> {
+  async handleStatus(): Promise<{ content: RagTextContentBlock[] }> {
     // `status` remains callable in degraded mode (configError set) so the
     // user can diagnose the root configuration via MCP without inspecting
     // stderr. Do NOT call `assertConfigOk` here — status surfaces the config
@@ -941,7 +976,7 @@ export class RAGServer {
     // error-mapping catch: genuine DB failures propagate (prefix-less) to the
     // central dispatcher mapper.
     const status = await this.vectorStore.getStatus()
-    const content: RagContentBlock[] = [
+    const content: RagTextContentBlock[] = [
       {
         type: 'text',
         text: JSON.stringify(status, null, 2),
@@ -963,7 +998,7 @@ export class RAGServer {
    * Deletes chunks from VectorDB and physical raw-data files
    * Supports both filePath (for ingest_file) and source (for ingest_data)
    */
-  async handleDeleteFile(raw: unknown): Promise<{ content: RagContentBlock[] }> {
+  async handleDeleteFile(raw: unknown): Promise<{ content: RagTextContentBlock[] }> {
     const args = parseDeleteFileInput(raw)
     // No outer error-mapping catch: the inline `McpError(InvalidParams)` and
     // `assertConfigOk` throw propagate with original identity to the central
@@ -1054,7 +1089,7 @@ export class RAGServer {
    * Context-expansion utility — not a search tool. Mirrors handleDeleteFile's
    * dual-input (filePath XOR source) resolution pattern.
    */
-  async handleReadChunkNeighbors(raw: unknown): Promise<{ content: RagContentBlock[] }> {
+  async handleReadChunkNeighbors(raw: unknown): Promise<{ content: RagTextContentBlock[] }> {
     const args = parseReadChunkNeighborsInput(raw)
     // No local error-mapping catch: `assertConfigOk` errors propagate with original identity to the
     // central dispatcher mapper. A `DatabaseError` reaches the mapper as a
@@ -1128,7 +1163,7 @@ export class RAGServer {
    * captured into the job record instead of escaping, and the run holds the
    * external-mutation guard until it is terminal.
    */
-  async handleSyncStart(input: SyncStartInput): Promise<{ content: RagContentBlock[] }> {
+  async handleSyncStart(input: SyncStartInput): Promise<{ content: RagTextContentBlock[] }> {
     // Root-dependent tool: fail fast on configError before registering a job.
     this.assertConfigOk()
 
@@ -1165,7 +1200,7 @@ export class RAGServer {
    * id other than the current one is unknown: the record was replaced by a newer
    * `sync_start` or lost with a previous server process.
    */
-  async handleSyncStatus(input: SyncStatusInput): Promise<{ content: RagContentBlock[] }> {
+  async handleSyncStatus(input: SyncStatusInput): Promise<{ content: RagTextContentBlock[] }> {
     const job = this.syncJob
     if (job === null || job.jobId !== input.jobId) {
       throw new McpError(

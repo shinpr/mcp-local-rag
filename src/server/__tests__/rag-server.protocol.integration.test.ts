@@ -1,6 +1,7 @@
 // RAG MCP Server Integration Test - Protocol & Basic Error Handling
 // Split from: rag-server.integration.test.ts (AC-001, AC-005)
 
+import { randomUUID } from 'node:crypto'
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
@@ -14,6 +15,7 @@ import {
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { testModelCacheDir, withTestDevice } from '../../__tests__/test-device.js'
 import type { Embedder } from '../../embedder/index.js'
+import type { VectorChunk, VectorStore } from '../../vectordb/index.js'
 import { DatabaseError } from '../../vectordb/types.js'
 import { RAGServer } from '../index.js'
 import type { SyncStatusResult } from '../types.js'
@@ -73,6 +75,245 @@ describe('AC-001: MCP Protocol Integration', () => {
       expect(result.content.length).toBe(1)
       expect(result.content[0].type).toBe('text')
     }
+  })
+})
+
+const INLINE_IMAGE_TMP_ROOT = resolve('./tmp/test-server-protocol-inline-images')
+const INLINE_IMAGE_DATA_DIR = join(INLINE_IMAGE_TMP_ROOT, 'documents')
+const INLINE_IMAGE_BASELINE_DB = join(INLINE_IMAGE_TMP_ROOT, 'baseline-db')
+const INLINE_IMAGE_VISUAL_DB = join(INLINE_IMAGE_TMP_ROOT, 'visual-db')
+const INLINE_IMAGE_FIRST_PATH = resolve(INLINE_IMAGE_DATA_DIR, 'first.pdf')
+const INLINE_IMAGE_SECOND_PATH = resolve(INLINE_IMAGE_DATA_DIR, 'second.pdf')
+const PNG_1X1_BASE64 =
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGBgAAAABQABpfZFQAAAAABJRU5ErkJggg=='
+const JPEG_1X1_BASE64 =
+  '/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAMCAgICAgMCAgIDAwMDBAYEBAQEBAgGBgUGCQgKCgkICQkKDA8MCgsOCwkJDRENDg8QEBEQCgwSExIQEw8QEBD/wAALCAABAAEBAREA/8QAFAABAAAAAAAAAAAAAAAAAAAACf/EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAD8AVN//2Q=='
+const INVALID_PAYLOAD_MARKER = 'SECRET_INVALID_IMAGE_PAYLOAD'
+const INLINE_CONFIG_WARNING = 'Protocol fixture configuration warning.'
+
+function inlineServerInternals(server: RAGServer): {
+  embedder: Embedder
+  vectorStore: VectorStore
+} {
+  return server as unknown as { embedder: Embedder; vectorStore: VectorStore }
+}
+
+function inlineChunk(index: number, vector: number[], withAttachments: boolean): VectorChunk {
+  const common = {
+    id: randomUUID(),
+    filePath: index === 0 ? INLINE_IMAGE_FIRST_PATH : INLINE_IMAGE_SECOND_PATH,
+    chunkIndex: index === 0 ? 3 : 7,
+    text: `protocol visual result ${index + 1}`,
+    vector,
+    metadata: {
+      fileName: index === 0 ? 'first.pdf' : 'second.pdf',
+      fileSize: 100 + index,
+      fileType: 'pdf',
+    },
+    fileTitle: index === 0 ? 'First visual result' : 'Second visual result',
+    timestamp: '2026-08-23T00:00:00.000Z',
+  }
+  if (!withAttachments) {
+    return { ...common, visualAttachments: null, imageStorageVersion: 'none' }
+  }
+  const visualAttachments =
+    index === 0
+      ? [
+          {
+            pageNum: 1,
+            visualIndex: 4,
+            bbox: [0.4, 0.1, 0.9, 0.6],
+            mimeType: 'image/jpeg',
+            pixelWidth: 1,
+            pixelHeight: 1,
+            data: JPEG_1X1_BASE64,
+          },
+          {
+            pageNum: 1,
+            visualIndex: 3,
+            bbox: [0.3, 0.1, 0.8, 0.5],
+            mimeType: 'image/png',
+            pixelWidth: 1,
+            pixelHeight: 1,
+            data: INVALID_PAYLOAD_MARKER,
+          },
+          {
+            pageNum: 1,
+            visualIndex: 2,
+            bbox: [0.1, 0.2, 0.7, 0.8],
+            mimeType: 'image/png',
+            pixelWidth: 1,
+            pixelHeight: 1,
+            data: PNG_1X1_BASE64,
+          },
+        ]
+      : [
+          {
+            pageNum: 2,
+            visualIndex: 1,
+            bbox: [0.2, 0.3, 0.6, 0.9],
+            mimeType: 'image/png',
+            pixelWidth: 1,
+            pixelHeight: 1,
+            data: PNG_1X1_BASE64,
+          },
+        ]
+  return {
+    ...common,
+    visualAttachments: JSON.stringify(visualAttachments),
+    imageStorageVersion: 'pdf-images-v1',
+  }
+}
+
+describe('AC-008 / AC-009 / AC-011: inline images over the MCP SDK protocol', () => {
+  let baselineServer: RAGServer
+  let visualServer: RAGServer
+  let client: Client
+  let baselineJson = ''
+
+  beforeAll(async () => {
+    rmSync(INLINE_IMAGE_TMP_ROOT, { recursive: true, force: true })
+    mkdirSync(INLINE_IMAGE_DATA_DIR, { recursive: true })
+    const sharedConfig = {
+      modelName: 'Xenova/all-MiniLM-L6-v2',
+      cacheDir: join(INLINE_IMAGE_TMP_ROOT, 'cache'),
+      baseDir: INLINE_IMAGE_DATA_DIR,
+      maxFileSize: 100 * 1024 * 1024,
+      hybridWeight: 0,
+    }
+    baselineServer = new RAGServer(
+      withTestDevice({ ...sharedConfig, dbPath: INLINE_IMAGE_BASELINE_DB })
+    )
+    visualServer = new RAGServer(
+      withTestDevice({
+        ...sharedConfig,
+        dbPath: INLINE_IMAGE_VISUAL_DB,
+        configWarnings: [INLINE_CONFIG_WARNING],
+      })
+    )
+
+    const queryVector = unitVector(1)
+    vi.spyOn(inlineServerInternals(baselineServer).embedder, 'embed').mockResolvedValue(queryVector)
+    vi.spyOn(inlineServerInternals(visualServer).embedder, 'embed').mockResolvedValue(queryVector)
+    await baselineServer.initialize()
+    await visualServer.initialize()
+
+    const vectors = [queryVector, unitVector(3)]
+    await inlineServerInternals(baselineServer).vectorStore.insertChunks(
+      vectors.map((vector, index) => inlineChunk(index, vector, false))
+    )
+    await inlineServerInternals(visualServer).vectorStore.insertChunks(
+      vectors.map((vector, index) => inlineChunk(index, vector, true))
+    )
+    const baseline = await baselineServer.handleQueryDocuments({
+      query: 'protocol visual',
+      limit: 2,
+    })
+    const baselineBlock = baseline.content[0]
+    if (baselineBlock === undefined || baselineBlock.type !== 'text') {
+      throw new Error('image-free baseline returned no leading JSON text block')
+    }
+    baselineJson = baselineBlock.text
+
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+    client = new Client({ name: 'inline-image-protocol-test-client', version: '1.0.0' })
+    await Promise.all([client.connect(clientTransport), visualServer.connect(serverTransport)])
+  }, 60000)
+
+  afterAll(async () => {
+    await client.close()
+    await baselineServer.close()
+    await visualServer.close()
+    vi.restoreAllMocks()
+    rmSync(INLINE_IMAGE_TMP_ROOT, { recursive: true, force: true })
+  })
+
+  it('decodes unchanged JSON, every ordered association/image pair, and bounded warnings', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    let response: ToolResult
+    try {
+      response = toolResult(
+        await client.callTool({
+          name: 'query_documents',
+          arguments: { query: 'protocol visual', limit: 2 },
+        })
+      )
+      expect(errorSpy).not.toHaveBeenCalled()
+      expect(warnSpy).not.toHaveBeenCalled()
+    } finally {
+      errorSpy.mockRestore()
+      warnSpy.mockRestore()
+    }
+    const { content } = response
+    expect(content).toHaveLength(9)
+
+    const firstBlock = content[0]
+    expect(firstBlock?.type).toBe('text')
+    const firstJson = firstBlock?.type === 'text' ? firstBlock.text : ''
+    expect(firstJson).toBe(baselineJson)
+    expect(firstJson).toBe(JSON.stringify(JSON.parse(baselineJson), null, 2))
+    expect(firstJson).toMatch(/^\[\n {2}\{\n {4}"filePath":/)
+    expect(JSON.parse(firstJson)).toEqual(JSON.parse(baselineJson))
+    expect(firstJson).not.toContain(PNG_1X1_BASE64)
+    expect(firstJson).not.toContain(JPEG_1X1_BASE64)
+    expect(firstJson).not.toContain('imageRef')
+    expect(firstJson).not.toContain('visualAttachments')
+    expect(firstJson).not.toContain('imageSearch')
+    for (const result of JSON.parse(firstJson) as Array<Record<string, unknown>>) {
+      expect(Object.keys(result)).toEqual(['filePath', 'chunkIndex', 'text', 'score', 'fileTitle'])
+    }
+
+    expect(content.slice(1, 7)).toEqual([
+      {
+        type: 'text',
+        text: JSON.stringify({
+          type: 'visual_attachment',
+          result: { filePath: INLINE_IMAGE_FIRST_PATH, chunkIndex: 3 },
+          pageNum: 1,
+          visualIndex: 2,
+          bbox: [0.1, 0.2, 0.7, 0.8],
+        }),
+      },
+      { type: 'image', data: PNG_1X1_BASE64, mimeType: 'image/png' },
+      {
+        type: 'text',
+        text: JSON.stringify({
+          type: 'visual_attachment',
+          result: { filePath: INLINE_IMAGE_FIRST_PATH, chunkIndex: 3 },
+          pageNum: 1,
+          visualIndex: 4,
+          bbox: [0.4, 0.1, 0.9, 0.6],
+        }),
+      },
+      { type: 'image', data: JPEG_1X1_BASE64, mimeType: 'image/jpeg' },
+      {
+        type: 'text',
+        text: JSON.stringify({
+          type: 'visual_attachment',
+          result: { filePath: INLINE_IMAGE_SECOND_PATH, chunkIndex: 7 },
+          pageNum: 2,
+          visualIndex: 1,
+          bbox: [0.2, 0.3, 0.6, 0.9],
+        }),
+      },
+      { type: 'image', data: PNG_1X1_BASE64, mimeType: 'image/png' },
+    ])
+    expect(content[7]).toEqual(
+      expect.objectContaining({
+        type: 'text',
+        text: expect.stringContaining('1 invalid attachment'),
+      })
+    )
+    expect(content[7]).not.toEqual(
+      expect.objectContaining({ text: expect.stringContaining(INVALID_PAYLOAD_MARKER) })
+    )
+    expect(content[8]).toEqual(
+      expect.objectContaining({
+        type: 'text',
+        text: expect.stringContaining(INLINE_CONFIG_WARNING),
+      })
+    )
   })
 })
 
