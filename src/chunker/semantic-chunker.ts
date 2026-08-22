@@ -165,9 +165,14 @@ export class SemanticChunker {
         (containsAtomicUnit || chunkText.length >= this.config.minChunkLength) &&
         !isGarbageChunk(chunkText)
       ) {
+        const firstUnit = group[0]
+        const lastUnit = group[group.length - 1]
+        if (!firstUnit || !lastUnit) continue
         chunks.push({
           text: chunkText,
           index: chunkIndex,
+          sourceStart: firstUnit.sourceStart,
+          sourceEnd: lastUnit.sourceEnd,
         })
         chunkIndex++
       }

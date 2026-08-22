@@ -131,8 +131,11 @@ const vectordbFactory = async (
 
 const pdfVisualFactory = () => ({
   createCaptioner: mocks.createCaptioner,
+  createVisualAttachment: vi.fn(),
   detectVisualCandidates: mocks.detectVisualCandidates,
+  detectVisualRegions: mocks.detectVisualCandidates,
   enrichPagesWithCaptions: mocks.enrichPagesWithCaptions,
+  processVisualRegions: vi.fn().mockResolvedValue([]),
 })
 
 const MOCKED_PATHS = [
@@ -191,6 +194,33 @@ function buildServer(): InstanceType<RAGServerCtor> {
   })
 }
 
+function buildParsePdfPagesResult() {
+  const text = 'page 1 text'
+  return {
+    doc: { destroy: vi.fn() },
+    metadataTitle: undefined,
+    pages: [
+      {
+        pageNum: 1,
+        text,
+        textFragments: [
+          {
+            pageNum: 1,
+            blockOrdinal: 0,
+            lineOrdinal: 0,
+            fragmentOrdinal: 0,
+            bbox: [0, 0, 100, 10],
+            text,
+            pageTextStart: 0,
+            pageTextEnd: text.length,
+          },
+        ],
+        stextJson: { blocks: [] },
+      },
+    ],
+  }
+}
+
 // ============================================
 // Tests
 // ============================================
@@ -234,11 +264,7 @@ describe('handleIngestFile - `visual` Runtime Validation (AC-012)', () => {
     // Visual-path stubs: `parsePdfPages` returns a doc with a `destroy()` spy
     // so the `finally` block can call it; `enrichPagesWithCaptions` returns
     // the pages unchanged.
-    mocks.parsePdfPages.mockResolvedValue({
-      doc: { destroy: vi.fn() },
-      metadataTitle: undefined,
-      pages: [{ pageNum: 1, text: 'page 1 text', stextJson: { blocks: [] } }],
-    })
+    mocks.parsePdfPages.mockResolvedValue(buildParsePdfPagesResult())
     mocks.enrichPagesWithCaptions.mockImplementation(async (pages: unknown) => ({
       pages,
       captions: [],
@@ -325,11 +351,7 @@ describe('handleIngestFile - `visualQuality` Runtime Validation', () => {
     mocks.validateFilePath.mockResolvedValue(undefined)
     mocks.parseFile.mockResolvedValue({ content: 'plain content', title: 'plain title' })
     mocks.parsePdf.mockResolvedValue({ content: 'pdf content', title: 'pdf title' })
-    mocks.parsePdfPages.mockResolvedValue({
-      doc: { destroy: vi.fn() },
-      metadataTitle: undefined,
-      pages: [{ pageNum: 1, text: 'page 1 text', stextJson: { blocks: [] } }],
-    })
+    mocks.parsePdfPages.mockResolvedValue(buildParsePdfPagesResult())
     mocks.enrichPagesWithCaptions.mockImplementation(async (pages: unknown) => ({
       pages,
       captions: [],

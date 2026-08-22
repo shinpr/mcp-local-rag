@@ -1272,10 +1272,10 @@ describe('sync executor against a real VectorStore (Early Verification Point)', 
     await store.insertChunks(
       buildVectorChunks({
         filePath,
-        chunks: Array.from({ length: chunkCount }, (_, index) => ({
-          index,
-          text: `seeded chunk ${index} of ${basename(filePath)}`,
-        })),
+        chunks: Array.from({ length: chunkCount }, (_, index) => {
+          const text = `seeded chunk ${index} of ${basename(filePath)}`
+          return { index, text, sourceStart: 0, sourceEnd: text.length }
+        }),
         embeddings: Array.from({ length: chunkCount }, (_, index) => fakeVector(index + 1)),
         fileSize: 64,
         fileTitle: null,
@@ -1299,9 +1299,10 @@ describe('sync executor against a real VectorStore (Early Verification Point)', 
     return async (filePath) => {
       log.push(`ingest:${filePath}`)
       if (filePath === failOn) throw new Error('induced ingest failure')
+      const text = `fresh chunk of ${basename(filePath)}`
       const chunks = buildVectorChunks({
         filePath,
-        chunks: [{ index: 0, text: `fresh chunk of ${basename(filePath)}` }],
+        chunks: [{ index: 0, text, sourceStart: 0, sourceEnd: text.length }],
         embeddings: [fakeVector(99)],
         fileSize: 32,
         fileTitle: null,

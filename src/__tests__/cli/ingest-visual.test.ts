@@ -132,39 +132,43 @@ const cliCommonFactory = () => ({
   ),
 })
 
-// Real-shaped pdf-visual barrel. `detectVisualCandidates` reflects
-// `captionerSpy.candidatePages`. `enrichPagesWithCaptions` mirrors the
-// production orchestrator contract: per-page or whole-VLM failures leave
-// `page.text` untouched, log a warn line naming the failed page, and produce
-// no caption record. Successful captions surface as `{pageNum, text}` records
-// on the dedicated `captions` array — the `[Visual content on page N: ...]`
-// wrapper is then applied downstream in `src/ingest/visual.ts` and emitted as
-// a dedicated chunk, not mutated into the page text.
+// Real-shaped region orchestrator. Captions remain isolated per region and
+// are inserted into the ordered document by `src/ingest/visual.ts`.
 const pdfVisualFactory = () => ({
-  detectVisualCandidates: (pages: { pageNum: number; stextJson: unknown }[]) =>
-    pages.map((p) => ({
-      pageNum: p.pageNum,
-      isCandidate: captionerSpy.candidatePages.has(p.pageNum),
-    })),
-  enrichPagesWithCaptions: async (
-    pages: { pageNum: number; text: string; stextJson: unknown }[],
-    candidates: { pageNum: number; isCandidate: boolean }[],
+  detectVisualRegions: (pages: { pageNum: number; stextJson: unknown }[]) =>
+    pages
+      .filter((page) => captionerSpy.candidatePages.has(page.pageNum))
+      .map((page, detectionIndex) => ({
+        pageNum: page.pageNum,
+        detectionIndex,
+        bbox: [0, 0, 10, 10],
+        normalizedBbox: [0, 0, 0.1, 0.1],
+        evidence: 'raster',
+      })),
+  processVisualRegions: async (
+    regions: Array<{
+      pageNum: number
+      detectionIndex: number
+      bbox: [number, number, number, number]
+      normalizedBbox: [number, number, number, number]
+      evidence: 'raster'
+    }>,
     _doc: unknown,
-    _captioner: unknown
+    _options: unknown
   ) => {
-    const candidateSet = new Set(candidates.filter((c) => c.isCandidate).map((c) => c.pageNum))
-    const captions: { pageNum: number; text: string }[] = []
-    for (const page of pages) {
-      if (!candidateSet.has(page.pageNum)) continue
-      captionerSpy.calls.push({ pageNum: page.pageNum })
-      if (captionerSpy.throwAll || captionerSpy.throwOn === page.pageNum) {
-        console.warn(`VLM caption failed for page ${page.pageNum}: simulated failure`)
-        continue
+    const processed = []
+    for (const region of regions) {
+      captionerSpy.calls.push({ pageNum: region.pageNum })
+      if (captionerSpy.throwAll || captionerSpy.throwOn === region.pageNum) {
+        console.warn(`VLM caption failed for page ${region.pageNum}: simulated failure`)
+        processed.push({ ...region, caption: null })
+      } else {
+        processed.push({ ...region, caption: 'synthetic caption text' })
       }
-      captions.push({ pageNum: page.pageNum, text: 'synthetic caption text' })
     }
-    return { pages, captions }
+    return processed
   },
+  createVisualAttachment: vi.fn(),
   createCaptioner: () => ({
     caption: async () => 'synthetic caption text',
   }),
@@ -255,13 +259,30 @@ function mockFileStat() {
  * for documentation purposes.
  */
 function buildThreePageParseResult() {
+  const page = (pageNum: number, text: string, blockType: 'text' | 'image') => ({
+    pageNum,
+    text,
+    textFragments: [
+      {
+        pageNum,
+        blockOrdinal: 0,
+        lineOrdinal: 0,
+        fragmentOrdinal: 0,
+        bbox: [0, 0, 100, 10] as [number, number, number, number],
+        text,
+        pageTextStart: 0,
+        pageTextEnd: text.length,
+      },
+    ],
+    stextJson: { blocks: [{ type: blockType }] },
+  })
   return {
     doc: { destroy: mocks.destroy },
     metadataTitle: undefined,
     pages: [
-      { pageNum: 1, text: 'page 1 plain text', stextJson: { blocks: [{ type: 'text' }] } },
-      { pageNum: 2, text: 'page 2 plain text', stextJson: { blocks: [{ type: 'image' }] } },
-      { pageNum: 3, text: 'page 3 plain text', stextJson: { blocks: [{ type: 'text' }] } },
+      page(1, 'page 1 plain text', 'text'),
+      page(2, 'page 2 plain text', 'image'),
+      page(3, 'page 3 plain text', 'text'),
     ],
   }
 }
@@ -371,7 +392,9 @@ describe('VLM PDF Enrichment - Visual Mode', () => {
     expect(process.exitCode).toBeUndefined()
 
     // Assert: at least one inserted chunk carries the page-2 caption marker.
-    const page2Chunks = inserted.filter((c) => c.text.includes('[Visual content on page 2: '))
+    const page2Chunks = inserted.filter((c) =>
+      c.text.includes('[Visual content on page 2, visual 0: ')
+    )
     expect(page2Chunks.length).toBeGreaterThan(0)
 
     // Assert: the caption body text is recoverable in that chunk.
@@ -416,7 +439,9 @@ describe('VLM PDF Enrichment - Visual Mode', () => {
     expect(process.exitCode).toBeUndefined()
 
     // Assert: NO chunk has the page-2 caption marker.
-    const page2Marker = inserted.filter((c) => c.text.includes('[Visual content on page 2:'))
+    const page2Marker = inserted.filter((c) =>
+      c.text.includes('[Visual content on page 2, visual 0:')
+    )
     expect(page2Marker).toHaveLength(0)
 
     // Assert: page 2's raw text is still present in the index.
@@ -425,7 +450,7 @@ describe('VLM PDF Enrichment - Visual Mode', () => {
     // Assert: page 3 KEEPS its caption marker (per-page failure does not
     // poison the rest of the file).
     const page3Marker = inserted.filter((c) =>
-      c.text.includes('[Visual content on page 3: synthetic caption text')
+      c.text.includes('[Visual content on page 3, visual 1: synthetic caption text')
     )
     expect(page3Marker.length).toBeGreaterThan(0)
 
@@ -533,20 +558,18 @@ describe('VLM PDF Enrichment - Visual Mode', () => {
   //         plain text — no control characters that would break downstream
   //         processing.)"
   // ROI: 35 (BV:7 × Freq:5 + Legal:0 + Defect:0)
-  // Behavior: Caption emitted as a dedicated chunk → embedder consumes it
-  //           without throwing; body text passes through the chunker cleanly.
+  // Behavior: Caption is interleaved into one ordered document, which passes
+  //           through one semantic chunking pass and one final-chunk embed batch.
   // Verification items:
-  //   - chunker.chunkText resolves on body text (captions are NOT in the
-  //     chunker input under the dedicated-chunk contract)
-  //   - embedder.embedBatch resolves on caption text array (called explicitly
-  //     for caption chunks in `prepareVisualPdfChunks`)
+  //   - chunker.chunkText receives the ordered body-and-caption document once
+  //   - embedder.embedBatch receives all final chunk texts once
   //   - Final inserted chunks include the caption marker AND have non-empty
   //     `vector` arrays
   // @category: integration
   // @lane: integration
-  // @dependency: ingestSingleFile, real chunker + real embedder (or shape-checked stubs)
+  // @dependency: ingestSingleFile; parser, chunker, embedder, vector store, and pdf-visual isolated by shape-checked mocks
   // @complexity: low
-  it('AC-007: caption chunk passes through embedder without error; chunker sees body-only text', async () => {
+  it('AC-007: ordered caption passes through the single chunk and embed pass', async () => {
     // Arrange: same setup as AC-002 — page 2 is the only candidate.
     const filePath = resolve('/tmp/test/ac007.pdf')
     mocks.stat.mockResolvedValue(mockFileStat())
@@ -558,24 +581,21 @@ describe('VLM PDF Enrichment - Visual Mode', () => {
     expect(error).toBeUndefined()
     expect(process.exitCode).toBeUndefined()
 
-    // Assert: chunker.chunkText was called once on the body-only joined text;
-    // the caption marker MUST NOT appear in the chunker input (it lives in a
-    // dedicated chunk emitted after chunking).
+    // AC-003 supersedes the old dedicated-caption contract: the caption is
+    // present in the one ordered document passed to chunkText.
     expect(mocks.chunkText).toHaveBeenCalledTimes(1)
     const chunkTextArg = mocks.chunkText.mock.calls[0]?.[0] as string
-    expect(chunkTextArg).not.toContain('[Visual content on page')
+    expect(chunkTextArg).toContain('[Visual content on page 2, visual 0: synthetic caption text]')
 
-    // Assert: embedder.embedBatch was called for the body chunks AND a
-    // separate explicit call for the caption chunk texts. The caption call
-    // carries the visual marker — proving the caption string survived the
-    // downstream embedder boundary without throwing.
-    expect(mocks.embedBatch.mock.calls.length).toBeGreaterThanOrEqual(2)
+    // The final chunk texts, including the atomic caption unit, are embedded
+    // in one batch after the single semantic chunking pass.
+    expect(mocks.embedBatch).toHaveBeenCalledTimes(1)
     const allEmbedBatchTexts = mocks.embedBatch.mock.calls.flatMap(
       (call) => (call[0] as string[]) ?? []
     )
     expect(
       allEmbedBatchTexts.some((t) =>
-        t.includes('[Visual content on page 2: synthetic caption text]')
+        t.includes('[Visual content on page 2, visual 0: synthetic caption text]')
       )
     ).toBe(true)
 

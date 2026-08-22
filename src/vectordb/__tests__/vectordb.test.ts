@@ -1646,7 +1646,10 @@ describe('VectorStore', () => {
       [...chunks].sort((a, b) => a.chunkIndex - b.chunkIndex)
 
     const textChunks = (count: number): TextChunk[] =>
-      Array.from({ length: count }, (_, index) => ({ text: `chunk ${index}`, index }))
+      Array.from({ length: count }, (_, index) => {
+        const text = `chunk ${index}`
+        return { text, index, sourceStart: 0, sourceEnd: text.length }
+      })
 
     /**
      * Stubs for `ingestSingleFile`'s injected collaborators. `parsedText` is

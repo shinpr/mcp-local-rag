@@ -188,7 +188,7 @@ Topic B is completely different. Topic B continues here.`
       await expect(chunker.chunkText(shortRow, mockEmbedder)).resolves.toEqual([])
       await expect(
         chunker.chunkText(shortRow, mockEmbedder, [{ start: 0, end: shortRow.length }])
-      ).resolves.toEqual([{ text: shortRow, index: 0 }])
+      ).resolves.toEqual([{ text: shortRow, index: 0, sourceStart: 0, sourceEnd: shortRow.length }])
     })
 
     it('should embed and persist a multi-sentence atomic row as one unit', async () => {
@@ -198,7 +198,7 @@ Topic B is completely different. Topic B continues here.`
       const result = await chunker.chunkText(row, mockEmbedder, [{ start: 0, end: row.length }])
 
       expect(mockEmbedder.embedBatch).toHaveBeenCalledWith([row])
-      expect(result).toEqual([{ text: row, index: 0 }])
+      expect(result).toEqual([{ text: row, index: 0, sourceStart: 0, sourceEnd: row.length }])
     })
 
     it('should keep an atomic row intact when grouped with neighboring prose', async () => {
@@ -215,7 +215,14 @@ Topic B is completely different. Topic B continues here.`
       ])
 
       expect(mockEmbedder.embedBatch).toHaveBeenCalledWith([before, row, after])
-      expect(result).toEqual([{ text: `${before} ${row} ${after}`, index: 0 }])
+      expect(result).toEqual([
+        {
+          text: `${before} ${row} ${after}`,
+          index: 0,
+          sourceStart: 0,
+          sourceEnd: text.length,
+        },
+      ])
     })
 
     it('should continue applying the garbage filter to atomic ranges', async () => {
@@ -227,6 +234,49 @@ Topic B is completely different. Topic B continues here.`
       ])
 
       expect(result).toEqual([])
+    })
+
+    it('exposes exact source envelopes without changing atomic grouping or chunk indices', async () => {
+      const source =
+        '  Repeated sentence.  \n\n[Visual content on page 1, visual 0: 📊 repeated.]\n\nRepeated sentence.'
+      const caption = '[Visual content on page 1, visual 0: 📊 repeated.]'
+      const captionStart = source.indexOf(caption)
+      const envelopeChunker = new SemanticChunker({
+        hardThreshold: 0.99,
+        initConst: 0.1,
+        c: 0.9,
+        minChunkLength: 1,
+      })
+      vi.mocked(mockEmbedder.embedBatch).mockResolvedValue([
+        createMockEmbedding([1, 0, 0]),
+        createMockEmbedding([0, 1, 0]),
+        createMockEmbedding([0, 0, 1]),
+      ])
+
+      const result = await envelopeChunker.chunkText(source, mockEmbedder, [
+        { start: captionStart, end: captionStart + caption.length },
+      ])
+
+      expect(result).toEqual([
+        {
+          text: 'Repeated sentence.',
+          index: 0,
+          sourceStart: 2,
+          sourceEnd: 20,
+        },
+        {
+          text: caption,
+          index: 1,
+          sourceStart: captionStart,
+          sourceEnd: captionStart + caption.length,
+        },
+        {
+          text: 'Repeated sentence.',
+          index: 2,
+          sourceStart: source.lastIndexOf('Repeated sentence.'),
+          sourceEnd: source.length,
+        },
+      ])
     })
   })
 

@@ -213,10 +213,10 @@ async function seedRows(
     await store.insertChunks(
       buildVectorChunks({
         filePath,
-        chunks: Array.from({ length: chunkCount }, (_, index) => ({
-          index,
-          text: `seeded chunk ${index} for ${filePath}`,
-        })),
+        chunks: Array.from({ length: chunkCount }, (_, index) => {
+          const text = `seeded chunk ${index} for ${filePath}`
+          return { index, text, sourceStart: 0, sourceEnd: text.length }
+        }),
         embeddings: Array.from({ length: chunkCount }, (_, index) => unitVector(index + 1)),
         fileSize: 64,
         fileTitle: null,
