@@ -1,44 +1,10 @@
-// `pdf-visual` package — orchestrator + intermediate barrel.
-//
-// `enrichPagesWithCaptions` glues `renderPdfPage` and the `Captioner`
-// together for every page flagged as a visual candidate by
-// `detectVisualCandidates`. Per-page failure handling lives here: the
-// renderer and captioner throw `VlmError` on their own failures, and the
-// orchestrator catches those errors so only the offending page falls back to
-// text-only output.
-//
-// Captions are NOT mutated into `page.text`. Returning them as a separate
-// `captions` array lets the ingest layer emit them as dedicated chunks
-// (`src/ingest/visual.ts`), preserving the `Summary` + `Keywords` structure
-// against the semantic chunker's sentence-boundary splits.
-//
-// Contract:
-//   1. Build a Set of candidate page numbers from
-//      `candidates.filter(c => c.isCandidate).map(c => c.pageNum)`.
-//   2. Iterate `pages` in input order. For each page whose `pageNum` is in
-//      the candidate Set:
-//        - `pngBytes = await renderPdfPage(doc, page.pageNum, candidate.cropRect)`
-//        - `caption  = await captioner.caption(pngBytes, page.pageNum)`
-//        - `caption === null` → `console.warn` naming the page; no caption record.
-//        - non-null → push `{ pageNum, text: caption }` into `captions`.
-//        - thrown error → `console.warn` naming the page and including
-//          `err.message`; no caption record. Per FR-3, a per-page captioner
-//          failure is warning-level (the file ingest as a whole succeeds).
-//   3. Return `{ pages, captions }`. The `pages` array is passed through
-//      unchanged (no text mutation).
-//
-// DPI is NOT a parameter of this function. The renderer owns DPI as a
-// module-private constant. If a future caller needs to override DPI it can
-// be added then.
-//
-// Layer constraint (per task file): this module imports ONLY from
-// `./renderer`, `./captioner`, `./detector`, `./types`. No external packages.
-// (The `mupdf` type import is type-only and erased at compile.)
+// `pdf-visual` region orchestration and public surface. Region processing
+// isolates caption and rendition failures so one crop cannot discard another.
 
 import type { Document as MupdfDocument } from 'mupdf'
 
-import { renderPdfPage } from './renderer.js'
-import type { Captioner } from './types.js'
+import { renderPdfPage, renderPdfRendition } from './renderer.js'
+import type { Captioner, DetectedVisualRegion, ProcessedVisualRegion, VisualBBox } from './types.js'
 
 // Public surface re-exports. The dispatch sites in `src/cli/ingest.ts` and
 // `src/server/index.ts` reach the visual-mode
@@ -49,8 +15,19 @@ import type { Captioner } from './types.js'
 // Re-export ordering below is alphabetical by source module to match Biome's
 // `organizeImports` rule (`./captioner` → `./detector` → `./renderer` → `./types`).
 export { createCaptioner } from './captioner.js'
-export { detectVisualCandidates } from './detector.js'
-export { renderPdfPage } from './renderer.js'
+export { detectVisualCandidates, detectVisualRegions } from './detector.js'
+export {
+  createVisualAttachment,
+  renderPdfPage,
+  renderPdfRendition,
+  validateVisualAttachment,
+} from './renderer.js'
+export type {
+  DetectedVisualRegion,
+  ImageRendition,
+  ProcessedVisualRegion,
+  VisualAttachment,
+} from './types.js'
 export { VlmError } from './types.js'
 
 /**
@@ -65,14 +42,14 @@ interface OrchestratorPage {
   stextJson: unknown
 }
 
-/**
- * Per-page detector record. Mirrors the shape returned by
- * `detectVisualCandidates` in `./detector.ts`.
- */
+/** Compatibility shape retained until the ordered ingest builder consumes regions directly. */
 interface OrchestratorCandidate {
   pageNum: number
-  isCandidate: boolean
-  cropRect?: [number, number, number, number]
+  isCandidate?: boolean
+  cropRect?: VisualBBox
+  detectionIndex?: number
+  bbox?: VisualBBox
+  normalizedBbox?: VisualBBox
 }
 
 /**
@@ -85,18 +62,64 @@ interface OrchestratorCandidate {
 export interface VisualCaption {
   pageNum: number
   text: string
+  detectionIndex?: number
+  bbox?: VisualBBox
+  normalizedBbox?: VisualBBox
+}
+
+export interface ProcessVisualRegionsOptions {
+  captioner?: Captioner
+  includeImages?: boolean
+}
+
+export async function processVisualRegions(
+  regions: DetectedVisualRegion[],
+  doc: MupdfDocument,
+  options: ProcessVisualRegionsOptions
+): Promise<ProcessedVisualRegion[]> {
+  const processed: ProcessedVisualRegion[] = []
+  for (const region of regions) {
+    let caption: string | null = null
+    let rendition: ProcessedVisualRegion['rendition']
+
+    if (options.captioner) {
+      try {
+        const pngBytes = await renderPdfPage(doc, region.pageNum, region.bbox)
+        caption = await options.captioner.caption(pngBytes, region.pageNum)
+        if (caption === null) {
+          console.warn(
+            `VLM caption empty for page ${region.pageNum}, visual ${region.detectionIndex}; proceeding without caption`
+          )
+        }
+      } catch {
+        console.warn(
+          `VLM caption failed for page ${region.pageNum}, visual ${region.detectionIndex}; proceeding without caption`
+        )
+      }
+    }
+
+    if (options.includeImages) {
+      try {
+        rendition = await renderPdfRendition(doc, region.pageNum, region.bbox, region.evidence)
+      } catch {
+        console.warn(
+          `PDF rendition failed for page ${region.pageNum}, visual ${region.detectionIndex}; proceeding without image`
+        )
+      }
+    }
+
+    processed.push({ ...region, caption, ...(rendition ? { rendition } : {}) })
+  }
+  return processed
 }
 
 /**
- * Generate VLM captions for each visual candidate page. Per-page failures are
- * tolerated: a thrown error or a `null` caption is logged and the page produces
- * no caption record. Other candidate pages are unaffected.
+ * Generate VLM captions for each visual region. Failures are isolated to the
+ * current region, including when several regions share a page.
  *
  * @param pages - Per-page records from `parsePdfPages`. Passed through
  *                unchanged (no text mutation).
- * @param candidates - Per-page `{ pageNum, isCandidate }` records from
- *                     `detectVisualCandidates`. Pages whose `isCandidate` is
- *                     false are skipped.
+ * @param candidates - Region records or temporary legacy page candidates.
  * @param doc - The open mupdf `Document`. The orchestrator does not own its
  *              lifecycle — the caller is responsible for `doc.destroy()`.
  * @param captioner - The VLM wrapper from `createCaptioner`.
@@ -110,32 +133,44 @@ export async function enrichPagesWithCaptions(
   doc: MupdfDocument,
   captioner: Captioner
 ): Promise<{ pages: OrchestratorPage[]; captions: VisualCaption[] }> {
-  const candidateByPage = new Map(
-    candidates.filter((c) => c.isCandidate).map((c) => [c.pageNum, c])
-  )
   const captions: VisualCaption[] = []
 
-  for (const page of pages) {
-    const candidate = candidateByPage.get(page.pageNum)
-    if (!candidate) continue
+  for (const candidate of candidates) {
+    if (candidate.isCandidate === false) continue
+    const isRegion =
+      Number.isInteger(candidate.detectionIndex) &&
+      candidate.bbox !== undefined &&
+      candidate.normalizedBbox !== undefined
+    const cropRect = isRegion ? candidate.bbox : candidate.cropRect
 
     try {
-      const pngBytes = await renderPdfPage(doc, page.pageNum, candidate.cropRect)
-      const caption = await captioner.caption(pngBytes, page.pageNum)
+      const pngBytes = await renderPdfPage(doc, candidate.pageNum, cropRect)
+      const caption = await captioner.caption(pngBytes, candidate.pageNum)
 
       if (caption === null) {
-        // Empty / sanitized-empty caption is a documented non-failure (see
-        // captioner contract step 7). Warn-log and emit no caption record.
-        console.warn(`VLM caption empty for page ${page.pageNum}; proceeding text-only`)
+        const visual = isRegion ? `, visual ${candidate.detectionIndex}` : ''
+        console.warn(
+          `VLM caption empty for page ${candidate.pageNum}${visual}; proceeding text-only`
+        )
         continue
       }
 
-      captions.push({ pageNum: page.pageNum, text: caption })
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err)
-      // Warn and continue so the file ingest succeeds while only this page
-      // degrades to text-only.
-      console.warn(`VLM caption failed for page ${page.pageNum}: ${message}`)
+      captions.push({
+        pageNum: candidate.pageNum,
+        text: caption,
+        ...(isRegion
+          ? {
+              detectionIndex: candidate.detectionIndex,
+              bbox: candidate.bbox,
+              normalizedBbox: candidate.normalizedBbox,
+            }
+          : {}),
+      })
+    } catch {
+      const visual = isRegion ? `, visual ${candidate.detectionIndex}` : ''
+      console.warn(
+        `VLM caption failed for page ${candidate.pageNum}${visual}; proceeding text-only`
+      )
     }
   }
 

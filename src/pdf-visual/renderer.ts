@@ -1,87 +1,296 @@
-// PDF page renderer for the visual ingest path.
-//
-// Given an already-open mupdf `Document` and a 1-based page number, renders
-// either the full page or a crop rectangle to a PNG byte array at the
-// renderer-internal DPI. The renderer does NOT own the document lifecycle —
-// the caller opens and destroys the document.
-//
-// Contract:
-//   1. `page = doc.loadPage(pageNum - 1)`              (1-based → 0-based)
-//   2. `matrix = [RENDER_DPI/72, 0, 0, RENDER_DPI/72, 0, 0]`
-//   3. Full page: `page.toPixmap(matrix, ColorSpace.DeviceRGB, false, true)`
-//      Crop: render via `DrawDevice` into a pixmap sized to the crop rect.
-//   4. return `pixmap.asPNG()`                          (Uint8Array, not Buffer)
-//   5. on mupdf error → throw `VlmError('Failed to render PDF page',
-//                                       { cause: err, pageNum })`
-
 import type { Document as MupdfDocument } from 'mupdf'
 import * as mupdf from 'mupdf'
 
+import type {
+  DetectedVisualRegion,
+  ImageRendition,
+  VisualAttachment,
+  VisualBBox,
+  VisualEvidence,
+  VisualImageMimeType,
+} from './types.js'
 import { VlmError } from './types.js'
 
 export { VlmError }
 
-// Module-private. Single consumer (this file). Not exported, not surfaced.
-// 200 DPI keeps small in-figure text (axis labels, legends, table cells)
-// legible after the VLM processor's internal downscale to ~512 px. 150 DPI
-// loses sub-10pt label glyphs on dense scientific PDFs; 300 DPI doubles
-// pixmap bytes for no measured retrieval-quality gain.
 const RENDER_DPI = 200
+const BASE_SCALE = RENDER_DPI / 72
+const CAPTION_LONG_EDGE_MAX = 4096
+const CAPTION_PIXEL_MAX = 16_777_216
+const RENDITION_LONG_EDGE_MAX = 1024
+const RENDITION_TARGET_BYTES = 256 * 1024
+const RENDITION_MAX_BYTES = 512 * 1024
+const RENDITION_MAX_BASE64_LENGTH = Math.ceil(RENDITION_MAX_BYTES / 3) * 4
+const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a] as const
+const JPEG_QUALITIES = [82, 72, 62, 52] as const
+const RENDITION_EDGES = [1024, 896, 768, 640, 512] as const
 
-type Rect = [number, number, number, number]
+function cropDimensions(cropRect: VisualBBox): { width: number; height: number } {
+  const width = cropRect[2] - cropRect[0]
+  const height = cropRect[3] - cropRect[1]
+  if (![...cropRect, width, height].every(Number.isFinite) || width <= 0 || height <= 0) {
+    throw new Error('Invalid crop rectangle')
+  }
+  return { width, height }
+}
 
-function renderCrop(page: mupdf.Page, cropRect: Rect, scale: number): Uint8Array {
-  const [x0, y0, x1, y1] = cropRect
-  const width = Math.max(1, Math.ceil((x1 - x0) * scale))
-  const height = Math.max(1, Math.ceil((y1 - y0) * scale))
+function captionScale(cropRect: VisualBBox): number {
+  const { width, height } = cropDimensions(cropRect)
+  return Math.min(
+    BASE_SCALE,
+    CAPTION_LONG_EDGE_MAX / Math.max(width, height),
+    Math.sqrt(CAPTION_PIXEL_MAX / (width * height))
+  )
+}
+
+function scaleForLongEdge(cropRect: VisualBBox, longEdge: number): number {
+  const { width, height } = cropDimensions(cropRect)
+  return Math.min(BASE_SCALE, longEdge / Math.max(width, height))
+}
+
+function renderCrop<T>(
+  page: mupdf.Page,
+  cropRect: VisualBBox,
+  scale: number,
+  consume: (pixmap: mupdf.Pixmap) => T
+): T {
+  const { width: sourceWidth, height: sourceHeight } = cropDimensions(cropRect)
+  const width = Math.max(1, Math.floor(sourceWidth * scale))
+  const height = Math.max(1, Math.floor(sourceHeight * scale))
   const pixmap = new mupdf.Pixmap(mupdf.ColorSpace.DeviceRGB, [0, 0, width, height], false)
-  const matrix: mupdf.Matrix = [scale, 0, 0, scale, -x0 * scale, -y0 * scale]
+  const matrix: mupdf.Matrix = [scale, 0, 0, scale, -cropRect[0] * scale, -cropRect[1] * scale]
   const device = new mupdf.DrawDevice(matrix, pixmap)
-
   try {
-    // Paint a white background (255 = max channel value on DeviceRGB) so any
-    // transparent / unpainted regions show as white to the VLM rather than the
-    // pixmap's default black.
     pixmap.clear(255)
     page.run(device, mupdf.Matrix.identity)
-    return pixmap.asPNG()
+    return consume(pixmap)
   } finally {
     device.close()
     pixmap.destroy?.()
   }
 }
 
-/**
- * Render a single PDF page to a PNG byte array.
- *
- * @param doc - An already-open mupdf `Document`. The renderer does NOT own the
- *              document lifecycle.
- * @param pageNum - 1-based page index. Translated to 0-based for mupdf.
- * @returns PNG bytes (`Uint8Array`, NOT `Buffer`).
- * @throws {VlmError} When mupdf rejects the page (out-of-range, render
- *                    failure, etc.). `cause` carries the original mupdf error;
- *                    `pageNum` carries the requested 1-based page.
- */
+function encodePixmap(
+  pixmap: mupdf.Pixmap,
+  mimeType: VisualImageMimeType,
+  quality = 82
+): ImageRendition {
+  const bytes = mimeType === 'image/png' ? pixmap.asPNG() : pixmap.asJPEG(quality)
+  return {
+    bytes,
+    mimeType,
+    pixelWidth: pixmap.getWidth(),
+    pixelHeight: pixmap.getHeight(),
+  }
+}
+
 export async function renderPdfPage(
   doc: MupdfDocument,
   pageNum: number,
-  cropRect?: Rect
+  cropRect?: VisualBBox
 ): Promise<Uint8Array> {
   let page: mupdf.Page | null = null
   let fullPagePixmap: mupdf.Pixmap | null = null
   try {
     page = doc.loadPage(pageNum - 1)
-    const scale = RENDER_DPI / 72
-    if (cropRect) return renderCrop(page, cropRect, scale)
-
-    const matrix: mupdf.Matrix = [scale, 0, 0, scale, 0, 0]
-    fullPagePixmap = page.toPixmap(matrix, mupdf.ColorSpace.DeviceRGB, false, true)
+    if (cropRect) {
+      return renderCrop(page, cropRect, captionScale(cropRect), (pixmap) => pixmap.asPNG())
+    }
+    fullPagePixmap = page.toPixmap(
+      [BASE_SCALE, 0, 0, BASE_SCALE, 0, 0],
+      mupdf.ColorSpace.DeviceRGB,
+      false,
+      true
+    )
     return fullPagePixmap.asPNG()
-  } catch (err) {
-    const cause = err instanceof Error ? err : new Error(String(err))
+  } catch (error) {
+    if (error instanceof VlmError) throw error
+    const cause = error instanceof Error ? error : new Error(String(error))
     throw new VlmError('Failed to render PDF page', { cause, pageNum })
   } finally {
     fullPagePixmap?.destroy?.()
     page?.destroy?.()
   }
+}
+
+function preferredMime(evidence: VisualEvidence): VisualImageMimeType {
+  return evidence === 'raster' ? 'image/jpeg' : 'image/png'
+}
+
+export async function renderPdfRendition(
+  doc: MupdfDocument,
+  pageNum: number,
+  cropRect: VisualBBox,
+  evidence: VisualEvidence
+): Promise<ImageRendition> {
+  let page: mupdf.Page | null = null
+  try {
+    page = doc.loadPage(pageNum - 1)
+    const { width, height } = cropDimensions(cropRect)
+    const nativeLongEdge = Math.max(1, Math.floor(Math.max(width, height) * BASE_SCALE))
+    const initialLongEdge = Math.min(RENDITION_LONG_EDGE_MAX, nativeLongEdge)
+    const edges = [
+      ...new Set(RENDITION_EDGES.map((edge) => Math.min(edge, initialLongEdge))),
+    ].filter((edge) => edge >= 1)
+    const mimeType = preferredMime(evidence)
+    let firstWithinHardLimit: ImageRendition | null = null
+
+    for (const edge of edges) {
+      const qualities = mimeType === 'image/jpeg' ? JPEG_QUALITIES : [82]
+      for (const quality of qualities) {
+        const rendition = renderCrop(page, cropRect, scaleForLongEdge(cropRect, edge), (pixmap) =>
+          encodePixmap(pixmap, mimeType, quality)
+        )
+        if (rendition.bytes.byteLength <= RENDITION_MAX_BYTES && !firstWithinHardLimit) {
+          firstWithinHardLimit = rendition
+        }
+        if (rendition.bytes.byteLength <= RENDITION_TARGET_BYTES) return rendition
+      }
+    }
+    if (firstWithinHardLimit) return firstWithinHardLimit
+
+    for (let edge = Math.min(RENDITION_LONG_EDGE_MAX, initialLongEdge); edge >= 256; edge -= 128) {
+      const rendition = renderCrop(page, cropRect, scaleForLongEdge(cropRect, edge), (pixmap) =>
+        encodePixmap(pixmap, 'image/jpeg', 52)
+      )
+      if (rendition.bytes.byteLength <= RENDITION_MAX_BYTES) return rendition
+    }
+    throw new Error('Rendition exceeds the encoded-size limit')
+  } catch (error) {
+    if (error instanceof VlmError) throw error
+    const cause = error instanceof Error ? error : new Error(String(error))
+    throw new VlmError('Failed to render PDF rendition', { cause, pageNum })
+  } finally {
+    page?.destroy?.()
+  }
+}
+
+function pngHeader(bytes: Uint8Array): { width: number; height: number } | null {
+  if (bytes.byteLength < 24 || !PNG_SIGNATURE.every((value, index) => bytes[index] === value)) {
+    return null
+  }
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+  const width = view.getUint32(16)
+  const height = view.getUint32(20)
+  return width > 0 && height > 0 ? { width, height } : null
+}
+
+function jpegHeader(bytes: Uint8Array): { width: number; height: number } | null {
+  if (bytes.byteLength < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8) return null
+  let offset = 2
+  while (offset + 3 < bytes.byteLength) {
+    if (bytes[offset] !== 0xff) {
+      offset += 1
+      continue
+    }
+    while (bytes[offset] === 0xff) offset += 1
+    const marker = bytes[offset] as number
+    offset += 1
+    if (marker === 0xd9 || marker === 0xda) break
+    if (offset + 1 >= bytes.byteLength) return null
+    const length = ((bytes[offset] as number) << 8) | (bytes[offset + 1] as number)
+    if (length < 2 || offset + length > bytes.byteLength) return null
+    const isStartOfFrame =
+      (marker >= 0xc0 && marker <= 0xc3) ||
+      (marker >= 0xc5 && marker <= 0xc7) ||
+      (marker >= 0xc9 && marker <= 0xcb) ||
+      (marker >= 0xcd && marker <= 0xcf)
+    if (isStartOfFrame && length >= 7) {
+      const height = ((bytes[offset + 3] as number) << 8) | (bytes[offset + 4] as number)
+      const width = ((bytes[offset + 5] as number) << 8) | (bytes[offset + 6] as number)
+      return width > 0 && height > 0 ? { width, height } : null
+    }
+    offset += length
+  }
+  return null
+}
+
+function validNormalizedBbox(value: unknown): value is VisualBBox {
+  if (!Array.isArray(value) || value.length !== 4 || !value.every(Number.isFinite)) return false
+  const [x0, y0, x1, y1] = value as VisualBBox
+  return x0 >= 0 && y0 >= 0 && x0 < x1 && y0 < y1 && x1 <= 1 && y1 <= 1
+}
+
+function decodeStrictBase64(value: unknown): Uint8Array | null {
+  if (
+    typeof value !== 'string' ||
+    value.length === 0 ||
+    value.length > RENDITION_MAX_BASE64_LENGTH ||
+    value.length % 4 !== 0 ||
+    !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)
+  ) {
+    return null
+  }
+  const decoded = Buffer.from(value, 'base64')
+  return decoded.toString('base64') === value ? decoded : null
+}
+
+export function validateVisualAttachment(value: unknown): value is VisualAttachment {
+  if (typeof value !== 'object' || value === null) return false
+  const attachment = value as Partial<VisualAttachment>
+  if (
+    !Number.isInteger(attachment.pageNum) ||
+    (attachment.pageNum as number) < 1 ||
+    !Number.isInteger(attachment.visualIndex) ||
+    (attachment.visualIndex as number) < 0 ||
+    !validNormalizedBbox(attachment.bbox) ||
+    (attachment.mimeType !== 'image/png' && attachment.mimeType !== 'image/jpeg') ||
+    !Number.isInteger(attachment.pixelWidth) ||
+    !Number.isInteger(attachment.pixelHeight) ||
+    (attachment.pixelWidth as number) <= 0 ||
+    (attachment.pixelHeight as number) <= 0 ||
+    Math.max(attachment.pixelWidth as number, attachment.pixelHeight as number) >
+      RENDITION_LONG_EDGE_MAX
+  ) {
+    return false
+  }
+  const bytes = decodeStrictBase64(attachment.data)
+  if (!bytes || bytes.byteLength > RENDITION_MAX_BYTES) return false
+  const header = attachment.mimeType === 'image/png' ? pngHeader(bytes) : jpegHeader(bytes)
+  return (
+    header !== null &&
+    header.width === attachment.pixelWidth &&
+    header.height === attachment.pixelHeight
+  )
+}
+
+function renditionHeader(rendition: ImageRendition): { width: number; height: number } | null {
+  return rendition.mimeType === 'image/png'
+    ? pngHeader(rendition.bytes)
+    : jpegHeader(rendition.bytes)
+}
+
+export function createVisualAttachment(
+  region: DetectedVisualRegion,
+  visualIndex: number,
+  rendition: ImageRendition
+): VisualAttachment {
+  const header = renditionHeader(rendition)
+  const source = cropDimensions(region.bbox)
+  const sourceRatio = source.width / source.height
+  const pixelRatio = rendition.pixelWidth / rendition.pixelHeight
+  const roundingTolerance = Math.max(1 / rendition.pixelWidth, 1 / rendition.pixelHeight) * 2
+  if (
+    !header ||
+    header.width !== rendition.pixelWidth ||
+    header.height !== rendition.pixelHeight ||
+    Math.abs(sourceRatio - pixelRatio) / sourceRatio > roundingTolerance ||
+    rendition.bytes.byteLength > RENDITION_MAX_BYTES
+  ) {
+    throw new VlmError('Invalid PDF rendition', { pageNum: region.pageNum })
+  }
+
+  const attachment: VisualAttachment = {
+    pageNum: region.pageNum,
+    visualIndex,
+    bbox: region.normalizedBbox,
+    mimeType: rendition.mimeType,
+    pixelWidth: rendition.pixelWidth,
+    pixelHeight: rendition.pixelHeight,
+    data: Buffer.from(rendition.bytes).toString('base64'),
+  }
+  if (!validateVisualAttachment(attachment)) {
+    throw new VlmError('Invalid PDF rendition', { pageNum: region.pageNum })
+  }
+  return attachment
 }

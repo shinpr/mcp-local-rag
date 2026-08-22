@@ -18,7 +18,13 @@
 
 import * as mupdf from 'mupdf'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { renderPdfPage, VlmError } from '../renderer.js'
+import {
+  createVisualAttachment,
+  renderPdfPage,
+  renderPdfRendition,
+  VlmError,
+  validateVisualAttachment,
+} from '../renderer.js'
 
 // PNG magic bytes per RFC 2083 §3.1.
 const PNG_MAGIC = [0x89, 0x50, 0x4e, 0x47] as const
@@ -31,17 +37,22 @@ const PNG_MAGIC = [0x89, 0x50, 0x4e, 0x47] as const
  * appends it to the page tree; without `insertPage` mupdf would refuse to
  * load the page after re-opening the saved bytes.
  */
-function buildMinimalPdfBytes(): Uint8Array {
+function buildMinimalPdfBytes(width = 100, height = 100): Uint8Array {
   const pdf = new mupdf.PDFDocument()
   try {
     const resources = pdf.newDictionary()
     const contents = new mupdf.Buffer()
-    const pageObj = pdf.addPage([0, 0, 100, 100], 0, resources, contents)
+    const pageObj = pdf.addPage([0, 0, width, height], 0, resources, contents)
     pdf.insertPage(-1, pageObj)
     return pdf.saveToBuffer().asUint8Array()
   } finally {
     pdf.destroy()
   }
+}
+
+function pngDimensions(bytes: Uint8Array): { width: number; height: number } {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+  return { width: view.getUint32(16), height: view.getUint32(20) }
 }
 
 describe('renderPdfPage', () => {
@@ -105,5 +116,74 @@ describe('renderPdfPage', () => {
     expect((captured as VlmError).name).toBe('VlmError')
     expect((captured as VlmError).message).toBe('Failed to render PDF page')
     expect((captured as VlmError).cause).toBeDefined()
+  })
+
+  it('bounds a non-square caption crop without changing its aspect ratio', async () => {
+    const bytes = buildMinimalPdfBytes(1800, 600)
+    const wideDoc = mupdf.Document.openDocument(bytes, 'application/pdf')
+    try {
+      const png = await renderPdfPage(wideDoc, 1, [0, 0, 1800, 600])
+      const dimensions = pngDimensions(png)
+
+      expect(Math.max(dimensions.width, dimensions.height)).toBeLessThanOrEqual(4096)
+      expect(dimensions.width * dimensions.height).toBeLessThanOrEqual(16_777_216)
+      expect(dimensions.width / dimensions.height).toBeCloseTo(3, 2)
+    } finally {
+      wideDoc.destroy()
+    }
+  })
+
+  it('creates bounded PNG and JPEG renditions with validated attachment metadata', async () => {
+    const bytes = buildMinimalPdfBytes(1800, 600)
+    const wideDoc = mupdf.Document.openDocument(bytes, 'application/pdf')
+    try {
+      const pngRendition = await renderPdfRendition(wideDoc, 1, [0, 0, 1800, 600], 'vector')
+      const jpegRendition = await renderPdfRendition(wideDoc, 1, [0, 0, 1800, 600], 'raster')
+
+      expect(pngRendition.mimeType).toBe('image/png')
+      expect(jpegRendition.mimeType).toBe('image/jpeg')
+      for (const rendition of [pngRendition, jpegRendition]) {
+        expect(Math.max(rendition.pixelWidth, rendition.pixelHeight)).toBeLessThanOrEqual(1024)
+        expect(rendition.pixelWidth / rendition.pixelHeight).toBeCloseTo(3, 2)
+        expect(rendition.bytes.byteLength).toBeLessThanOrEqual(512 * 1024)
+      }
+
+      const attachment = createVisualAttachment(
+        {
+          pageNum: 1,
+          detectionIndex: 0,
+          bbox: [0, 0, 1800, 600],
+          normalizedBbox: [0, 0, 1, 1],
+          evidence: 'vector',
+        },
+        4,
+        pngRendition
+      )
+      expect(attachment.visualIndex).toBe(4)
+      expect(attachment.data).not.toMatch(/^data:/)
+      expect(validateVisualAttachment(attachment)).toBe(true)
+    } finally {
+      wideDoc.destroy()
+    }
+  })
+
+  it('rejects malformed base64, signature mismatches, dimension mismatches, and invalid bbox values', async () => {
+    const rendition = await renderPdfRendition(doc as mupdf.Document, 1, [0, 0, 100, 100], 'vector')
+    const valid = createVisualAttachment(
+      {
+        pageNum: 1,
+        detectionIndex: 0,
+        bbox: [0, 0, 100, 100],
+        normalizedBbox: [0, 0, 1, 1],
+        evidence: 'vector',
+      },
+      0,
+      rendition
+    )
+
+    expect(validateVisualAttachment({ ...valid, data: `${valid.data.slice(0, -1)}-` })).toBe(false)
+    expect(validateVisualAttachment({ ...valid, mimeType: 'image/jpeg' })).toBe(false)
+    expect(validateVisualAttachment({ ...valid, pixelWidth: valid.pixelWidth + 1 })).toBe(false)
+    expect(validateVisualAttachment({ ...valid, bbox: [0, 0.8, 1, 0.2] })).toBe(false)
   })
 })

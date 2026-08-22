@@ -49,11 +49,15 @@ const mocks = vi.hoisted(() => {
     defaultCaption: string | null
     // Page-keyed renderer behaviour. If absent, `defaultPng` is returned.
     renderByPage: Map<number, Error>
+    renderByCropX: Map<number, Error>
+    renditionByCropX: Map<number, Error>
     defaultPng: Uint8Array
   } = {
     captionByPage: new Map(),
     defaultCaption: 'a generic caption',
     renderByPage: new Map(),
+    renderByCropX: new Map(),
+    renditionByCropX: new Map(),
     defaultPng: new Uint8Array([0x89, 0x50, 0x4e, 0x47]),
   }
 
@@ -61,6 +65,11 @@ const mocks = vi.hoisted(() => {
     async (_doc: unknown, pageNum: number, _cropRect?: unknown): Promise<Uint8Array> => {
       const override = state.renderByPage.get(pageNum)
       if (override) throw override
+      const cropX = Array.isArray(_cropRect) ? (_cropRect[0] as number) : undefined
+      if (cropX !== undefined) {
+        const cropOverride = state.renderByCropX.get(cropX)
+        if (cropOverride) throw cropOverride
+      }
       return state.defaultPng
     }
   )
@@ -72,7 +81,19 @@ const mocks = vi.hoisted(() => {
     return state.defaultCaption
   })
 
-  return { state, renderSpy, captionSpy }
+  const defaultRendition = {
+    bytes: new Uint8Array([0x89, 0x50, 0x4e, 0x47]),
+    mimeType: 'image/png' as const,
+    pixelWidth: 100,
+    pixelHeight: 100,
+  }
+  const renditionSpy = vi.fn(async (_doc: unknown, _pageNum: number, cropRect: number[]) => {
+    const override = state.renditionByCropX.get(cropRect[0] as number)
+    if (override) throw override
+    return defaultRendition
+  })
+
+  return { state, renderSpy, captionSpy, renditionSpy, defaultRendition }
 })
 
 // Mock factories — installed via `vi.doMock` in `beforeAll` and removed via
@@ -80,6 +101,7 @@ const mocks = vi.hoisted(() => {
 
 const rendererFactory = () => ({
   renderPdfPage: mocks.renderSpy,
+  renderPdfRendition: mocks.renditionSpy,
 })
 
 const captionerFactory = () => ({
@@ -94,6 +116,7 @@ const MOCKED_PATHS = ['../renderer.js', '../captioner.js'] as const
 import type { Captioner } from '../types.js'
 
 let enrichPagesWithCaptions: typeof import('../index.js').enrichPagesWithCaptions
+let processVisualRegions: typeof import('../index.js').processVisualRegions
 
 // ============================================
 // Helpers
@@ -133,7 +156,7 @@ describe('enrichPagesWithCaptions', () => {
     vi.resetModules()
     vi.doMock('../renderer.js', rendererFactory)
     vi.doMock('../captioner.js', captionerFactory)
-    ;({ enrichPagesWithCaptions } = await import('../index.js'))
+    ;({ enrichPagesWithCaptions, processVisualRegions } = await import('../index.js'))
   })
 
   afterAll(() => {
@@ -146,7 +169,10 @@ describe('enrichPagesWithCaptions', () => {
     mocks.state.captionByPage = new Map()
     mocks.state.defaultCaption = 'a generic caption'
     mocks.state.renderByPage = new Map()
+    mocks.state.renderByCropX = new Map()
+    mocks.state.renditionByCropX = new Map()
     mocks.renderSpy.mockClear()
+    mocks.renditionSpy.mockClear()
     mocks.captionSpy.mockClear()
     // Silence and capture console output. Use `mockImplementation` (not
     // `mockReturnValue`) so the original method is fully shadowed.
@@ -284,5 +310,69 @@ describe('enrichPagesWithCaptions', () => {
     expect(mocks.renderSpy).toHaveBeenCalledWith(fakeDoc, 2, [1, 2, 3, 4])
     expect(mocks.captionSpy).toHaveBeenCalledTimes(1)
     expect(mocks.captionSpy).toHaveBeenCalledWith(mocks.state.defaultPng, 2)
+  })
+
+  it('isolates failures between independent regions on the same page', async () => {
+    const pages = makePages([{ pageNum: 1, text: 'page body' }])
+    const regions = [
+      {
+        pageNum: 1,
+        detectionIndex: 0,
+        bbox: [10, 20, 110, 120] as [number, number, number, number],
+        normalizedBbox: [0.01, 0.02, 0.11, 0.12] as [number, number, number, number],
+        evidence: 'vector' as const,
+      },
+      {
+        pageNum: 1,
+        detectionIndex: 1,
+        bbox: [200, 220, 400, 420] as [number, number, number, number],
+        normalizedBbox: [0.2, 0.22, 0.4, 0.42] as [number, number, number, number],
+        evidence: 'raster' as const,
+      },
+    ]
+    mocks.state.renderByCropX.set(10, new Error('first region render failed'))
+    mocks.state.defaultCaption = 'surviving region caption'
+
+    const result = await enrichPagesWithCaptions(pages, regions, fakeDoc, captioner)
+
+    expect(mocks.renderSpy).toHaveBeenCalledTimes(2)
+    expect(result.captions).toEqual([
+      {
+        pageNum: 1,
+        detectionIndex: 1,
+        bbox: [200, 220, 400, 420],
+        normalizedBbox: [0.2, 0.22, 0.4, 0.42],
+        text: 'surviving region caption',
+      },
+    ])
+    expect(warnSpy.mock.calls.flat().join(' ')).toMatch(/page 1.*visual 0/)
+  })
+
+  it('keeps every region when one persisted rendition fails', async () => {
+    const regions = [
+      {
+        pageNum: 1,
+        detectionIndex: 0,
+        bbox: [10, 20, 110, 120] as [number, number, number, number],
+        normalizedBbox: [0.01, 0.02, 0.11, 0.12] as [number, number, number, number],
+        evidence: 'vector' as const,
+      },
+      {
+        pageNum: 1,
+        detectionIndex: 1,
+        bbox: [200, 220, 400, 420] as [number, number, number, number],
+        normalizedBbox: [0.2, 0.22, 0.4, 0.42] as [number, number, number, number],
+        evidence: 'raster' as const,
+      },
+    ]
+    mocks.state.renditionByCropX.set(10, new Error('first rendition failed'))
+
+    const result = await processVisualRegions(regions, fakeDoc, { includeImages: true })
+
+    expect(result).toHaveLength(2)
+    expect(result[0]).not.toHaveProperty('rendition')
+    expect(result[1]?.rendition).toBe(mocks.defaultRendition)
+    expect(mocks.renditionSpy).toHaveBeenCalledTimes(2)
+    expect(warnSpy.mock.calls.flat().join(' ')).toMatch(/page 1.*visual 0/)
   })
 })

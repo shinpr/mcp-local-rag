@@ -7,8 +7,8 @@
 //     class (not the architecture-agnostic `AutoModelForImageTextToText`).
 //   - Processor invoked with a SINGLE image argument (not the array form
 //     used by the IDEFICS3-based `fast` profile).
-//   - Image is resized to 448x448 client-side before being handed to the
-//     processor.
+//   - The decoded image is handed to the processor at its native aspect ratio;
+//     no fixed square resize is applied.
 //   - `model.generate` is called with `max_new_tokens` ONLY — the
 //     `repetition_penalty` / `no_repeat_ngram_size` options used by `fast`
 //     MUST NOT be present (they produce forced variant generation on Qwen).
@@ -82,16 +82,18 @@ const mocks = vi.hoisted(() => {
 
   const mockModelInstance = { generate: mockGenerate }
 
-  // RawImage.fromBlob resolves to an object with a `.resize()` method; the
-  // production code chains `.resize(448, 448)` and we assert on the args.
+  // RawImage.fromBlob resolves to a non-square image with a resize spy so the
+  // test can prove that quality preprocessing does not distort it.
   const mockResize = vi.fn((_w: number, _h: number) => {
     if (state.resizeThrows) throw state.resizeThrows
     return { width: 448, height: 448, channels: 3, data: new Uint8ClampedArray(0) }
   })
 
+  const decodedImage = { width: 900, height: 450, resize: mockResize }
+
   const mockFromBlob = vi.fn(async (_blob: Blob) => {
     if (state.fromBlobThrows) throw state.fromBlobThrows
-    return { resize: mockResize }
+    return decodedImage
   })
 
   const env = { cacheDir: '' as string }
@@ -113,6 +115,7 @@ const mocks = vi.hoisted(() => {
     mockProcessorInstance,
     mockFromBlob,
     mockResize,
+    decodedImage,
   }
 })
 
@@ -190,13 +193,13 @@ describe('createCaptioner — quality profile dispatch (Qwen2.5-VL-3B-Instruct-O
     expect(mocks.mockModelFromPretrained).toHaveBeenCalledTimes(1)
   })
 
-  it('resizes the decoded image to 448x448 before invoking the processor', async () => {
+  it('passes the decoded non-square image through without fixed resizing', async () => {
     const captioner = createCaptioner(BASE_CONFIG)
     await captioner.caption(PNG_BYTES, 1)
 
     expect(mocks.mockFromBlob).toHaveBeenCalledTimes(1)
-    expect(mocks.mockResize).toHaveBeenCalledTimes(1)
-    expect(mocks.mockResize.mock.calls[0]).toEqual([448, 448])
+    expect(mocks.mockResize).not.toHaveBeenCalled()
+    expect(mocks.mockProcessorInstance.mock.calls[0]?.[1]).toBe(mocks.decodedImage)
   })
 
   it('invokes the processor with a SINGLE image (Qwen) — not an array (IDEFICS3)', async () => {

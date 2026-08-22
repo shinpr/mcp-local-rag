@@ -5,17 +5,15 @@
 // in-image text (axis labels, panel sub-labels, annotations), at the cost of
 // a materially larger model cache (~10× `fast`) and ~2× per-page inference
 // time on CPU. Shares the profile-agnostic load/decode mechanics with `fast`
-// via `shared.ts`; keeps its own model class, prompt, resize, processor call
+// via `shared.ts`; keeps its own model class, prompt, processor call
 // shape, and generation options.
 //
 // Implementation contract:
 //   1. Lazy-load processor + model on first `caption()` call with the pinned
 //      DTYPE and the resolved device. `env.cacheDir` is set by the dispatcher
 //      (`captioner.ts`) before this profile is constructed.
-//   2. Decode PNG bytes via `RawImage.fromBlob(...)` and resize to 448x448 —
-//      matches the onnx-community Qwen2-VL reference example. Qwen2.5-VL
-//      supports dynamic resolution natively, but the reference example uses
-//      a fixed resize for stable behavior.
+//   2. Decode PNG bytes via `RawImage.fromBlob(...)` and pass the native,
+//      aspect-preserving image to Qwen2.5-VL's dynamic-resolution processor.
 //   3. Build chat-style input via `processor.apply_chat_template(messages,
 //      { add_generation_prompt: true })` with the Qwen2.5-VL conversation
 //      shape `[{role:'user', content:[{type:'image'},{type:'text',text:...}]}]`.
@@ -41,12 +39,6 @@ import { VlmError } from '../types.js'
 import { createModelLoader, decodePngToRawImage, postProcess } from './shared.js'
 
 const MODEL_NAME = 'onnx-community/Qwen2.5-VL-3B-Instruct-ONNX'
-
-/**
- * Fixed input resolution (px) for the Qwen2.5-VL reference resize. Matches the
- * onnx-community Qwen2-VL example's stable-behavior fixed resize.
- */
-const QWEN_INPUT_SIZE = 448
 
 /**
  * Static prompt — tuned for retrieval search indexing. Asks the VLM to scan
@@ -89,14 +81,7 @@ export function createQualityCaptioner(resolvedDevice: string): Captioner {
       try {
         const { processor, model } = await loader.ensureLoaded()
 
-        // Decode PNG → RawImage, then resize to 448x448 to match the
-        // onnx-community Qwen2-VL reference example. Qwen2.5-VL supports dynamic
-        // resolution natively, but the reference example uses a fixed resize for
-        // stable behavior; revisit if small in-figure text is lost.
-        const rawImage = await (await decodePngToRawImage(pngBytes)).resize(
-          QWEN_INPUT_SIZE,
-          QWEN_INPUT_SIZE
-        )
+        const rawImage = await decodePngToRawImage(pngBytes)
 
         // Build chat-style input. The Qwen2.5-VL conversation shape mirrors
         // the onnx-community Qwen2-VL reference: a single user turn with an
