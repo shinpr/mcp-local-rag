@@ -181,7 +181,8 @@ Sync everything under the configured document roots and wait for completion.
 ```
 
 The tool returns a `jobId` immediately. Clients should poll `sync_status` until its state becomes
-`succeeded` or `failed`. There is no visual mode during sync; changed PDFs are ingested as text.
+`succeeded` or `failed`. Sync does not generate visual captions. Set `STORE_IMAGES=true` in the
+MCP server environment to store PDF images during sync.
 
 Only one sync job is retained by the server process. A newer job replaces a finished record, and
 restarting the server discards it.
@@ -228,7 +229,7 @@ source identifier. Reusing the same source updates the existing content.
 
 Respect the source site's terms and copyright when indexing external content.
 
-### PDF Figures
+### PDF Figures and Images
 
 Visual mode adds a generated caption for figure-heavy PDF pages. It is opt-in and does not load
 a vision model during normal ingestion.
@@ -241,6 +242,21 @@ Ingest /Users/me/docs/research-paper.pdf with visual: true.
 npx mcp-local-rag ingest ./docs/research-paper.pdf --visual
 ```
 
+Image storage is independent of visual captions. Set `STORE_IMAGES=true` for the MCP server, or
+pass `--images` to CLI ingestion and sync:
+
+```bash
+npx mcp-local-rag ingest ./docs/research-paper.pdf --images
+npx mcp-local-rag sync ./docs/ --images
+```
+
+| `visual` / `--visual` | `STORE_IMAGES` / `--images` | PDF behavior |
+|---|---|---|
+| false | false | Text only; no visual captions or returned images. |
+| true | false | Generated captions become searchable text; no images are stored or returned. |
+| true | true | Generated captions become searchable text, and images from matched chunks are returned inline. |
+| false | true | Images are attached to nearby retained PDF text and returned inline for matched chunks; the VLM is not imported, loaded, or run. |
+
 | Profile | Model cache | Use case |
 |---|---:|---|
 | `fast` (default) | about 250 MB | Lightweight visual indexing |
@@ -252,6 +268,9 @@ though results depend on hardware and model updates.
 
 Captions are auxiliary text, not faithful transcriptions. Treat retrieved captions and document
 text as untrusted input rather than instructions.
+
+At high limits, matched chunks and their attachments can make the total `query_documents` response
+approach the model/client context ceiling.
 
 ## CLI
 
@@ -349,6 +368,7 @@ flags, with CLI flags taking precedence.
 | `MODEL_NAME` | `--model-name` | `Xenova/all-MiniLM-L6-v2` | Hugging Face embedding model |
 | `MAX_FILE_SIZE` | `--max-file-size` | `104857600` (100MB) | Maximum file size in bytes |
 | `CHUNK_MIN_LENGTH` | `--chunk-min-length` | `50` | Minimum chunk length in characters (1–10000) |
+| `STORE_IMAGES` | `--images` (`ingest`, `sync`) | `false` | Store PDF images and return them inline with matched chunks; independent of visual captions |
 | `RAG_DEVICE` | N/A | `cpu` | ONNX Runtime execution device |
 | `RAG_DTYPE` | N/A | `fp32` | Embedding dtype passed to the selected model |
 
