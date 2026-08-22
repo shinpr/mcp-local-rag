@@ -8,6 +8,7 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
 import {
+  type Annotations,
   CallToolRequestSchema,
   ErrorCode,
   ListToolsRequestSchema,
@@ -114,6 +115,34 @@ const TOOL_ERROR_CONTEXT: Record<string, ToMcpErrorContext> = {
   list_files: {},
   status: {},
   sync_status: {},
+}
+
+const ATTACHMENT_WARNING_ANNOTATIONS = {
+  audience: ['user', 'assistant'],
+  priority: 0.3,
+} satisfies Annotations
+
+function attachmentOmissionWarning(
+  omittedCount: number,
+  invalidIdentities: readonly { filePath: string; chunkIndex: number }[]
+): RagContentBlock {
+  const identities = invalidIdentities
+    .slice(0, 3)
+    .map(({ filePath, chunkIndex }) => JSON.stringify({ filePath, chunkIndex }))
+    .join(', ')
+  return {
+    type: 'text',
+    text: `Warning: Visual attachments omitted ${omittedCount} invalid attachment${omittedCount === 1 ? '' : 's'}${identities.length > 0 ? ` for ${identities}` : ''}. Text search results are unchanged.`,
+    annotations: ATTACHMENT_WARNING_ANNOTATIONS,
+  }
+}
+
+function attachmentHydrationFailureWarning(): RagContentBlock {
+  return {
+    type: 'text',
+    text: 'Warning: Visual attachments could not be loaded. Text search results are unchanged.',
+    annotations: ATTACHMENT_WARNING_ANNOTATIONS,
+  }
 }
 
 /**
@@ -498,12 +527,27 @@ export class RAGServer {
       return queryResult
     })
 
+    let attachmentWarning: RagContentBlock | null = null
+    try {
+      const hydration = await this.vectorStore.hydrateVisualAttachments(searchResults)
+      if (hydration.omittedCount > 0) {
+        attachmentWarning = attachmentOmissionWarning(
+          hydration.omittedCount,
+          hydration.invalidIdentities
+        )
+      }
+    } catch {
+      attachmentWarning = attachmentHydrationFailureWarning()
+    }
+
     const content: RagContentBlock[] = [
       {
         type: 'text',
         text: JSON.stringify(results, null, 2),
       },
     ]
+
+    if (attachmentWarning) content.push(attachmentWarning)
 
     // Append config warnings on every call because MCP clients may hide
     // stderr and may not retain context across calls.

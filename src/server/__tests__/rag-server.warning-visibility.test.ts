@@ -14,9 +14,11 @@
 
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { testModelCacheDir, withTestDevice } from '../../__tests__/test-device.js'
+import type { Embedder } from '../../embedder/index.js'
 import { BaseDirsConfigError } from '../../utils/base-dirs.js'
+import type { SearchResult, VectorStore } from '../../vectordb/index.js'
 import { RAGServer } from '../index.js'
 
 const PRECEDENCE_WARNING =
@@ -408,3 +410,160 @@ describe('P3-T3: no spurious blocks when warnings absent', () => {
     expect(result.content.length).toBe(1)
   })
 })
+
+describe('query_documents attachment warning isolation', () => {
+  const dbPath = resolve('./tmp/test-lancedb-attachment-warning-isolation')
+  const dataDir = resolve('./tmp/test-data-attachment-warning-isolation')
+  const PNG_1X1_BASE64 =
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGBgAAAABQABpfZFQAAAAABJRU5ErkJggg=='
+  const searchResults: SearchResult[] = [
+    {
+      filePath: '/test/first.pdf',
+      chunkIndex: 3,
+      text: 'first preserved text',
+      score: 0.1,
+      metadata: { fileName: 'first.pdf', fileSize: 100, fileType: 'pdf' },
+      fileTitle: 'First',
+    },
+    {
+      filePath: '/test/second.pdf',
+      chunkIndex: 7,
+      text: 'second preserved text',
+      score: 0.2,
+      metadata: { fileName: 'second.pdf', fileSize: 200, fileType: 'pdf' },
+      fileTitle: 'Second',
+    },
+    {
+      filePath: '/test/third.pdf',
+      chunkIndex: 11,
+      text: 'third preserved text',
+      score: 0.3,
+      metadata: { fileName: 'third.pdf', fileSize: 300, fileType: 'pdf' },
+      fileTitle: 'Third',
+    },
+    {
+      filePath: '/test/fourth.pdf',
+      chunkIndex: 13,
+      text: 'fourth preserved text',
+      score: 0.4,
+      metadata: { fileName: 'fourth.pdf', fileSize: 400, fileType: 'pdf' },
+      fileTitle: 'Fourth',
+    },
+  ]
+  let server: RAGServer
+
+  function internals(value: RAGServer): { embedder: Embedder; vectorStore: VectorStore } {
+    return value as unknown as { embedder: Embedder; vectorStore: VectorStore }
+  }
+
+  beforeAll(() => {
+    mkdirSync(dbPath, { recursive: true })
+    mkdirSync(dataDir, { recursive: true })
+    server = new RAGServer(
+      withTestDevice({
+        dbPath,
+        modelName: 'Xenova/all-MiniLM-L6-v2',
+        cacheDir: testModelCacheDir(),
+        baseDir: dataDir,
+        maxFileSize: 100 * 1024 * 1024,
+      })
+    )
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  afterAll(() => {
+    rmSync(dbPath, { recursive: true, force: true })
+    rmSync(dataDir, { recursive: true, force: true })
+  })
+
+  function stubSearch(): void {
+    vi.spyOn(internals(server).embedder, 'embed').mockResolvedValue([0.1, 0.2])
+    vi.spyOn(internals(server).vectorStore, 'search').mockResolvedValue(searchResults)
+  }
+
+  it('keeps every text result and caps one omission warning at the first three identities', async () => {
+    stubSearch()
+    vi.spyOn(internals(server).vectorStore, 'hydrateVisualAttachments').mockResolvedValue({
+      rows: [
+        {
+          filePath: '/test/first.pdf',
+          chunkIndex: 3,
+          attachments: [
+            {
+              pageNum: 1,
+              visualIndex: 2,
+              bbox: [0.1, 0.2, 0.8, 0.9],
+              mimeType: 'image/png',
+              pixelWidth: 1,
+              pixelHeight: 1,
+              data: PNG_1X1_BASE64,
+            },
+          ],
+        },
+        { filePath: '/test/second.pdf', chunkIndex: 7, attachments: [] },
+        { filePath: '/test/third.pdf', chunkIndex: 11, attachments: [] },
+        { filePath: '/test/fourth.pdf', chunkIndex: 13, attachments: [] },
+      ],
+      omittedCount: 4,
+      invalidIdentities: [
+        { filePath: '/test/first.pdf', chunkIndex: 3 },
+        { filePath: '/test/second.pdf', chunkIndex: 7 },
+        { filePath: '/test/third.pdf', chunkIndex: 11 },
+        { filePath: '/test/fourth.pdf', chunkIndex: 13 },
+      ],
+    })
+
+    const result = await server.handleQueryDocuments({ query: 'preserved', limit: 2 })
+    const firstBlock = result.content[0]
+    expect(firstBlock?.type).toBe('text')
+    const parsed = JSON.parse(firstBlock?.type === 'text' ? firstBlock.text : 'null')
+    expect(parsed.map((item: QueryResultShape) => item.text)).toEqual([
+      'first preserved text',
+      'second preserved text',
+      'third preserved text',
+      'fourth preserved text',
+    ])
+    expect(result.content).toHaveLength(2)
+    expect(result.content.every((block) => block.type === 'text')).toBe(true)
+    const warnings = result.content.filter(
+      (block): block is Extract<(typeof result.content)[number], { type: 'text' }> =>
+        block.type === 'text' && block.text.startsWith('Warning: Visual attachments')
+    )
+    expect(warnings).toHaveLength(1)
+    expect(warnings[0]?.text).toContain('4 invalid attachments')
+    expect(warnings[0]?.text).toContain('/test/first.pdf')
+    expect(warnings[0]?.text).toContain('/test/second.pdf')
+    expect(warnings[0]?.text).toContain('/test/third.pdf')
+    expect(warnings[0]?.text).not.toContain('/test/fourth.pdf')
+    expect(warnings[0]?.text).not.toContain(PNG_1X1_BASE64)
+  })
+
+  it('keeps every text result and emits one controlled warning on total hydration failure', async () => {
+    stubSearch()
+    vi.spyOn(internals(server).vectorStore, 'hydrateVisualAttachments').mockRejectedValue(
+      new Error('sensitive database internals')
+    )
+
+    const result = await server.handleQueryDocuments({ query: 'preserved', limit: 2 })
+    const firstBlock = result.content[0]
+    const parsed = JSON.parse(firstBlock?.type === 'text' ? firstBlock.text : 'null')
+    expect(parsed.map((item: QueryResultShape) => item.text)).toEqual([
+      'first preserved text',
+      'second preserved text',
+      'third preserved text',
+      'fourth preserved text',
+    ])
+    expect(result.content).toHaveLength(2)
+    const warnings = result.content.filter(
+      (block): block is Extract<(typeof result.content)[number], { type: 'text' }> =>
+        block.type === 'text' && block.text.startsWith('Warning: Visual attachments')
+    )
+    expect(warnings).toHaveLength(1)
+    expect(warnings[0]?.text).not.toContain('sensitive database internals')
+  })
+})
+
+type QueryResultShape = { text: string }

@@ -4,6 +4,8 @@ import { type Connection, connect, Index, type Table } from '@lancedb/lancedb'
 import { normalizeScopePrefix } from '../utils/scope-match.js'
 import { applyFileFilter, applyGrouping, applyKeywordBoost } from './search-filters.js'
 import {
+  type AttachmentHydrationResult,
+  type ChunkIdentity,
   type ChunkRow,
   DatabaseError,
   DEFAULT_HYBRID_WEIGHT,
@@ -13,6 +15,7 @@ import {
   type ImageStorageVersion,
   normalizeImageStorageVersion,
   normalizeVisualAttachments,
+  parseHydratedVisualAttachments,
   type SearchOptions,
   type SearchResult,
   toChunkRow,
@@ -24,7 +27,10 @@ import {
 
 // Re-export public API
 export type {
+  AttachmentHydrationResult,
+  ChunkIdentity,
   GroupingMode,
+  HydratedChunkAttachments,
   ImageStorageVersion,
   SearchResult,
   VectorChunk,
@@ -379,7 +385,11 @@ export class VectorStore {
     try {
       // Step 1: Semantic (vector) search - always the primary search
       const candidateLimit = limit * HYBRID_SEARCH_CANDIDATE_MULTIPLIER
-      let query = this.table.vectorSearch(queryVector).distanceType('dot').limit(candidateLimit)
+      let query = this.table
+        .vectorSearch(queryVector)
+        .distanceType('dot')
+        .select(['filePath', 'chunkIndex', 'text', 'metadata', 'fileTitle', '_distance'])
+        .limit(candidateLimit)
 
       // Scope prefilter: restrict to chunks under the given path prefixes
       // (exact-or-descendant) before ranking. Applied only when scope is
@@ -457,6 +467,83 @@ export class VectorStore {
     } catch (error) {
       throw new DatabaseError('Failed to search vectors', error as Error)
     }
+  }
+
+  /**
+   * Load and validate attachments for the ordered unique final search identities.
+   * Candidate retrieval and ranking are deliberately complete before this one
+   * projected batch query runs.
+   */
+  async hydrateVisualAttachments(
+    identities: readonly ChunkIdentity[]
+  ): Promise<AttachmentHydrationResult> {
+    const uniqueIdentities: ChunkIdentity[] = []
+    const seen = new Set<string>()
+    for (const identity of identities) {
+      if (
+        typeof identity.filePath !== 'string' ||
+        !Number.isInteger(identity.chunkIndex) ||
+        identity.chunkIndex < 0
+      ) {
+        throw new DatabaseError('Invalid final attachment hydration identity')
+      }
+      const key = this.identityKey(identity)
+      if (!seen.has(key)) {
+        seen.add(key)
+        uniqueIdentities.push({ filePath: identity.filePath, chunkIndex: identity.chunkIndex })
+      }
+    }
+
+    if (uniqueIdentities.length > 20) {
+      throw new DatabaseError('Final attachment hydration exceeds the search limit of 20')
+    }
+    if (!this.table || uniqueIdentities.length === 0) {
+      return {
+        rows: uniqueIdentities.map((identity) => ({ ...identity, attachments: [] })),
+        omittedCount: 0,
+        invalidIdentities: [],
+      }
+    }
+
+    try {
+      const predicate = uniqueIdentities
+        .map(
+          ({ filePath, chunkIndex }) =>
+            `(\`filePath\` = '${this.escapeQuotes(filePath)}' AND \`chunkIndex\` = ${chunkIndex})`
+        )
+        .join(' OR ')
+      const records = await this.table
+        .query()
+        .where(predicate)
+        .select(['filePath', 'chunkIndex', 'visualAttachments'])
+        .toArray()
+      const recordsByIdentity = new Map<string, unknown>()
+      for (const record of records) {
+        if (typeof record.filePath !== 'string' || !Number.isInteger(record.chunkIndex)) continue
+        recordsByIdentity.set(
+          this.identityKey({ filePath: record.filePath, chunkIndex: record.chunkIndex as number }),
+          record.visualAttachments
+        )
+      }
+
+      let omittedCount = 0
+      const invalidIdentities: ChunkIdentity[] = []
+      const rows = uniqueIdentities.map((identity) => {
+        const recordKey = this.identityKey(identity)
+        if (!recordsByIdentity.has(recordKey)) return { ...identity, attachments: [] }
+        const parsed = parseHydratedVisualAttachments(recordsByIdentity.get(recordKey))
+        omittedCount += parsed.omittedCount
+        if (parsed.omittedCount > 0) invalidIdentities.push(identity)
+        return { ...identity, attachments: parsed.attachments }
+      })
+      return { rows, omittedCount, invalidIdentities }
+    } catch (error) {
+      throw new DatabaseError('Failed to hydrate visual attachments', error as Error)
+    }
+  }
+
+  private identityKey(identity: ChunkIdentity): string {
+    return JSON.stringify([identity.filePath, identity.chunkIndex])
   }
 
   /**

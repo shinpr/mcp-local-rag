@@ -142,6 +142,24 @@ export interface SearchResult {
   fileTitle: string | null
 }
 
+/** Persisted composite identity used only for final-result attachment hydration. */
+export interface ChunkIdentity {
+  filePath: string
+  chunkIndex: number
+}
+
+/** Validated attachments for one requested final identity, in visual order. */
+export interface HydratedChunkAttachments extends ChunkIdentity {
+  attachments: VisualAttachment[]
+}
+
+/** Result of one final-identity hydration query. */
+export interface AttachmentHydrationResult {
+  rows: HydratedChunkAttachments[]
+  omittedCount: number
+  invalidIdentities: ChunkIdentity[]
+}
+
 /**
  * Row returned by VectorStore.getChunksByRange.
  * Distinct from SearchResult: no score (not a ranked result) and no metadata
@@ -295,6 +313,128 @@ export function normalizeVisualAttachments(value: unknown): string | null {
 /** Normalize missing, nullable, empty, and unsupported legacy state to disabled. */
 export function normalizeImageStorageVersion(value: unknown): ImageStorageVersion {
   return value === 'pdf-images-v1' ? 'pdf-images-v1' : 'none'
+}
+
+const VISUAL_RENDITION_LONG_EDGE_MAX = 1024
+const VISUAL_RENDITION_MAX_BYTES = 512 * 1024
+const VISUAL_RENDITION_MAX_BASE64_LENGTH = Math.ceil(VISUAL_RENDITION_MAX_BYTES / 3) * 4
+const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a] as const
+
+function decodeStrictBase64(value: unknown): Uint8Array | null {
+  if (
+    typeof value !== 'string' ||
+    value.length === 0 ||
+    value.length > VISUAL_RENDITION_MAX_BASE64_LENGTH ||
+    value.length % 4 !== 0 ||
+    !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)
+  ) {
+    return null
+  }
+  const decoded = Buffer.from(value, 'base64')
+  return decoded.toString('base64') === value ? decoded : null
+}
+
+function pngDimensions(bytes: Uint8Array): { width: number; height: number } | null {
+  if (!PNG_SIGNATURE.every((value, index) => bytes[index] === value) || bytes.byteLength < 24) {
+    return null
+  }
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+  const width = view.getUint32(16)
+  const height = view.getUint32(20)
+  return width > 0 && height > 0 ? { width, height } : null
+}
+
+function jpegDimensions(bytes: Uint8Array): { width: number; height: number } | null {
+  if (bytes.byteLength < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8) return null
+  let offset = 2
+  while (offset + 3 < bytes.byteLength) {
+    if (bytes[offset] !== 0xff) {
+      offset += 1
+      continue
+    }
+    while (bytes[offset] === 0xff) offset += 1
+    const marker = bytes[offset] as number
+    offset += 1
+    if (marker === 0xd9 || marker === 0xda) break
+    if (offset + 1 >= bytes.byteLength) return null
+    const length = ((bytes[offset] as number) << 8) | (bytes[offset + 1] as number)
+    if (length < 2 || offset + length > bytes.byteLength) return null
+    const isStartOfFrame =
+      (marker >= 0xc0 && marker <= 0xc3) ||
+      (marker >= 0xc5 && marker <= 0xc7) ||
+      (marker >= 0xc9 && marker <= 0xcb) ||
+      (marker >= 0xcd && marker <= 0xcf)
+    if (isStartOfFrame && length >= 7) {
+      const height = ((bytes[offset + 3] as number) << 8) | (bytes[offset + 4] as number)
+      const width = ((bytes[offset + 5] as number) << 8) | (bytes[offset + 6] as number)
+      return width > 0 && height > 0 ? { width, height } : null
+    }
+    offset += length
+  }
+  return null
+}
+
+function isValidNormalizedBbox(value: unknown): value is [number, number, number, number] {
+  if (!Array.isArray(value) || value.length !== 4 || !value.every(Number.isFinite)) return false
+  const [x0, y0, x1, y1] = value
+  return x0 >= 0 && y0 >= 0 && x0 < x1 && y0 < y1 && x1 <= 1 && y1 <= 1
+}
+
+function isVisualAttachment(value: unknown): value is VisualAttachment {
+  if (typeof value !== 'object' || value === null) return false
+  const attachment = value as Partial<VisualAttachment>
+  if (
+    !Number.isInteger(attachment.pageNum) ||
+    (attachment.pageNum as number) < 1 ||
+    !Number.isInteger(attachment.visualIndex) ||
+    (attachment.visualIndex as number) < 0 ||
+    !isValidNormalizedBbox(attachment.bbox) ||
+    (attachment.mimeType !== 'image/png' && attachment.mimeType !== 'image/jpeg') ||
+    !Number.isInteger(attachment.pixelWidth) ||
+    !Number.isInteger(attachment.pixelHeight) ||
+    (attachment.pixelWidth as number) <= 0 ||
+    (attachment.pixelHeight as number) <= 0 ||
+    Math.max(attachment.pixelWidth as number, attachment.pixelHeight as number) >
+      VISUAL_RENDITION_LONG_EDGE_MAX
+  ) {
+    return false
+  }
+  const bytes = decodeStrictBase64(attachment.data)
+  if (!bytes || bytes.byteLength > VISUAL_RENDITION_MAX_BYTES) return false
+  const dimensions =
+    attachment.mimeType === 'image/png' ? pngDimensions(bytes) : jpegDimensions(bytes)
+  return (
+    dimensions !== null &&
+    dimensions.width === attachment.pixelWidth &&
+    dimensions.height === attachment.pixelHeight
+  )
+}
+
+/** Parse one persisted attachment cell while keeping malformed siblings observable. */
+export function parseHydratedVisualAttachments(value: unknown): {
+  attachments: VisualAttachment[]
+  omittedCount: number
+} {
+  if (value === null || value === undefined || value === '' || value === '[]') {
+    return { attachments: [], omittedCount: 0 }
+  }
+  if (typeof value !== 'string') return { attachments: [], omittedCount: 1 }
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(value)
+  } catch {
+    return { attachments: [], omittedCount: 1 }
+  }
+  if (!Array.isArray(parsed)) return { attachments: [], omittedCount: 1 }
+
+  const attachments: VisualAttachment[] = []
+  let omittedCount = 0
+  for (const item of parsed) {
+    if (isVisualAttachment(item)) attachments.push(item)
+    else omittedCount += 1
+  }
+  attachments.sort((left, right) => left.visualIndex - right.visualIndex)
+  return { attachments, omittedCount }
 }
 
 /**

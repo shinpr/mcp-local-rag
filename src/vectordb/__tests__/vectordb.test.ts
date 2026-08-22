@@ -2367,3 +2367,367 @@ describe('VectorStore', () => {
     })
   })
 })
+
+// PDF visual image storage and deferred hydration integration skeleton.
+//
+// AC: AC-005/AC-006 — Fresh and migrated LanceDB tables preserve the exact
+// visual attachment/storage-version semantics, while vector and FTS candidate
+// retrieval omit those columns and one batch lookup hydrates only final results.
+// Behavior: Seed fresh and legacy temporary tables -> initialize and query the
+// real VectorStore -> observe migrated/normalized rows, attachment-free
+// candidates, and ordered attachments hydrated for only the final identities.
+// @lane: integration
+// @dependency: VectorStore + real temporary LanceDB schema, vector query, FTS
+// query, and final-identity batch lookup
+// @real-dependency: @lancedb/lancedb storage and query builders; do not replace
+// the database or its projection/hydration operations with mocks
+// Primary failure mode: A schema or query-path regression loses persisted image
+// state, exposes legacy sentinels, or materializes large attachments for the 2x
+// candidate set before ranking and limiting.
+// Proof obligation: Through independent real-DB reads, assert both columns on a
+// fresh table and after idempotent legacy migration; assert missing/null/empty
+// attachment state normalizes to [] and image state to none; capture real vector
+// and FTS candidate rows without visualAttachments/imageStorageVersion; then
+// assert one escaped batch lookup receives exactly the ordered unique final
+// {filePath, chunkIndex} identities (maximum 20) and returns per-row attachments
+// in visualIndex order. Keep any instrumentation at the query-instance boundary
+// and restore it after the case so Vitest's shared module registry is unchanged.
+describe('PDF visual attachment persistence and deferred hydration', () => {
+  const PNG_1X1_BASE64 =
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGBgAAAABQABpfZFQAAAAABJRU5ErkJggg=='
+
+  function createNormalizedVector(seed: number): number[] {
+    const vector = new Array(384).fill(0).map((_, index) => Math.sin(seed + index))
+    const norm = Math.sqrt(vector.reduce((sum, value) => sum + value * value, 0))
+    return vector.map((value) => value / norm)
+  }
+
+  function createTestChunk(
+    text: string,
+    filePath: string,
+    chunkIndex: number,
+    vector: number[]
+  ): VectorChunk {
+    return {
+      id: randomUUID(),
+      filePath,
+      chunkIndex,
+      text,
+      vector,
+      metadata: { fileName: path.basename(filePath), fileSize: text.length, fileType: 'pdf' },
+      fileTitle: null,
+      timestamp: new Date().toISOString(),
+    }
+  }
+
+  async function withTempDb(
+    name: string,
+    run: (store: VectorStore, dbPath: string) => Promise<void>
+  ): Promise<void> {
+    const dbPath = `./tmp/test-vectordb-${name}`
+    if (fs.existsSync(dbPath)) fs.rmSync(dbPath, { recursive: true })
+    const store = new VectorStore({ dbPath, tableName: 'chunks' })
+    try {
+      await store.initialize()
+      await run(store, dbPath)
+    } finally {
+      await store.close()
+      if (fs.existsSync(dbPath)) fs.rmSync(dbPath, { recursive: true })
+    }
+  }
+
+  function visualAttachment(visualIndex: number) {
+    return {
+      pageNum: 1,
+      visualIndex,
+      bbox: [0.1, 0.2, 0.8, 0.9] as [number, number, number, number],
+      mimeType: 'image/png' as const,
+      pixelWidth: 1,
+      pixelHeight: 1,
+      data: PNG_1X1_BASE64,
+    }
+  }
+
+  it('creates both columns and migrates legacy rows idempotently with no-image normalization', async () => {
+    await withTempDb('visual-columns-fresh', async (store, dbPath) => {
+      await store.insertChunks([
+        {
+          ...createTestChunk('fresh visual row', '/test/fresh.pdf', 0, createNormalizedVector(1)),
+          visualAttachments: JSON.stringify([visualAttachment(0)]),
+          imageStorageVersion: 'pdf-images-v1',
+        },
+      ])
+
+      const { connect: lanceConnect } = await import('@lancedb/lancedb')
+      const db = await lanceConnect(dbPath)
+      const table = await db.openTable('chunks')
+      const names = (await table.schema()).fields.map((field) => field.name)
+      expect(names).toContain('visualAttachments')
+      expect(names).toContain('imageStorageVersion')
+      await db.close()
+    })
+
+    const legacyDbPath = './tmp/test-vectordb-visual-columns-legacy'
+    if (fs.existsSync(legacyDbPath)) fs.rmSync(legacyDbPath, { recursive: true })
+    try {
+      const { connect: lanceConnect } = await import('@lancedb/lancedb')
+      const legacyDb = await lanceConnect(legacyDbPath)
+      await legacyDb.createTable('chunks', [
+        {
+          id: randomUUID(),
+          filePath: '/test/legacy.pdf',
+          chunkIndex: 0,
+          text: 'legacy row',
+          vector: createNormalizedVector(1),
+          metadata: { fileName: 'legacy.pdf', fileSize: 10, fileType: 'pdf' },
+          fileTitle: '',
+          contentHash: '',
+          timestamp: new Date().toISOString(),
+        },
+      ])
+      await legacyDb.close()
+
+      const first = new VectorStore({ dbPath: legacyDbPath, tableName: 'chunks' })
+      await first.initialize()
+      const second = new VectorStore({ dbPath: legacyDbPath, tableName: 'chunks' })
+      await second.initialize()
+
+      const verifyDb = await lanceConnect(legacyDbPath)
+      const verifyTable = await verifyDb.openTable('chunks')
+      const names = (await verifyTable.schema()).fields.map((field) => field.name)
+      expect(names.filter((name) => name === 'visualAttachments')).toHaveLength(1)
+      expect(names.filter((name) => name === 'imageStorageVersion')).toHaveLength(1)
+      const sentinelRecord = (filePath: string, chunkIndex: number) => ({
+        id: randomUUID(),
+        filePath,
+        chunkIndex,
+        text: `legacy sentinel ${chunkIndex}`,
+        vector: createNormalizedVector(chunkIndex + 2),
+        metadata: { fileName: path.basename(filePath), fileSize: 10, fileType: 'pdf' },
+        fileTitle: '',
+        contentHash: '',
+        timestamp: new Date().toISOString(),
+      })
+      await verifyTable.add([
+        {
+          ...sentinelRecord('/test/legacy-null.pdf', 1),
+          visualAttachments: null,
+          imageStorageVersion: null,
+        },
+        {
+          ...sentinelRecord('/test/legacy-empty.pdf', 2),
+          visualAttachments: '',
+          imageStorageVersion: '',
+        },
+        {
+          ...sentinelRecord('/test/legacy-array.pdf', 3),
+          visualAttachments: '[]',
+          imageStorageVersion: '',
+        },
+      ])
+      await verifyDb.close()
+
+      const identities = [
+        { filePath: '/test/legacy.pdf', chunkIndex: 0 },
+        { filePath: '/test/legacy-null.pdf', chunkIndex: 1 },
+        { filePath: '/test/legacy-empty.pdf', chunkIndex: 2 },
+        { filePath: '/test/legacy-array.pdf', chunkIndex: 3 },
+      ]
+      for (const identity of identities) {
+        const rows = await second.getChunksByFilePath(identity.filePath)
+        expect(rows).toHaveLength(1)
+        expect(rows[0]?.visualAttachments).toBeNull()
+        expect(rows[0]?.imageStorageVersion).toBe('none')
+      }
+      const hydration = await second.hydrateVisualAttachments(identities)
+      expect(hydration.rows).toEqual(
+        identities.map((identity) => ({ ...identity, attachments: [] }))
+      )
+      expect(hydration.omittedCount).toBe(0)
+      expect(hydration.invalidIdentities).toEqual([])
+      await first.close()
+      await second.close()
+    } finally {
+      if (fs.existsSync(legacyDbPath)) fs.rmSync(legacyDbPath, { recursive: true })
+    }
+  })
+
+  it('keeps real vector and FTS candidates attachment-free and preserves generated scores', async () => {
+    await withTempDb('visual-candidate-projection', async (store) => {
+      await store.insertChunks(
+        Array.from({ length: 4 }, (_, index) => ({
+          ...createTestChunk(
+            `projection keyword row ${index}`,
+            `/test/projection-${index}.pdf`,
+            index,
+            createNormalizedVector(index + 1)
+          ),
+          visualAttachments: JSON.stringify([visualAttachment(index)]),
+          imageStorageVersion: 'pdf-images-v1' as const,
+        }))
+      )
+      await store.optimize()
+
+      const table = (store as unknown as { table: Record<string, (...args: unknown[]) => unknown> })
+        .table
+      const vectorRows: Record<string, unknown>[] = []
+      const ftsRows: Record<string, unknown>[] = []
+      const originalVectorSearch = table.vectorSearch.bind(table)
+      const originalSearch = table.search.bind(table)
+
+      vi.spyOn(table, 'vectorSearch').mockImplementation((...args: unknown[]) => {
+        const query = originalVectorSearch(...args) as {
+          toArray: () => Promise<Record<string, unknown>[]>
+        }
+        const originalToArray = query.toArray.bind(query)
+        vi.spyOn(query, 'toArray').mockImplementation(async () => {
+          const rows = await originalToArray()
+          vectorRows.push(...rows)
+          return rows
+        })
+        return query
+      })
+      vi.spyOn(table, 'search').mockImplementation((...args: unknown[]) => {
+        const query = originalSearch(...args) as {
+          toArray: () => Promise<Record<string, unknown>[]>
+        }
+        const originalToArray = query.toArray.bind(query)
+        vi.spyOn(query, 'toArray').mockImplementation(async () => {
+          const rows = await originalToArray()
+          ftsRows.push(...rows)
+          return rows
+        })
+        return query
+      })
+
+      try {
+        const results = await store.search(createNormalizedVector(1), {
+          queryText: 'projection keyword',
+          limit: 2,
+        })
+
+        expect(results).toHaveLength(2)
+        expect(results.every((result) => Number.isFinite(result.score))).toBe(true)
+        expect(vectorRows.length).toBeGreaterThan(0)
+        expect(ftsRows.length).toBeGreaterThan(0)
+        for (const row of [...vectorRows, ...ftsRows]) {
+          expect(row).not.toHaveProperty('visualAttachments')
+          expect(row).not.toHaveProperty('imageStorageVersion')
+        }
+        expect(vectorRows.every((row) => typeof row._distance === 'number')).toBe(true)
+        expect(ftsRows.every((row) => typeof row._score === 'number')).toBe(true)
+      } finally {
+        vi.restoreAllMocks()
+      }
+    })
+  })
+
+  it('hydrates one escaped batch for ordered unique final identities and sorts attachments', async () => {
+    await withTempDb('visual-final-hydration', async (store) => {
+      const quotedPath = "/test/quoted'o.pdf"
+      await store.insertChunks([
+        {
+          ...createTestChunk('first final', quotedPath, 3, createNormalizedVector(1)),
+          visualAttachments: JSON.stringify([visualAttachment(4), visualAttachment(1)]),
+          imageStorageVersion: 'pdf-images-v1',
+        },
+        {
+          ...createTestChunk('second final', '/test/second.pdf', 7, createNormalizedVector(2)),
+          visualAttachments: JSON.stringify([visualAttachment(2)]),
+          imageStorageVersion: 'pdf-images-v1',
+        },
+        {
+          ...createTestChunk(
+            'prefetched only',
+            '/test/candidate.pdf',
+            9,
+            createNormalizedVector(3)
+          ),
+          visualAttachments: JSON.stringify([visualAttachment(9)]),
+          imageStorageVersion: 'pdf-images-v1',
+        },
+      ])
+
+      const finalResults = await store.search(createNormalizedVector(1), { limit: 2 })
+      expect(finalResults).toHaveLength(2)
+
+      const table = (store as unknown as { table: Record<string, (...args: unknown[]) => unknown> })
+        .table
+      const originalQuery = table.query.bind(table)
+      const predicates: string[] = []
+      vi.spyOn(table, 'query').mockImplementation((...args: unknown[]) => {
+        const query = originalQuery(...args) as {
+          where: (predicate: string) => unknown
+        }
+        const originalWhere = query.where.bind(query)
+        vi.spyOn(query, 'where').mockImplementation((predicate: string) => {
+          predicates.push(predicate)
+          return originalWhere(predicate)
+        })
+        return query
+      })
+
+      try {
+        const hydration = await store.hydrateVisualAttachments([
+          finalResults[0]!,
+          finalResults[0]!,
+          finalResults[1]!,
+        ])
+
+        expect(predicates).toHaveLength(1)
+        expect(predicates[0]).toContain("quoted''o.pdf")
+        expect(predicates[0]).not.toContain('/test/candidate.pdf')
+        expect(
+          hydration.rows.map(({ filePath, chunkIndex }) => ({ filePath, chunkIndex }))
+        ).toEqual(finalResults.map(({ filePath, chunkIndex }) => ({ filePath, chunkIndex })))
+        expect(hydration.rows[0]?.attachments.map((item) => item.visualIndex)).toEqual([1, 4])
+        expect(hydration.rows[1]?.attachments.map((item) => item.visualIndex)).toEqual([2])
+        expect(hydration.omittedCount).toBe(0)
+        expect(hydration.invalidIdentities).toEqual([])
+      } finally {
+        vi.restoreAllMocks()
+      }
+    })
+  })
+
+  it('preserves valid siblings and reports malformed rows without failing hydration', async () => {
+    await withTempDb('visual-hydration-validation', async (store) => {
+      await store.insertChunks([
+        {
+          ...createTestChunk('mixed attachments', '/test/mixed.pdf', 1, createNormalizedVector(1)),
+          visualAttachments: JSON.stringify([
+            visualAttachment(3),
+            { ...visualAttachment(4), data: 'not-base64' },
+          ]),
+          imageStorageVersion: 'pdf-images-v1',
+        },
+        {
+          ...createTestChunk('malformed row', '/test/malformed.pdf', 2, createNormalizedVector(2)),
+          visualAttachments: '{not-json',
+          imageStorageVersion: 'pdf-images-v1',
+        },
+      ])
+
+      const hydration = await store.hydrateVisualAttachments([
+        { filePath: '/test/mixed.pdf', chunkIndex: 1 },
+        { filePath: '/test/malformed.pdf', chunkIndex: 2 },
+        { filePath: '/test/missing.pdf', chunkIndex: 3 },
+      ])
+
+      expect(hydration.rows).toEqual([
+        {
+          filePath: '/test/mixed.pdf',
+          chunkIndex: 1,
+          attachments: [visualAttachment(3)],
+        },
+        { filePath: '/test/malformed.pdf', chunkIndex: 2, attachments: [] },
+        { filePath: '/test/missing.pdf', chunkIndex: 3, attachments: [] },
+      ])
+      expect(hydration.omittedCount).toBe(2)
+      expect(hydration.invalidIdentities).toEqual([
+        { filePath: '/test/mixed.pdf', chunkIndex: 1 },
+        { filePath: '/test/malformed.pdf', chunkIndex: 2 },
+      ])
+    })
+  })
+})

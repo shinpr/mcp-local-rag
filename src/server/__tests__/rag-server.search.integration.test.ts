@@ -1,12 +1,13 @@
 // RAG MCP Server Integration Test - Vector Search
 // Split from: rag-server.integration.test.ts (AC-004)
 
+import { randomUUID } from 'node:crypto'
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { testModelCacheDir, withTestDevice } from '../../__tests__/test-device.js'
 import type { Embedder } from '../../embedder/index.js'
-import type { SearchResult, VectorStore } from '../../vectordb/index.js'
+import type { SearchResult, VectorChunk, VectorStore } from '../../vectordb/index.js'
 import type { SearchOptions } from '../../vectordb/types.js'
 import { RAGServer } from '../index.js'
 
@@ -240,5 +241,176 @@ describe('handleQueryDocuments → VectorStore.search() options boundary', () =>
     expect(options.queryText).toBe('typescript')
     expect(options.limit).toBe(10)
     expect(Object.hasOwn(options, 'scope')).toBe(false)
+  })
+})
+
+describe('query_documents visual attachment search invariance', () => {
+  const plainDbPath = resolve('./tmp/test-lancedb-search-invariance-plain')
+  const visualDbPath = resolve('./tmp/test-lancedb-search-invariance-visual')
+  const dataDir = resolve('./tmp/test-data-search-invariance')
+  const PNG_1X1_BASE64 =
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGBgAAAABQABpfZFQAAAAABJRU5ErkJggg=='
+  let plainServer: RAGServer
+  let visualServer: RAGServer
+
+  function serverInternals(server: RAGServer): { embedder: Embedder; vectorStore: VectorStore } {
+    return server as unknown as { embedder: Embedder; vectorStore: VectorStore }
+  }
+
+  function tableInternals(store: VectorStore): {
+    query: (...args: unknown[]) => unknown
+  } {
+    return (store as unknown as { table: { query: (...args: unknown[]) => unknown } }).table
+  }
+
+  function chunk(index: number, vector: number[], withAttachment: boolean): VectorChunk {
+    return {
+      id: randomUUID(),
+      filePath: `/test/invariance-${index.toString().padStart(2, '0')}.pdf`,
+      chunkIndex: index,
+      text: `visual invariance searchable row ${index}`,
+      vector: [...vector],
+      metadata: { fileName: `invariance-${index}.pdf`, fileSize: 100 + index, fileType: 'pdf' },
+      fileTitle: `Invariance ${index}`,
+      ...(withAttachment
+        ? {
+            visualAttachments: JSON.stringify([
+              {
+                pageNum: 1,
+                visualIndex: index,
+                bbox: [0.1, 0.2, 0.8, 0.9],
+                mimeType: 'image/png',
+                pixelWidth: 1,
+                pixelHeight: 1,
+                data: PNG_1X1_BASE64,
+              },
+            ]),
+            imageStorageVersion: 'pdf-images-v1' as const,
+          }
+        : { visualAttachments: null, imageStorageVersion: 'none' as const }),
+      timestamp: '2026-08-22T00:00:00.000Z',
+    }
+  }
+
+  beforeAll(async () => {
+    for (const target of [plainDbPath, visualDbPath, dataDir]) {
+      rmSync(target, { recursive: true, force: true })
+      mkdirSync(target, { recursive: true })
+    }
+    const config = {
+      modelName: 'Xenova/all-MiniLM-L6-v2',
+      cacheDir: testModelCacheDir(),
+      baseDir: dataDir,
+      maxFileSize: 100 * 1024 * 1024,
+    }
+    plainServer = new RAGServer(withTestDevice({ ...config, dbPath: plainDbPath }))
+    visualServer = new RAGServer(withTestDevice({ ...config, dbPath: visualDbPath }))
+    await plainServer.initialize()
+    await visualServer.initialize()
+
+    const vector = await serverInternals(plainServer).embedder.embed('visual invariance')
+    await serverInternals(plainServer).vectorStore.insertChunks(
+      Array.from({ length: 25 }, (_, index) => chunk(index, vector, false))
+    )
+    await serverInternals(visualServer).vectorStore.insertChunks(
+      Array.from({ length: 25 }, (_, index) => chunk(index, vector, true))
+    )
+    await serverInternals(plainServer).vectorStore.optimize()
+    await serverInternals(visualServer).vectorStore.optimize()
+  }, 60000)
+
+  afterAll(async () => {
+    await plainServer.close()
+    await visualServer.close()
+    rmSync(plainDbPath, { recursive: true, force: true })
+    rmSync(visualDbPath, { recursive: true, force: true })
+    rmSync(dataDir, { recursive: true, force: true })
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it.each([
+    ['default 10', undefined, 10],
+    ['explicit 20', 20, 20],
+  ] as const)('keeps the first JSON array deeply equal at %s', async (_label, limit, count) => {
+    const args = { query: 'visual invariance', ...(limit === undefined ? {} : { limit }) }
+    const plain = await plainServer.handleQueryDocuments(args)
+
+    const store = serverInternals(visualServer).vectorStore
+    const table = tableInternals(store)
+    const events: string[] = []
+    const predicates: string[] = []
+    const originalSearch = store.search.bind(store)
+    const originalHydrate = store.hydrateVisualAttachments.bind(store)
+    const originalQuery = table.query.bind(table)
+    vi.spyOn(store, 'search').mockImplementation(async (...searchArgs) => {
+      events.push('search:start')
+      const searched = await originalSearch(...searchArgs)
+      events.push('search:end')
+      return searched
+    })
+    const hydrateSpy = vi
+      .spyOn(store, 'hydrateVisualAttachments')
+      .mockImplementation(async (identities) => {
+        events.push('hydrate:start')
+        const hydrated = await originalHydrate(identities)
+        events.push('hydrate:end')
+        return hydrated
+      })
+    vi.spyOn(table, 'query').mockImplementation((...queryArgs: unknown[]) => {
+      const query = originalQuery(...queryArgs) as {
+        where: (predicate: string) => unknown
+        select: (columns: string[]) => unknown
+      }
+      let predicate: string | null = null
+      const originalWhere = query.where.bind(query)
+      const originalSelect = query.select.bind(query)
+      vi.spyOn(query, 'where').mockImplementation((wherePredicate: string) => {
+        predicate = wherePredicate
+        return originalWhere(wherePredicate)
+      })
+      vi.spyOn(query, 'select').mockImplementation((columns: string[]) => {
+        if (columns.includes('visualAttachments')) {
+          events.push('lookup')
+          if (predicate !== null) predicates.push(predicate)
+        }
+        return originalSelect(columns)
+      })
+      return query
+    })
+
+    const visual = await visualServer.handleQueryDocuments(args)
+    const plainJson = JSON.parse(plain.content[0]?.text ?? 'null')
+    const visualJson = JSON.parse(visual.content[0]?.text ?? 'null') as Array<{
+      filePath: string
+      chunkIndex: number
+    }>
+
+    expect(plainJson).toHaveLength(count)
+    expect(visualJson).toEqual(plainJson)
+    for (const result of visualJson as Record<string, unknown>[]) {
+      expect(result).not.toHaveProperty('visualAttachments')
+      expect(result).not.toHaveProperty('imageStorageVersion')
+      expect(result).not.toHaveProperty('imageRef')
+    }
+
+    const finalIdentities = visualJson.map(({ filePath, chunkIndex }) => ({ filePath, chunkIndex }))
+    expect(
+      new Set(finalIdentities.map(({ filePath, chunkIndex }) => `${filePath}:${chunkIndex}`)).size
+    ).toBe(count)
+    expect(hydrateSpy).toHaveBeenCalledTimes(1)
+    expect(
+      hydrateSpy.mock.calls[0]?.[0].map(({ filePath, chunkIndex }) => ({ filePath, chunkIndex }))
+    ).toEqual(finalIdentities)
+    expect(events).toEqual(['search:start', 'search:end', 'hydrate:start', 'lookup', 'hydrate:end'])
+    const expectedPredicate = finalIdentities
+      .map(
+        ({ filePath, chunkIndex }) =>
+          `(\`filePath\` = '${filePath.replace(/'/g, "''")}' AND \`chunkIndex\` = ${chunkIndex})`
+      )
+      .join(' OR ')
+    expect(predicates).toEqual([expectedPredicate])
   })
 })
