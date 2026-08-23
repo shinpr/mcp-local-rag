@@ -44,15 +44,15 @@
 //   IMPORTANT: when `src/cli/ingest.ts`'s `ingestSingleFile` chunk-row
 //   shape changes, update `cliInlineIngest` below to match.
 
-import { randomUUID } from 'node:crypto'
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { basename, extname, resolve } from 'node:path'
+import { resolve } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { SemanticChunker } from '../../chunker/index.js'
 import { Embedder } from '../../embedder/index.js'
 import {
   buildChunksAndEmbeddings,
   buildChunksFromParseResult,
+  buildVectorChunks,
   computeContentHash,
 } from '../../ingest/compute.js'
 import { DocumentParser } from '../../parser/index.js'
@@ -168,27 +168,13 @@ async function cliInlineIngest(
   // Construction (including the source-byte hash) completes before the
   // destructive delete, mirroring `ingestSingleFile`.
   const contentHash = computeContentHash(readFileSync(filePath))
-  const timestamp = new Date().toISOString()
-  const vectorChunks: VectorChunk[] = chunks.map((chunk, index) => {
-    const embedding = embeddings[index]
-    if (!embedding) {
-      throw new Error(`Missing embedding for chunk ${index}`)
-    }
-    return {
-      id: randomUUID(),
-      filePath,
-      chunkIndex: chunk.index,
-      text: chunk.text,
-      vector: embedding,
-      metadata: {
-        fileName: basename(filePath),
-        fileSize: text.length,
-        fileType: extname(filePath).slice(1),
-      },
-      fileTitle: title,
-      contentHash,
-      timestamp,
-    }
+  const vectorChunks = buildVectorChunks({
+    filePath,
+    chunks,
+    embeddings,
+    fileSize: text.length,
+    fileTitle: title,
+    contentHash,
   })
 
   await vectorStore.deleteChunks(filePath)

@@ -16,6 +16,10 @@ export interface TextChunk {
   text: string
   /** Chunk index (zero-based) */
   index: number
+  /** Inclusive UTF-16 offset in the source document. */
+  sourceStart: number
+  /** Exclusive UTF-16 offset in the source document. */
+  sourceEnd: number
 }
 
 export { DEFAULT_MIN_CHUNK_LENGTH, SemanticChunker } from './semantic-chunker.js'

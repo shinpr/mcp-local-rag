@@ -1,172 +1,356 @@
-// Shared visual-PDF preparation for the ingest pipeline.
-//
-// `prepareVisualPdfChunks` lifts the inline `createCaptioner → parsePdfPages →
-// detectVisualCandidates → enrichPagesWithCaptions → buildChunksAndEmbeddings
-// → extractPdfTitle` flow out of the CLI's `ingestSingleFile`
-// (src/cli/ingest.ts) and the MCP server's `handleIngestFile`
-// (src/server/index.ts) into this single dispatch-agnostic helper. Each
-// caller keeps ownership of its persistence semantics (delete + insert with
-// the CLI's bulk-loop optimize() vs. the MCP server's backup/rollback/optimize
-// per call); only the shared "produce chunks + embeddings + title from a PDF
-// using VLM captions" computation lives here.
-//
-// This module is safe to import statically from dispatch sites. The
-// `pdf-visual` package is loaded here via a single dynamic
-// `await import('../pdf-visual/index.js')` so the default (non-visual) path
-// never pulls VLM code into the bundle.
-
-import { basename } from 'node:path'
-
-import type { SemanticChunker, TextChunk } from '../chunker/index.js'
+import type { AtomicTextRange, SemanticChunker, TextChunk } from '../chunker/index.js'
 import type { EmbedderInterface } from '../chunker/semantic-chunker.js'
 import type { DocumentParser } from '../parser/index.js'
-import { extractPdfTitle } from '../parser/title-extractor.js'
-import type { QualityProfile } from '../pdf-visual/types.js'
-import { buildChunksAndEmbeddings } from './compute.js'
+import type { FilteredTextFragment } from '../parser/pdf-filter.js'
+import type {
+  DetectedVisualRegion,
+  ProcessedVisualRegion,
+  QualityProfile,
+} from '../pdf-visual/types.js'
+import type { VisualAttachment } from '../vectordb/types.js'
+import { buildChunksAndEmbeddings, createVisualAttachment, findNearestChunk } from './compute.js'
 
-/**
- * Minimal parser surface consumed by `prepareVisualPdfChunks`. Only the
- * `parsePdfPages` method is required; we reuse `DocumentParser`'s type so the
- * shape stays in sync automatically when the parser contract evolves (e.g.,
- * a new optional field on `pages[]`). `import type` keeps this a type-only
- * dependency — no runtime import of the parser class and no bundle/NFR-1
- * impact. Both `DocumentParser` (production) and parser mocks satisfy this.
- */
 export interface VisualPdfParser {
   parsePdfPages: DocumentParser['parsePdfPages']
 }
 
-/**
- * Captioner configuration forwarded to `pdf-visual.createCaptioner`. The
- * `profile` selects the underlying VLM family (`fast` = SmolVLM-256M,
- * `quality` = Qwen2.5-VL-3B); the actual model identifier lives inside the
- * profile module.
- */
 export interface CaptionerConfig {
   profile: QualityProfile
   cacheDir: string
-  /** Execution device passed through to the captioner model. */
   device?: string | undefined
 }
 
-/**
- * Result of the shared visual-PDF computation.
- *
- * - `chunks` and `embeddings` come from `buildChunksAndEmbeddings(...)` on
- *   the joined enriched-page text. They have the same length.
- * - `title` is the resolved display title from `extractPdfTitle(...)`, or
- *   `null` when no title can be derived (matches the existing inline-flow
- *   semantics).
- */
+export interface PrepareVisualPdfChunksOptions {
+  images: boolean
+  captioner?: CaptionerConfig
+}
+
 export interface PrepareVisualPdfChunksResult {
   chunks: TextChunk[]
   embeddings: number[][]
   title: string | null
-  /**
-   * The joined enriched-page text that was fed into the chunker. Exposed so
-   * callers can use its length for `metadata.fileSize` (the existing
-   * inline-flow contract — the joined text length is the post-enrichment,
-   * pre-chunking size, not the on-disk PDF byte size).
-   */
   text: string
+  atomicRanges: AtomicTextRange[]
+  visualAttachments: Map<number, VisualAttachment[]>
+  omittedImageCount: number
 }
 
-/**
- * Run the visual-PDF enrichment flow end-to-end and return the chunks +
- * embeddings + title for the caller to persist.
- *
- * Steps (matches the inline flow in `ingestSingleFile` and `handleIngestFile`):
- *   1. Dynamic-import `pdf-visual` (NFR-1 discipline — loaded only here).
- *   2. `createCaptioner(captionerConfig)`.
- *   3. `parser.parsePdfPages(filePath, embedder)` → `{ doc, metadataTitle, pages }`.
- *   4. `detectVisualCandidates(pages)`.
- *   5. `enrichPagesWithCaptions(pages, candidates, doc, captioner)`.
- *   6. Join enriched page texts with `\n\n` (DD-documented join).
- *   7. `buildChunksAndEmbeddings(text, null, chunker, embedder)`.
- *   8. `extractPdfTitle(metadataTitle, chunks[0]?.text, basename(filePath),
- *      pages[0]?.page1FontHint)`.
- *   9. `doc.destroy()` in `finally` so the mupdf WASM handle is released on
- *      both success and error paths.
- *
- * Empty-chunks case is propagated verbatim: when `chunks.length === 0`, this
- * function returns `{ chunks: [], embeddings: [], title }` and the caller
- * handles the warning/error (CLI: log + skip; MCP: throw McpError).
- *
- * @param filePath        Absolute path to the PDF (caller has already validated).
- * @param parser          Parser instance with `parsePdfPages` (mockable).
- * @param chunker         Semantic chunker instance (owned by the caller).
- * @param embedder        Embedder implementing `EmbedderInterface`.
- * @param captionerConfig modelName + cacheDir + dtype (resolved by the caller).
- */
+export interface OrderedVisualPage {
+  pageNum: number
+  text: string
+  textFragments: readonly FilteredTextFragment[]
+}
+
+export interface OrderedVisualRegion extends ProcessedVisualRegion {
+  visualIndex: number
+  anchorOffset: number
+  captionRange?: AtomicTextRange
+}
+
+export interface OrderedVisualDocument {
+  text: string
+  atomicRanges: AtomicTextRange[]
+  regions: OrderedVisualRegion[]
+}
+
+function horizontalOverlap(left: readonly number[], right: readonly number[]): boolean {
+  return Math.min(left[2] ?? 0, right[2] ?? 0) >= Math.max(left[0] ?? 0, right[0] ?? 0)
+}
+
+function xCenter(bbox: readonly number[]): number {
+  return ((bbox[0] ?? 0) + (bbox[2] ?? 0)) / 2
+}
+
+function yCenter(bbox: readonly number[]): number {
+  return ((bbox[1] ?? 0) + (bbox[3] ?? 0)) / 2
+}
+
+function findInsertionIndex(
+  fragments: readonly FilteredTextFragment[],
+  region: DetectedVisualRegion
+): number {
+  if (fragments.length === 0) return 0
+  let candidates = fragments
+    .map((fragment, index) => ({ fragment, index }))
+    .filter(({ fragment }) => horizontalOverlap(fragment.bbox, region.bbox))
+
+  if (candidates.length === 0) {
+    const regionCenter = xCenter(region.bbox)
+    const minimumDistance = Math.min(
+      ...fragments.map((fragment) => Math.abs(xCenter(fragment.bbox) - regionCenter))
+    )
+    candidates = fragments
+      .map((fragment, index) => ({ fragment, index }))
+      .filter(({ fragment }) => Math.abs(xCenter(fragment.bbox) - regionCenter) === minimumDistance)
+  }
+
+  const regionMidpoint = yCenter(region.bbox)
+  const preceding = candidates.filter(({ fragment }) => yCenter(fragment.bbox) <= regionMidpoint)
+  if (preceding.length > 0) {
+    return Math.max(...preceding.map(({ index }) => index + 1))
+  }
+  return Math.min(...candidates.map(({ index }) => index))
+}
+
+function fallbackFragments(page: OrderedVisualPage): readonly FilteredTextFragment[] {
+  if (page.textFragments.length > 0 || page.text.length === 0) return page.textFragments
+  return [
+    {
+      pageNum: page.pageNum,
+      blockOrdinal: 0,
+      lineOrdinal: 0,
+      fragmentOrdinal: 0,
+      bbox: [0, 0, 0, 0],
+      text: page.text,
+      pageTextStart: 0,
+      pageTextEnd: page.text.length,
+    },
+  ]
+}
+
+export function buildOrderedVisualDocument(
+  pages: readonly OrderedVisualPage[],
+  processedRegions: readonly ProcessedVisualRegion[]
+): OrderedVisualDocument {
+  let text = ''
+  let visualIndex = 0
+  const atomicRanges: AtomicTextRange[] = []
+  const regions: OrderedVisualRegion[] = []
+  const consumedRegions = new Set<ProcessedVisualRegion>()
+
+  for (const page of pages) {
+    const pageFragments = fallbackFragments(page)
+    const positioned = processedRegions
+      .filter((region) => region.pageNum === page.pageNum)
+      .map((region) => ({
+        region,
+        insertionIndex: findInsertionIndex(pageFragments, region),
+      }))
+      .sort(
+        (left, right) =>
+          left.insertionIndex - right.insertionIndex ||
+          left.region.detectionIndex - right.region.detectionIndex
+      )
+    const pageVisualIndices = new Map(
+      positioned.map((item, index) => [item.region, visualIndex + index] as const)
+    )
+
+    const insertionOffsets = new Map<ProcessedVisualRegion, number>()
+    for (const item of positioned) {
+      const preceding = pageFragments[item.insertionIndex - 1]
+      const following = pageFragments[item.insertionIndex]
+      insertionOffsets.set(
+        item.region,
+        Math.max(
+          0,
+          Math.min(page.text.length, preceding?.pageTextEnd ?? following?.pageTextStart ?? 0)
+        )
+      )
+    }
+
+    const insertionGroups = new Map<number, ProcessedVisualRegion[]>()
+    for (const item of positioned) {
+      const offset = insertionOffsets.get(item.region) ?? 0
+      const group = insertionGroups.get(offset) ?? []
+      group.push(item.region)
+      insertionGroups.set(offset, group)
+    }
+
+    let pageText = ''
+    let pageCursor = 0
+    const captionRanges = new Map<ProcessedVisualRegion, AtomicTextRange>()
+    const anchorOffsets = new Map<ProcessedVisualRegion, number>()
+    for (const [offset, group] of [...insertionGroups].sort((left, right) => left[0] - right[0])) {
+      pageText += page.text.slice(pageCursor, offset)
+      const hasCaption = group.some((region) => region.caption !== null)
+      if (hasCaption) {
+        const trailingNewlines = pageText.match(/\n*$/)?.[0].length ?? 0
+        pageText += pageText.length > 0 ? '\n'.repeat(Math.max(0, 2 - trailingNewlines)) : ''
+      }
+      let captionIndex = 0
+      for (const region of group) {
+        if (region.caption === null) {
+          anchorOffsets.set(region, pageText.length)
+          continue
+        }
+        if (captionIndex > 0) pageText += '\n\n'
+        const start = pageText.length
+        pageText += `[Visual content on page ${page.pageNum}, visual ${pageVisualIndices.get(region)}: ${region.caption}]`
+        captionRanges.set(region, { start, end: pageText.length })
+        anchorOffsets.set(region, start)
+        captionIndex += 1
+      }
+      if (hasCaption && offset < page.text.length) {
+        const leadingNewlines = page.text.slice(offset).match(/^\n*/)?.[0].length ?? 0
+        pageText += '\n'.repeat(Math.max(0, 2 - leadingNewlines))
+      }
+      pageCursor = offset
+    }
+    pageText += page.text.slice(pageCursor)
+
+    const pageSeparator = text.length > 0 && pageText.length > 0 ? '\n\n' : ''
+    const pageStart = text.length + pageSeparator.length
+    text += pageSeparator + pageText
+
+    for (const positionedRegion of positioned) {
+      const currentVisualIndex = visualIndex++
+      const relativeCaptionRange = captionRanges.get(positionedRegion.region)
+      const captionRange = relativeCaptionRange
+        ? {
+            start: pageStart + relativeCaptionRange.start,
+            end: pageStart + relativeCaptionRange.end,
+          }
+        : undefined
+      if (captionRange) atomicRanges.push(captionRange)
+      const anchorOffset = anchorOffsets.get(positionedRegion.region)
+      if (anchorOffset === undefined) throw new Error('Visual region has no anchor offset')
+      regions.push({
+        ...positionedRegion.region,
+        visualIndex: currentVisualIndex,
+        anchorOffset: pageStart + anchorOffset,
+        ...(captionRange ? { captionRange } : {}),
+      })
+      consumedRegions.add(positionedRegion.region)
+    }
+  }
+
+  if (consumedRegions.size !== processedRegions.length) {
+    throw new Error('A processed visual region has no matching PDF page')
+  }
+
+  return { text, atomicRanges, regions }
+}
+
+function assignVisualAttachments(
+  document: OrderedVisualDocument,
+  chunks: readonly TextChunk[],
+  attachments: readonly VisualAttachment[]
+): Map<number, VisualAttachment[]> {
+  const attachmentsByChunkIndex = new Map<number, VisualAttachment[]>()
+  if (chunks.length === 0) return attachmentsByChunkIndex
+  const regionByVisualIndex = new Map(
+    document.regions.map((region) => [region.visualIndex, region] as const)
+  )
+  const seenVisualIndices = new Set<number>()
+
+  for (const attachment of [...attachments].sort(
+    (left, right) => left.imageIndex - right.imageIndex
+  )) {
+    if (seenVisualIndices.has(attachment.imageIndex)) {
+      throw new Error(`Duplicate visual attachment index: ${attachment.imageIndex}`)
+    }
+    seenVisualIndices.add(attachment.imageIndex)
+    const region = regionByVisualIndex.get(attachment.imageIndex)
+    if (!region)
+      throw new Error(`Visual attachment has no ordered region: ${attachment.imageIndex}`)
+
+    const owner = findNearestChunk(chunks, region.anchorOffset)
+    if (!owner) throw new Error(`Visual ${attachment.imageIndex} has no owning chunk`)
+    const current = attachmentsByChunkIndex.get(owner.index) ?? []
+    current.push(attachment)
+    attachmentsByChunkIndex.set(owner.index, current)
+  }
+  return attachmentsByChunkIndex
+}
+
+async function processImageOnlyRegions(
+  regions: DetectedVisualRegion[],
+  doc: Awaited<ReturnType<VisualPdfParser['parsePdfPages']>>['doc']
+): Promise<{
+  processed: ProcessedVisualRegion[]
+  omittedImageCount: number
+}> {
+  const renderer = await import('../pdf-visual/renderer.js')
+  const processed: ProcessedVisualRegion[] = []
+  let omittedImageCount = 0
+  for (const region of regions) {
+    try {
+      const image = await renderer.renderPdfRendition(
+        doc as Parameters<typeof renderer.renderPdfRendition>[0],
+        region.pageNum,
+        region.bbox,
+        region.evidence
+      )
+      processed.push({ ...region, caption: null, rendition: image })
+    } catch {
+      omittedImageCount += 1
+      processed.push({ ...region, caption: null })
+    }
+  }
+  return { processed, omittedImageCount }
+}
+
 export async function prepareVisualPdfChunks(
   filePath: string,
   parser: VisualPdfParser,
   chunker: SemanticChunker,
   embedder: EmbedderInterface,
-  captionerConfig: CaptionerConfig
+  options: PrepareVisualPdfChunksOptions
 ): Promise<PrepareVisualPdfChunksResult> {
-  // Dynamic import — load-bearing for NFR-1. The default (non-visual) path
-  // must never reach a static `pdf-visual` reference.
-  const pdfVisual = await import('../pdf-visual/index.js')
-
-  const captioner = pdfVisual.createCaptioner(captionerConfig)
-
-  const { doc, metadataTitle, pages } = await parser.parsePdfPages(filePath, embedder)
+  const captionerConfig = options.captioner
+  const { doc, title, pages } = await parser.parsePdfPages(filePath, embedder)
   try {
-    const candidates = pdfVisual.detectVisualCandidates(
-      pages.map((p) => ({ pageNum: p.pageNum, stextJson: p.stextJson })),
-      doc as Parameters<typeof pdfVisual.detectVisualCandidates>[1]
-    )
-    const { pages: enrichedPages, captions } = await pdfVisual.enrichPagesWithCaptions(
-      pages,
-      candidates,
-      // The dynamic import widens the doc type at the boundary; the parser
-      // returned a real mupdf `Document` (caller-typed) so this is safe.
-      doc as Parameters<typeof pdfVisual.enrichPagesWithCaptions>[2],
-      captioner
-    )
-    const text = enrichedPages
-      .map((p) => p.text)
-      .filter((t) => t.length > 0)
-      .join('\n\n')
+    let processed: ProcessedVisualRegion[]
+    let omittedImageCount = 0
 
-    // Chunk + embed the page text WITHOUT captions inline. Captions are
-    // emitted as dedicated chunks below so the semantic chunker cannot split
-    // their internal Summary / Keywords structure on sentence-boundary
-    // vocabulary shifts.
-    const { chunks, embeddings } = await buildChunksAndEmbeddings(text, chunker, embedder)
-
-    const titleResult = extractPdfTitle(
-      metadataTitle,
-      chunks[0]?.text,
-      basename(filePath),
-      pages[0]?.page1FontHint
-    )
-    const title = titleResult.title || null
-
-    // Append one dedicated chunk per caption. The `[Visual content on page N:
-    // …]` wrapper is applied here (previously applied in the orchestrator)
-    // so the caption chunk text matches the historical marker format used by
-    // downstream search.
-    if (captions.length > 0) {
-      const captionChunks = captions.map((c, i) => ({
-        text: `[Visual content on page ${c.pageNum}: ${c.text}]`,
-        index: chunks.length + i,
-      }))
-      const captionEmbeddings = await embedder.embedBatch(captionChunks.map((c) => c.text))
-      chunks.push(...captionChunks)
-      embeddings.push(...captionEmbeddings)
+    if (captionerConfig !== undefined) {
+      const pdfVisual = await import('../pdf-visual/index.js')
+      const regions = pdfVisual.detectVisualRegions(
+        pages.map((page) => ({ pageNum: page.pageNum, stextJson: page.stextJson })),
+        doc as Parameters<typeof pdfVisual.detectVisualRegions>[1]
+      )
+      const captioner = pdfVisual.createCaptioner(captionerConfig)
+      processed = await pdfVisual.processVisualRegions(
+        regions,
+        doc as Parameters<typeof pdfVisual.processVisualRegions>[1],
+        { captioner, includeImages: options.images }
+      )
+    } else {
+      const detector = await import('../pdf-visual/detector.js')
+      const regions = detector.detectVisualRegions(
+        pages.map((page) => ({ pageNum: page.pageNum, stextJson: page.stextJson })),
+        doc as Parameters<typeof detector.detectVisualRegions>[1]
+      )
+      const imageOnly = await processImageOnlyRegions(regions, doc)
+      processed = imageOnly.processed
+      omittedImageCount += imageOnly.omittedImageCount
     }
 
-    return { chunks, embeddings, title, text }
+    const ordered = buildOrderedVisualDocument(pages, processed)
+    const { chunks, embeddings } = await buildChunksAndEmbeddings(
+      ordered.text,
+      chunker,
+      embedder,
+      ordered.atomicRanges
+    )
+    const attachments: VisualAttachment[] = []
+    if (options.images) {
+      for (const orderedRegion of ordered.regions) {
+        if (!orderedRegion.rendition) continue
+        try {
+          attachments.push(
+            createVisualAttachment(orderedRegion.visualIndex, orderedRegion.rendition)
+          )
+        } catch {
+          omittedImageCount += 1
+        }
+      }
+    }
+    const visualAttachments = assignVisualAttachments(ordered, chunks, attachments)
+    return {
+      chunks,
+      embeddings,
+      title,
+      text: ordered.text,
+      atomicRanges: ordered.atomicRanges,
+      visualAttachments,
+      omittedImageCount,
+    }
   } finally {
-    // Caller owns `doc` per `parsePdfPages` contract. Release the mupdf WASM
-    // handle on both success and error paths. Wrap so a destroy failure
-    // cannot mask the original try-body error.
     try {
       doc.destroy()
-    } catch (destroyErr) {
-      const message = destroyErr instanceof Error ? destroyErr.message : String(destroyErr)
+    } catch (destroyError) {
+      const message = destroyError instanceof Error ? destroyError.message : String(destroyError)
       console.warn(`prepareVisualPdfChunks: doc.destroy() failed: ${message}`)
     }
   }

@@ -4,12 +4,15 @@ import { type Connection, connect, Index, type Table } from '@lancedb/lancedb'
 import { normalizeScopePrefix } from '../utils/scope-match.js'
 import { applyFileFilter, applyGrouping, applyKeywordBoost } from './search-filters.js'
 import {
+  type AttachmentHydrationResult,
   type ChunkRow,
   DatabaseError,
   DEFAULT_HYBRID_WEIGHT,
   FTS_CLEANUP_THRESHOLD_MS,
   FTS_INDEX_NAME,
   HYBRID_SEARCH_CANDIDATE_MULTIPLIER,
+  normalizeVisualAttachments,
+  parseHydratedVisualAttachments,
   type SearchOptions,
   type SearchResult,
   toChunkRow,
@@ -20,7 +23,14 @@ import {
 } from './types.js'
 
 // Re-export public API
-export type { GroupingMode, SearchResult, VectorChunk } from './types.js'
+export type {
+  AttachmentHydrationResult,
+  GroupingMode,
+  HydratedChunkAttachments,
+  SearchResult,
+  VectorChunk,
+  VisualAttachment,
+} from './types.js'
 
 // ============================================
 // VectorStore Class
@@ -207,15 +217,15 @@ export class VectorStore {
         // LanceDB's createTable API accepts data as Record<string, unknown>[]
         // Note: LanceDB cannot infer Arrow type from null/absent values, so the
         // nullable string columns need a non-null sample value for schema
-        // inference. Empty string is the placeholder; the read converters
-        // normalize '' back to null (fileTitle) or an absent key (contentHash),
-        // matching what the migration path produces.
+        // inference. The read converters normalize each placeholder back to
+        // its logical no-value state, matching what migration produces.
         const records = chunks.map((chunk) => {
           const record = chunk as unknown as Record<string, unknown>
           return {
             ...record,
             fileTitle: record['fileTitle'] ?? '',
             contentHash: record['contentHash'] ?? '',
+            visualAttachments: normalizeVisualAttachments(record['visualAttachments']),
           }
         })
         this.table = await this.db.createTable(this.config.tableName, records)
@@ -225,7 +235,13 @@ export class VectorStore {
         await this.ensureFtsIndex()
       } else {
         // Add data to existing table
-        const records = chunks.map((chunk) => chunk as unknown as Record<string, unknown>)
+        const records = chunks.map((chunk) => {
+          const record = chunk as unknown as Record<string, unknown>
+          return {
+            ...record,
+            visualAttachments: normalizeVisualAttachments(record['visualAttachments']),
+          }
+        })
         await this.table.add(records)
       }
 
@@ -304,6 +320,11 @@ export class VectorStore {
       await this.table.addColumns([{ name: 'contentHash', valueSql: 'cast(NULL as string)' }])
       console.error('VectorStore: Migrated schema - added contentHash column')
     }
+
+    if (!hasField('visualAttachments')) {
+      await this.table.addColumns([{ name: 'visualAttachments', valueSql: 'cast(NULL as string)' }])
+      console.error('VectorStore: Migrated schema - added visualAttachments column')
+    }
   }
 
   /**
@@ -350,7 +371,11 @@ export class VectorStore {
     try {
       // Step 1: Semantic (vector) search - always the primary search
       const candidateLimit = limit * HYBRID_SEARCH_CANDIDATE_MULTIPLIER
-      let query = this.table.vectorSearch(queryVector).distanceType('dot').limit(candidateLimit)
+      let query = this.table
+        .vectorSearch(queryVector)
+        .distanceType('dot')
+        .select(['id', 'filePath', 'chunkIndex', 'text', 'metadata', 'fileTitle', '_distance'])
+        .limit(candidateLimit)
 
       // Scope prefilter: restrict to chunks under the given path prefixes
       // (exact-or-descendant) before ranking. Applied only when scope is
@@ -431,6 +456,62 @@ export class VectorStore {
   }
 
   /**
+   * Load and validate attachments for the ordered unique final search identities.
+   * Candidate retrieval and ranking are deliberately complete before this one
+   * projected batch query runs.
+   */
+  async hydrateVisualAttachments(
+    results: readonly { id: string }[]
+  ): Promise<AttachmentHydrationResult> {
+    const ids: string[] = []
+    const seen = new Set<string>()
+    for (const result of results) {
+      if (typeof result.id !== 'string' || result.id.length === 0) {
+        throw new DatabaseError('Invalid final attachment hydration identity')
+      }
+      if (!seen.has(result.id)) {
+        seen.add(result.id)
+        ids.push(result.id)
+      }
+    }
+
+    if (!this.table || ids.length === 0) {
+      return {
+        rows: ids.map((id) => ({ id, attachments: [] })),
+        omittedCount: 0,
+      }
+    }
+
+    try {
+      const predicate = ids.map((id) => `\`id\` = '${this.escapeQuotes(id)}'`).join(' OR ')
+      const records = await this.table
+        .query()
+        .where(predicate)
+        .select(['id', 'visualAttachments'])
+        .toArray()
+      const recordsByIdentity = new Map<string, unknown>()
+      for (const record of records) {
+        if (typeof record.id !== 'string') continue
+        recordsByIdentity.set(record.id, record.visualAttachments)
+      }
+
+      let omittedCount = 0
+      const rows = ids.map((id) => {
+        if (!recordsByIdentity.has(id)) {
+          omittedCount += 1
+          return { id, attachments: [] }
+        }
+        const parsed = parseHydratedVisualAttachments(recordsByIdentity.get(id))
+        omittedCount += parsed.omittedCount
+        return { id, attachments: parsed.attachments }
+      })
+      return { rows, omittedCount }
+    } catch (error) {
+      throw new DatabaseError('Failed to hydrate visual attachments', error as Error)
+    }
+  }
+
+  /**
    * Build a LanceDB `.where()` predicate restricting `filePath` to the
    * exact-or-descendant set of the given prefixes (OR'd): `filePath = P OR
    * filePath LIKE 'D%'`, where the separator boundary in D stops `/a/b` from
@@ -464,8 +545,7 @@ export class VectorStore {
   }
 
   /**
-   * Per-chunk `(filePath, contentHash)` projection — the manifest incremental
-   * sync reconciles the disk against.
+   * Per-chunk `(filePath, contentHash)` projection used by incremental sync.
    *
    * One entry per stored row rather than one per file, because a file whose
    * rows disagree on the hash (or carry none) must be detectable as dirty.
@@ -474,17 +554,26 @@ export class VectorStore {
    * create-path seeds for Arrow schema inference — is normalized to `null` so a
    * hashless row can never read as a real hash, mirroring `toVectorChunk`.
    *
-   * Projects only the two columns so a manifest load does not materialize the
-   * embedding vectors. Lazy-table null returns `[]` (mirrors {@link listFiles}).
+   * Projects only the two convergence columns so a manifest load does not
+   * materialize embedding vectors or attachment payloads. Lazy-table null
+   * returns `[]` (mirrors {@link listFiles}).
    */
-  async listChunkHashes(): Promise<{ filePath: string; contentHash: string | null }[]> {
+  async listChunkHashes(): Promise<
+    {
+      filePath: string
+      contentHash: string | null
+    }[]
+  > {
     if (!this.table) {
       return []
     }
 
     try {
       const records = await this.table.query().select(['filePath', 'contentHash']).toArray()
-      const entries: { filePath: string; contentHash: string | null }[] = []
+      const entries: {
+        filePath: string
+        contentHash: string | null
+      }[] = []
       for (const record of records) {
         const filePath: unknown = record.filePath
         const contentHash: unknown = record.contentHash

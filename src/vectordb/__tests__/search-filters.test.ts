@@ -13,6 +13,7 @@ function mockResult(
   text = 'test'
 ): SearchResult {
   return {
+    id: `${filePath}:${chunkIndex}`,
     filePath,
     chunkIndex,
     text,

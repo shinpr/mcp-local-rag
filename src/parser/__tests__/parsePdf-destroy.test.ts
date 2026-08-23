@@ -110,15 +110,32 @@ describe('parsePdf destroy lifecycle (AC-013)', () => {
     }>
     metadataTitle?: string
     pageLoadError?: Error
-  }): { destroyFn: ReturnType<typeof vi.fn> } {
+    stextJsonError?: Error
+  }): {
+    destroyFn: ReturnType<typeof vi.fn>
+    pageDestroyFns: Array<ReturnType<typeof vi.fn>>
+    stextDestroyFns: Array<ReturnType<typeof vi.fn>>
+  } {
     const destroyFn = vi.fn()
+    const pageDestroyFns: Array<ReturnType<typeof vi.fn>> = []
+    const stextDestroyFns: Array<ReturnType<typeof vi.fn>> = []
     const mockPages = options.pages.map((pageDef) => {
+      const pageDestroy = vi.fn()
+      const stextDestroy = vi.fn()
+      pageDestroyFns.push(pageDestroy)
+      stextDestroyFns.push(stextDestroy)
       const mockStext = {
-        asJSON: vi.fn().mockReturnValue(JSON.stringify({ blocks: pageDef.blocks })),
+        asJSON: options.stextJsonError
+          ? vi.fn().mockImplementation(() => {
+              throw options.stextJsonError
+            })
+          : vi.fn().mockReturnValue(JSON.stringify({ blocks: pageDef.blocks })),
+        destroy: stextDestroy,
       }
       return {
         getBounds: vi.fn().mockReturnValue(pageDef.bounds),
         toStructuredText: vi.fn().mockReturnValue(mockStext),
+        destroy: pageDestroy,
       }
     })
 
@@ -134,7 +151,7 @@ describe('parsePdf destroy lifecycle (AC-013)', () => {
     }
 
     mockOpenDocument.mockReturnValue(mockDoc)
-    return { destroyFn }
+    return { destroyFn, pageDestroyFns, stextDestroyFns }
   }
 
   beforeEach(async () => {
@@ -175,7 +192,7 @@ describe('parsePdf destroy lifecycle (AC-013)', () => {
 
   it('should call destroy exactly once on the success path', async () => {
     const filePath = join(testDir, 'test.pdf')
-    const { destroyFn } = setupMupdfMock({
+    const { destroyFn, pageDestroyFns, stextDestroyFns } = setupMupdfMock({
       pages: [
         {
           bounds: [0, 0, 612, 792],
@@ -195,6 +212,8 @@ describe('parsePdf destroy lifecycle (AC-013)', () => {
     expect(result.content).toBe('Hello world')
     // AC-013 witness: destroy called exactly once
     expect(destroyFn).toHaveBeenCalledTimes(1)
+    expect(stextDestroyFns[0]).toHaveBeenCalledTimes(1)
+    expect(pageDestroyFns[0]).toHaveBeenCalledTimes(1)
   })
 
   it('should call destroy exactly once on the error path', async () => {
@@ -231,6 +250,32 @@ describe('parsePdf destroy lifecycle (AC-013)', () => {
     // AC-013 witness: destroy still called exactly once even when the per-page
     // loop threw. This is the test that would fail if T2.3's `finally` block
     // were removed.
+    expect(destroyFn).toHaveBeenCalledTimes(1)
+  })
+
+  it('should destroy StructuredText and page when structured-text JSON extraction throws', async () => {
+    const filePath = join(testDir, 'test.pdf')
+    const stextJsonError = new Error('Simulated StructuredText JSON failure')
+    const { destroyFn, pageDestroyFns, stextDestroyFns } = setupMupdfMock({
+      pages: [
+        {
+          bounds: [0, 0, 612, 792],
+          blocks: [
+            {
+              type: 'text',
+              lines: [{ text: 'unused', x: 72, y: 100, font: { size: 12 } }],
+            },
+          ],
+        },
+      ],
+      stextJsonError,
+    })
+
+    await expect(parser.parsePdf(filePath, mockEmbedder)).rejects.toMatchObject({
+      cause: stextJsonError,
+    })
+    expect(stextDestroyFns[0]).toHaveBeenCalledTimes(1)
+    expect(pageDestroyFns[0]).toHaveBeenCalledTimes(1)
     expect(destroyFn).toHaveBeenCalledTimes(1)
   })
 

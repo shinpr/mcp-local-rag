@@ -30,7 +30,7 @@ import {
   classifyRequestedPath,
 } from '../utils/scan.js'
 import { createEmbedder, createVectorStore, formatCliError } from './common.js'
-import { ingestSingleFile, resolveConfig } from './ingest.js'
+import { type IngestSingleFileOptions, ingestSingleFile, resolveConfig } from './ingest.js'
 import type { GlobalOptions } from './options.js'
 import { consumeBaseDirArg, resolveGlobalConfig } from './options.js'
 
@@ -52,6 +52,7 @@ Arguments:
 
 Options:
   --base-dir <path>      Document root (repeatable; overrides environment roots)
+  --images               Store images for new/changed PDF and DOCX files
   -h, --help             Show this help
 
 Without --base-dir, roots come from BASE_DIRS / BASE_DIR (default: current directory).
@@ -69,6 +70,7 @@ interface SyncArgs {
   help: boolean
   baseDirs: string[]
   path?: string
+  images: boolean
 }
 
 /**
@@ -79,6 +81,7 @@ function parseArgs(args: string[]): SyncArgs {
   let help = false
   const baseDirs: string[] = []
   let path: string | undefined
+  let images = false
 
   let index = 0
   while (index < args.length) {
@@ -94,6 +97,10 @@ function parseArgs(args: string[]): SyncArgs {
         index = valueIndex + 1
         break
       }
+      case '--images':
+        images = true
+        index++
+        break
       default:
         if (arg.startsWith('-')) {
           console.error(`Unknown option: ${arg}`)
@@ -113,7 +120,7 @@ function parseArgs(args: string[]): SyncArgs {
     }
   }
 
-  const parsed: SyncArgs = { help, baseDirs }
+  const parsed: SyncArgs = { help, baseDirs, images }
   if (path !== undefined) parsed.path = path
   return parsed
 }
@@ -228,14 +235,17 @@ export async function runSync(args: string[], globalOptions: GlobalOptions = {})
     // Named as it happens, so a long run shows which file it is on and the
     // counters alone are not the only record of what changed. A zero-chunk file
     // already reports itself from inside `ingestSingleFile`.
-    ingestFile: async (filePath: string) => {
+    ingestFile: async (filePath: string, images: boolean) => {
+      const ingestOptions: IngestSingleFileOptions = images
+        ? { visual: false, images: true }
+        : { visual: false, images: false }
       const chunkCount = await ingestSingleFile(
         filePath,
         parser,
         chunker,
         ensureEmbedder(),
         vectorStore,
-        { visual: false }
+        ingestOptions
       )
       if (chunkCount > 0) console.error(`upserted ${filePath} (${chunkCount} chunks)`)
       return chunkCount
@@ -260,6 +270,7 @@ export async function runSync(args: string[], globalOptions: GlobalOptions = {})
       // resolve() (never realpath) so the requested path is spelled like the
       // stored DB keys; the core validates it against the configured roots.
       ...(parsed.path === undefined ? {} : { requestedPath: resolve(parsed.path) }),
+      ...(parsed.images ? { images: true } : {}),
       collaborators,
     })
 

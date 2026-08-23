@@ -1,87 +1,232 @@
-// PDF page renderer for the visual ingest path.
-//
-// Given an already-open mupdf `Document` and a 1-based page number, renders
-// either the full page or a crop rectangle to a PNG byte array at the
-// renderer-internal DPI. The renderer does NOT own the document lifecycle —
-// the caller opens and destroys the document.
-//
-// Contract:
-//   1. `page = doc.loadPage(pageNum - 1)`              (1-based → 0-based)
-//   2. `matrix = [RENDER_DPI/72, 0, 0, RENDER_DPI/72, 0, 0]`
-//   3. Full page: `page.toPixmap(matrix, ColorSpace.DeviceRGB, false, true)`
-//      Crop: render via `DrawDevice` into a pixmap sized to the crop rect.
-//   4. return `pixmap.asPNG()`                          (Uint8Array, not Buffer)
-//   5. on mupdf error → throw `VlmError('Failed to render PDF page',
-//                                       { cause: err, pageNum })`
-
 import type { Document as MupdfDocument } from 'mupdf'
 import * as mupdf from 'mupdf'
 
+import { MAX_VISUAL_RENDITION_BYTES } from '../utils/limits.js'
+import type { ImageRendition, VisualBBox, VisualEvidence, VisualImageMimeType } from './types.js'
 import { VlmError } from './types.js'
 
 export { VlmError }
 
-// Module-private. Single consumer (this file). Not exported, not surfaced.
-// 200 DPI keeps small in-figure text (axis labels, legends, table cells)
-// legible after the VLM processor's internal downscale to ~512 px. 150 DPI
-// loses sub-10pt label glyphs on dense scientific PDFs; 300 DPI doubles
-// pixmap bytes for no measured retrieval-quality gain.
 const RENDER_DPI = 200
+const BASE_SCALE = RENDER_DPI / 72
+const CAPTION_LONG_EDGE_MAX = 4096
+const CAPTION_PIXEL_MAX = 16_777_216
+const RENDITION_LONG_EDGE_MAX = 1024
+const RENDITION_TARGET_BYTES = 256 * 1024
+const JPEG_QUALITIES = [82, 72, 62, 52] as const
+const RENDITION_EDGES = [1024, 896, 768, 640, 512, 384, 256] as const
 
-type Rect = [number, number, number, number]
+function cropDimensions(cropRect: VisualBBox): { width: number; height: number } {
+  const width = cropRect[2] - cropRect[0]
+  const height = cropRect[3] - cropRect[1]
+  if (![...cropRect, width, height].every(Number.isFinite) || width <= 0 || height <= 0) {
+    throw new Error('Invalid crop rectangle')
+  }
+  return { width, height }
+}
 
-function renderCrop(page: mupdf.Page, cropRect: Rect, scale: number): Uint8Array {
-  const [x0, y0, x1, y1] = cropRect
-  const width = Math.max(1, Math.ceil((x1 - x0) * scale))
-  const height = Math.max(1, Math.ceil((y1 - y0) * scale))
+function scaleForLongEdge(cropRect: VisualBBox, longEdge: number): number {
+  const { width, height } = cropDimensions(cropRect)
+  return Math.min(BASE_SCALE, longEdge / Math.max(width, height))
+}
+
+function captionScale(cropRect: VisualBBox): number {
+  const { width, height } = cropDimensions(cropRect)
+  return Math.min(
+    BASE_SCALE,
+    CAPTION_LONG_EDGE_MAX / Math.max(width, height),
+    Math.sqrt(CAPTION_PIXEL_MAX / (width * height))
+  )
+}
+
+function renderCrop<T>(
+  page: mupdf.Page,
+  cropRect: VisualBBox,
+  scale: number,
+  consume: (pixmap: mupdf.Pixmap) => T
+): T {
+  const { width: sourceWidth, height: sourceHeight } = cropDimensions(cropRect)
+  const width = Math.max(1, Math.floor(sourceWidth * scale))
+  const height = Math.max(1, Math.floor(sourceHeight * scale))
   const pixmap = new mupdf.Pixmap(mupdf.ColorSpace.DeviceRGB, [0, 0, width, height], false)
-  const matrix: mupdf.Matrix = [scale, 0, 0, scale, -x0 * scale, -y0 * scale]
-  const device = new mupdf.DrawDevice(matrix, pixmap)
-
+  let device: mupdf.DrawDevice | null = null
   try {
-    // Paint a white background (255 = max channel value on DeviceRGB) so any
-    // transparent / unpainted regions show as white to the VLM rather than the
-    // pixmap's default black.
+    const matrix: mupdf.Matrix = [scale, 0, 0, scale, -cropRect[0] * scale, -cropRect[1] * scale]
+    device = new mupdf.DrawDevice(matrix, pixmap)
     pixmap.clear(255)
     page.run(device, mupdf.Matrix.identity)
-    return pixmap.asPNG()
+    return consume(pixmap)
   } finally {
-    device.close()
-    pixmap.destroy?.()
+    try {
+      device?.close()
+    } finally {
+      pixmap.destroy?.()
+    }
   }
 }
 
-/**
- * Render a single PDF page to a PNG byte array.
- *
- * @param doc - An already-open mupdf `Document`. The renderer does NOT own the
- *              document lifecycle.
- * @param pageNum - 1-based page index. Translated to 0-based for mupdf.
- * @returns PNG bytes (`Uint8Array`, NOT `Buffer`).
- * @throws {VlmError} When mupdf rejects the page (out-of-range, render
- *                    failure, etc.). `cause` carries the original mupdf error;
- *                    `pageNum` carries the requested 1-based page.
- */
+function encodePixmap(
+  pixmap: mupdf.Pixmap,
+  mimeType: VisualImageMimeType,
+  quality = 82
+): ImageRendition {
+  const bytes = mimeType === 'image/png' ? pixmap.asPNG() : pixmap.asJPEG(quality)
+  return {
+    bytes,
+    mimeType,
+  }
+}
+
+function encodePixmapCandidates(
+  pixmap: mupdf.Pixmap,
+  mimeType: VisualImageMimeType
+): ImageRendition[] {
+  const renditions: ImageRendition[] = []
+  const qualities = mimeType === 'image/jpeg' ? JPEG_QUALITIES : [82]
+  for (const quality of qualities) {
+    const rendition = encodePixmap(pixmap, mimeType, quality)
+    renditions.push(rendition)
+    if (rendition.bytes.byteLength <= RENDITION_TARGET_BYTES) break
+  }
+  return renditions
+}
+
 export async function renderPdfPage(
   doc: MupdfDocument,
   pageNum: number,
-  cropRect?: Rect
+  cropRect: VisualBBox
 ): Promise<Uint8Array> {
   let page: mupdf.Page | null = null
-  let fullPagePixmap: mupdf.Pixmap | null = null
   try {
     page = doc.loadPage(pageNum - 1)
-    const scale = RENDER_DPI / 72
-    if (cropRect) return renderCrop(page, cropRect, scale)
-
-    const matrix: mupdf.Matrix = [scale, 0, 0, scale, 0, 0]
-    fullPagePixmap = page.toPixmap(matrix, mupdf.ColorSpace.DeviceRGB, false, true)
-    return fullPagePixmap.asPNG()
-  } catch (err) {
-    const cause = err instanceof Error ? err : new Error(String(err))
+    return renderCrop(page, cropRect, captionScale(cropRect), (pixmap) => pixmap.asPNG())
+  } catch (error) {
+    if (error instanceof VlmError) throw error
+    const cause = error instanceof Error ? error : new Error(String(error))
     throw new VlmError('Failed to render PDF page', { cause, pageNum })
   } finally {
-    fullPagePixmap?.destroy?.()
     page?.destroy?.()
+  }
+}
+
+function preferredMime(evidence: VisualEvidence): VisualImageMimeType {
+  return evidence === 'raster' ? 'image/jpeg' : 'image/png'
+}
+
+type RenderAtEdge = (edge: number, mimeType: VisualImageMimeType) => ImageRendition[]
+
+function renditionEdges(sourceLongEdge: number): number[] {
+  const initialLongEdge = Math.min(RENDITION_LONG_EDGE_MAX, sourceLongEdge)
+  return [...new Set(RENDITION_EDGES.map((edge) => Math.min(edge, initialLongEdge)))].filter(
+    (edge) => edge >= 1
+  )
+}
+
+function selectForMime(
+  edges: readonly number[],
+  mimeType: VisualImageMimeType,
+  renderAtEdge: RenderAtEdge
+): ImageRendition | null {
+  let withinHardLimit: ImageRendition | null = null
+  for (const edge of edges) {
+    for (const rendition of renderAtEdge(edge, mimeType)) {
+      if (rendition.bytes.byteLength <= MAX_VISUAL_RENDITION_BYTES && withinHardLimit === null) {
+        withinHardLimit = rendition
+      }
+      if (rendition.bytes.byteLength <= RENDITION_TARGET_BYTES) return rendition
+    }
+  }
+  return withinHardLimit
+}
+
+function selectBoundedRendition(
+  sourceLongEdge: number,
+  preferred: VisualImageMimeType,
+  renderAtEdge: RenderAtEdge
+): ImageRendition {
+  const edges = renditionEdges(sourceLongEdge)
+  const rendition = selectForMime(edges, preferred, renderAtEdge)
+  if (rendition) return rendition
+  if (preferred === 'image/png') {
+    const jpeg = selectForMime(edges, 'image/jpeg', renderAtEdge)
+    if (jpeg) return jpeg
+  }
+  throw new Error('Rendition exceeds the encoded-size limit')
+}
+
+export async function renderPdfRendition(
+  doc: MupdfDocument,
+  pageNum: number,
+  cropRect: VisualBBox,
+  evidence: VisualEvidence
+): Promise<ImageRendition> {
+  let page: mupdf.Page | null = null
+  try {
+    page = doc.loadPage(pageNum - 1)
+    const { width, height } = cropDimensions(cropRect)
+    const nativeLongEdge = Math.max(1, Math.floor(Math.max(width, height) * BASE_SCALE))
+    return selectBoundedRendition(nativeLongEdge, preferredMime(evidence), (edge, mimeType) =>
+      renderCrop(page as mupdf.Page, cropRect, scaleForLongEdge(cropRect, edge), (pixmap) =>
+        encodePixmapCandidates(pixmap, mimeType)
+      )
+    )
+  } catch (error) {
+    if (error instanceof VlmError) throw error
+    const cause = error instanceof Error ? error : new Error(String(error))
+    throw new VlmError('Failed to render PDF rendition', { cause, pageNum })
+  } finally {
+    page?.destroy?.()
+  }
+}
+
+function renderImageAtSize<T>(
+  image: mupdf.Image,
+  width: number,
+  height: number,
+  preserveAlpha: boolean,
+  consume: (pixmap: mupdf.Pixmap) => T
+): T {
+  const pixmap = new mupdf.Pixmap(mupdf.ColorSpace.DeviceRGB, [0, 0, width, height], preserveAlpha)
+  let device: mupdf.DrawDevice | null = null
+  try {
+    pixmap.clear(preserveAlpha ? 0 : 255)
+    device = new mupdf.DrawDevice(mupdf.Matrix.identity, pixmap)
+    device.fillImage(image, [width, 0, 0, height, 0, 0], 1)
+    device.close()
+    device = null
+    return consume(pixmap)
+  } finally {
+    try {
+      device?.close()
+    } finally {
+      pixmap.destroy?.()
+    }
+  }
+}
+
+/** Bound a Mammoth-extracted PNG/JPEG using the same query payload limits as PDF crops. */
+export function renderImageRendition(
+  bytes: Uint8Array,
+  sourceMimeType: VisualImageMimeType
+): ImageRendition {
+  let image: mupdf.Image | null = null
+  try {
+    const loadedImage = new mupdf.Image(bytes)
+    image = loadedImage
+    const sourceWidth = loadedImage.getWidth()
+    const sourceHeight = loadedImage.getHeight()
+    if (sourceWidth <= 0 || sourceHeight <= 0) throw new Error('Image has invalid dimensions')
+
+    const sourceLongEdge = Math.max(sourceWidth, sourceHeight)
+    return selectBoundedRendition(sourceLongEdge, sourceMimeType, (edge, mimeType) => {
+      const scale = edge / sourceLongEdge
+      const width = Math.max(1, Math.round(sourceWidth * scale))
+      const height = Math.max(1, Math.round(sourceHeight * scale))
+      return renderImageAtSize(loadedImage, width, height, mimeType === 'image/png', (pixmap) =>
+        encodePixmapCandidates(pixmap, mimeType)
+      )
+    })
+  } finally {
+    image?.destroy?.()
   }
 }

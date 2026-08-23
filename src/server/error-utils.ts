@@ -4,16 +4,24 @@ import { getCauseChain, isAppError } from '../utils/errors.js'
 
 /**
  * Shape of a single MCP content block used by RAG server handlers. Mirrors
- * the SDK's `TextContent` minus the strictly internal fields — defined here
- * (rather than imported) because the SDK exposes the type through a
- * widely-imported union; using a local alias keeps handler signatures stable
- * if the SDK widens the union later.
+ * only the SDK text/image shapes needed by this server — defined here rather
+ * than using the SDK's widely-imported content union so unrelated SDK
+ * additions do not widen handler signatures later.
  */
-export type RagContentBlock = {
+export type RagTextContentBlock = {
   type: 'text'
   text: string
   annotations?: Annotations
 }
+
+export type RagImageContentBlock = {
+  type: 'image'
+  data: string
+  mimeType: 'image/png' | 'image/jpeg'
+  annotations?: Annotations
+}
+
+export type RagContentBlock = RagTextContentBlock | RagImageContentBlock
 
 /**
  * Annotations applied to config-warning blocks. The audience covers both
@@ -65,11 +73,12 @@ function buildConfigWarningBlocks(warnings: readonly string[]): RagContentBlock[
  * same `content` reference for chainability (handlers typically build the
  * array first, then call this once before returning).
  */
-export function appendConfigWarnings(
-  content: RagContentBlock[],
+export function appendConfigWarnings<T extends RagContentBlock[]>(
+  content: T,
   warnings: readonly string[]
-): RagContentBlock[] {
-  content.push(...buildConfigWarningBlocks(warnings))
+): T {
+  const blocks: RagContentBlock[] = content
+  blocks.push(...buildConfigWarningBlocks(warnings))
   return content
 }
 
@@ -79,7 +88,7 @@ export function appendConfigWarnings(
  * `BASE_DIRS`) so the user can read the error via the MCP response without
  * inspecting stderr.
  */
-export function buildConfigErrorBlock(message: string): RagContentBlock {
+export function buildConfigErrorBlock(message: string): RagTextContentBlock {
   return {
     type: 'text',
     text: `Configuration error: Tell the user to fix this. ${message}`,

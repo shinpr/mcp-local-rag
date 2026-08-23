@@ -1146,6 +1146,7 @@ describe('VectorStore', () => {
     describe('toSearchResult fileTitle handling', () => {
       it('should include fileTitle when present in raw result', () => {
         const raw = {
+          id: 'row-1',
           filePath: '/test/doc.md',
           chunkIndex: 0,
           text: 'Test content',
@@ -1160,6 +1161,7 @@ describe('VectorStore', () => {
 
       it('should default fileTitle to null when not present in raw result', () => {
         const raw = {
+          id: 'row-1',
           filePath: '/test/doc.md',
           chunkIndex: 0,
           text: 'Test content',
@@ -1175,6 +1177,7 @@ describe('VectorStore', () => {
     describe('isLanceDBRawResult backward compatibility', () => {
       it('should accept results without fileTitle (regression guard)', () => {
         const rawWithoutTitle = {
+          id: 'row-1',
           filePath: '/test/doc.md',
           chunkIndex: 0,
           text: 'Test content',
@@ -1187,6 +1190,7 @@ describe('VectorStore', () => {
 
       it('should accept results with fileTitle', () => {
         const rawWithTitle = {
+          id: 'row-1',
           filePath: '/test/doc.md',
           chunkIndex: 0,
           text: 'Test content',
@@ -1646,7 +1650,12 @@ describe('VectorStore', () => {
       [...chunks].sort((a, b) => a.chunkIndex - b.chunkIndex)
 
     const textChunks = (count: number): TextChunk[] =>
-      Array.from({ length: count }, (_, index) => ({ text: `chunk ${index}`, index }))
+      Array.from({ length: count }, (_, index) => ({
+        text: `chunk ${index}`,
+        index,
+        sourceStart: index * 10,
+        sourceEnd: index * 10 + 7,
+      }))
 
     /**
      * Stubs for `ingestSingleFile`'s injected collaborators. `parsedText` is
@@ -2362,5 +2371,111 @@ describe('VectorStore', () => {
         expect(paths).toEqual([`${trickyDir}/child.md`])
       })
     })
+  })
+})
+
+describe('visualAttachments schema and hydration', () => {
+  const png =
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGBgAAAABQABpfZFQAAAAABJRU5ErkJggg=='
+
+  function chunk(filePath: string, visualAttachments = '[]'): VectorChunk {
+    return {
+      id: randomUUID(),
+      filePath,
+      chunkIndex: 0,
+      text: 'searchable attachment text',
+      vector: new Array(384).fill(0).map((_, index) => (index === 0 ? 1 : 0)),
+      metadata: { fileName: path.basename(filePath), fileSize: 26, fileType: 'pdf' },
+      fileTitle: null,
+      visualAttachments,
+      timestamp: new Date().toISOString(),
+    }
+  }
+
+  it('adds the missing column once and treats a legacy row as having no images', async () => {
+    const dbPath = './tmp/test-vectordb-visual-migration'
+    fs.rmSync(dbPath, { recursive: true, force: true })
+    const { connect } = await import('@lancedb/lancedb')
+    const db = await connect(dbPath)
+    const legacy = chunk('/legacy.pdf')
+    const { visualAttachments: _omitted, ...legacyWithoutImages } = legacy
+    await db.createTable('chunks', [{ ...legacyWithoutImages, fileTitle: '', contentHash: '' }])
+    await db.close()
+
+    const first = new VectorStore({ dbPath, tableName: 'chunks' })
+    const second = new VectorStore({ dbPath, tableName: 'chunks' })
+    try {
+      await first.initialize()
+      await second.initialize()
+      const verifyDb = await connect(dbPath)
+      const fields = (await (await verifyDb.openTable('chunks')).schema()).fields
+      expect(fields.filter((field) => field.name === 'visualAttachments')).toHaveLength(1)
+      await verifyDb.close()
+      await expect(second.hydrateVisualAttachments([{ id: legacy.id }])).resolves.toMatchObject({
+        rows: [{ id: legacy.id, attachments: [] }],
+      })
+    } finally {
+      await first.close()
+      await second.close()
+      fs.rmSync(dbPath, { recursive: true, force: true })
+    }
+  })
+
+  it('hydrates images in imageIndex order and omits a malformed sibling', async () => {
+    const dbPath = './tmp/test-vectordb-visual-hydration'
+    fs.rmSync(dbPath, { recursive: true, force: true })
+    const store = new VectorStore({ dbPath, tableName: 'chunks' })
+    try {
+      await store.initialize()
+      const attachment = (imageIndex: number) => ({
+        imageIndex,
+        mimeType: 'image/png' as const,
+        data: png,
+      })
+      const stored = chunk(
+        "/quoted'o.pdf",
+        JSON.stringify([
+          attachment(4),
+          { ...attachment(3), data: 'invalid' },
+          { ...attachment(2), data: Buffer.from('not a png').toString('base64') },
+          attachment(1),
+        ])
+      )
+      await store.insertChunks([stored])
+
+      const hydration = await store.hydrateVisualAttachments([{ id: stored.id }])
+      expect(hydration.rows[0]?.attachments.map((item) => item.imageIndex)).toEqual([1, 4])
+      expect(hydration.omittedCount).toBe(2)
+    } finally {
+      await store.close()
+      fs.rmSync(dbPath, { recursive: true, force: true })
+    }
+  })
+
+  it('does not attach a replacement row image to an earlier search result', async () => {
+    const dbPath = './tmp/test-vectordb-visual-reingest-race'
+    fs.rmSync(dbPath, { recursive: true, force: true })
+    const store = new VectorStore({ dbPath, tableName: 'chunks' })
+    try {
+      await store.initialize()
+      const oldRow = chunk('/reingested.pdf')
+      await store.insertChunks([oldRow])
+      const [oldResult] = await store.search(oldRow.vector, { limit: 1 })
+      expect(oldResult?.id).toBe(oldRow.id)
+
+      await store.deleteChunks('/reingested.pdf')
+      const newRow = chunk(
+        '/reingested.pdf',
+        JSON.stringify([{ imageIndex: 0, mimeType: 'image/png', data: png }])
+      )
+      await store.insertChunks([newRow])
+
+      const hydration = await store.hydrateVisualAttachments([oldResult!])
+      expect(hydration.rows).toEqual([{ id: oldRow.id, attachments: [] }])
+      expect(hydration.omittedCount).toBe(1)
+    } finally {
+      await store.close()
+      fs.rmSync(dbPath, { recursive: true, force: true })
+    }
   })
 })

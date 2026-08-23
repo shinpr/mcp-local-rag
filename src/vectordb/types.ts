@@ -1,6 +1,7 @@
 // VectorDB type definitions, constants, type guards, and error classes
 
 import { AppError } from '../utils/errors.js'
+import { MAX_VISUAL_RENDITION_BYTES } from '../utils/limits.js'
 
 // ============================================
 // Constants
@@ -78,6 +79,15 @@ export interface DocumentMetadata {
 }
 
 /**
+ * Validated, bounded image stored in a chunk's ordered attachment JSON.
+ */
+export interface VisualAttachment {
+  imageIndex: number
+  mimeType: 'image/png' | 'image/jpeg'
+  data: string
+}
+
+/**
  * Vector chunk
  */
 export interface VectorChunk {
@@ -97,6 +107,8 @@ export interface VectorChunk {
   fileTitle: string | null
   /** SHA-256 of the source file bytes; absent for chunks not ingested from a file. */
   contentHash?: string
+  /** Ordered `JSON.stringify(VisualAttachment[])`; omitted means no attachments. */
+  visualAttachments?: string
   /** Ingestion timestamp (ISO 8601 format) */
   timestamp: string
 }
@@ -105,6 +117,8 @@ export interface VectorChunk {
  * Search result
  */
 export interface SearchResult {
+  /** Stable persisted row identity used for attachment hydration. */
+  id: string
   /** File path */
   filePath: string
   /** Chunk index */
@@ -117,6 +131,18 @@ export interface SearchResult {
   metadata: DocumentMetadata
   /** Document title extracted from file content (display-only, not used for scoring) */
   fileTitle: string | null
+}
+
+/** Validated attachments for one persisted row, in visual order. */
+export interface HydratedChunkAttachments {
+  id: string
+  attachments: VisualAttachment[]
+}
+
+/** Result of one final-identity hydration query. */
+export interface AttachmentHydrationResult {
+  rows: HydratedChunkAttachments[]
+  omittedCount: number
 }
 
 /**
@@ -140,6 +166,7 @@ export interface ChunkRow {
  * Raw result from LanceDB query (internal type)
  */
 export interface LanceDBRawResult {
+  id: string
   filePath: string
   chunkIndex: number
   text: string
@@ -174,6 +201,7 @@ export function isLanceDBRawResult(value: unknown): value is LanceDBRawResult {
   if (typeof value !== 'object' || value === null) return false
   const obj = value as Record<string, unknown>
   return (
+    typeof obj['id'] === 'string' &&
     typeof obj['filePath'] === 'string' &&
     typeof obj['chunkIndex'] === 'number' &&
     typeof obj['text'] === 'string' &&
@@ -197,6 +225,7 @@ export function toSearchResult(raw: unknown): SearchResult {
   // is kept defensive rather than throwing, since a missing score is not worth
   // failing a whole search over.
   return {
+    id: raw.id,
     filePath: raw.filePath,
     chunkIndex: raw.chunkIndex,
     text: raw.text,
@@ -218,8 +247,18 @@ export function toVectorChunk(raw: unknown): VectorChunk {
     throw new DatabaseError('Invalid chunk row shape from LanceDB')
   }
   const obj = raw as Record<string, unknown>
-  const { id, filePath, chunkIndex, text, vector, metadata, fileTitle, contentHash, timestamp } =
-    obj
+  const {
+    id,
+    filePath,
+    chunkIndex,
+    text,
+    vector,
+    metadata,
+    fileTitle,
+    contentHash,
+    visualAttachments,
+    timestamp,
+  } = obj
   if (
     typeof id !== 'string' ||
     typeof filePath !== 'string' ||
@@ -247,8 +286,89 @@ export function toVectorChunk(raw: unknown): VectorChunk {
     // for schema inference, and a '' that survived to a caller would read as a
     // real hash equal to nothing on disk.
     ...(typeof contentHash === 'string' && contentHash.length > 0 ? { contentHash } : {}),
+    visualAttachments: normalizeVisualAttachments(visualAttachments),
     timestamp,
   }
+}
+
+/** Normalize only the defined legacy no-image sentinels; keep malformed JSON observable. */
+export function normalizeVisualAttachments(value: unknown): string {
+  return typeof value === 'string' && value.length > 0 ? value : '[]'
+}
+
+const VISUAL_RENDITION_MAX_BASE64_LENGTH = Math.ceil(MAX_VISUAL_RENDITION_BYTES / 3) * 4
+
+function decodeStrictBase64(value: unknown): Uint8Array | null {
+  if (
+    typeof value !== 'string' ||
+    value.length === 0 ||
+    value.length > VISUAL_RENDITION_MAX_BASE64_LENGTH ||
+    value.length % 4 !== 0 ||
+    !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)
+  ) {
+    return null
+  }
+  const decoded = Buffer.from(value, 'base64')
+  return decoded.toString('base64') === value ? decoded : null
+}
+
+function isVisualAttachment(value: unknown): value is VisualAttachment {
+  if (typeof value !== 'object' || value === null) return false
+  const attachment = value as Partial<VisualAttachment>
+  if (
+    !Number.isInteger(attachment.imageIndex) ||
+    (attachment.imageIndex as number) < 0 ||
+    (attachment.mimeType !== 'image/png' && attachment.mimeType !== 'image/jpeg')
+  ) {
+    return false
+  }
+  const bytes = decodeStrictBase64(attachment.data)
+  if (!bytes || bytes.byteLength > MAX_VISUAL_RENDITION_BYTES) return false
+  return attachment.mimeType === 'image/png'
+    ? bytes.length >= 8 &&
+        bytes[0] === 0x89 &&
+        bytes[1] === 0x50 &&
+        bytes[2] === 0x4e &&
+        bytes[3] === 0x47 &&
+        bytes[4] === 0x0d &&
+        bytes[5] === 0x0a &&
+        bytes[6] === 0x1a &&
+        bytes[7] === 0x0a
+    : bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff
+}
+
+/** Parse one persisted attachment cell while keeping malformed siblings observable. */
+export function parseHydratedVisualAttachments(value: unknown): {
+  attachments: VisualAttachment[]
+  omittedCount: number
+} {
+  if (value === null || value === undefined || value === '' || value === '[]') {
+    return { attachments: [], omittedCount: 0 }
+  }
+  if (typeof value !== 'string') return { attachments: [], omittedCount: 1 }
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(value)
+  } catch {
+    return { attachments: [], omittedCount: 1 }
+  }
+  if (!Array.isArray(parsed)) return { attachments: [], omittedCount: 1 }
+
+  const attachments: VisualAttachment[] = []
+  let omittedCount = 0
+  for (const item of parsed) {
+    if (!isVisualAttachment(item)) {
+      omittedCount += 1
+      continue
+    }
+    attachments.push({
+      imageIndex: item.imageIndex,
+      mimeType: item.mimeType,
+      data: item.data,
+    })
+  }
+  attachments.sort((left, right) => left.imageIndex - right.imageIndex)
+  return { attachments, omittedCount }
 }
 
 /**

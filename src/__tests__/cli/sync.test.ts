@@ -216,6 +216,8 @@ async function seedRows(
         chunks: Array.from({ length: chunkCount }, (_, index) => ({
           index,
           text: `seeded chunk ${index} for ${filePath}`,
+          sourceStart: index * 10,
+          sourceEnd: index * 10 + 8,
         })),
         embeddings: Array.from({ length: chunkCount }, (_, index) => unitVector(index + 1)),
         fileSize: 64,

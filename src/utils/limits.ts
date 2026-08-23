@@ -19,3 +19,6 @@ export const DEFAULT_MAX_FILE_SIZE = 104_857_600
  * (500 MB). Values above this are rejected by `validateMaxFileSize`.
  */
 export const MAX_FILE_SIZE_LIMIT = 524_288_000
+
+/** Maximum encoded bytes for one visual attachment returned with a chunk. */
+export const MAX_VISUAL_RENDITION_BYTES = 512 * 1024

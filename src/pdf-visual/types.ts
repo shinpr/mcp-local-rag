@@ -58,3 +58,26 @@ export interface CaptionerConfig {
 export interface Captioner {
   caption(pngBytes: Uint8Array, pageNum: number): Promise<string | null>
 }
+
+export type VisualBBox = [number, number, number, number]
+
+export type VisualEvidence = 'raster' | 'vector'
+
+export interface DetectedVisualRegion {
+  pageNum: number
+  detectionIndex: number
+  bbox: VisualBBox
+  evidence: VisualEvidence
+}
+
+export type VisualImageMimeType = 'image/png' | 'image/jpeg'
+
+export interface ImageRendition {
+  bytes: Uint8Array
+  mimeType: VisualImageMimeType
+}
+
+export interface ProcessedVisualRegion extends DetectedVisualRegion {
+  caption: string | null
+  rendition?: ImageRendition
+}

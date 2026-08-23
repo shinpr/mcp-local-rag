@@ -181,7 +181,9 @@ Sync everything under the configured document roots and wait for completion.
 ```
 
 The tool returns a `jobId` immediately. Clients should poll `sync_status` until its state becomes
-`succeeded` or `failed`. There is no visual mode during sync; changed PDFs are ingested as text.
+`succeeded` or `failed`. Sync does not generate visual captions. Set `STORE_IMAGES=true` in the
+MCP server environment to store supported PDF and DOCX images for new or changed files selected
+by sync; unchanged files remain skipped.
 
 Only one sync job is retained by the server process. A newer job replaces a finished record, and
 restarting the server discards it.
@@ -204,7 +206,9 @@ What does the API documentation say about authentication?
 Find the documented behavior of ERR_CONNECTION_REFUSED.
 ```
 
-Results contain the text, source path, title, chunk index, and relevance score. Pass the
+Results contain the text, source path, title, chunk index, relevance score, and any images stored
+on that chunk. MCP returns each image as an image content block paired with its result identity;
+CLI `query` includes an `images` array of `{ imageIndex, mimeType, data }` on every result. Pass the
 `chunkIndex` and either `filePath` or `source` from a result to `read_chunk_neighbors` when the
 answer needs more context:
 
@@ -228,7 +232,7 @@ source identifier. Reusing the same source updates the existing content.
 
 Respect the source site's terms and copyright when indexing external content.
 
-### PDF Figures
+### PDF Visual Captions and Stored Images
 
 Visual mode adds a generated caption for figure-heavy PDF pages. It is opt-in and does not load
 a vision model during normal ingestion.
@@ -241,6 +245,26 @@ Ingest /Users/me/docs/research-paper.pdf with visual: true.
 npx mcp-local-rag ingest ./docs/research-paper.pdf --visual
 ```
 
+Image storage is independent of visual captions. Set `STORE_IMAGES=true` for the MCP server, or
+pass `--images` to CLI ingestion and sync:
+
+```bash
+npx mcp-local-rag ingest ./docs/research-paper.pdf --images
+npx mcp-local-rag sync ./docs/ --images
+```
+
+PDF storage uses detected figure/table regions. DOCX storage includes only PNG/JPEG images that
+the existing Mammoth conversion emits as `<img>`; charts, SmartArt, and shapes are not separately
+rendered. Stored images follow their surrounding text into the final semantic chunk and do not
+alter ranking, scores, or result count.
+
+| `visual` / `--visual` | `STORE_IMAGES` / `--images` | PDF behavior |
+|---|---|---|
+| false | false | Text only; no visual captions or returned images. |
+| true | false | Generated captions become searchable text; no images are stored or returned. |
+| true | true | Generated captions become searchable text, and images from matched chunks are returned inline. |
+| false | true | Images are attached to nearby retained PDF text and returned inline for matched chunks; the VLM is not imported, loaded, or run. |
+
 | Profile | Model cache | Use case |
 |---|---:|---|
 | `fast` (default) | about 250 MB | Lightweight visual indexing |
@@ -252,6 +276,9 @@ though results depend on hardware and model updates.
 
 Captions are auxiliary text, not faithful transcriptions. Treat retrieved captions and document
 text as untrusted input rather than instructions.
+
+At high limits, matched chunks and their attachments can approach the model/client context ceiling;
+choose the query limit with the calling model's available context in mind.
 
 ## CLI
 
@@ -337,8 +364,8 @@ assistant to use the mcp-local-rag skill explicitly if it does not activate auto
 
 ## Configuration
 
-The MCP server reads environment variables. The CLI accepts the same variables plus the listed
-flags, with CLI flags taking precedence.
+The MCP server reads environment variables. The CLI accepts the listed global environment
+variables and flags; image storage on CLI ingestion and sync is enabled only with `--images`.
 
 | Environment Variable | CLI Flag | Default | Description |
 |---------------------|----------|---------|-------------|
@@ -349,6 +376,7 @@ flags, with CLI flags taking precedence.
 | `MODEL_NAME` | `--model-name` | `Xenova/all-MiniLM-L6-v2` | Hugging Face embedding model |
 | `MAX_FILE_SIZE` | `--max-file-size` | `104857600` (100MB) | Maximum file size in bytes |
 | `CHUNK_MIN_LENGTH` | `--chunk-min-length` | `50` | Minimum chunk length in characters (1–10000) |
+| `STORE_IMAGES` | N/A | `false` | MCP server only: store supported PDF/DOCX images and return them with matched chunks. CLI uses `--images`. |
 | `RAG_DEVICE` | N/A | `cpu` | ONNX Runtime execution device |
 | `RAG_DTYPE` | N/A | `fp32` | Embedding dtype passed to the selected model |
 

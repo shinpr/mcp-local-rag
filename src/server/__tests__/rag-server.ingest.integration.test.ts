@@ -3,10 +3,21 @@
 
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { buildDocxFixture, headingXml, tableXml } from '../../__tests__/docx-fixture.js'
+import { buildPdfWithImageBytes } from '../../__tests__/pdf-image-fixture.js'
 import { testModelCacheDir, withTestDevice } from '../../__tests__/test-device.js'
+import type { Embedder } from '../../embedder/index.js'
+import { parseHydratedVisualAttachments, type VisualAttachment } from '../../vectordb/types.js'
 import { RAGServer } from '../index.js'
+
+function deterministicEmbeddings(texts: string[]): number[][] {
+  return texts.map((_text, index) => {
+    const vector = new Array<number>(384).fill(0)
+    vector[index % vector.length] = 1
+    return vector
+  })
+}
 
 describe('AC-008: File Re-ingestion', () => {
   let localRagServer: RAGServer
@@ -119,6 +130,75 @@ describe('AC-008: File Re-ingestion', () => {
           expectedValues.every((value) => row.text.includes(value))
       )
     ).toBeDefined()
+  }, 60000)
+
+  it('writes configured PDF image state and direct ingest replaces it request-locally when disabled', async () => {
+    const testFile = resolve(localTestDataDir, 'image-state.pdf')
+    const imageDbPath = resolve('./tmp/test-lancedb-direct-image-state')
+    writeFileSync(testFile, buildPdfWithImageBytes())
+    mkdirSync(imageDbPath, { recursive: true })
+
+    const makeConfiguredServer = (storeImages: boolean) => {
+      const server = new RAGServer(
+        withTestDevice({
+          dbPath: imageDbPath,
+          modelName: 'Xenova/all-MiniLM-L6-v2',
+          cacheDir: testModelCacheDir(),
+          baseDir: localTestDataDir,
+          maxFileSize: 100 * 1024 * 1024,
+          storeImages,
+        })
+      )
+      const embedder = (server as unknown as { embedder: Embedder }).embedder
+      vi.spyOn(embedder, 'embedBatch').mockImplementation(async (texts) =>
+        deterministicEmbeddings(texts)
+      )
+      return server
+    }
+    const readRows = async (server: RAGServer) =>
+      await (
+        server as unknown as {
+          vectorStore: {
+            getChunksByFilePath(path: string): Promise<Array<{ visualAttachments: string | null }>>
+          }
+        }
+      ).vectorStore.getChunksByFilePath(testFile)
+
+    const enabled = makeConfiguredServer(true)
+    await enabled.initialize()
+    try {
+      await enabled.handleIngestFile({ filePath: testFile })
+      const rows = await readRows(enabled)
+      expect(rows.length).toBeGreaterThan(0)
+      const attachmentRows = rows
+        .map((row) => JSON.parse(row.visualAttachments ?? '[]') as VisualAttachment[])
+        .filter((attachments) => attachments.length > 0)
+      expect(attachmentRows.length).toBeGreaterThan(0)
+      for (const attachments of attachmentRows) {
+        expect(attachments.length).toBeGreaterThan(0)
+        expect(attachments.map((attachment) => attachment.imageIndex)).toEqual(
+          attachments.map((attachment) => attachment.imageIndex).sort((left, right) => left - right)
+        )
+        expect(parseHydratedVisualAttachments(JSON.stringify(attachments))).toEqual({
+          attachments,
+          omittedCount: 0,
+        })
+      }
+    } finally {
+      await enabled.close()
+    }
+
+    const disabled = makeConfiguredServer(false)
+    await disabled.initialize()
+    try {
+      await disabled.handleIngestFile({ filePath: testFile })
+      const rows = await readRows(disabled)
+      expect(rows.length).toBeGreaterThan(0)
+      expect(rows.every((row) => row.visualAttachments === '[]')).toBe(true)
+    } finally {
+      await disabled.close()
+      rmSync(imageDbPath, { recursive: true, force: true })
+    }
   }, 60000)
 
   // AC interpretation: [Data protection] Prevent data loss when re-ingest results in 0 chunks

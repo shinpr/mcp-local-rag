@@ -1,6 +1,6 @@
 import * as fs from 'node:fs'
 import { basename } from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { buildVectorChunks } from '../../ingest/compute.js'
 import { type VectorChunk, VectorStore } from '../../vectordb/index.js'
 import {
@@ -574,6 +574,20 @@ const upsertOf = (filePath: string, staleStoredPaths: string[] = []) => ({
 })
 
 describe('executeSyncPlan — mutation gating', () => {
+  it('passes the invocation image flag only to files already selected for upsert', async () => {
+    const { executor } = createExecutor()
+    const ingestFile = vi.spyOn(executor, 'ingestFile')
+
+    await executeSyncPlan(
+      { upserts: [upsertOf(`${ROOT}/changed.pdf`)], skipped: 8, prunes: [] },
+      executor,
+      true
+    )
+
+    expect(ingestFile).toHaveBeenCalledOnce()
+    expect(ingestFile).toHaveBeenCalledWith(`${ROOT}/changed.pdf`, true)
+  })
+
   it('touches no collaborator for a skip-only plan', async () => {
     const { executor, log } = createExecutor()
 
@@ -1275,6 +1289,8 @@ describe('sync executor against a real VectorStore (Early Verification Point)', 
         chunks: Array.from({ length: chunkCount }, (_, index) => ({
           index,
           text: `seeded chunk ${index} of ${basename(filePath)}`,
+          sourceStart: index * 10,
+          sourceEnd: index * 10 + 9,
         })),
         embeddings: Array.from({ length: chunkCount }, (_, index) => fakeVector(index + 1)),
         fileSize: 64,
@@ -1301,7 +1317,14 @@ describe('sync executor against a real VectorStore (Early Verification Point)', 
       if (filePath === failOn) throw new Error('induced ingest failure')
       const chunks = buildVectorChunks({
         filePath,
-        chunks: [{ index: 0, text: `fresh chunk of ${basename(filePath)}` }],
+        chunks: [
+          {
+            index: 0,
+            text: `fresh chunk of ${basename(filePath)}`,
+            sourceStart: 0,
+            sourceEnd: 32,
+          },
+        ],
         embeddings: [fakeVector(99)],
         fileSize: 32,
         fileTitle: null,

@@ -8,6 +8,7 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
 import {
+  type Annotations,
   CallToolRequestSchema,
   ErrorCode,
   ListToolsRequestSchema,
@@ -61,6 +62,7 @@ import {
   formatErrorForClient,
   logError,
   type RagContentBlock,
+  type RagTextContentBlock,
   type ToMcpErrorContext,
   toMcpError,
 } from './error-utils.js'
@@ -114,6 +116,29 @@ const TOOL_ERROR_CONTEXT: Record<string, ToMcpErrorContext> = {
   list_files: {},
   status: {},
   sync_status: {},
+}
+
+const ATTACHMENT_WARNING_ANNOTATIONS = {
+  audience: ['user', 'assistant'],
+  priority: 0.3,
+} satisfies Annotations
+
+type QueryContent = [RagTextContentBlock, ...RagContentBlock[]]
+
+function attachmentOmissionWarning(omittedCount: number): RagTextContentBlock {
+  return {
+    type: 'text',
+    text: `Warning: Visual attachments omitted ${omittedCount} unavailable or invalid attachment${omittedCount === 1 ? '' : 's'}. Text search results are unchanged.`,
+    annotations: ATTACHMENT_WARNING_ANNOTATIONS,
+  }
+}
+
+function attachmentHydrationFailureWarning(): RagTextContentBlock {
+  return {
+    type: 'text',
+    text: 'Warning: Visual attachments could not be loaded. Text search results are unchanged.',
+    annotations: ATTACHMENT_WARNING_ANNOTATIONS,
+  }
 }
 
 /**
@@ -230,6 +255,7 @@ export class RAGServer {
    */
   private readonly maxFileSize: number
   private readonly device: string | undefined
+  private readonly storeImages: boolean
   /**
    * The one current-or-latest sync job this process retains (SYNC-006). A new
    * `sync_start` replaces a terminal record, so the older id becomes unknown,
@@ -262,6 +288,7 @@ export class RAGServer {
     this.minChunkLength = config.chunkMinLength ?? DEFAULT_MIN_CHUNK_LENGTH
     this.maxFileSize = config.maxFileSize
     this.device = config.device
+    this.storeImages = config.storeImages ?? false
     this.excludePaths = [`${resolve(this.dbPath)}${sep}`, `${resolve(this.cacheDir)}${sep}`]
     this.server = new Server(
       { name: 'rag-mcp-server', version: packageVersion },
@@ -340,7 +367,7 @@ export class RAGServer {
    * stays in exactly one place (design-doc-mandated countermeasure for the
    * "warning shape changes touch many handlers" risk).
    */
-  private withWarnings(content: RagContentBlock[]): RagContentBlock[] {
+  private withWarnings<T extends RagContentBlock[]>(content: T): T {
     return appendConfigWarnings(content, this.configWarnings)
   }
 
@@ -353,7 +380,7 @@ export class RAGServer {
    * sync holds the guard the message names its job id and points at
    * `sync_status`, which is the only way for the caller to learn when to retry.
    */
-  private acquireMutation(): { content: RagContentBlock[]; isError: true } | null {
+  private acquireMutation(): { content: RagTextContentBlock[]; isError: true } | null {
     if (!this.mutationInFlight) {
       this.mutationInFlight = true
       return null
@@ -455,7 +482,7 @@ export class RAGServer {
   /**
    * query_documents tool handler
    */
-  async handleQueryDocuments(args: QueryDocumentsInput): Promise<{ content: RagContentBlock[] }> {
+  async handleQueryDocuments(args: QueryDocumentsInput): Promise<{ content: QueryContent }> {
     // query_documents operates over the LanceDB only (no baseDirs access), so
     // it stays callable in degraded mode (configError present). The warning
     // and error blocks attached via `withWarnings` / status remain the user-
@@ -496,12 +523,51 @@ export class RAGServer {
       return queryResult
     })
 
-    const content: RagContentBlock[] = [
+    let hydratedRows: Awaited<ReturnType<VectorStore['hydrateVisualAttachments']>>['rows'] = []
+    let attachmentWarning: RagContentBlock | null = null
+    try {
+      const hydration = await this.vectorStore.hydrateVisualAttachments(searchResults)
+      hydratedRows = hydration.rows
+      if (hydration.omittedCount > 0) {
+        attachmentWarning = attachmentOmissionWarning(hydration.omittedCount)
+      }
+    } catch {
+      attachmentWarning = attachmentHydrationFailureWarning()
+    }
+
+    const content: QueryContent = [
       {
         type: 'text',
         text: JSON.stringify(results, null, 2),
       },
     ]
+
+    const attachmentsByIdentity = new Map(hydratedRows.map((row) => [row.id, row.attachments]))
+    for (const [resultIndex, result] of results.entries()) {
+      const attachments = attachmentsByIdentity.get(searchResults[resultIndex]?.id ?? '') ?? []
+      for (const attachment of attachments) {
+        content.push({
+          type: 'text',
+          text: JSON.stringify({
+            type: 'visual_attachment',
+            result: {
+              filePath: result.filePath,
+              chunkIndex: result.chunkIndex,
+              ...(result.source === undefined ? {} : { source: result.source }),
+            },
+            imageIndex: attachment.imageIndex,
+            mimeType: attachment.mimeType,
+          }),
+        })
+        content.push({
+          type: 'image',
+          data: attachment.data,
+          mimeType: attachment.mimeType,
+        })
+      }
+    }
+
+    if (attachmentWarning) content.push(attachmentWarning)
 
     // Append config warnings on every call because MCP clients may hide
     // stderr and may not retain context across calls.
@@ -549,8 +615,8 @@ export class RAGServer {
    */
   async handleIngestFile(
     raw: unknown,
-    options: { skipOptimize?: boolean } = {}
-  ): Promise<{ content: RagContentBlock[] }> {
+    options: { skipOptimize?: boolean; images?: boolean } = {}
+  ): Promise<{ content: RagTextContentBlock[] }> {
     const args = parseIngestFileInput(raw)
     const isRawData = await isPathInRawDataDir(args.filePath, this.dbPath)
     // Skip the configError gate only for paths structurally inside
@@ -573,10 +639,16 @@ export class RAGServer {
     // For raw-data files (from ingest_data), read directly without validation
     // since the path is internally generated and content is already processed
     const isPdf = args.filePath.toLowerCase().endsWith('.pdf')
+    const isDocx = args.filePath.toLowerCase().endsWith('.docx')
+    const images = (isPdf || isDocx) && (options.images ?? this.storeImages)
     let text: string
     let title: string | null = null
     let chunks: Awaited<ReturnType<typeof buildChunksAndEmbeddings>>['chunks']
     let embeddings: Awaited<ReturnType<typeof buildChunksAndEmbeddings>>['embeddings']
+    let visualAttachments:
+      | Awaited<ReturnType<typeof prepareVisualPdfChunks>>['visualAttachments']
+      | undefined
+    let omittedImageCount = 0
     // Set only by the raw-data branch, which already reads the whole file, so
     // the contentHash below costs no second read there.
     const sourceBytes = isRawData ? await readFile(args.filePath) : undefined
@@ -596,7 +668,7 @@ export class RAGServer {
       title = meta?.title ?? null
       console.error(`Read raw-data file: ${args.filePath} (${text.length} characters)`)
       ;({ chunks, embeddings } = await buildChunksAndEmbeddings(text, this.chunker, this.embedder))
-    } else if (visualArg === true && isPdf) {
+    } else if (isPdf && (visualArg === true || images)) {
       // Visual dispatch delegates to `prepareVisualPdfChunks`, which owns
       // the dynamic `pdf-visual` import so the default path does not load
       // visual dependencies. This handler keeps its backup/rollback/
@@ -607,29 +679,41 @@ export class RAGServer {
         this.chunker,
         this.embedder,
         {
-          profile: visualQuality,
-          cacheDir: this.cacheDir,
-          device: this.device,
+          images,
+          ...(visualArg === true
+            ? {
+                captioner: {
+                  profile: visualQuality,
+                  cacheDir: this.cacheDir,
+                  device: this.device,
+                },
+              }
+            : {}),
         }
       )
       chunks = visualResult.chunks
       embeddings = visualResult.embeddings
       text = visualResult.text
       title = visualResult.title
+      visualAttachments = visualResult.visualAttachments
+      omittedImageCount = visualResult.omittedImageCount
     } else if (isPdf) {
       const result = await this.parser.parsePdf(args.filePath, this.embedder)
       text = result.content
       title = result.title || null
       ;({ chunks, embeddings } = await buildChunksAndEmbeddings(text, this.chunker, this.embedder))
     } else {
-      const result = await this.parser.parseFile(args.filePath)
+      const result = await this.parser.parseFile(args.filePath, { images })
       text = result.content
       title = result.title || null
-      ;({ chunks, embeddings } = await buildChunksFromParseResult(
-        result,
-        this.chunker,
-        this.embedder
-      ))
+      ;({ chunks, embeddings, visualAttachments, omittedImageCount } =
+        await buildChunksFromParseResult(result, this.chunker, this.embedder))
+    }
+
+    if (omittedImageCount > 0) {
+      console.warn(
+        `Skipped ${omittedImageCount} undecodable or oversized image(s) in ${args.filePath}`
+      )
     }
 
     // Fail-fast: Prevent data loss when chunking produces 0 chunks
@@ -661,6 +745,7 @@ export class RAGServer {
       fileSize: text.length,
       fileTitle: title || null,
       contentHash,
+      ...(visualAttachments === undefined ? {} : { visualAttachments }),
     })
 
     // Delete existing data
@@ -728,7 +813,7 @@ export class RAGServer {
    * - Converts to Markdown for better chunking
    * - Saves as .md file
    */
-  async handleIngestData(args: IngestDataInput): Promise<{ content: RagContentBlock[] }> {
+  async handleIngestData(args: IngestDataInput): Promise<{ content: RagTextContentBlock[] }> {
     // ingest_data writes only to `dbPath`/raw-data — it never reads from a
     // configured `baseDir`. Keeping it callable in degraded mode means a user
     // with invalid BASE_DIRS can still capture raw-data via MCP while they
@@ -815,7 +900,7 @@ export class RAGServer {
    *   producing-root annotation.
    * - Excludes `dbPath` and `cacheDir` uniformly across every root.
    */
-  async handleListFiles(input: ListFilesInput = {}): Promise<{ content: RagContentBlock[] }> {
+  async handleListFiles(input: ListFilesInput = {}): Promise<{ content: RagTextContentBlock[] }> {
     // Root-dependent tool: fail fast on configError BEFORE any DB / FS access.
     // `assertConfigOk` throws `BaseDirsConfigError` (mapped to InvalidParams by
     // the central dispatcher); no local error-mapping catch here.
@@ -852,7 +937,7 @@ export class RAGServer {
     // clients see the warnings alongside the file list without needing
     // to inspect stderr. Config-level warnings (`configWarnings`) are
     // still appended via `withWarnings`.
-    const content: RagContentBlock[] = [{ type: 'text', text: JSON.stringify(result, null, 2) }]
+    const content: RagTextContentBlock[] = [{ type: 'text', text: JSON.stringify(result, null, 2) }]
     for (const warning of listed.warnings) {
       content.push({
         type: 'text',
@@ -877,7 +962,7 @@ export class RAGServer {
   /**
    * status tool handler
    */
-  async handleStatus(): Promise<{ content: RagContentBlock[] }> {
+  async handleStatus(): Promise<{ content: RagTextContentBlock[] }> {
     // `status` remains callable in degraded mode (configError set) so the
     // user can diagnose the root configuration via MCP without inspecting
     // stderr. Do NOT call `assertConfigOk` here — status surfaces the config
@@ -885,7 +970,7 @@ export class RAGServer {
     // error-mapping catch: genuine DB failures propagate (prefix-less) to the
     // central dispatcher mapper.
     const status = await this.vectorStore.getStatus()
-    const content: RagContentBlock[] = [
+    const content: RagTextContentBlock[] = [
       {
         type: 'text',
         text: JSON.stringify(status, null, 2),
@@ -907,7 +992,7 @@ export class RAGServer {
    * Deletes chunks from VectorDB and physical raw-data files
    * Supports both filePath (for ingest_file) and source (for ingest_data)
    */
-  async handleDeleteFile(raw: unknown): Promise<{ content: RagContentBlock[] }> {
+  async handleDeleteFile(raw: unknown): Promise<{ content: RagTextContentBlock[] }> {
     const args = parseDeleteFileInput(raw)
     // No outer error-mapping catch: the inline `McpError(InvalidParams)` and
     // `assertConfigOk` throw propagate with original identity to the central
@@ -998,7 +1083,7 @@ export class RAGServer {
    * Context-expansion utility — not a search tool. Mirrors handleDeleteFile's
    * dual-input (filePath XOR source) resolution pattern.
    */
-  async handleReadChunkNeighbors(raw: unknown): Promise<{ content: RagContentBlock[] }> {
+  async handleReadChunkNeighbors(raw: unknown): Promise<{ content: RagTextContentBlock[] }> {
     const args = parseReadChunkNeighborsInput(raw)
     // No local error-mapping catch: `assertConfigOk` errors propagate with original identity to the
     // central dispatcher mapper. A `DatabaseError` reaches the mapper as a
@@ -1072,7 +1157,7 @@ export class RAGServer {
    * captured into the job record instead of escaping, and the run holds the
    * external-mutation guard until it is terminal.
    */
-  async handleSyncStart(input: SyncStartInput): Promise<{ content: RagContentBlock[] }> {
+  async handleSyncStart(input: SyncStartInput): Promise<{ content: RagTextContentBlock[] }> {
     // Root-dependent tool: fail fast on configError before registering a job.
     this.assertConfigOk()
 
@@ -1109,7 +1194,7 @@ export class RAGServer {
    * id other than the current one is unknown: the record was replaced by a newer
    * `sync_start` or lost with a previous server process.
    */
-  async handleSyncStatus(input: SyncStatusInput): Promise<{ content: RagContentBlock[] }> {
+  async handleSyncStatus(input: SyncStatusInput): Promise<{ content: RagTextContentBlock[] }> {
     const job = this.syncJob
     if (job === null || job.jobId !== input.jobId) {
       throw new McpError(
@@ -1178,8 +1263,8 @@ export class RAGServer {
         this.updateSyncJob(jobId, { total: hashedFiles })
         return await this.vectorStore.listChunkHashes()
       },
-      ingestFile: async (filePath: string) => {
-        const chunkCount = await this.ingestFileForSync(filePath)
+      ingestFile: async (filePath: string, images: boolean) => {
+        const chunkCount = await this.ingestFileForSync(filePath, images)
         ingestedFiles += 1
         this.updateSyncJob(jobId, { completed: ingestedFiles })
         return chunkCount
@@ -1201,6 +1286,7 @@ export class RAGServer {
       // resolve() (never realpath) so the requested path is spelled like the
       // stored DB keys; the core validates it against the configured roots.
       ...(requestedPath === undefined ? {} : { requestedPath: resolve(requestedPath) }),
+      ...(this.storeImages ? { images: true } : {}),
       collaborators,
     })
 
@@ -1235,9 +1321,9 @@ export class RAGServer {
    * — that path restores rows and then aborts the run, so no later `optimize()`
    * follows it.
    */
-  private async ingestFileForSync(filePath: string): Promise<number> {
+  private async ingestFileForSync(filePath: string, images: boolean): Promise<number> {
     try {
-      const response = await this.handleIngestFile({ filePath }, { skipOptimize: true })
+      const response = await this.handleIngestFile({ filePath }, { skipOptimize: true, images })
       const { chunkCount } = JSON.parse(response.content[0]?.text ?? '{}') as {
         chunkCount?: number
       }

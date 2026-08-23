@@ -117,6 +117,13 @@ This is after the code block.`
       expect(sentences[0]).toBe('Use `console.log()` for debugging.')
       expect(sentences[1]).toBe('It prints output.')
     })
+
+    it('preserves replacement-pattern characters in fenced code', () => {
+      const code = 'const replacement = "$& $` $1";'
+      const sentences = splitIntoSentences(`Before.\n\n\`\`\`js\n${code}\n\`\`\`\n\nAfter.`)
+
+      expect(sentences.join('\n')).toContain(code)
+    })
   })
 
   // --------------------------------------------
@@ -201,9 +208,14 @@ describe('splitIntoSentenceUnits', () => {
     const start = 'Before.\n\n'.length
 
     expect(splitIntoSentenceUnits(text, [{ start, end: start + row.length }])).toEqual([
-      { text: 'Before.', atomic: false },
-      { text: row, atomic: true },
-      { text: 'After.', atomic: false },
+      { text: 'Before.', atomic: false, sourceStart: 0, sourceEnd: 7 },
+      { text: row, atomic: true, sourceStart: start, sourceEnd: start + row.length },
+      {
+        text: 'After.',
+        atomic: false,
+        sourceStart: start + row.length + 2,
+        sourceEnd: text.length,
+      },
     ])
   })
 
@@ -218,8 +230,13 @@ describe('splitIntoSentenceUnits', () => {
         { start: secondStart, end: secondStart + row.length },
       ])
     ).toEqual([
-      { text: row, atomic: true },
-      { text: row, atomic: true },
+      { text: row, atomic: true, sourceStart: 0, sourceEnd: row.length },
+      {
+        text: row,
+        atomic: true,
+        sourceStart: secondStart,
+        sourceEnd: secondStart + row.length,
+      },
     ])
   })
 
@@ -231,9 +248,56 @@ describe('splitIntoSentenceUnits', () => {
     expect(
       splitIntoSentenceUnits(text, [{ start: prefix.length, end: prefix.length + row.length }])
     ).toEqual([
-      { text: '😀 prefix.', atomic: false },
-      { text: row, atomic: true },
+      { text: '😀 prefix.', atomic: false, sourceStart: 0, sourceEnd: '😀 prefix.'.length },
+      {
+        text: row,
+        atomic: true,
+        sourceStart: prefix.length,
+        sourceEnd: prefix.length + row.length,
+      },
     ])
+  })
+
+  it('preserves exact UTF-16 envelopes through repeated inline code, trimming, and whitespace', () => {
+    const sentence = 'Repeat `x. y` now.'
+    const text = `  ${sentence}  \n\n${sentence} 😀  `
+    const units = splitIntoSentenceUnits(text)
+
+    expect(units).toEqual([
+      {
+        text: sentence,
+        atomic: false,
+        sourceStart: 2,
+        sourceEnd: 2 + sentence.length,
+      },
+      {
+        text: sentence,
+        atomic: false,
+        sourceStart: text.lastIndexOf(sentence),
+        sourceEnd: text.lastIndexOf(sentence) + sentence.length,
+      },
+      {
+        text: '😀',
+        atomic: false,
+        sourceStart: text.indexOf('😀'),
+        sourceEnd: text.indexOf('😀') + '😀'.length,
+      },
+    ])
+    for (const unit of units) {
+      expect(text.slice(unit.sourceStart, unit.sourceEnd)).toBe(unit.text)
+    }
+  })
+
+  it('maps a restored fenced-code sentence to the original range instead of placeholder length', () => {
+    const fenced = '```ts\nconst value = "same. same."\n```'
+    const text = `  Before code.\n${fenced}\nAfter code.  `
+    const units = splitIntoSentenceUnits(text)
+    const codeUnit = units.find((unit) => unit.text.includes('const value'))
+
+    expect(codeUnit).toBeDefined()
+    expect(codeUnit && text.slice(codeUnit.sourceStart, codeUnit.sourceEnd)).toBe(codeUnit?.text)
+    expect(codeUnit?.sourceStart).toBe(text.indexOf(fenced))
+    expect(codeUnit?.sourceEnd).toBe(text.indexOf(fenced) + fenced.length)
   })
 
   it.each([

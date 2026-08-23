@@ -156,7 +156,7 @@ export interface SyncExecutor {
    * store untouched: the executor relies on that to keep a zero-chunk file's
    * prior rows and hash intact.
    */
-  ingestFile(filePath: string): Promise<number>
+  ingestFile(filePath: string, images: boolean): Promise<number>
   /** Delete the rows of exactly one stored path spelling. */
   deleteExactPath(filePath: string): Promise<number>
   optimize(): Promise<void>
@@ -209,6 +209,8 @@ export interface RunSyncInput {
   platform: NodeJS.Platform
   /** Omitted means "every configured root". */
   requestedPath?: string | undefined
+  /** `true` stores images for files already selected as new or changed. */
+  images?: boolean | undefined
   collaborators: SyncCollaborators
 }
 
@@ -410,7 +412,8 @@ async function isRequestedPathContained(
  */
 export async function executeSyncPlan(
   plan: SyncPlan,
-  executor: SyncExecutor
+  executor: SyncExecutor,
+  images = false
 ): Promise<SyncExecutionResult> {
   let upserted = 0
   let empty = 0
@@ -421,7 +424,7 @@ export async function executeSyncPlan(
 
   for (const action of plan.upserts) {
     try {
-      const chunkCount = await executor.ingestFile(action.filePath)
+      const chunkCount = await executor.ingestFile(action.filePath, images)
       if (chunkCount === 0) {
         empty += 1
         continue
@@ -609,6 +612,6 @@ export async function runSync(input: RunSyncInput): Promise<SyncResult> {
     coverage: gathered.coverage,
   })
 
-  const execution = await executeSyncPlan(plan, input.collaborators)
+  const execution = await executeSyncPlan(plan, input.collaborators, input.images === true)
   return { ...execution, coverage: gathered.coverage }
 }

@@ -11,7 +11,7 @@ import { withTrailingSeparator } from '../utils/base-dirs.js'
 import { AppError, isAppError } from '../utils/errors.js'
 import { convertDocxDocumentToText, extractDocxCoreTitle } from './docx-parser.js'
 import { extractPdfPages } from './pdf-extract.js'
-import type { EmbedderInterface } from './pdf-filter.js'
+import type { EmbedderInterface, FilteredTextFragment } from './pdf-filter.js'
 import {
   extractDocxTitle,
   extractMarkdownTitle,
@@ -42,6 +42,40 @@ export interface ParseResult {
   content: string
   title: string
   atomicRanges?: readonly AtomicTextRange[]
+  imageAnchors?: readonly ParsedImageAnchor[]
+}
+
+export interface ParsedImageAnchor {
+  offset: number
+  imageIndex: number
+  mimeType: 'image/png' | 'image/jpeg'
+  bytes: Uint8Array
+}
+
+export interface ParseFileOptions {
+  images?: boolean
+}
+
+async function resolvePdfTitle(
+  filePath: string,
+  pages: readonly { text: string }[],
+  metadataTitle: string | undefined,
+  page1FontHint: { text: string; fontSize: number } | undefined,
+  embedder: EmbedderInterface
+): Promise<string> {
+  const fileName = basename(filePath)
+  let firstPageChunkText: string | undefined
+  try {
+    const filteredPage1 = pages[0]?.text
+    if (filteredPage1 && filteredPage1.trim().length > 0) {
+      const page1Chunks = await new SemanticChunker().chunkText(filteredPage1, embedder)
+      firstPageChunkText = page1Chunks[0]?.text
+    }
+  } catch (titleError) {
+    if (isAppError(titleError)) throw titleError
+    console.error(`Title extraction failed, falling back to filename: ${titleError}`)
+  }
+  return extractPdfTitle(metadataTitle, firstPageChunkText, fileName, page1FontHint).title
 }
 
 /**
@@ -269,7 +303,7 @@ export class DocumentParser {
    * @throws ValidationError - Path traversal, size exceeded, unsupported format
    * @throws FileOperationError - File read failed, parse failed
    */
-  async parseFile(filePath: string): Promise<ParseResult> {
+  async parseFile(filePath: string, options: ParseFileOptions = {}): Promise<ParseResult> {
     // Validation
     await this.validateFilePath(filePath)
     this.validateFileSize(filePath)
@@ -278,7 +312,7 @@ export class DocumentParser {
     const ext = extname(filePath).toLowerCase()
     switch (ext) {
       case '.docx':
-        return await this.parseDocx(filePath)
+        return await this.parseDocx(filePath, options.images === true)
       case '.txt':
         return await this.parseTxt(filePath)
       case '.md':
@@ -327,39 +361,11 @@ export class DocumentParser {
         .filter((t) => t.length > 0)
         .join('\n\n')
 
-      // Extract title from filtered page 1 via semantic chunking
-      // Isolated try-catch: title extraction failure should not abort PDF ingestion
-      const fileName = basename(filePath)
-      let firstPageChunkText: string | undefined
-      try {
-        const filteredPage1 = pages[0]?.text
-        if (filteredPage1 && filteredPage1.trim().length > 0) {
-          const chunker = new SemanticChunker()
-          const page1Chunks = await chunker.chunkText(filteredPage1, embedder)
-          if (page1Chunks.length > 0) {
-            firstPageChunkText = (page1Chunks[0] as { text: string }).text
-          }
-        }
-      } catch (titleError) {
-        // A foreign domain error raised while the embedder runs during page-1
-        // chunking (e.g. `EmbeddingError`) is NOT a title-local failure — let
-        // it propagate so it is not silently masked by the filename fallback.
-        if (isAppError(titleError)) {
-          throw titleError
-        }
-        console.error(`Title extraction failed, falling back to filename: ${titleError}`)
-      }
-
-      const titleResult = extractPdfTitle(
-        metadataTitle,
-        firstPageChunkText,
-        fileName,
-        page1FontHint
-      )
+      const title = await resolvePdfTitle(filePath, pages, metadataTitle, page1FontHint, embedder)
 
       console.error(`Parsed PDF: ${filePath} (${text.length} characters, ${pages.length} pages)`)
 
-      return { content: text, title: titleResult.title }
+      return { content: text, title }
     } catch (error) {
       // A foreign domain error (e.g. `EmbeddingError` raised while the parser
       // uses the embedder) keeps its identity — rethrow it unchanged instead
@@ -400,14 +406,12 @@ export class DocumentParser {
    *     internally before the exception propagates (so the caller never
    *     receives a handle it would not know to clean up). Callers MUST NOT
    *     call `doc.destroy()` on an error from this method.
-   * This method does NOT compute the final title and does NOT decide visual
-   * candidates — those are the dispatch site's and `pdf-visual/detector`'s
-   * responsibilities, respectively.
+   * Title resolution stays here so visual captions cannot change PDF metadata.
+   * Visual candidate selection remains `pdf-visual/detector`'s responsibility.
    *
    * @param filePath - PDF file path (validated against BASE_DIR and size limit)
    * @param embedder - Embedder for semantic header/footer detection
-   * @returns Open mupdf `Document`, `metadataTitle`, and per-page records.
-   *          `page1FontHint` (largest-font line on page 1) is present only on `pages[0]`.
+   * @returns Open mupdf `Document`, resolved title, and per-page text/layout records.
    * @throws ValidationError - Path traversal, size exceeded
    * @throws FileOperationError - File read or parse failed (after destroying `doc` internally)
    */
@@ -416,12 +420,12 @@ export class DocumentParser {
     embedder: EmbedderInterface
   ): Promise<{
     doc: MupdfDocument
-    metadataTitle: string | undefined
+    title: string
     pages: Array<{
       pageNum: number
       text: string
+      textFragments: FilteredTextFragment[]
       stextJson: unknown
-      page1FontHint?: { text: string; fontSize: number }
     }>
   }> {
     // Validation (mirrors parsePdf's entry-point contract so the visual path
@@ -442,29 +446,25 @@ export class DocumentParser {
       const extracted = await extractPdfPages(doc, embedder, 'preserve-whitespace,preserve-images')
 
       const { pages: helperPages, metadataTitle, page1FontHint } = extracted
-
-      // Adapt the helper's top-level `page1FontHint` onto `pages[0]` per the
-      // public contract.
-      const pages = helperPages.map((p, idx) =>
-        idx === 0 && page1FontHint !== undefined
-          ? {
-              pageNum: p.pageNum,
-              text: p.text,
-              stextJson: p.stextJson,
-              page1FontHint,
-            }
-          : {
-              pageNum: p.pageNum,
-              text: p.text,
-              stextJson: p.stextJson,
-            }
+      const pages = helperPages.map((page) => ({
+        pageNum: page.pageNum,
+        text: page.text,
+        textFragments: page.textFragments,
+        stextJson: page.stextJson,
+      }))
+      const title = await resolvePdfTitle(
+        filePath,
+        helperPages,
+        metadataTitle,
+        page1FontHint,
+        embedder
       )
 
       console.error(
         `Parsed PDF pages: ${filePath} (${pages.length} pages; caller owns doc disposal)`
       )
 
-      return { doc, metadataTitle, pages }
+      return { doc, title, pages }
     } catch (error) {
       // `doc` is undefined when `openDocument` itself threw — nothing to free.
       // When it is defined, dispose before re-throwing (on BOTH the foreign and
@@ -490,10 +490,39 @@ export class DocumentParser {
    * @returns ParseResult with content and extracted title
    * @throws FileOperationError - File read failed, parse failed
    */
-  private async parseDocx(filePath: string): Promise<ParseResult> {
+  private async parseDocx(filePath: string, includeImages: boolean): Promise<ParseResult> {
     try {
       const buffer = await readFile(filePath)
-      const htmlResult = await mammoth.convertToHtml({ buffer })
+      const capturedImages = new Map<
+        number,
+        { mimeType: ParsedImageAnchor['mimeType']; bytes: Uint8Array }
+      >()
+      let nextImageIndex = 0
+      let skippedImageCount = 0
+      const htmlResult = includeImages
+        ? await mammoth.convertToHtml(
+            { buffer },
+            {
+              convertImage: mammoth.images.imgElement(async (image) => {
+                const imageIndex = nextImageIndex++
+                if (image.contentType !== 'image/png' && image.contentType !== 'image/jpeg') {
+                  skippedImageCount += 1
+                  return { src: `data:${image.contentType};base64,` }
+                }
+                const bytes = await image.readAsBuffer().catch(() => null)
+                if (bytes === null) {
+                  skippedImageCount += 1
+                  return { src: `data:${image.contentType};base64,` }
+                }
+                capturedImages.set(imageIndex, { mimeType: image.contentType, bytes })
+                return {
+                  src: `data:${image.contentType};base64,`,
+                  'data-rag-image-index': String(imageIndex),
+                }
+              }),
+            }
+          )
+        : await mammoth.convertToHtml({ buffer })
       const htmlDocument = new JSDOM(htmlResult.value).window.document
       const coreTitle = await extractDocxCoreTitle(buffer)
       const body = convertDocxDocumentToText(htmlDocument)
@@ -501,10 +530,20 @@ export class DocumentParser {
       const titleResult = extractDocxTitle(htmlDocument, fileName, coreTitle)
 
       console.error(`Parsed DOCX: ${filePath} (${body.content.length} characters)`)
+      if (skippedImageCount > 0) {
+        console.warn(
+          `Skipped ${skippedImageCount} unsupported or unreadable DOCX image(s) in ${filePath}; only embedded PNG and JPEG are supported`
+        )
+      }
+      const imageAnchors = (body.imageAnchors ?? []).flatMap((anchor) => {
+        const captured = capturedImages.get(anchor.imageIndex)
+        return captured ? [{ ...anchor, ...captured }] : []
+      })
       return {
         content: body.content,
         title: titleResult.title,
         ...(body.atomicRanges.length === 0 ? {} : { atomicRanges: body.atomicRanges }),
+        ...(imageAnchors.length === 0 ? {} : { imageAnchors }),
       }
     } catch (error) {
       throw new FileOperationError(`Failed to parse DOCX: ${filePath}`, error as Error)

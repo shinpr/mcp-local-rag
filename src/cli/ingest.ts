@@ -64,6 +64,7 @@ interface IngestCliOptions {
   maxFileSize?: number | undefined
   chunkMinLength?: number | undefined
   visual?: boolean | undefined
+  images?: boolean | undefined
   /**
    * Visual-quality profile selector. Only meaningful when `visual` is true;
    * silently ignored otherwise (mirrors the existing `--visual` precedent
@@ -99,6 +100,7 @@ Options:
   --max-file-size <n>        Max file size in bytes (default: ${INGEST_DEFAULTS.maxFileSize})
   --chunk-min-length <n>     Minimum chunk length in characters (default: 50, range: 1-10000)
   --visual                   Enable VLM captioning for PDF figure pages (PDFs only; no effect on other types)
+  --images                   Store bounded PDF figures/tables and Mammoth DOCX images
   --visual-quality <profile> VLM profile when --visual is set: fast (default, lightweight) or quality (Qwen2.5-VL-3B, ~10x cache, ~2x inference)
   -h, --help                 Show this help
 
@@ -167,6 +169,10 @@ export function parseArgs(args: string[]): ParsedArgs {
       case '--visual':
         // Boolean toggle: no value consumed. Mirrors the -h/--help pattern.
         options.visual = true
+        i++
+        break
+      case '--images':
+        options.images = true
         i++
         break
       case '--visual-quality': {
@@ -287,21 +293,15 @@ export async function resolveConfig(
 // ============================================
 
 /**
- * Options for `ingestSingleFile`. Discriminated on `visual` so the visual
- * path is type-only callable with the VLM config it actually needs:
- *  - `visual` absent or `false` → no VLM fields required (and not accepted).
- *  - `visual: true` → `profile` and `cacheDir` required; `device` optional.
- *
- * Why a union rather than always-required fields: making the VLM fields
- * unconditionally required forces non-visual callers (default-mode tests,
- * future direct-import callers that only ingest non-PDF files) to fabricate
- * VLM config they will never use. The visual-true variant still catches
- * accidental misuse at compile time, which was the original goal.
+ * Options for `ingestSingleFile`. VLM configuration is required only when
+ * visual captions are enabled.
  */
 export type IngestSingleFileOptions =
-  | { visual?: false | undefined }
+  | { visual?: false | undefined; images?: false | undefined }
+  | { visual: false; images: true }
   | {
       visual: true
+      images?: boolean | undefined
       profile: QualityProfile
       cacheDir: string
       device?: string | undefined
@@ -368,7 +368,7 @@ export async function ingestSingleFile(
 
   // Parse file
   const isPdf = filePath.toLowerCase().endsWith('.pdf')
-  if (options?.visual === true && isPdf) {
+  if (isPdf && (options?.visual === true || options?.images === true)) {
     // Visual dispatch — delegates the shared visual-PDF flow to
     // `prepareVisualPdfChunks` (NFR-1: the dynamic `pdf-visual` import lives
     // inside that helper, not here). This branch keeps the CLI persistence
@@ -379,9 +379,16 @@ export async function ingestSingleFile(
     // (`runIngest` defaults `visualQuality` to `'fast'` when `--visual` is
     // set without `--visual-quality`).
     const visualResult = await prepareVisualPdfChunks(filePath, parser, chunker, embedder, {
-      profile: options.profile,
-      cacheDir: options.cacheDir,
-      device: options.device,
+      images: options.images === true,
+      ...(options.visual
+        ? {
+            captioner: {
+              profile: options.profile,
+              cacheDir: options.cacheDir,
+              device: options.device,
+            },
+          }
+        : {}),
     })
     const { chunks, embeddings } = visualResult
     if (chunks.length === 0) {
@@ -389,6 +396,11 @@ export async function ingestSingleFile(
       return 0
     }
     const title = visualResult.title
+    if (visualResult.omittedImageCount > 0) {
+      console.error(
+        `  Warning: skipped ${visualResult.omittedImageCount} undecodable or oversized PDF image(s)`
+      )
+    }
 
     // Persistence — identical to the default branch below; inlined here so
     // chunks/embeddings produced on the visual path persist correctly. The
@@ -403,6 +415,7 @@ export async function ingestSingleFile(
       fileSize: visualResult.text.length,
       fileTitle: title,
       contentHash,
+      visualAttachments: visualResult.visualAttachments,
     })
     await vectorStore.deleteChunks(filePath)
     await vectorStore.insertChunks(vectorChunks)
@@ -411,16 +424,16 @@ export async function ingestSingleFile(
 
   const parsedFileResult = isPdf
     ? await parser.parsePdf(filePath, embedder)
-    : await parser.parseFile(filePath)
+    : await parser.parseFile(filePath, { images: options?.images === true })
   const text = parsedFileResult.content
   const title = parsedFileResult.title || null
 
   // Chunk text + generate embeddings via the shared computation layer.
-  const { chunks, embeddings } = await buildChunksFromParseResult(
-    parsedFileResult,
-    chunker,
-    embedder
-  )
+  const { chunks, embeddings, visualAttachments, omittedImageCount } =
+    await buildChunksFromParseResult(parsedFileResult, chunker, embedder)
+  if (omittedImageCount > 0) {
+    console.error(`  Warning: skipped ${omittedImageCount} undecodable or oversized DOCX image(s)`)
+  }
   if (chunks.length === 0) {
     console.error(`  Warning: 0 chunks generated (file may be empty or too short)`)
     return 0
@@ -435,6 +448,7 @@ export async function ingestSingleFile(
     fileSize: text.length,
     fileTitle: title,
     contentHash,
+    visualAttachments,
   })
 
   // Delete existing chunks for this file, then insert the new ones
@@ -536,6 +550,7 @@ export async function runIngest(args: string[], globalOptions: GlobalOptions = {
         const ingestOptions: IngestSingleFileOptions = options.visual
           ? {
               visual: true,
+              images: options.images === true,
               // Default the profile to `'fast'` when `--visual-quality` was
               // not provided. The flag is silently ignored when `--visual`
               // itself is absent (mirrors the existing `--visual` precedent
@@ -544,7 +559,9 @@ export async function runIngest(args: string[], globalOptions: GlobalOptions = {
               cacheDir: globalConfig.cacheDir,
               device: resolveDevice(process.env['RAG_DEVICE']),
             }
-          : { visual: false }
+          : options.images
+            ? { visual: false, images: true }
+            : { visual: false, images: false }
         const chunkCount = await ingestSingleFile(
           filePath,
           parser,

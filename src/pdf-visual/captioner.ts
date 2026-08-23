@@ -51,7 +51,7 @@ export function createCaptioner(config: CaptionerConfig): Captioner {
     case 'quality':
       // No silent fallback to `fast` on load failure. The heavier Qwen2.5-VL
       // model surfaces its load error as a wrapped `VlmError` per page (see
-      // `enrichPagesWithCaptions` in `./index.ts`); per FR-3 the file ingest
+      // `processVisualRegions` in `./index.ts`); per FR-3 the file ingest
       // as a whole still completes text-only, so a misconfigured install
       // degrades each candidate page rather than masking the misconfig by
       // switching to `fast`. Operators see one warn line per candidate page.

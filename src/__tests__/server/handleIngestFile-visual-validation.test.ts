@@ -66,8 +66,7 @@ const mocks = vi.hoisted(() => {
     // only verifies validation, not the visual algorithm — these mocks are
     // stand-ins that return minimal real-shaped values.
     createCaptioner: vi.fn().mockReturnValue({ caption: vi.fn().mockResolvedValue(null) }),
-    detectVisualCandidates: vi.fn().mockReturnValue([]),
-    enrichPagesWithCaptions: vi.fn(),
+    detectVisualRegions: vi.fn().mockReturnValue([]),
   }
 })
 
@@ -131,8 +130,8 @@ const vectordbFactory = async (
 
 const pdfVisualFactory = () => ({
   createCaptioner: mocks.createCaptioner,
-  detectVisualCandidates: mocks.detectVisualCandidates,
-  enrichPagesWithCaptions: mocks.enrichPagesWithCaptions,
+  detectVisualRegions: mocks.detectVisualRegions,
+  processVisualRegions: vi.fn().mockResolvedValue([]),
 })
 
 const MOCKED_PATHS = [
@@ -191,6 +190,33 @@ function buildServer(): InstanceType<RAGServerCtor> {
   })
 }
 
+function buildParsePdfPagesResult() {
+  const text = 'page 1 text'
+  return {
+    doc: { destroy: vi.fn() },
+    title: 'PDF title',
+    pages: [
+      {
+        pageNum: 1,
+        text,
+        textFragments: [
+          {
+            pageNum: 1,
+            blockOrdinal: 0,
+            lineOrdinal: 0,
+            fragmentOrdinal: 0,
+            bbox: [0, 0, 100, 10],
+            text,
+            pageTextStart: 0,
+            pageTextEnd: text.length,
+          },
+        ],
+        stextJson: { blocks: [] },
+      },
+    ],
+  }
+}
+
 // ============================================
 // Tests
 // ============================================
@@ -231,19 +257,9 @@ describe('handleIngestFile - `visual` Runtime Validation (AC-012)', () => {
     // `false` cases reach `buildChunksAndEmbeddings` without crashing first.
     mocks.parseFile.mockResolvedValue({ content: 'plain content', title: 'plain title' })
     mocks.parsePdf.mockResolvedValue({ content: 'pdf content', title: 'pdf title' })
-    // Visual-path stubs: `parsePdfPages` returns a doc with a `destroy()` spy
-    // so the `finally` block can call it; `enrichPagesWithCaptions` returns
-    // the pages unchanged.
-    mocks.parsePdfPages.mockResolvedValue({
-      doc: { destroy: vi.fn() },
-      metadataTitle: undefined,
-      pages: [{ pageNum: 1, text: 'page 1 text', stextJson: { blocks: [] } }],
-    })
-    mocks.enrichPagesWithCaptions.mockImplementation(async (pages: unknown) => ({
-      pages,
-      captions: [],
-    }))
-    mocks.detectVisualCandidates.mockReturnValue([])
+    // Visual-path stubs return an open document and no detected regions.
+    mocks.parsePdfPages.mockResolvedValue(buildParsePdfPagesResult())
+    mocks.detectVisualRegions.mockReturnValue([])
     mocks.createCaptioner.mockReturnValue({ caption: vi.fn().mockResolvedValue(null) })
     // Default chunker behavior — return a single chunk so the handler does NOT
     // fail-fast on zero chunks. The positive cases reach persistence stubs.
@@ -325,16 +341,8 @@ describe('handleIngestFile - `visualQuality` Runtime Validation', () => {
     mocks.validateFilePath.mockResolvedValue(undefined)
     mocks.parseFile.mockResolvedValue({ content: 'plain content', title: 'plain title' })
     mocks.parsePdf.mockResolvedValue({ content: 'pdf content', title: 'pdf title' })
-    mocks.parsePdfPages.mockResolvedValue({
-      doc: { destroy: vi.fn() },
-      metadataTitle: undefined,
-      pages: [{ pageNum: 1, text: 'page 1 text', stextJson: { blocks: [] } }],
-    })
-    mocks.enrichPagesWithCaptions.mockImplementation(async (pages: unknown) => ({
-      pages,
-      captions: [],
-    }))
-    mocks.detectVisualCandidates.mockReturnValue([])
+    mocks.parsePdfPages.mockResolvedValue(buildParsePdfPagesResult())
+    mocks.detectVisualRegions.mockReturnValue([])
     mocks.createCaptioner.mockReturnValue({ caption: vi.fn().mockResolvedValue(null) })
     mocks.chunkText.mockResolvedValue([{ text: 'chunk 0 text', index: 0 }])
   })
