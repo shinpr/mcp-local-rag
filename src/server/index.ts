@@ -54,7 +54,7 @@ import {
   classifyRequestedPath,
 } from '../utils/scan.js'
 import { nonAbsolutePrefixes } from '../utils/scope-match.js'
-import { type ImageStorageVersion, type VectorChunk, VectorStore } from '../vectordb/index.js'
+import { type VectorChunk, VectorStore } from '../vectordb/index.js'
 import { DatabaseError } from '../vectordb/types.js'
 import {
   appendConfigWarnings,
@@ -62,7 +62,6 @@ import {
   formatErrorForClient,
   logError,
   type RagContentBlock,
-  type RagContentSequence,
   type RagTextContentBlock,
   type ToMcpErrorContext,
   toMcpError,
@@ -124,17 +123,12 @@ const ATTACHMENT_WARNING_ANNOTATIONS = {
   priority: 0.3,
 } satisfies Annotations
 
-function attachmentOmissionWarning(
-  omittedCount: number,
-  invalidIdentities: readonly { filePath: string; chunkIndex: number }[]
-): RagTextContentBlock {
-  const identities = invalidIdentities
-    .slice(0, 3)
-    .map(({ filePath, chunkIndex }) => JSON.stringify({ filePath, chunkIndex }))
-    .join(', ')
+type QueryContent = [RagTextContentBlock, ...RagContentBlock[]]
+
+function attachmentOmissionWarning(omittedCount: number): RagTextContentBlock {
   return {
     type: 'text',
-    text: `Warning: Visual attachments omitted ${omittedCount} invalid attachment${omittedCount === 1 ? '' : 's'}${identities.length > 0 ? ` for ${identities}` : ''}. Text search results are unchanged.`,
+    text: `Warning: Visual attachments omitted ${omittedCount} unavailable or invalid attachment${omittedCount === 1 ? '' : 's'}. Text search results are unchanged.`,
     annotations: ATTACHMENT_WARNING_ANNOTATIONS,
   }
 }
@@ -373,9 +367,7 @@ export class RAGServer {
    * stays in exactly one place (design-doc-mandated countermeasure for the
    * "warning shape changes touch many handlers" risk).
    */
-  private withWarnings(content: RagTextContentBlock[]): RagTextContentBlock[]
-  private withWarnings(content: RagContentSequence): RagContentSequence
-  private withWarnings(content: RagContentBlock[]): RagContentBlock[] {
+  private withWarnings<T extends RagContentBlock[]>(content: T): T {
     return appendConfigWarnings(content, this.configWarnings)
   }
 
@@ -490,7 +482,7 @@ export class RAGServer {
   /**
    * query_documents tool handler
    */
-  async handleQueryDocuments(args: QueryDocumentsInput): Promise<{ content: RagContentSequence }> {
+  async handleQueryDocuments(args: QueryDocumentsInput): Promise<{ content: QueryContent }> {
     // query_documents operates over the LanceDB only (no baseDirs access), so
     // it stays callable in degraded mode (configError present). The warning
     // and error blocks attached via `withWarnings` / status remain the user-
@@ -537,28 +529,22 @@ export class RAGServer {
       const hydration = await this.vectorStore.hydrateVisualAttachments(searchResults)
       hydratedRows = hydration.rows
       if (hydration.omittedCount > 0) {
-        attachmentWarning = attachmentOmissionWarning(
-          hydration.omittedCount,
-          hydration.invalidIdentities
-        )
+        attachmentWarning = attachmentOmissionWarning(hydration.omittedCount)
       }
     } catch {
       attachmentWarning = attachmentHydrationFailureWarning()
     }
 
-    const content: RagContentSequence = [
+    const content: QueryContent = [
       {
         type: 'text',
         text: JSON.stringify(results, null, 2),
       },
     ]
 
-    const attachmentsByIdentity = new Map(
-      hydratedRows.map((row) => [JSON.stringify([row.filePath, row.chunkIndex]), row.attachments])
-    )
-    for (const result of results) {
-      const attachments =
-        attachmentsByIdentity.get(JSON.stringify([result.filePath, result.chunkIndex])) ?? []
+    const attachmentsByIdentity = new Map(hydratedRows.map((row) => [row.id, row.attachments]))
+    for (const [resultIndex, result] of results.entries()) {
+      const attachments = attachmentsByIdentity.get(searchResults[resultIndex]?.id ?? '') ?? []
       for (const attachment of attachments) {
         content.push({
           type: 'text',
@@ -569,9 +555,8 @@ export class RAGServer {
               chunkIndex: result.chunkIndex,
               ...(result.source === undefined ? {} : { source: result.source }),
             },
-            pageNum: attachment.pageNum,
-            visualIndex: attachment.visualIndex,
-            bbox: attachment.bbox,
+            imageIndex: attachment.imageIndex,
+            mimeType: attachment.mimeType,
           }),
         })
         content.push({
@@ -654,7 +639,8 @@ export class RAGServer {
     // For raw-data files (from ingest_data), read directly without validation
     // since the path is internally generated and content is already processed
     const isPdf = args.filePath.toLowerCase().endsWith('.pdf')
-    const images = isPdf && (options.images ?? this.storeImages)
+    const isDocx = args.filePath.toLowerCase().endsWith('.docx')
+    const images = (isPdf || isDocx) && (options.images ?? this.storeImages)
     let text: string
     let title: string | null = null
     let chunks: Awaited<ReturnType<typeof buildChunksAndEmbeddings>>['chunks']
@@ -662,7 +648,7 @@ export class RAGServer {
     let visualAttachments:
       | Awaited<ReturnType<typeof prepareVisualPdfChunks>>['visualAttachments']
       | undefined
-    const imageStorageVersion: ImageStorageVersion = images ? 'pdf-images-v1' : 'none'
+    let omittedImageCount = 0
     // Set only by the raw-data branch, which already reads the whole file, so
     // the contentHash below costs no second read there.
     const sourceBytes = isRawData ? await readFile(args.filePath) : undefined
@@ -693,11 +679,16 @@ export class RAGServer {
         this.chunker,
         this.embedder,
         {
-          profile: visualQuality,
-          cacheDir: this.cacheDir,
-          device: this.device,
-          visual: visualArg === true,
           images,
+          ...(visualArg === true
+            ? {
+                captioner: {
+                  profile: visualQuality,
+                  cacheDir: this.cacheDir,
+                  device: this.device,
+                },
+              }
+            : {}),
         }
       )
       chunks = visualResult.chunks
@@ -705,20 +696,24 @@ export class RAGServer {
       text = visualResult.text
       title = visualResult.title
       visualAttachments = visualResult.visualAttachments
+      omittedImageCount = visualResult.omittedImageCount
     } else if (isPdf) {
       const result = await this.parser.parsePdf(args.filePath, this.embedder)
       text = result.content
       title = result.title || null
       ;({ chunks, embeddings } = await buildChunksAndEmbeddings(text, this.chunker, this.embedder))
     } else {
-      const result = await this.parser.parseFile(args.filePath)
+      const result = await this.parser.parseFile(args.filePath, { images })
       text = result.content
       title = result.title || null
-      ;({ chunks, embeddings } = await buildChunksFromParseResult(
-        result,
-        this.chunker,
-        this.embedder
-      ))
+      ;({ chunks, embeddings, visualAttachments, omittedImageCount } =
+        await buildChunksFromParseResult(result, this.chunker, this.embedder))
+    }
+
+    if (omittedImageCount > 0) {
+      console.warn(
+        `Skipped ${omittedImageCount} undecodable or oversized image(s) in ${args.filePath}`
+      )
     }
 
     // Fail-fast: Prevent data loss when chunking produces 0 chunks
@@ -751,7 +746,6 @@ export class RAGServer {
       fileTitle: title || null,
       contentHash,
       ...(visualAttachments === undefined ? {} : { visualAttachments }),
-      imageStorageVersion,
     })
 
     // Delete existing data

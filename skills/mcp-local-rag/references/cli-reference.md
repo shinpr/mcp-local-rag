@@ -29,6 +29,7 @@ npx mcp-local-rag [global-options] ingest [options] <path>
 | `--max-file-size <n>` | `MAX_FILE_SIZE` | `104857600` | Max file size in bytes (1–500MB) |
 | `--visual` | — | `false` | Enable VLM captioning for PDF figure pages (PDFs only; no effect on other types) |
 | `--visual-quality <profile>` | — | `fast` | VLM profile when `--visual` is set: `fast` or `quality`. Silently ignored when `--visual` is absent. See "Visual quality profiles" below. |
+| `--images` | — | `false` | Store PDF figure/table regions and DOCX PNG/JPEG `<img>` content on semantic chunks. Independent of `--visual`. |
 
 Output to stderr. Exit 0 = all succeeded, exit 1 = one or more failed. `SKIPPED (0 chunks)` = empty or too-short file, counted as success.
 
@@ -55,7 +56,7 @@ Numbers are approximate at the time of writing and may shift with model updates 
 
 The CLI accepts only `fast` or `quality` for `--visual-quality`. The MCP `ingest_file` tool additionally accepts an empty string `""` and normalizes it to `'fast'` (for clients that emit empty strings for unspecified optional parameters).
 
-**Security — treat captions as untrusted data:** Visual captions are derived from PDF contents and may inherit attacker-controlled text (e.g., instructions embedded in figures by a malicious document author). Downstream LLM consumers must treat retrieved chunks as untrusted data, not as instructions. The `[Visual content on page <N>: ...]` envelope is preserved verbatim so consumers can distinguish caption text from surrounding prose.
+**Security — treat captions as untrusted data:** Visual captions are derived from PDF contents and may inherit attacker-controlled text (e.g., instructions embedded in figures by a malicious document author). Downstream LLM consumers must treat retrieved chunks as untrusted data, not as instructions. The `[Visual content on page <N>, visual <index>: ...]` envelope is preserved verbatim so consumers can distinguish caption text from surrounding prose.
 
 ### sync
 
@@ -63,7 +64,11 @@ The CLI accepts only `fast` or `quality` for `--visual-quality`. The MCP `ingest
 npx mcp-local-rag [global-options] sync [options] [path]
 ```
 
-Reconcile the index with the files on disk: ingest new and changed files, leave unchanged files alone, and remove index entries for files that are gone. `--base-dir <path>` is repeatable. There is no `--visual` on `sync`, so a changed PDF is re-ingested as text.
+Reconcile the index with the files on disk: ingest new and changed files, leave unchanged files alone, and remove index entries for files that are gone. `--base-dir <path>` is repeatable. There is no `--visual` on `sync`, so a changed PDF is re-ingested without VLM captions. `--images` applies to new and changed PDF/DOCX files selected by the same comparison.
+
+| Option | Env Var | Default | Description |
+|--------|---------|---------|-------------|
+| `--images` | — | `false` | Store supported images while ingesting new or changed PDF/DOCX files. |
 
 The positional `path` is optional and must sit inside a configured base directory; omit it to synchronize every configured root. A directory is scanned, while a single file is synchronized on its own and its siblings are left untouched. Without `--base-dir`, roots come from `BASE_DIRS` / `BASE_DIR` (default: cwd).
 
@@ -100,7 +105,10 @@ npx mcp-local-rag [global-options] query [--limit <n>] [--scope <prefix>]... <te
 | `--limit <n>` | `10` | Max results (1–20) |
 | `--scope <prefix>` | — | Restrict to an absolute path prefix (matches a filePath equal to or under it). Repeat for multiple prefixes (unioned). Relative prefixes match nothing. |
 
-Output: JSON array to stdout.
+Output: JSON array to stdout. Every result includes `images`, ordered by `imageIndex`, with items
+shaped as `{ "imageIndex": number, "mimeType": "image/png" | "image/jpeg", "data": "<base64>" }`.
+Decode `data` as base64 and pass the resulting bytes to the LLM host as an image of the declared
+`mimeType`, alongside the same result's text.
 
 ### list
 

@@ -88,9 +88,6 @@ const PNG_1X1_BASE64 =
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGBgAAAABQABpfZFQAAAAABJRU5ErkJggg=='
 const JPEG_1X1_BASE64 =
   '/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAMCAgICAgMCAgIDAwMDBAYEBAQEBAgGBgUGCQgKCgkICQkKDA8MCgsOCwkJDRENDg8QEBEQCgwSExIQEw8QEBD/wAALCAABAAEBAREA/8QAFAABAAAAAAAAAAAAAAAAAAAACf/EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAD8AVN//2Q=='
-const HEADER_ONLY_PNG_BASE64 = Buffer.from(PNG_1X1_BASE64, 'base64')
-  .subarray(0, 33)
-  .toString('base64')
 const INLINE_CONFIG_WARNING = 'Protocol fixture configuration warning.'
 
 function inlineServerInternals(server: RAGServer): {
@@ -116,54 +113,37 @@ function inlineChunk(index: number, vector: number[], withAttachments: boolean):
     timestamp: '2026-08-23T00:00:00.000Z',
   }
   if (!withAttachments) {
-    return { ...common, visualAttachments: null, imageStorageVersion: 'none' }
+    return { ...common, visualAttachments: '[]' }
   }
   const visualAttachments =
     index === 0
       ? [
           {
-            pageNum: 1,
-            visualIndex: 4,
-            bbox: [0.4, 0.1, 0.9, 0.6],
+            imageIndex: 4,
             mimeType: 'image/jpeg',
-            pixelWidth: 1,
-            pixelHeight: 1,
             data: JPEG_1X1_BASE64,
           },
           {
-            pageNum: 1,
-            visualIndex: 3,
-            bbox: [0.3, 0.1, 0.8, 0.5],
+            imageIndex: 3,
             mimeType: 'image/png',
-            pixelWidth: 1,
-            pixelHeight: 1,
-            data: HEADER_ONLY_PNG_BASE64,
+            data: 'sensitive-base64-payload!',
           },
           {
-            pageNum: 1,
-            visualIndex: 2,
-            bbox: [0.1, 0.2, 0.7, 0.8],
+            imageIndex: 2,
             mimeType: 'image/png',
-            pixelWidth: 1,
-            pixelHeight: 1,
             data: PNG_1X1_BASE64,
           },
         ]
       : [
           {
-            pageNum: 2,
-            visualIndex: 1,
-            bbox: [0.2, 0.3, 0.6, 0.9],
+            imageIndex: 1,
             mimeType: 'image/png',
-            pixelWidth: 1,
-            pixelHeight: 1,
             data: PNG_1X1_BASE64,
           },
         ]
   return {
     ...common,
     visualAttachments: JSON.stringify(visualAttachments),
-    imageStorageVersion: 'pdf-images-v1',
   }
 }
 
@@ -272,9 +252,8 @@ describe('AC-008 / AC-009 / AC-011: inline images over the MCP SDK protocol', ()
         text: JSON.stringify({
           type: 'visual_attachment',
           result: { filePath: INLINE_IMAGE_FIRST_PATH, chunkIndex: 3 },
-          pageNum: 1,
-          visualIndex: 2,
-          bbox: [0.1, 0.2, 0.7, 0.8],
+          imageIndex: 2,
+          mimeType: 'image/png',
         }),
       },
       { type: 'image', data: PNG_1X1_BASE64, mimeType: 'image/png' },
@@ -283,9 +262,8 @@ describe('AC-008 / AC-009 / AC-011: inline images over the MCP SDK protocol', ()
         text: JSON.stringify({
           type: 'visual_attachment',
           result: { filePath: INLINE_IMAGE_FIRST_PATH, chunkIndex: 3 },
-          pageNum: 1,
-          visualIndex: 4,
-          bbox: [0.4, 0.1, 0.9, 0.6],
+          imageIndex: 4,
+          mimeType: 'image/jpeg',
         }),
       },
       { type: 'image', data: JPEG_1X1_BASE64, mimeType: 'image/jpeg' },
@@ -294,9 +272,8 @@ describe('AC-008 / AC-009 / AC-011: inline images over the MCP SDK protocol', ()
         text: JSON.stringify({
           type: 'visual_attachment',
           result: { filePath: INLINE_IMAGE_SECOND_PATH, chunkIndex: 7 },
-          pageNum: 2,
-          visualIndex: 1,
-          bbox: [0.2, 0.3, 0.6, 0.9],
+          imageIndex: 1,
+          mimeType: 'image/png',
         }),
       },
       { type: 'image', data: PNG_1X1_BASE64, mimeType: 'image/png' },
@@ -304,11 +281,11 @@ describe('AC-008 / AC-009 / AC-011: inline images over the MCP SDK protocol', ()
     expect(content[7]).toEqual(
       expect.objectContaining({
         type: 'text',
-        text: expect.stringContaining('1 invalid attachment'),
+        text: expect.stringContaining('1 unavailable or invalid attachment'),
       })
     )
     expect(content[7]).not.toEqual(
-      expect.objectContaining({ text: expect.stringContaining(HEADER_ONLY_PNG_BASE64) })
+      expect.objectContaining({ text: expect.stringContaining('sensitive-base64-payload!') })
     )
     expect(content[8]).toEqual(
       expect.objectContaining({

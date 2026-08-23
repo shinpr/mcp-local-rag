@@ -117,6 +117,13 @@ This is after the code block.`
       expect(sentences[0]).toBe('Use `console.log()` for debugging.')
       expect(sentences[1]).toBe('It prints output.')
     })
+
+    it('preserves replacement-pattern characters in fenced code', () => {
+      const code = 'const replacement = "$& $` $1";'
+      const sentences = splitIntoSentences(`Before.\n\n\`\`\`js\n${code}\n\`\`\`\n\nAfter.`)
+
+      expect(sentences.join('\n')).toContain(code)
+    })
   })
 
   // --------------------------------------------

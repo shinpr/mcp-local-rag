@@ -1,4 +1,4 @@
-import { mkdir, rm, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { JSDOM } from 'jsdom'
 import JSZip from 'jszip'
@@ -32,11 +32,78 @@ describe('DOCX parser', () => {
     await rm(testDir, { recursive: true, force: true })
   })
 
-  async function parseFixture(fileName: string, fixture: Buffer) {
+  async function parseFixture(
+    fileName: string,
+    fixture: Buffer,
+    options?: Parameters<DocumentParser['parseFile']>[1]
+  ) {
     const filePath = join(testDir, fileName)
     await writeFile(filePath, fixture)
-    return await parser.parseFile(filePath)
+    return await parser.parseFile(filePath, options)
   }
+
+  it('keeps image anchors at their text position without adding searchable marker text', () => {
+    expect(
+      convertDocxHtmlToText('<p>Before<img data-rag-image-index="0" src="ignored"> after</p>')
+    ).toEqual({
+      content: 'Before after',
+      atomicRanges: [],
+      imageAnchors: [{ offset: 'Before'.length, imageIndex: 0 }],
+    })
+  })
+
+  it('preserves text that matches the former image marker beside a real image', () => {
+    const literalMarker = '\uE000rag-image:0\uE001'
+    const beforeImage = `Visible ${literalMarker} before`
+
+    expect(
+      convertDocxHtmlToText(
+        `<p>${beforeImage}<img data-rag-image-index="1" src="ignored"> after</p>`
+      )
+    ).toEqual({
+      content: `${beforeImage} after`,
+      atomicRanges: [],
+      imageAnchors: [{ offset: beforeImage.length, imageIndex: 1 }],
+    })
+  })
+
+  it('does not duplicate an image used in a serialized table header', () => {
+    const result = convertDocxHtmlToText(
+      '<table><tr><td><img data-rag-image-index="0"></td></tr><tr><td>First</td></tr><tr><td>Second</td></tr></table>'
+    )
+
+    expect(result.imageAnchors).toEqual([{ offset: 0, imageIndex: 0 }])
+  })
+
+  it('captures Mammoth img output only when image storage is enabled', async () => {
+    const fixture = await readFile(
+      join(process.cwd(), 'node_modules', 'mammoth', 'test', 'test-data', 'tiny-picture.docx')
+    )
+
+    const plain = await parseFixture('plain.docx', fixture)
+    const withImages = await parseFixture('with-images.docx', fixture, { images: true })
+
+    expect(withImages.content).toBe(plain.content)
+    expect(plain.imageAnchors).toBeUndefined()
+    expect(withImages.imageAnchors).toEqual([
+      expect.objectContaining({ offset: 0, imageIndex: 0, mimeType: 'image/png' }),
+    ])
+  })
+
+  it('does not read external DOCX image references', async () => {
+    const fixture = await readFile(
+      join(process.cwd(), 'node_modules', 'mammoth', 'test', 'test-data', 'external-picture.docx')
+    )
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+
+    const result = await parseFixture('external-picture.docx', fixture, { images: true })
+
+    expect(result.imageAnchors).toBeUndefined()
+    expect(warning).toHaveBeenCalledWith(
+      expect.stringContaining('only embedded PNG and JPEG are supported')
+    )
+    warning.mockRestore()
+  })
 
   it('uses a fixed valid ZIP timestamp independently of wall-clock time', async () => {
     vi.useFakeTimers()

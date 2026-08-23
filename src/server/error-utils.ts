@@ -19,14 +19,9 @@ export type RagImageContentBlock = {
   data: string
   mimeType: 'image/png' | 'image/jpeg'
   annotations?: Annotations
-  /** Makes text-only consumer access safely resolve to `undefined`. */
-  text?: never
 }
 
 export type RagContentBlock = RagTextContentBlock | RagImageContentBlock
-
-/** Every tool response has a leading text block; query responses may then add images. */
-export type RagContentSequence = [RagTextContentBlock, ...RagContentBlock[]]
 
 /**
  * Annotations applied to config-warning blocks. The audience covers both
@@ -78,23 +73,12 @@ function buildConfigWarningBlocks(warnings: readonly string[]): RagContentBlock[
  * same `content` reference for chainability (handlers typically build the
  * array first, then call this once before returning).
  */
-export function appendConfigWarnings(
-  content: RagTextContentBlock[],
+export function appendConfigWarnings<T extends RagContentBlock[]>(
+  content: T,
   warnings: readonly string[]
-): RagTextContentBlock[]
-export function appendConfigWarnings(
-  content: RagContentSequence,
-  warnings: readonly string[]
-): RagContentSequence
-export function appendConfigWarnings(
-  content: RagContentBlock[],
-  warnings: readonly string[]
-): RagContentBlock[]
-export function appendConfigWarnings(
-  content: RagContentBlock[],
-  warnings: readonly string[]
-): RagContentBlock[] {
-  content.push(...buildConfigWarningBlocks(warnings))
+): T {
+  const blocks: RagContentBlock[] = content
+  blocks.push(...buildConfigWarningBlocks(warnings))
   return content
 }
 

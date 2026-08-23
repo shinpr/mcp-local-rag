@@ -706,7 +706,7 @@ describe('pdf-filter', () => {
   })
 
   describe('filterPageBoundaryLayouts', () => {
-    it('preserves native heading and complete-column order with exact fragment ranges', async () => {
+    it('preserves legacy line order with exact fragment ranges', async () => {
       const pages: PageData[] = [
         {
           pageNum: 1,
@@ -769,12 +769,12 @@ describe('pdf-filter', () => {
 
       const [layout] = await filterPageBoundaryLayouts(pages, embedder)
 
-      expect(layout?.text).toBe('Heading\nLeft one\nLeft two\nRight one\nRight two')
+      expect(layout?.text).toBe('Heading\nLeft one Right one\nLeft two Right two')
       expect(layout?.textFragments.map((fragment) => fragment.text)).toEqual([
         'Heading',
         'Left one',
-        'Left two',
         'Right one',
+        'Left two',
         'Right two',
       ])
       expect(
@@ -782,7 +782,7 @@ describe('pdf-filter', () => {
           layout.text.slice(fragment.pageTextStart, fragment.pageTextEnd)
         )
       ).toEqual(layout?.textFragments.map((fragment) => fragment.text))
-      expect(layout?.textFragments[2]).toMatchObject({
+      expect(layout?.textFragments[3]).toMatchObject({
         pageNum: 1,
         blockOrdinal: 1,
         lineOrdinal: 1,

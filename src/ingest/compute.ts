@@ -15,7 +15,9 @@ import { basename, extname } from 'node:path'
 import type { AtomicTextRange, SemanticChunker, TextChunk } from '../chunker/index.js'
 import type { EmbedderInterface } from '../chunker/semantic-chunker.js'
 import type { ParseResult } from '../parser/index.js'
-import type { ImageStorageVersion, VectorChunk, VisualAttachment } from '../vectordb/index.js'
+import type { ImageRendition } from '../pdf-visual/types.js'
+import { MAX_VISUAL_RENDITION_BYTES } from '../utils/limits.js'
+import type { VectorChunk, VisualAttachment } from '../vectordb/index.js'
 
 /**
  * Result of the shared chunk + embed computation.
@@ -27,6 +29,62 @@ import type { ImageStorageVersion, VectorChunk, VisualAttachment } from '../vect
 export interface BuildChunksAndEmbeddingsResult {
   chunks: TextChunk[]
   embeddings: number[][]
+}
+
+export interface BuildChunksFromParseResultResult extends BuildChunksAndEmbeddingsResult {
+  visualAttachments: Map<number, VisualAttachment[]>
+  omittedImageCount: number
+}
+
+export function findNearestChunk(
+  chunks: readonly TextChunk[],
+  sourceOffset: number
+): TextChunk | undefined {
+  let owner: TextChunk | undefined
+  let bestDistance = Number.POSITIVE_INFINITY
+  for (const chunk of chunks) {
+    const distance =
+      sourceOffset < chunk.sourceStart
+        ? chunk.sourceStart - sourceOffset
+        : sourceOffset > chunk.sourceEnd
+          ? sourceOffset - chunk.sourceEnd
+          : 0
+    if (!owner) {
+      owner = chunk
+      bestDistance = distance
+      continue
+    }
+    const isPreceding = chunk.sourceEnd <= sourceOffset
+    const ownerIsPreceding = owner.sourceEnd <= sourceOffset
+    if (
+      distance < bestDistance ||
+      (distance === bestDistance && isPreceding && !ownerIsPreceding) ||
+      (distance === bestDistance && isPreceding === ownerIsPreceding && chunk.index < owner.index)
+    ) {
+      owner = chunk
+      bestDistance = distance
+    }
+  }
+  return owner
+}
+
+export function createVisualAttachment(
+  imageIndex: number,
+  rendition: ImageRendition
+): VisualAttachment {
+  if (
+    !Number.isInteger(imageIndex) ||
+    imageIndex < 0 ||
+    rendition.bytes.byteLength === 0 ||
+    rendition.bytes.byteLength > MAX_VISUAL_RENDITION_BYTES
+  ) {
+    throw new Error('Invalid bounded image rendition')
+  }
+  return {
+    imageIndex,
+    mimeType: rendition.mimeType,
+    data: Buffer.from(rendition.bytes).toString('base64'),
+  }
 }
 
 /**
@@ -72,8 +130,37 @@ export async function buildChunksFromParseResult(
   result: ParseResult,
   chunker: SemanticChunker,
   embedder: EmbedderInterface
-): Promise<BuildChunksAndEmbeddingsResult> {
-  return await buildChunksAndEmbeddings(result.content, chunker, embedder, result.atomicRanges)
+): Promise<BuildChunksFromParseResultResult> {
+  const computed = await buildChunksAndEmbeddings(
+    result.content,
+    chunker,
+    embedder,
+    result.atomicRanges
+  )
+  const visualAttachments = new Map<number, VisualAttachment[]>()
+  if (!result.imageAnchors?.length || computed.chunks.length === 0) {
+    return { ...computed, visualAttachments, omittedImageCount: 0 }
+  }
+
+  const { renderImageRendition } = await import('../pdf-visual/renderer.js')
+  let omittedCount = 0
+  for (const anchor of [...result.imageAnchors].sort(
+    (left, right) => left.imageIndex - right.imageIndex
+  )) {
+    const owner = findNearestChunk(computed.chunks, anchor.offset)
+    if (!owner) throw new Error(`Image ${anchor.imageIndex} has no owning chunk`)
+
+    try {
+      const rendition = renderImageRendition(anchor.bytes, anchor.mimeType)
+      const attachment = createVisualAttachment(anchor.imageIndex, rendition)
+      const owned = visualAttachments.get(owner.index) ?? []
+      owned.push(attachment)
+      visualAttachments.set(owner.index, owned)
+    } catch {
+      omittedCount += 1
+    }
+  }
+  return { ...computed, visualAttachments, omittedImageCount: omittedCount }
 }
 
 /**
@@ -118,7 +205,6 @@ export function buildVectorChunks(params: {
   fileTitle: string | null
   contentHash: string | null
   visualAttachments?: ReadonlyMap<number, readonly VisualAttachment[]>
-  imageStorageVersion?: ImageStorageVersion
 }): VectorChunk[] {
   const {
     filePath,
@@ -128,7 +214,6 @@ export function buildVectorChunks(params: {
     fileTitle,
     contentHash,
     visualAttachments = new Map(),
-    imageStorageVersion = 'none',
   } = params
   const timestamp = new Date().toISOString()
   return chunks.map((chunk, index) => {
@@ -137,14 +222,10 @@ export function buildVectorChunks(params: {
       throw new Error(`Missing embedding for chunk ${index}`)
     }
     const attachments = [...(visualAttachments.get(chunk.index) ?? [])]
-      .sort((left, right) => left.visualIndex - right.visualIndex)
-      .map(({ pageNum, visualIndex, bbox, mimeType, pixelWidth, pixelHeight, data }) => ({
-        pageNum,
-        visualIndex,
-        bbox,
+      .sort((left, right) => left.imageIndex - right.imageIndex)
+      .map(({ imageIndex, mimeType, data }) => ({
+        imageIndex,
         mimeType,
-        pixelWidth,
-        pixelHeight,
         data,
       }))
     return {
@@ -160,8 +241,7 @@ export function buildVectorChunks(params: {
       },
       fileTitle,
       ...(contentHash === null ? {} : { contentHash }),
-      visualAttachments: attachments.length > 0 ? JSON.stringify(attachments) : null,
-      imageStorageVersion,
+      visualAttachments: JSON.stringify(attachments),
       timestamp,
     }
   })

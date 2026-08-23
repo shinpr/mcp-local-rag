@@ -143,7 +143,6 @@ const pdfVisualFactory = () => ({
         pageNum: page.pageNum,
         detectionIndex,
         bbox: [0, 0, 10, 10],
-        normalizedBbox: [0, 0, 0.1, 0.1],
         evidence: 'raster',
       })),
   processVisualRegions: async (
@@ -151,7 +150,6 @@ const pdfVisualFactory = () => ({
       pageNum: number
       detectionIndex: number
       bbox: [number, number, number, number]
-      normalizedBbox: [number, number, number, number]
       evidence: 'raster'
     }>,
     _doc: unknown,
@@ -172,8 +170,6 @@ const pdfVisualFactory = () => ({
                 rendition: {
                   bytes: new Uint8Array([1, 2, 3]),
                   mimeType: 'image/png',
-                  pixelWidth: 10,
-                  pixelHeight: 10,
                 },
               }
             : {}),
@@ -182,18 +178,6 @@ const pdfVisualFactory = () => ({
     }
     return processed
   },
-  createVisualAttachment: (
-    region: { pageNum: number; normalizedBbox: [number, number, number, number] },
-    visualIndex: number
-  ) => ({
-    pageNum: region.pageNum,
-    visualIndex,
-    bbox: region.normalizedBbox,
-    mimeType: 'image/png',
-    pixelWidth: 10,
-    pixelHeight: 10,
-    data: 'AQID',
-  }),
   createCaptioner: () => ({
     caption: async () => 'synthetic caption text',
   }),
@@ -207,7 +191,6 @@ const detectorFactory = () => ({
         pageNum: page.pageNum,
         detectionIndex,
         bbox: [0, 0, 10, 10],
-        normalizedBbox: [0, 0, 0.1, 0.1],
         evidence: 'raster',
       })),
 })
@@ -216,20 +199,6 @@ const rendererFactory = () => ({
   renderPdfRendition: async () => ({
     bytes: new Uint8Array([1, 2, 3]),
     mimeType: 'image/png',
-    pixelWidth: 10,
-    pixelHeight: 10,
-  }),
-  createVisualAttachment: (
-    region: { pageNum: number; normalizedBbox: [number, number, number, number] },
-    visualIndex: number
-  ) => ({
-    pageNum: region.pageNum,
-    visualIndex,
-    bbox: region.normalizedBbox,
-    mimeType: 'image/png',
-    pixelWidth: 10,
-    pixelHeight: 10,
-    data: 'AQID',
   }),
 })
 
@@ -261,8 +230,8 @@ interface CapturedInsert {
   chunkIndex: number
   text: string
   vector: number[]
+  fileTitle: string | null
   visualAttachments: string | null
-  imageStorageVersion: string
 }
 
 /**
@@ -296,9 +265,9 @@ function captureRun(fn: () => Promise<void>): Promise<{
         chunkIndex: Number(row['chunkIndex']),
         text: String(row['text']),
         vector: Array.isArray(row['vector']) ? (row['vector'] as number[]) : [],
+        fileTitle: typeof row['fileTitle'] === 'string' ? row['fileTitle'] : null,
         visualAttachments:
           typeof row['visualAttachments'] === 'string' ? row['visualAttachments'] : null,
-        imageStorageVersion: String(row['imageStorageVersion']),
       })
     }
     return Promise.resolve(undefined)
@@ -344,7 +313,7 @@ function buildThreePageParseResult() {
   })
   return {
     doc: { destroy: mocks.destroy },
-    metadataTitle: undefined,
+    title: 'Plain PDF',
     pages: [
       page(1, 'page 1 plain text', 'text'),
       page(2, 'page 2 plain text', 'image'),
@@ -440,14 +409,6 @@ describe('VLM PDF Enrichment - Visual Mode', () => {
     process.exitCode = undefined
   })
 
-  it('documents --images as independent from --visual', async () => {
-    const { stderr, error } = await captureRun(() => runIngest(['--help']))
-
-    expect((error as Error | undefined)?.message).toBe('process.exit(0)')
-    expect(stderr.join('\n')).toContain('--images')
-    expect(stderr.join('\n')).toContain('independently from captions')
-  })
-
   it.each([
     { flags: [] as string[], captioned: false, storedImages: false },
     { flags: ['--visual'], captioned: true, storedImages: false },
@@ -464,12 +425,10 @@ describe('VLM PDF Enrichment - Visual Mode', () => {
       expect(error).toBeUndefined()
       expect(inserted.length).toBeGreaterThan(0)
       expect(inserted.some((row) => row.text.includes('[Visual content on page'))).toBe(captioned)
-      expect(
-        inserted.every(
-          (row) => row.imageStorageVersion === (storedImages ? 'pdf-images-v1' : 'none')
-        )
-      ).toBe(true)
-      expect(inserted.some((row) => row.visualAttachments !== null)).toBe(storedImages)
+      expect(inserted.some((row) => JSON.parse(row.visualAttachments ?? '[]').length > 0)).toBe(
+        storedImages
+      )
+      expect(inserted.every((row) => row.fileTitle === 'Plain PDF')).toBe(true)
       expect(captionerSpy.calls.length > 0).toBe(captioned)
     }
   )
@@ -658,62 +617,8 @@ describe('VLM PDF Enrichment - Visual Mode', () => {
 
     // Assert: parser.parseFile was the boundary entered, not parsePdfPages or parsePdf.
     expect(mocks.parseFile).toHaveBeenCalledTimes(1)
-    expect(mocks.parseFile).toHaveBeenCalledWith(filePath)
+    expect(mocks.parseFile).toHaveBeenCalledWith(filePath, { images: false })
     expect(mocks.parsePdfPages).toHaveBeenCalledTimes(0)
     expect(mocks.parsePdf).toHaveBeenCalledTimes(0)
-  })
-
-  // AC-007: "The VLM-produced caption string passes through chunker.chunkText
-  //         without throwing, and the resulting chunks pass through
-  //         embedder.embedBatch without throwing. (Verifies the caption is
-  //         plain text — no control characters that would break downstream
-  //         processing.)"
-  // ROI: 35 (BV:7 × Freq:5 + Legal:0 + Defect:0)
-  // Behavior: Caption is interleaved into one ordered document, which passes
-  //           through one semantic chunking pass and one final-chunk embed batch.
-  // Verification items:
-  //   - chunker.chunkText receives the ordered body-and-caption document once
-  //   - embedder.embedBatch receives all final chunk texts once
-  //   - Final inserted chunks include the caption marker AND have non-empty
-  //     `vector` arrays
-  // @category: integration
-  // @lane: integration
-  // @dependency: ingestSingleFile; parser, chunker, embedder, vector store, and pdf-visual isolated by shape-checked mocks
-  // @complexity: low
-  it('AC-007: ordered caption passes through the single chunk and embed pass', async () => {
-    // Arrange: same setup as AC-002 — page 2 is the only candidate.
-    const filePath = resolve('/tmp/test/ac007.pdf')
-    mocks.stat.mockResolvedValue(mockFileStat())
-
-    // Act
-    const { inserted, error } = await captureRun(() => runIngest(['--visual', filePath]))
-
-    // Assert: pipeline completed without throwing.
-    expect(error).toBeUndefined()
-    expect(process.exitCode).toBeUndefined()
-
-    // AC-003 supersedes the old dedicated-caption contract: the caption is
-    // present in the one ordered document passed to chunkText.
-    expect(mocks.chunkText).toHaveBeenCalledTimes(1)
-    const chunkTextArg = mocks.chunkText.mock.calls[0]?.[0] as string
-    expect(chunkTextArg).toContain('[Visual content on page 2, visual 0: synthetic caption text]')
-
-    // The final chunk texts, including the atomic caption unit, are embedded
-    // in one batch after the single semantic chunking pass.
-    expect(mocks.embedBatch).toHaveBeenCalledTimes(1)
-    const allEmbedBatchTexts = mocks.embedBatch.mock.calls.flatMap(
-      (call) => (call[0] as string[]) ?? []
-    )
-    expect(
-      allEmbedBatchTexts.some((t) =>
-        t.includes('[Visual content on page 2, visual 0: synthetic caption text]')
-      )
-    ).toBe(true)
-
-    // Assert: every inserted chunk has a non-empty vector.
-    expect(inserted.length).toBeGreaterThan(0)
-    for (const chunk of inserted) {
-      expect(chunk.vector.length).toBeGreaterThan(0)
-    }
   })
 })

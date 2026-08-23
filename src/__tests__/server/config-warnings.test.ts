@@ -273,19 +273,23 @@ describe('Config warning delivery via MCP annotations', () => {
     it('includes warnings on every query call (AC-009)', async () => {
       const result1 = await server.handleQueryDocuments({ query: 'test' })
       expect(result1.content.length).toBe(2)
-      expect(result1.content[1]?.text).toContain('Warning:')
-      expect(result1.content[1]?.annotations).toEqual({
-        audience: ['user', 'assistant'],
-        priority: 0.3,
-      })
+      expect(result1.content[1]).toEqual(
+        expect.objectContaining({
+          type: 'text',
+          text: expect.stringContaining('Warning:'),
+          annotations: { audience: ['user', 'assistant'], priority: 0.3 },
+        })
+      )
 
       const result2 = await server.handleQueryDocuments({ query: 'test again' })
       expect(result2.content.length).toBe(2)
-      expect(result2.content[1]?.text).toContain('Warning:')
-      expect(result2.content[1]?.annotations).toEqual({
-        audience: ['user', 'assistant'],
-        priority: 0.3,
-      })
+      expect(result2.content[1]).toEqual(
+        expect.objectContaining({
+          type: 'text',
+          text: expect.stringContaining('Warning:'),
+          annotations: { audience: ['user', 'assistant'], priority: 0.3 },
+        })
+      )
     })
   })
 

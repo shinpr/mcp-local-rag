@@ -26,6 +26,11 @@ interface QueryResultOutput {
   text: string
   score: number
   fileTitle: string | null
+  images: Array<{
+    imageIndex: number
+    mimeType: 'image/png' | 'image/jpeg'
+    data: string
+  }>
   source?: string
 }
 
@@ -191,6 +196,24 @@ export async function runQuery(args: string[], globalOptions: GlobalOptions = {}
       ...(options.scope ? { scope: options.scope } : {}),
     })
 
+    let attachmentsByIdentity = new Map<
+      string,
+      Awaited<
+        ReturnType<typeof vectorStore.hydrateVisualAttachments>
+      >['rows'][number]['attachments']
+    >()
+    try {
+      const hydration = await vectorStore.hydrateVisualAttachments(searchResults)
+      attachmentsByIdentity = new Map(hydration.rows.map((row) => [row.id, row.attachments]))
+      if (hydration.omittedCount > 0) {
+        console.error(
+          `Warning: omitted ${hydration.omittedCount} unavailable or malformed image attachment(s) from query results`
+        )
+      }
+    } catch {
+      console.error('Warning: image attachments could not be loaded; returning text results only')
+    }
+
     // Format results with source restoration for raw-data files
     const results: QueryResultOutput[] = searchResults.map((result) => {
       const output: QueryResultOutput = {
@@ -199,6 +222,7 @@ export async function runQuery(args: string[], globalOptions: GlobalOptions = {}
         text: result.text,
         score: result.score,
         fileTitle: result.fileTitle ?? null,
+        images: attachmentsByIdentity.get(result.id) ?? [],
       }
 
       if (isManagedRawDataPath(result.filePath, globalConfig.dbPath)) {

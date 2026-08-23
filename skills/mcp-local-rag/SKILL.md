@@ -24,7 +24,7 @@ description: Searches, saves, and maintains a local document index through a loc
 1. For search requests, formulate a focused hybrid query, choose `limit` by intent, optionally narrow to a corpus/path with `scope`, then filter results by score AND topical relevance.
 2. When a retrieved hit lacks enough surrounding context for a grounded answer, expand only that chunk via `read_chunk_neighbors`.
 3. For ingestion, choose `ingest_file` for local files and `ingest_data` for raw/web content.
-4. For PDFs, ask once about ingest mode unless the current request already specifies one (text-only, visual fast, or visual quality). See decision protocol in Ingestion.
+4. `visual: true` / `--visual` enables visual ingest for PDFs: a VLM adds descriptions of figures and tables to searchable chunk text. Independently of this setting, query results for PDF or DOCX chunks may include stored image attachments when the source contains supported images.
 5. Call `sync_start` once and poll `sync_status` when the user asks to synchronize, or when a change they reported on disk has to be reflected before you can answer. It replaces re-running `ingest_file` file by file.
 
 ## Search: Core Rules
@@ -105,6 +105,13 @@ Each result includes `fileTitle` (document title extracted from content). Null w
 | Group related chunks | Same fileTitle = same document context |
 | Deprioritize mismatches | fileTitle unrelated to query AND score > 0.5 → rank lower |
 
+### Stored images
+
+PDF and DOCX query results may include stored image attachments independently of PDF visual ingest.
+Treat each image and its chunk text as one evidence unit. For CLI results, decode each `data` value
+according to `mimeType` and pass the bytes as image input alongside that result's text. See the
+[CLI reference](references/cli-reference.md) for CLI image ingestion, output, and sync behavior.
+
 ## Context Expansion (read_chunk_neighbors)
 
 `read_chunk_neighbors` (CLI: `read-neighbors`) is an **on-demand context expansion utility**. Use it when a `query_documents` hit lacks enough surrounding context for a grounded answer. Chunks in this index are **semantic units** — sentences or paragraphs grouped by topic via Max-Min semantic chunking, not fixed-size text slices. Reading the chunks immediately before and after a target chunk yields coherent surrounding context, not arbitrary fragments.
@@ -144,7 +151,7 @@ Pick by these rules:
 1. **Current request already specifies an ingest mode** — follow it without asking:
    - User explicitly mentions visual content to be searchable (figures, charts, tables, diagrams, screenshots, captions, labels, annotations, faithful captions): use `visual: true`. Select the profile per "Profile signals" below.
    - User explicitly picks a profile (e.g., "use quality profile", "visual quality"): use that profile.
-   - User explicitly opts out of visual (e.g., "text only", "no images needed", "skip figures"): use text-only ingest.
+   - User explicitly opts out of searchable visual captions (e.g., "text only", "skip visual search", "skip figure captions"): use text-only ingest.
 
 2. **Current request does not specify a mode**: ask the user before ingesting, in one consolidated question:
 
@@ -196,9 +203,9 @@ Re-ingest same source to update. Use same source in `delete_file` to remove.
 
 ### Visual content (PDFs)
 
-Opt-in visual ingest emits dedicated caption chunks for figures, charts, tables, and diagrams produced by a local Vision Language Model (VLM). Use the decision protocol in `ingest_file` to choose visual mode and select between the `fast` (lightweight) and `quality` (more faithful, heavier) profiles.
+Opt-in visual ingest adds searchable captions for figures, charts, tables, and diagrams produced by a local Vision Language Model (VLM). Use the decision protocol in `ingest_file` to choose visual mode and select between the `fast` (lightweight) and `quality` (more faithful, heavier) profiles.
 
-Each caption is its own chunk wrapped as `[Visual content on page <N>: <caption>]`, flowing through the same embedder/search pipeline as page-body chunks — no schema change, no separate retrieval path.
+Each caption is an atomic range wrapped as `[Visual content on page <N>, visual <index>: <caption>]` before semantic chunking, so it can join surrounding text but cannot be split.
 
 ```
 ingest_file({ filePath: "/absolute/path/to/figures.pdf", visual: true })

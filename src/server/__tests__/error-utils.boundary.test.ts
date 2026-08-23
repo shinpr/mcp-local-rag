@@ -5,37 +5,7 @@ import { FileOperationError, ValidationError } from '../../parser/index.js'
 import { VlmError } from '../../pdf-visual/types.js'
 import { BaseDirsConfigError } from '../../utils/base-dirs.js'
 import { DatabaseError } from '../../vectordb/types.js'
-import {
-  appendConfigWarnings,
-  formatErrorForClient,
-  formatErrorForLog,
-  logError,
-  type RagContentBlock,
-  toMcpError,
-} from '../error-utils.js'
-
-describe('RagContentBlock boundary', () => {
-  it('preserves SDK image content while appending text configuration warnings', () => {
-    const content: RagContentBlock[] = [
-      {
-        type: 'image',
-        data: 'aW1hZ2U=',
-        mimeType: 'image/png',
-      },
-    ]
-
-    const returned = appendConfigWarnings(content, ['controlled configuration warning'])
-
-    expect(returned).toBe(content)
-    expect(returned).toEqual([
-      { type: 'image', data: 'aW1hZ2U=', mimeType: 'image/png' },
-      expect.objectContaining({
-        type: 'text',
-        text: expect.stringContaining('controlled configuration warning'),
-      }),
-    ])
-  })
-})
+import { formatErrorForClient, formatErrorForLog, logError, toMcpError } from '../error-utils.js'
 
 describe('formatErrorForClient', () => {
   let originalNodeEnv: string | undefined

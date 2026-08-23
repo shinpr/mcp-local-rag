@@ -32,7 +32,7 @@ import {
 import { createEmbedder, createVectorStore, formatCliError } from './common.js'
 import { type IngestSingleFileOptions, ingestSingleFile, resolveConfig } from './ingest.js'
 import type { GlobalOptions } from './options.js'
-import { consumeBaseDirArg, resolveDevice, resolveGlobalConfig } from './options.js'
+import { consumeBaseDirArg, resolveGlobalConfig } from './options.js'
 
 // ============================================
 // Help
@@ -52,7 +52,7 @@ Arguments:
 
 Options:
   --base-dir <path>      Document root (repeatable; overrides environment roots)
-  --images               Store bounded PDF figure/table images; omitted sync preserves enabled files
+  --images               Store images for new/changed PDF and DOCX files
   -h, --help             Show this help
 
 Without --base-dir, roots come from BASE_DIRS / BASE_DIR (default: current directory).
@@ -237,13 +237,7 @@ export async function runSync(args: string[], globalOptions: GlobalOptions = {})
     // already reports itself from inside `ingestSingleFile`.
     ingestFile: async (filePath: string, images: boolean) => {
       const ingestOptions: IngestSingleFileOptions = images
-        ? {
-            visual: false,
-            images: true,
-            profile: 'fast',
-            cacheDir: globalConfig.cacheDir,
-            device: resolveDevice(process.env['RAG_DEVICE']),
-          }
+        ? { visual: false, images: true }
         : { visual: false, images: false }
       const chunkCount = await ingestSingleFile(
         filePath,

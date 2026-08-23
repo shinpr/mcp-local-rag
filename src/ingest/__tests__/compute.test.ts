@@ -2,43 +2,40 @@ import { describe, expect, it, vi } from 'vitest'
 
 import type { SemanticChunker } from '../../chunker/index.js'
 import type { EmbedderInterface } from '../../chunker/semantic-chunker.js'
-import { buildChunksAndEmbeddings } from '../compute.js'
+import { buildChunksFromParseResult } from '../compute.js'
 
-describe('buildChunksAndEmbeddings', () => {
-  it('performs one ordered chunk pass and preserves returned source envelopes', async () => {
-    const text = 'Before.\n\n[Visual content on page 1, visual 0: Caption.]\n\nAfter.'
-    const captionStart = text.indexOf('[Visual content')
-    const atomicRanges = [{ start: captionStart, end: text.indexOf(']\n\n') + 1 }]
-    const expectedChunks = [{ text, index: 0, sourceStart: 0, sourceEnd: text.length }]
-    const chunkText = vi.fn().mockResolvedValue(expectedChunks)
-    const embedBatch = vi.fn().mockResolvedValue([[1, 0]])
-
-    const result = await buildChunksAndEmbeddings(
-      text,
-      { chunkText } as unknown as SemanticChunker,
-      { embedBatch } satisfies EmbedderInterface,
-      atomicRanges
+describe('buildChunksFromParseResult', () => {
+  it('attaches a DOCX image to the chunk owning its source position', async () => {
+    const text = 'Before text. After text.'
+    const chunks = [
+      { text: 'Before text.', index: 0, sourceStart: 0, sourceEnd: 11 },
+      { text: 'After text.', index: 1, sourceStart: 13, sourceEnd: text.length },
+    ]
+    const chunkText = vi.fn().mockResolvedValue(chunks)
+    const embedBatch = vi.fn().mockResolvedValue([
+      [1, 0],
+      [0, 1],
+    ])
+    const png = Uint8Array.from(
+      Buffer.from(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+        'base64'
+      )
     )
 
-    expect(chunkText).toHaveBeenCalledTimes(1)
-    expect(chunkText).toHaveBeenCalledWith(text, expect.anything(), atomicRanges)
-    expect(embedBatch).toHaveBeenCalledWith([text])
-    expect(result).toEqual({ chunks: expectedChunks, embeddings: [[1, 0]] })
-  })
+    const result = await buildChunksFromParseResult(
+      {
+        content: text,
+        title: 'Document',
+        imageAnchors: [{ offset: 12, imageIndex: 0, mimeType: 'image/png', bytes: png }],
+      },
+      { chunkText } as unknown as SemanticChunker,
+      { embedBatch } satisfies EmbedderInterface
+    )
 
-  it('does not create an embedding when the ordered document produces zero chunks', async () => {
-    const chunkText = vi.fn().mockResolvedValue([])
-    const embedBatch = vi.fn()
-
-    await expect(
-      buildChunksAndEmbeddings(
-        '',
-        { chunkText } as unknown as SemanticChunker,
-        { embedBatch } satisfies EmbedderInterface,
-        []
-      )
-    ).resolves.toEqual({ chunks: [], embeddings: [] })
-    expect(chunkText).toHaveBeenCalledTimes(1)
-    expect(embedBatch).not.toHaveBeenCalled()
+    expect(result.visualAttachments.get(0)).toEqual([
+      expect.objectContaining({ imageIndex: 0, mimeType: expect.stringMatching(/^image\//) }),
+    ])
+    expect(result.visualAttachments.has(1)).toBe(false)
   })
 })

@@ -36,80 +36,98 @@ export interface SentenceUnit {
 
 interface MappedText {
   text: string
-  boundaries: number[]
+  segments: MappingSegment[]
+}
+
+interface MappingSegment {
+  mappedStart: number
+  mappedEnd: number
+  sourceStart: number
+  sourceEnd: number
+  linear: boolean
 }
 
 // ============================================
 // Helper Functions
 // ============================================
 
-function replaceMappedMatches(
-  input: MappedText,
-  pattern: RegExp,
-  placeholderPrefix: string,
-  blocks: CodeBlockInfo[],
-  firstIndex: number
-): { mapped: MappedText; nextIndex: number } {
-  const matches = [...input.text.matchAll(pattern)]
-  if (matches.length === 0) return { mapped: input, nextIndex: firstIndex }
-
-  let text = ''
-  const boundaries = [input.boundaries[0] ?? 0]
-  let cursor = 0
-  let index = firstIndex
-  const appendSource = (start: number, end: number): void => {
-    text += input.text.slice(start, end)
-    for (let offset = start; offset < end; offset++) {
-      boundaries.push(input.boundaries[offset + 1] ?? input.boundaries[offset] ?? 0)
-    }
-  }
-
-  for (const match of matches) {
-    const matchStart = match.index
-    const content = match[0]
-    if (matchStart === undefined || content.length === 0) continue
-    appendSource(cursor, matchStart)
-
-    const matchEnd = matchStart + content.length
-    const sourceStart = input.boundaries[matchStart] ?? 0
-    const sourceEnd = input.boundaries[matchEnd] ?? sourceStart
-    const placeholder = `${placeholderPrefix}${index}${placeholderPrefix}`
-    blocks.push({ placeholder, content })
-    text += placeholder
-    for (let offset = 0; offset < placeholder.length; offset++) {
-      boundaries.push(offset === placeholder.length - 1 ? sourceEnd : sourceStart)
-    }
-    cursor = matchEnd
-    index++
-  }
-  appendSource(cursor, input.text.length)
-  return { mapped: { text, boundaries }, nextIndex: index }
-}
-
 function maskCode(
   text: string,
   sourceStart: number
 ): { mapped: MappedText; blocks: CodeBlockInfo[] } {
   const blocks: CodeBlockInfo[] = []
-  const initial: MappedText = {
-    text,
-    boundaries: Array.from({ length: text.length + 1 }, (_, index) => sourceStart + index),
-  }
-  const fenced = replaceMappedMatches(initial, /```[\s\S]*?```/g, CODE_BLOCK_PLACEHOLDER, blocks, 0)
-  const inline = replaceMappedMatches(
-    fenced.mapped,
-    /`[^`]+`/g,
-    INLINE_CODE_PLACEHOLDER,
-    blocks,
-    fenced.nextIndex
+  const fenced = [...text.matchAll(/```[\s\S]*?```/g)].flatMap((match) =>
+    match.index === undefined ? [] : [{ start: match.index, end: match.index + match[0].length }]
   )
-  return { mapped: inline.mapped, blocks }
+  const matchedRanges = [...fenced]
+  let gapStart = 0
+  for (const fencedRange of [...fenced, { start: text.length, end: text.length }]) {
+    const gap = text.slice(gapStart, fencedRange.start)
+    for (const match of gap.matchAll(/`[^`]+`/g)) {
+      if (match.index === undefined) continue
+      matchedRanges.push({
+        start: gapStart + match.index,
+        end: gapStart + match.index + match[0].length,
+      })
+    }
+    gapStart = fencedRange.end
+  }
+  matchedRanges.sort((left, right) => left.start - right.start)
+
+  let mappedText = ''
+  let cursor = 0
+  const segments: MappingSegment[] = []
+  const append = (value: string, start: number, end: number, linear: boolean): void => {
+    const mappedStart = mappedText.length
+    mappedText += value
+    segments.push({
+      mappedStart,
+      mappedEnd: mappedText.length,
+      sourceStart: sourceStart + start,
+      sourceEnd: sourceStart + end,
+      linear,
+    })
+  }
+  for (const [index, range] of matchedRanges.entries()) {
+    if (range.start > cursor) append(text.slice(cursor, range.start), cursor, range.start, true)
+    const content = text.slice(range.start, range.end)
+    const placeholderPrefix = content.startsWith('```')
+      ? CODE_BLOCK_PLACEHOLDER
+      : INLINE_CODE_PLACEHOLDER
+    const placeholder = `${placeholderPrefix}${index}${placeholderPrefix}`
+    blocks.push({ placeholder, content })
+    append(placeholder, range.start, range.end, false)
+    cursor = range.end
+  }
+  if (cursor < text.length) append(text.slice(cursor), cursor, text.length, true)
+  return { mapped: { text: mappedText, segments }, blocks }
+}
+
+function sourceOffsetAt(mapped: MappedText, offset: number, fallback: number): number {
+  let low = 0
+  let high = mapped.segments.length - 1
+  while (low <= high) {
+    const middle = Math.floor((low + high) / 2)
+    const segment = mapped.segments[middle] as MappingSegment
+    if (offset < segment.mappedStart) {
+      high = middle - 1
+    } else if (offset > segment.mappedEnd) {
+      low = middle + 1
+    } else if (offset === segment.mappedEnd) {
+      return segment.sourceEnd
+    } else {
+      return segment.linear
+        ? segment.sourceStart + (offset - segment.mappedStart)
+        : segment.sourceStart
+    }
+  }
+  return fallback
 }
 
 function restoreCode(text: string, blocks: CodeBlockInfo[]): string {
   let restored = text
   for (const block of blocks) {
-    restored = restored.replace(block.placeholder, block.content)
+    restored = restored.replace(block.placeholder, () => block.content)
   }
   return restored
 }
@@ -146,8 +164,8 @@ function splitOrdinaryRange(text: string, sourceStart: number, sourceEnd: number
     units.push({
       text: restored,
       atomic: false,
-      sourceStart: mapped.boundaries[trimmedStart] ?? sourceStart,
-      sourceEnd: mapped.boundaries[trimmedEnd] ?? sourceEnd,
+      sourceStart: sourceOffsetAt(mapped, trimmedStart, sourceStart),
+      sourceEnd: sourceOffsetAt(mapped, trimmedEnd, sourceEnd),
     })
   }
 

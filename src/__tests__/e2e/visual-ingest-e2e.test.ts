@@ -149,7 +149,7 @@ function buildPng(width: number, height: number): Uint8Array {
  *   - Substantial body text (well above the chunker's `minChunkLength=50`
  *     filter, with multiple sentences so the semantic chunker emits ≥1 chunk
  *     in the text-only fallback path).
- *   - An embedded raster image so `detectVisualCandidates` flags the page as
+ *   - An embedded raster image so `detectVisualRegions` finds the page region
  *     a visual candidate (DD §pdf-visual/detector.ts — binary rule on
  *     `block.type === 'image'`), exercising the captioner code path.
  *

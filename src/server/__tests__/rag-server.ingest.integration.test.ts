@@ -8,8 +8,7 @@ import { buildDocxFixture, headingXml, tableXml } from '../../__tests__/docx-fix
 import { buildPdfWithImageBytes } from '../../__tests__/pdf-image-fixture.js'
 import { testModelCacheDir, withTestDevice } from '../../__tests__/test-device.js'
 import type { Embedder } from '../../embedder/index.js'
-import { validateVisualAttachment } from '../../pdf-visual/renderer.js'
-import type { VisualAttachment } from '../../pdf-visual/types.js'
+import { parseHydratedVisualAttachments, type VisualAttachment } from '../../vectordb/types.js'
 import { RAGServer } from '../index.js'
 
 function deterministicEmbeddings(texts: string[]): number[][] {
@@ -160,9 +159,7 @@ describe('AC-008: File Re-ingestion', () => {
       await (
         server as unknown as {
           vectorStore: {
-            getChunksByFilePath(
-              path: string
-            ): Promise<Array<{ visualAttachments: string | null; imageStorageVersion: string }>>
+            getChunksByFilePath(path: string): Promise<Array<{ visualAttachments: string | null }>>
           }
         }
       ).vectorStore.getChunksByFilePath(testFile)
@@ -173,19 +170,19 @@ describe('AC-008: File Re-ingestion', () => {
       await enabled.handleIngestFile({ filePath: testFile })
       const rows = await readRows(enabled)
       expect(rows.length).toBeGreaterThan(0)
-      expect(rows.every((row) => row.imageStorageVersion === 'pdf-images-v1')).toBe(true)
       const attachmentRows = rows
-        .filter((row) => row.visualAttachments !== null)
-        .map((row) => JSON.parse(row.visualAttachments as string) as VisualAttachment[])
+        .map((row) => JSON.parse(row.visualAttachments ?? '[]') as VisualAttachment[])
+        .filter((attachments) => attachments.length > 0)
       expect(attachmentRows.length).toBeGreaterThan(0)
       for (const attachments of attachmentRows) {
         expect(attachments.length).toBeGreaterThan(0)
-        expect(attachments.map((attachment) => attachment.visualIndex)).toEqual(
-          attachments
-            .map((attachment) => attachment.visualIndex)
-            .sort((left, right) => left - right)
+        expect(attachments.map((attachment) => attachment.imageIndex)).toEqual(
+          attachments.map((attachment) => attachment.imageIndex).sort((left, right) => left - right)
         )
-        expect(attachments.every(validateVisualAttachment)).toBe(true)
+        expect(parseHydratedVisualAttachments(JSON.stringify(attachments))).toEqual({
+          attachments,
+          omittedCount: 0,
+        })
       }
     } finally {
       await enabled.close()
@@ -197,8 +194,7 @@ describe('AC-008: File Re-ingestion', () => {
       await disabled.handleIngestFile({ filePath: testFile })
       const rows = await readRows(disabled)
       expect(rows.length).toBeGreaterThan(0)
-      expect(rows.every((row) => row.imageStorageVersion === 'none')).toBe(true)
-      expect(rows.every((row) => row.visualAttachments === null)).toBe(true)
+      expect(rows.every((row) => row.visualAttachments === '[]')).toBe(true)
     } finally {
       await disabled.close()
       rmSync(imageDbPath, { recursive: true, force: true })

@@ -8,13 +8,13 @@
     "url": "https://github.com/shinpr/mcp-local-rag",
     "source": "github"
   },
-  "version": "0.17.4",
+  "version": "0.18.0",
   "packages": [
     {
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "mcp-local-rag",
-      "version": "0.17.4",
+      "version": "0.18.0",
       "transport": {
         "type": "stdio"
       },
@@ -85,6 +85,13 @@
         {
           "name": "CHUNK_MIN_LENGTH",
           "description": "Minimum chunk length in characters (1-10000, defaults to 50). Chunks shorter than this threshold are filtered out during ingestion.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        },
+        {
+          "name": "STORE_IMAGES",
+          "description": "Store supported PDF and DOCX images during ingestion and return them with matched chunks (defaults to false).",
           "isRequired": false,
           "format": "string",
           "isSecret": false

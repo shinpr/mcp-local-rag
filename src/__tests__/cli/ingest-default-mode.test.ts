@@ -120,7 +120,6 @@ const detectorFactory = () => ({ detectVisualRegions: vi.fn(() => []) })
 
 const rendererFactory = () => ({
   renderPdfRendition: vi.fn(),
-  createVisualAttachment: vi.fn(),
 })
 
 const parserFactory = () => ({
@@ -463,7 +462,7 @@ describe('VLM PDF Enrichment - Default Mode (no --visual)', () => {
       const doc = { destroy: vi.fn() }
       mocks.parsePdfPages.mockResolvedValue({
         doc,
-        metadataTitle: GENERIC_PDF_TITLE,
+        title: GENERIC_PDF_TITLE,
         pages: [
           {
             pageNum: 1,
@@ -512,8 +511,7 @@ describe('VLM PDF Enrichment - Default Mode (no --visual)', () => {
       expect(mocks.parsePdfPages).toHaveBeenCalledTimes(1)
       expect(mocks.insertChunks).toHaveBeenCalledWith([
         expect.objectContaining({
-          imageStorageVersion: 'pdf-images-v1',
-          visualAttachments: null,
+          visualAttachments: '[]',
         }),
       ])
     })

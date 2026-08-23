@@ -6,15 +6,27 @@ const CORE_TITLE_NAMESPACE = 'http://purl.org/dc/elements/1.1/'
 const PROSE_BLOCK_TAGS = new Set(['H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'P', 'BLOCKQUOTE', 'PRE'])
 const LIST_TAGS = new Set(['UL', 'OL'])
 const SKIPPED_TAGS = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT'])
+const IMAGE_MARKER_PREFIX = '\u0000rag-image:'
+const IMAGE_MARKER_SUFFIX = '\u0000'
+const IMAGE_MARKER_PATTERN = new RegExp(`${IMAGE_MARKER_PREFIX}(\\d+)${IMAGE_MARKER_SUFFIX}`, 'gu')
 
 export interface DocxBodyResult {
   content: string
   atomicRanges: readonly AtomicTextRange[]
+  imageAnchors?: readonly { offset: number; imageIndex: number }[]
 }
 
 interface EmittedBlock {
   text: string
   atomic: boolean
+}
+
+function imageMarker(element: Element): string {
+  if (element.tagName !== 'IMG') return ''
+  const value = element.getAttribute('data-rag-image-index')
+  return value !== null && /^\d+$/.test(value)
+    ? `${IMAGE_MARKER_PREFIX}${value}${IMAGE_MARKER_SUFFIX}`
+    : ''
 }
 
 function normalizeSingleLine(text: string): string {
@@ -32,6 +44,11 @@ function normalizeTextContent(element: Element): string {
 
     const child = node as Element
     if (SKIPPED_TAGS.has(child.tagName)) return
+    const marker = imageMarker(child)
+    if (marker) {
+      parts.push(marker)
+      return
+    }
     if (child.tagName === 'BR') {
       parts.push(' ')
       return
@@ -60,6 +77,11 @@ function serializeInlineText(element: Element): string {
 
     const child = node as Element
     if (SKIPPED_TAGS.has(child.tagName)) return
+    const marker = imageMarker(child)
+    if (marker) {
+      parts.push(marker)
+      return
+    }
     if (child.tagName === 'BR') {
       parts.push('\n')
       return
@@ -97,6 +119,11 @@ function serializeList(list: Element): string {
 
         const element = node as Element
         if (SKIPPED_TAGS.has(element.tagName)) return
+        const marker = imageMarker(element)
+        if (marker) {
+          currentLine += marker
+          return
+        }
         if (element.tagName === 'BR') {
           flush()
           return
@@ -157,6 +184,11 @@ function collectTextTokens(element: Element): string {
 
     const child = node as Element
     if (SKIPPED_TAGS.has(child.tagName)) return
+    const marker = imageMarker(child)
+    if (marker) {
+      tokens.push(marker)
+      return
+    }
     for (const descendant of child.childNodes) visit(descendant)
   }
   visit(element)
@@ -173,12 +205,14 @@ function emitTable(table: Element): EmittedBlock[] {
 
   // Ordinary Word tables often contain only td cells, so the approved contract
   // deliberately treats the first physical row as labels even without th markup.
+  const headerMarkers: string[] = []
   const headers = directRowCells(headerRow).map((cell, index) => {
     const text = normalizeTextContent(cell)
-    return text || `Column ${index + 1}`
+    headerMarkers.push(...(text.match(IMAGE_MARKER_PATTERN) ?? []))
+    return text.replace(IMAGE_MARKER_PATTERN, '') || `Column ${index + 1}`
   })
 
-  return rows.slice(1).flatMap((row) => {
+  const rowBlocks = rows.slice(1).flatMap((row) => {
     const values = directRowCells(row)
     const text = values
       .map(
@@ -187,6 +221,9 @@ function emitTable(table: Element): EmittedBlock[] {
       .join('\n')
     return text ? [{ text, atomic: true }] : []
   })
+  const first = rowBlocks[0]
+  if (first && headerMarkers.length > 0) first.text = headerMarkers.join('') + first.text
+  return rowBlocks
 }
 
 function hasRecognizedBlockDescendant(element: Element): boolean {
@@ -262,13 +299,48 @@ export function convertDocxDocumentToText(document: Document): DocxBodyResult {
   const blocks = emitDocumentBlocks(document)
   let content = ''
   const atomicRanges: AtomicTextRange[] = []
+  const imageAnchors: { offset: number; imageIndex: number }[] = []
 
   for (const block of blocks) {
+    const matches = [...block.text.matchAll(IMAGE_MARKER_PATTERN)]
+    if (matches.length === 0) {
+      if (content) content += '\n\n'
+      const start = content.length
+      content += block.text
+      if (block.atomic) atomicRanges.push({ start, end: content.length })
+      continue
+    }
+    const cleanText = block.text.replace(IMAGE_MARKER_PATTERN, '')
+    const normalizedText = cleanText.split('\n').map(normalizeSingleLine).join('\n')
+    if (!normalizedText) {
+      for (const match of matches) {
+        imageAnchors.push({ offset: content.length, imageIndex: Number(match[1]) })
+      }
+      continue
+    }
+
     if (content) content += '\n\n'
     const start = content.length
-    content += block.text
+    for (const match of matches) {
+      const rawOffset = match.index ?? 0
+      const cleanPrefix = block.text.slice(0, rawOffset).replace(IMAGE_MARKER_PATTERN, '')
+      const normalizedPrefix = cleanPrefix.split('\n').map(normalizeSingleLine).join('\n')
+      imageAnchors.push({ offset: start + normalizedPrefix.length, imageIndex: Number(match[1]) })
+    }
+    content += normalizedText
     if (block.atomic) atomicRanges.push({ start, end: content.length })
   }
 
-  return { content, atomicRanges }
+  imageAnchors.sort((left, right) => left.imageIndex - right.imageIndex)
+  const seenImageIndices = new Set<number>()
+  const uniqueImageAnchors = imageAnchors.filter((anchor) => {
+    if (seenImageIndices.has(anchor.imageIndex)) return false
+    seenImageIndices.add(anchor.imageIndex)
+    return true
+  })
+  return {
+    content,
+    atomicRanges,
+    ...(uniqueImageAnchors.length === 0 ? {} : { imageAnchors: uniqueImageAnchors }),
+  }
 }

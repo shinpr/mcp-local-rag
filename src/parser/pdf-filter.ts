@@ -26,14 +26,6 @@ interface TextItemWithPosition {
   blockOrdinal?: number
   lineOrdinal?: number
   bbox?: [number, number, number, number]
-  columnBand?: PdfColumnBand
-}
-
-export interface PdfColumnBand {
-  sectionIndex: number
-  bandIndex: number
-  bbox: [number, number, number, number]
-  pageWidth: number
 }
 
 /**
@@ -54,7 +46,6 @@ export interface FilteredTextFragment {
   text: string
   pageTextStart: number
   pageTextEnd: number
-  columnBand?: PdfColumnBand
 }
 
 export interface FilteredPageLayout {
@@ -73,11 +64,7 @@ export interface FilteredPageLayout {
  * same native line from the next line; geometry is retained as placement
  * metadata and is not used as a global reading-order comparator.
  */
-function buildPageLayout(
-  pageNum: number,
-  items: TextItemWithPosition[],
-  separatorMode: 'native' | 'space' = 'native'
-): FilteredPageLayout {
+function buildPageLayout(pageNum: number, items: TextItemWithPosition[]): FilteredPageLayout {
   let rawText = ''
   let previousItem: TextItemWithPosition | undefined
   const rawFragments: Array<
@@ -88,12 +75,15 @@ function buildPageLayout(
   > = []
   const fragmentCounts = new Map<string, number>()
 
-  for (let itemIndex = 0; itemIndex < items.length; itemIndex++) {
-    const item = items[itemIndex]
+  const orderedItems = [...items].sort(
+    (left, right) => Math.round(right.y) - Math.round(left.y) || left.x - right.x
+  )
+  for (let itemIndex = 0; itemIndex < orderedItems.length; itemIndex++) {
+    const item = orderedItems[itemIndex]
     if (!item || item.text.trim().length === 0) continue
 
     if (previousItem) {
-      rawText += separatorMode === 'space' || !previousItem.hasEOL ? ' ' : '\n'
+      rawText += Math.round(previousItem.y) === Math.round(item.y) ? ' ' : '\n'
     }
 
     const rawStart = rawText.length
@@ -110,7 +100,6 @@ function buildPageLayout(
       lineOrdinal,
       fragmentOrdinal,
       bbox: item.bbox ?? [item.x, item.y, item.x, item.y],
-      ...(item.columnBand ? { columnBand: item.columnBand } : {}),
       rawStart,
       rawEnd,
     })
@@ -137,10 +126,47 @@ function buildPageLayout(
       text: text.slice(pageTextStart, pageTextEnd),
       pageTextStart,
       pageTextEnd,
-      ...(fragment.columnBand ? { columnBand: fragment.columnBand } : {}),
     })
   }
 
+  return { text, textFragments }
+}
+
+function buildSentenceLayout(
+  pageNum: number,
+  sentences: readonly SentenceWithY[],
+  items: readonly TextItemWithPosition[]
+): FilteredPageLayout {
+  let text = ''
+  const textFragments: FilteredTextFragment[] = []
+  for (const sentence of sentences) {
+    if (text) text += ' '
+    const start = text.length
+    text += sentence.text
+    const matchingItems = items.filter((item) => Math.round(item.y) === Math.round(sentence.y))
+    const first = matchingItems[0]
+    const boxes: Array<[number, number, number, number]> = matchingItems.map(
+      (item) => item.bbox ?? [item.x, item.y, item.x, item.y]
+    )
+    const bbox: [number, number, number, number] = boxes.length
+      ? [
+          Math.min(...boxes.map((box) => box[0])),
+          Math.min(...boxes.map((box) => box[1])),
+          Math.max(...boxes.map((box) => box[2])),
+          Math.max(...boxes.map((box) => box[3])),
+        ]
+      : [0, 0, 0, 0]
+    textFragments.push({
+      pageNum,
+      blockOrdinal: first?.blockOrdinal ?? 0,
+      lineOrdinal: first?.lineOrdinal ?? textFragments.length,
+      fragmentOrdinal: 0,
+      bbox,
+      text: sentence.text,
+      pageTextStart: start,
+      pageTextEnd: text.length,
+    })
+  }
   return { text, textFragments }
 }
 
@@ -708,15 +734,9 @@ export async function filterPageBoundaryLayouts(
   )
 
   return pages.map((page, pageIndex) => {
-    const sentences = pageSentences[pageIndex] ?? []
-    const removedYs = new Set<number>()
-    if (patterns.removeFirstSentence && sentences[0]) {
-      removedYs.add(Math.round(sentences[0].y))
-    }
-    if (patterns.removeLastSentence && sentences.length > 0) {
-      removedYs.add(Math.round(sentences[sentences.length - 1]!.y))
-    }
-    const survivingItems = page.items.filter((item) => !removedYs.has(Math.round(item.y)))
-    return buildPageLayout(page.pageNum, survivingItems, 'space')
+    let cleaned = [...(pageSentences[pageIndex] ?? [])]
+    if (patterns.removeFirstSentence && cleaned.length > 0) cleaned = cleaned.slice(1)
+    if (patterns.removeLastSentence && cleaned.length > 0) cleaned = cleaned.slice(0, -1)
+    return buildSentenceLayout(page.pageNum, cleaned, page.items)
   })
 }

@@ -32,7 +32,7 @@ interface RAGServerConfigBase {
   maxFiles?: number
   /** Minimum chunk length in characters (optional, default: 50) */
   chunkMinLength?: number
-  /** Store bounded PDF visual renditions independently from VLM captioning. */
+  /** Store bounded PDF regions and Mammoth-produced DOCX images. */
   storeImages?: boolean
   /**
    * Normal-path (resolve()) roots, index-aligned with the realpath'd `baseDirs`

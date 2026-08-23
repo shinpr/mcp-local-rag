@@ -1,7 +1,7 @@
 // VectorDB type definitions, constants, type guards, and error classes
 
 import { AppError } from '../utils/errors.js'
-import { BOUNDED_IMAGE_MAX_BYTES, parseBoundedImageStructure } from '../utils/image-structure.js'
+import { MAX_VISUAL_RENDITION_BYTES } from '../utils/limits.js'
 
 // ============================================
 // Constants
@@ -78,22 +78,12 @@ export interface DocumentMetadata {
   fileType: string
 }
 
-/** Persisted PDF image-storage state for one chunk row. */
-export type ImageStorageVersion = 'none' | 'pdf-images-v1'
-
 /**
- * Validated, bounded PDF rendition stored in a chunk's ordered attachment JSON.
- * Coordinates are normalized [x0, y0, x1, y1] values in the inclusive 0..1
- * page space, dimensions are positive integers with a maximum 1024 px long
- * edge, and data is strict standard base64 for the declared PNG/JPEG MIME.
+ * Validated, bounded image stored in a chunk's ordered attachment JSON.
  */
 export interface VisualAttachment {
-  pageNum: number
-  visualIndex: number
-  bbox: [number, number, number, number]
+  imageIndex: number
   mimeType: 'image/png' | 'image/jpeg'
-  pixelWidth: number
-  pixelHeight: number
   data: string
 }
 
@@ -117,10 +107,8 @@ export interface VectorChunk {
   fileTitle: string | null
   /** SHA-256 of the source file bytes; absent for chunks not ingested from a file. */
   contentHash?: string
-  /** Ordered `JSON.stringify(VisualAttachment[])`; null means no attachments. */
-  visualAttachments?: string | null
-  /** Logical image-storage state; legacy omitted values normalize to `none`. */
-  imageStorageVersion?: ImageStorageVersion
+  /** Ordered `JSON.stringify(VisualAttachment[])`; omitted means no attachments. */
+  visualAttachments?: string
   /** Ingestion timestamp (ISO 8601 format) */
   timestamp: string
 }
@@ -129,6 +117,8 @@ export interface VectorChunk {
  * Search result
  */
 export interface SearchResult {
+  /** Stable persisted row identity used for attachment hydration. */
+  id: string
   /** File path */
   filePath: string
   /** Chunk index */
@@ -143,14 +133,9 @@ export interface SearchResult {
   fileTitle: string | null
 }
 
-/** Persisted composite identity used only for final-result attachment hydration. */
-export interface ChunkIdentity {
-  filePath: string
-  chunkIndex: number
-}
-
-/** Validated attachments for one requested final identity, in visual order. */
-export interface HydratedChunkAttachments extends ChunkIdentity {
+/** Validated attachments for one persisted row, in visual order. */
+export interface HydratedChunkAttachments {
+  id: string
   attachments: VisualAttachment[]
 }
 
@@ -158,7 +143,6 @@ export interface HydratedChunkAttachments extends ChunkIdentity {
 export interface AttachmentHydrationResult {
   rows: HydratedChunkAttachments[]
   omittedCount: number
-  invalidIdentities: ChunkIdentity[]
 }
 
 /**
@@ -182,6 +166,7 @@ export interface ChunkRow {
  * Raw result from LanceDB query (internal type)
  */
 export interface LanceDBRawResult {
+  id: string
   filePath: string
   chunkIndex: number
   text: string
@@ -216,6 +201,7 @@ export function isLanceDBRawResult(value: unknown): value is LanceDBRawResult {
   if (typeof value !== 'object' || value === null) return false
   const obj = value as Record<string, unknown>
   return (
+    typeof obj['id'] === 'string' &&
     typeof obj['filePath'] === 'string' &&
     typeof obj['chunkIndex'] === 'number' &&
     typeof obj['text'] === 'string' &&
@@ -239,6 +225,7 @@ export function toSearchResult(raw: unknown): SearchResult {
   // is kept defensive rather than throwing, since a missing score is not worth
   // failing a whole search over.
   return {
+    id: raw.id,
     filePath: raw.filePath,
     chunkIndex: raw.chunkIndex,
     text: raw.text,
@@ -270,7 +257,6 @@ export function toVectorChunk(raw: unknown): VectorChunk {
     fileTitle,
     contentHash,
     visualAttachments,
-    imageStorageVersion,
     timestamp,
   } = obj
   if (
@@ -301,24 +287,16 @@ export function toVectorChunk(raw: unknown): VectorChunk {
     // real hash equal to nothing on disk.
     ...(typeof contentHash === 'string' && contentHash.length > 0 ? { contentHash } : {}),
     visualAttachments: normalizeVisualAttachments(visualAttachments),
-    imageStorageVersion: normalizeImageStorageVersion(imageStorageVersion),
     timestamp,
   }
 }
 
 /** Normalize only the defined legacy no-image sentinels; keep malformed JSON observable. */
-export function normalizeVisualAttachments(value: unknown): string | null {
-  return typeof value === 'string' && value.length > 0 && value !== '[]' ? value : null
+export function normalizeVisualAttachments(value: unknown): string {
+  return typeof value === 'string' && value.length > 0 ? value : '[]'
 }
 
-/** Normalize missing, nullable, empty, and unsupported legacy state to disabled. */
-export function normalizeImageStorageVersion(value: unknown): ImageStorageVersion {
-  return value === 'pdf-images-v1' ? 'pdf-images-v1' : 'none'
-}
-
-const VISUAL_RENDITION_LONG_EDGE_MAX = 1024
-const VISUAL_RENDITION_MAX_BYTES = BOUNDED_IMAGE_MAX_BYTES
-const VISUAL_RENDITION_MAX_BASE64_LENGTH = Math.ceil(VISUAL_RENDITION_MAX_BYTES / 3) * 4
+const VISUAL_RENDITION_MAX_BASE64_LENGTH = Math.ceil(MAX_VISUAL_RENDITION_BYTES / 3) * 4
 
 function decodeStrictBase64(value: unknown): Uint8Array | null {
   if (
@@ -334,39 +312,29 @@ function decodeStrictBase64(value: unknown): Uint8Array | null {
   return decoded.toString('base64') === value ? decoded : null
 }
 
-function isValidNormalizedBbox(value: unknown): value is [number, number, number, number] {
-  if (!Array.isArray(value) || value.length !== 4 || !value.every(Number.isFinite)) return false
-  const [x0, y0, x1, y1] = value
-  return x0 >= 0 && y0 >= 0 && x0 < x1 && y0 < y1 && x1 <= 1 && y1 <= 1
-}
-
 function isVisualAttachment(value: unknown): value is VisualAttachment {
   if (typeof value !== 'object' || value === null) return false
   const attachment = value as Partial<VisualAttachment>
   if (
-    !Number.isInteger(attachment.pageNum) ||
-    (attachment.pageNum as number) < 1 ||
-    !Number.isInteger(attachment.visualIndex) ||
-    (attachment.visualIndex as number) < 0 ||
-    !isValidNormalizedBbox(attachment.bbox) ||
-    (attachment.mimeType !== 'image/png' && attachment.mimeType !== 'image/jpeg') ||
-    !Number.isInteger(attachment.pixelWidth) ||
-    !Number.isInteger(attachment.pixelHeight) ||
-    (attachment.pixelWidth as number) <= 0 ||
-    (attachment.pixelHeight as number) <= 0 ||
-    Math.max(attachment.pixelWidth as number, attachment.pixelHeight as number) >
-      VISUAL_RENDITION_LONG_EDGE_MAX
+    !Number.isInteger(attachment.imageIndex) ||
+    (attachment.imageIndex as number) < 0 ||
+    (attachment.mimeType !== 'image/png' && attachment.mimeType !== 'image/jpeg')
   ) {
     return false
   }
   const bytes = decodeStrictBase64(attachment.data)
-  if (!bytes || bytes.byteLength > VISUAL_RENDITION_MAX_BYTES) return false
-  const dimensions = parseBoundedImageStructure(bytes, attachment.mimeType)
-  return (
-    dimensions !== null &&
-    dimensions.width === attachment.pixelWidth &&
-    dimensions.height === attachment.pixelHeight
-  )
+  if (!bytes || bytes.byteLength > MAX_VISUAL_RENDITION_BYTES) return false
+  return attachment.mimeType === 'image/png'
+    ? bytes.length >= 8 &&
+        bytes[0] === 0x89 &&
+        bytes[1] === 0x50 &&
+        bytes[2] === 0x4e &&
+        bytes[3] === 0x47 &&
+        bytes[4] === 0x0d &&
+        bytes[5] === 0x0a &&
+        bytes[6] === 0x1a &&
+        bytes[7] === 0x0a
+    : bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff
 }
 
 /** Parse one persisted attachment cell while keeping malformed siblings observable. */
@@ -389,10 +357,17 @@ export function parseHydratedVisualAttachments(value: unknown): {
   const attachments: VisualAttachment[] = []
   let omittedCount = 0
   for (const item of parsed) {
-    if (isVisualAttachment(item)) attachments.push(item)
-    else omittedCount += 1
+    if (!isVisualAttachment(item)) {
+      omittedCount += 1
+      continue
+    }
+    attachments.push({
+      imageIndex: item.imageIndex,
+      mimeType: item.mimeType,
+      data: item.data,
+    })
   }
-  attachments.sort((left, right) => left.visualIndex - right.visualIndex)
+  attachments.sort((left, right) => left.imageIndex - right.imageIndex)
   return { attachments, omittedCount }
 }
 

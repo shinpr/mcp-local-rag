@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => {
     // VectorStore methods
     initialize: vi.fn().mockResolvedValue(undefined),
     search: vi.fn().mockResolvedValue([]),
+    hydrateVisualAttachments: vi.fn().mockResolvedValue({ rows: [], omittedCount: 0 }),
 
     // Embedder methods
     embedBatch: vi.fn().mockResolvedValue([[0.1, 0.2, 0.3]]),
@@ -30,6 +31,7 @@ const cliCommonFactory = () => ({
   createVectorStore: vi.fn().mockImplementation(() => ({
     initialize: mocks.initialize,
     search: mocks.search,
+    hydrateVisualAttachments: mocks.hydrateVisualAttachments,
     close: vi.fn(),
   })),
   // Catch-block renderer; faithful shim preserves the `Error: <message>`
@@ -254,6 +256,7 @@ describe('CLI query', () => {
       text: 'matched content',
       score: 0.25,
       fileTitle: 'Document Title',
+      images: [],
     })
     expect(parsed[1]).toEqual({
       filePath: '/path/to/another.md',
@@ -261,7 +264,38 @@ describe('CLI query', () => {
       text: 'another match',
       score: 0.5,
       fileTitle: null,
+      images: [],
     })
+  })
+
+  it('should include hydrated images in their matching result', async () => {
+    const result = {
+      filePath: '/path/to/diagram.pdf',
+      chunkIndex: 3,
+      text: 'Architecture diagram',
+      score: 0.2,
+      fileTitle: 'Design',
+      metadata: { fileName: 'diagram.pdf', fileSize: 100, fileType: 'pdf' },
+    }
+    mocks.search.mockResolvedValue([result])
+    mocks.hydrateVisualAttachments.mockResolvedValueOnce({
+      rows: [
+        {
+          filePath: result.filePath,
+          chunkIndex: result.chunkIndex,
+          attachments: [{ imageIndex: 0, mimeType: 'image/png', data: 'aW1hZ2U=' }],
+        },
+      ],
+      omittedCount: 0,
+    })
+
+    const { stdout, error } = await captureOutput(() => runQuery(['architecture']))
+
+    expect(error).toBeUndefined()
+    expect(JSON.parse(stdout.join(''))[0].images).toEqual([
+      { imageIndex: 0, mimeType: 'image/png', data: 'aW1hZ2U=' },
+    ])
+    expect(mocks.hydrateVisualAttachments).toHaveBeenCalledWith([result])
   })
 
   it('should use embedBatch with query text for embedding generation', async () => {

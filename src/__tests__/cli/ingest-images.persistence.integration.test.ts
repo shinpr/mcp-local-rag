@@ -1,8 +1,7 @@
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
-import { validateVisualAttachment } from '../../pdf-visual/renderer.js'
-import type { VisualAttachment } from '../../pdf-visual/types.js'
+import { parseHydratedVisualAttachments, type VisualAttachment } from '../../vectordb/types.js'
 import { buildPdfWithImageBytes } from '../pdf-image-fixture.js'
 
 type RunIngest = typeof import('../../cli/ingest.js').runIngest
@@ -80,19 +79,19 @@ describe('CLI ingest image persistence', () => {
 
       const enabledRows = await readRows()
       expect(enabledRows.length).toBeGreaterThan(0)
-      expect(enabledRows.every((row) => row.imageStorageVersion === 'pdf-images-v1')).toBe(true)
       const attachmentRows = enabledRows
-        .filter((row) => row.visualAttachments !== null)
-        .map((row) => JSON.parse(row.visualAttachments as string) as VisualAttachment[])
+        .map((row) => JSON.parse(row.visualAttachments ?? '[]') as VisualAttachment[])
+        .filter((attachments) => attachments.length > 0)
       expect(attachmentRows.length).toBeGreaterThan(0)
       for (const attachments of attachmentRows) {
         expect(attachments.length).toBeGreaterThan(0)
-        expect(attachments.map((attachment) => attachment.visualIndex)).toEqual(
-          attachments
-            .map((attachment) => attachment.visualIndex)
-            .sort((left, right) => left - right)
+        expect(attachments.map((attachment) => attachment.imageIndex)).toEqual(
+          attachments.map((attachment) => attachment.imageIndex).sort((left, right) => left - right)
         )
-        expect(attachments.every(validateVisualAttachment)).toBe(true)
+        expect(parseHydratedVisualAttachments(JSON.stringify(attachments))).toEqual({
+          attachments,
+          omittedCount: 0,
+        })
       }
 
       await runIngest(['--base-dir', testRoot, pdfPath], {
@@ -103,8 +102,7 @@ describe('CLI ingest image persistence', () => {
 
       const disabledRows = await readRows()
       expect(disabledRows.length).toBeGreaterThan(0)
-      expect(disabledRows.every((row) => row.imageStorageVersion === 'none')).toBe(true)
-      expect(disabledRows.every((row) => row.visualAttachments === null)).toBe(true)
+      expect(disabledRows.every((row) => row.visualAttachments === '[]')).toBe(true)
     } finally {
       consoleError.mockRestore()
     }

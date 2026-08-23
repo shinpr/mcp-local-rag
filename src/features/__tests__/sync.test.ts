@@ -1,6 +1,6 @@
 import * as fs from 'node:fs'
 import { basename } from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { buildVectorChunks } from '../../ingest/compute.js'
 import { type VectorChunk, VectorStore } from '../../vectordb/index.js'
 import {
@@ -80,9 +80,7 @@ describe('planSync — content-hash decisions (SYNC-001)', () => {
       planInput({ diskFiles: [{ filePath: `${ROOT}/new.md`, contentHash: HASH_A }] })
     )
 
-    expect(plan.upserts).toEqual([
-      { filePath: `${ROOT}/new.md`, staleStoredPaths: [], imageStorageVersion: 'none' },
-    ])
+    expect(plan.upserts).toEqual([{ filePath: `${ROOT}/new.md`, staleStoredPaths: [] }])
     expect(plan.skipped).toBe(0)
   })
 
@@ -159,81 +157,6 @@ describe('planSync — content-hash decisions (SYNC-001)', () => {
     expect(upsertPaths(plan)).toEqual([`${ROOT}/changed.pdf`, `${ROOT}/added.md`])
     expect(plan.skipped).toBe(1)
     expect(plan.prunes).toEqual([])
-  })
-})
-
-describe('planSync — image-storage convergence', () => {
-  it('upserts an unchanged PDF when images are requested over disabled rows', () => {
-    const filePath = `${ROOT}/manual.pdf`
-
-    const plan = planSync(
-      planInput({
-        images: true,
-        diskFiles: [{ filePath, contentHash: HASH_A }],
-        dbRows: [{ filePath, contentHash: HASH_A, imageStorageVersion: 'none' }],
-      })
-    )
-
-    expect(plan).toEqual({
-      upserts: [{ filePath, staleStoredPaths: [], imageStorageVersion: 'pdf-images-v1' }],
-      skipped: 0,
-      prunes: [],
-    })
-  })
-
-  it('preserves a consistently enabled PDF when ordinary sync omits images', () => {
-    const filePath = `${ROOT}/manual.pdf`
-
-    const plan = planSync(
-      planInput({
-        diskFiles: [{ filePath, contentHash: HASH_A }],
-        dbRows: [
-          { filePath, contentHash: HASH_A, imageStorageVersion: 'pdf-images-v1' },
-          { filePath, contentHash: HASH_A, imageStorageVersion: 'pdf-images-v1' },
-        ],
-      })
-    )
-
-    expect(plan).toEqual({ upserts: [], skipped: 1, prunes: [] })
-  })
-
-  it('dirties mixed rows and converges them to enabled without silent attachment loss', () => {
-    const filePath = `${ROOT}/mixed.pdf`
-
-    const plan = planSync(
-      planInput({
-        diskFiles: [{ filePath, contentHash: HASH_A }],
-        dbRows: [
-          { filePath, contentHash: HASH_A, imageStorageVersion: 'none' },
-          { filePath, contentHash: HASH_A, imageStorageVersion: 'pdf-images-v1' },
-        ],
-      })
-    )
-
-    expect(plan.upserts).toEqual([
-      { filePath, staleStoredPaths: [], imageStorageVersion: 'pdf-images-v1' },
-    ])
-  })
-
-  it('uses disabled state for a new PDF when images are omitted', () => {
-    const filePath = `${ROOT}/new.pdf`
-
-    const plan = planSync(planInput({ diskFiles: [{ filePath, contentHash: HASH_A }] }))
-
-    expect(plan.upserts).toEqual([{ filePath, staleStoredPaths: [], imageStorageVersion: 'none' }])
-  })
-
-  it('keeps non-PDF rows disabled even when images are requested', () => {
-    const filePath = `${ROOT}/notes.md`
-
-    const plan = planSync(
-      planInput({
-        images: true,
-        diskFiles: [{ filePath, contentHash: HASH_A }],
-      })
-    )
-
-    expect(plan.upserts).toEqual([{ filePath, staleStoredPaths: [], imageStorageVersion: 'none' }])
   })
 })
 
@@ -522,11 +445,7 @@ describe('planSync — Windows comparison keys', () => {
 
     expect(plan).toEqual({
       upserts: [
-        {
-          filePath: 'C:\\Root\\Sub\\Live.md',
-          staleStoredPaths: ['c:\\root\\sub\\live.md'],
-          imageStorageVersion: 'none',
-        },
+        { filePath: 'C:\\Root\\Sub\\Live.md', staleStoredPaths: ['c:\\root\\sub\\live.md'] },
       ],
       skipped: 0,
       prunes: [],
@@ -551,7 +470,6 @@ describe('planSync — Windows comparison keys', () => {
       {
         filePath: 'C:\\Root\\Sub\\Live.md',
         staleStoredPaths: ['c:\\root\\sub\\live.md', 'C:\\ROOT\\SUB\\LIVE.MD'],
-        imageStorageVersion: 'none',
       },
     ])
     expect(plan.prunes).toEqual([])
@@ -653,41 +571,21 @@ function createExecutor(
 const upsertOf = (filePath: string, staleStoredPaths: string[] = []) => ({
   filePath,
   staleStoredPaths,
-  imageStorageVersion: 'none' as const,
 })
 
 describe('executeSyncPlan — mutation gating', () => {
-  it.each([
-    ['none', false],
-    ['pdf-images-v1', true],
-  ] as const)('passes resolved %s state to the ingest executor', async (version, images) => {
-    const received: Array<{ filePath: string; images: boolean }> = []
-    const executor: SyncExecutor = {
-      ingestFile: async (filePath, resolvedImages) => {
-        received.push({ filePath, images: resolvedImages })
-        return 1
-      },
-      deleteExactPath: async () => 0,
-      optimize: async () => {},
-    }
+  it('passes the invocation image flag only to files already selected for upsert', async () => {
+    const { executor } = createExecutor()
+    const ingestFile = vi.spyOn(executor, 'ingestFile')
 
-    const result = await executeSyncPlan(
-      {
-        upserts: [
-          {
-            filePath: `${ROOT}/manual.pdf`,
-            staleStoredPaths: [],
-            imageStorageVersion: version,
-          },
-        ],
-        skipped: 0,
-        prunes: [],
-      },
-      executor
+    await executeSyncPlan(
+      { upserts: [upsertOf(`${ROOT}/changed.pdf`)], skipped: 8, prunes: [] },
+      executor,
+      true
     )
 
-    expect(received).toEqual([{ filePath: `${ROOT}/manual.pdf`, images }])
-    expect(result.error).toBeNull()
+    expect(ingestFile).toHaveBeenCalledOnce()
+    expect(ingestFile).toHaveBeenCalledWith(`${ROOT}/changed.pdf`, true)
   })
 
   it('touches no collaborator for a skip-only plan', async () => {
@@ -1388,10 +1286,12 @@ describe('sync executor against a real VectorStore (Early Verification Point)', 
     await store.insertChunks(
       buildVectorChunks({
         filePath,
-        chunks: Array.from({ length: chunkCount }, (_, index) => {
-          const text = `seeded chunk ${index} of ${basename(filePath)}`
-          return { index, text, sourceStart: 0, sourceEnd: text.length }
-        }),
+        chunks: Array.from({ length: chunkCount }, (_, index) => ({
+          index,
+          text: `seeded chunk ${index} of ${basename(filePath)}`,
+          sourceStart: index * 10,
+          sourceEnd: index * 10 + 9,
+        })),
         embeddings: Array.from({ length: chunkCount }, (_, index) => fakeVector(index + 1)),
         fileSize: 64,
         fileTitle: null,
@@ -1415,10 +1315,16 @@ describe('sync executor against a real VectorStore (Early Verification Point)', 
     return async (filePath) => {
       log.push(`ingest:${filePath}`)
       if (filePath === failOn) throw new Error('induced ingest failure')
-      const text = `fresh chunk of ${basename(filePath)}`
       const chunks = buildVectorChunks({
         filePath,
-        chunks: [{ index: 0, text, sourceStart: 0, sourceEnd: text.length }],
+        chunks: [
+          {
+            index: 0,
+            text: `fresh chunk of ${basename(filePath)}`,
+            sourceStart: 0,
+            sourceEnd: 32,
+          },
+        ],
         embeddings: [fakeVector(99)],
         fileSize: 32,
         fileTitle: null,
