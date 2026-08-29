@@ -1,6 +1,9 @@
 // MCP tool schema definitions for RAGServer
 
 import type { Tool } from '@modelcontextprotocol/sdk/types.js'
+import { QUALITY_PROFILES } from '../pdf-visual/types.js'
+import { MAX_NEIGHBOR_COUNT, MAX_QUERY_LIMIT, MIN_QUERY_LIMIT } from '../utils/limits.js'
+import { CONTENT_FORMATS } from '../utils/raw-data-utils.js'
 
 /**
  * All MCP tool definitions for the RAG server.
@@ -22,10 +25,9 @@ export const toolDefinitions: Tool[] = [
         },
         limit: {
           type: 'number',
-          minimum: 1,
-          maximum: 20,
-          description:
-            'Max results (default 10, range 1-20). Lower favors precision, higher recall.',
+          minimum: MIN_QUERY_LIMIT,
+          maximum: MAX_QUERY_LIMIT,
+          description: `Max results (default 10, range ${MIN_QUERY_LIMIT}-${MAX_QUERY_LIMIT}). Lower favors precision, higher recall.`,
         },
         scope: {
           oneOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' } }],
@@ -54,7 +56,7 @@ export const toolDefinitions: Tool[] = [
         },
         visualQuality: {
           type: 'string',
-          enum: ['fast', 'quality'],
+          enum: [...QUALITY_PROFILES],
           default: 'fast',
           description:
             'VLM profile when visual is true (default "fast"). "quality" is more accurate on figures with in-image text but much heavier and slower. Ignored when visual is false.',
@@ -84,7 +86,7 @@ export const toolDefinitions: Tool[] = [
             },
             format: {
               type: 'string',
-              enum: ['text', 'html', 'markdown'],
+              enum: [...CONTENT_FORMATS],
               description:
                 'Content format: text (plain/copied text), html (fetched web pages), or markdown.',
             },
@@ -138,8 +140,7 @@ export const toolDefinitions: Tool[] = [
   },
   {
     name: 'read_chunk_neighbors',
-    description:
-      'Read the chunks immediately before and after a query_documents result, in the same document, for more surrounding context. Pass chunkIndex from the result plus exactly one of filePath (ingest_file) or source (ingest_data). Returns the target chunk (isTarget: true) and its neighbors, ascending by chunkIndex; an out-of-range chunkIndex returns []. Defaults: before=2, after=2 (max 50 each).',
+    description: `Read the chunks immediately before and after a query_documents result, in the same document, for more surrounding context. Pass chunkIndex from the result plus exactly one of filePath (ingest_file) or source (ingest_data). Returns the target chunk (isTarget: true) and its neighbors, ascending by chunkIndex; an out-of-range chunkIndex returns []. Defaults: before=2, after=2 (max ${MAX_NEIGHBOR_COUNT} each).`,
     inputSchema: {
       type: 'object',
       properties: {
@@ -159,11 +160,11 @@ export const toolDefinitions: Tool[] = [
         },
         before: {
           type: 'number',
-          description: 'Number of chunks to retrieve before the target (0–50, default 2).',
+          description: `Number of chunks to retrieve before the target (0–${MAX_NEIGHBOR_COUNT}, default 2).`,
         },
         after: {
           type: 'number',
-          description: 'Number of chunks to retrieve after the target (0–50, default 2).',
+          description: `Number of chunks to retrieve after the target (0–${MAX_NEIGHBOR_COUNT}, default 2).`,
         },
       },
       required: ['chunkIndex'],

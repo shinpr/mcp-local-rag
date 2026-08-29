@@ -1,6 +1,7 @@
 // VectorStore implementation with LanceDB integration
 
 import { type Connection, connect, Index, type Table } from '@lancedb/lancedb'
+import { MAX_QUERY_LIMIT, MIN_QUERY_LIMIT } from '../utils/limits.js'
 import { normalizeScopePrefix } from '../utils/scope-match.js'
 import { applyFileFilter, applyGrouping, applyKeywordBoost } from './search-filters.js'
 import {
@@ -364,8 +365,10 @@ export class VectorStore {
       return []
     }
 
-    if (limit < 1 || limit > 20) {
-      throw new DatabaseError(`Invalid limit: expected 1-20, got ${limit}`)
+    if (limit < MIN_QUERY_LIMIT || limit > MAX_QUERY_LIMIT) {
+      throw new DatabaseError(
+        `Invalid limit: expected ${MIN_QUERY_LIMIT}-${MAX_QUERY_LIMIT}, got ${limit}`
+      )
     }
 
     try {

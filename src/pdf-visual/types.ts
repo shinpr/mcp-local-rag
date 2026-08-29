@@ -32,7 +32,8 @@ export class VlmError extends AppError {
  * `quality` ports the Qwen2.5-VL-3B-Instruct-ONNX captioner (~2.9 GB cache,
  * ~2× per-page inference, higher fidelity on figures with in-image text).
  */
-export type QualityProfile = 'fast' | 'quality'
+export const QUALITY_PROFILES = ['fast', 'quality'] as const
+export type QualityProfile = (typeof QUALITY_PROFILES)[number]
 
 /**
  * Captioner configuration. The model identifier is no longer caller-tunable;

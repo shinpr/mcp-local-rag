@@ -18,18 +18,21 @@ import { DEFAULT_MIN_CHUNK_LENGTH, SemanticChunker } from '../chunker/index.js'
 import { Embedder } from '../embedder/index.js'
 import { listDocuments } from '../features/list.js'
 import {
+  formatSyncError,
   runSync,
   type SyncCollaborators,
   type SyncCoverage,
-  type SyncError,
 } from '../features/sync.js'
 import {
   buildChunksAndEmbeddings,
-  buildChunksFromParseResult,
   buildVectorChunks,
   computeContentHash,
 } from '../ingest/compute.js'
-import { prepareVisualPdfChunks } from '../ingest/visual.js'
+import {
+  buildPreparedFileVectorChunks,
+  type PreparedFileIngest,
+  prepareFileForIngest,
+} from '../ingest/file.js'
 import { parseHtml } from '../parser/html-parser.js'
 import { DocumentParser, ValidationError } from '../parser/index.js'
 import { extractMarkdownTitle, extractTxtTitle } from '../parser/title-extractor.js'
@@ -79,9 +82,11 @@ import {
   parseSyncStatusInput,
 } from './tool-input.js'
 import type {
+  DeleteFileInput,
   DeleteFileResult,
   FileEntry,
   IngestDataInput,
+  IngestFileInput,
   IngestResult,
   ListFilesInput,
   ListFilesResult,
@@ -198,16 +203,6 @@ function coverageWarnings(coverage: SyncCoverage, maxFileSize: number): string[]
         `Warning: not read because it exceeds the maximum file size (${maxFileSize} bytes), so its indexed chunks were kept: ${displayPath(filePath)}`
     ),
   ]
-}
-
-/**
- * The one controlled error string a failed job exposes. Scope and existence
- * messages already name the path, while a per-file ingest failure ("Missing
- * embedding for chunk 1") does not — there the suffix is the only thing
- * identifying the file, so it is appended exactly once.
- */
-function syncErrorText({ message, filePath }: SyncError): string {
-  return filePath === null || message.includes(filePath) ? message : `${message} (${filePath})`
 }
 
 /** RAG server compliant with MCP Protocol */
@@ -575,37 +570,6 @@ export class RAGServer {
   }
 
   /**
-   * Hash the source file's raw bytes for `contentHash`, before anything parses it.
-   *
-   * This read is now the first thing to touch a client-supplied path, so the three
-   * checks the parse used to perform ahead of it run here instead:
-   *  - `validateFilePath` refuses a path outside every configured root, or one that
-   *    reaches outside through a symlinked ancestor. It makes no judgement about
-   *    what kind of file the path names.
-   *  - `validateFileSize` keeps a whole oversized file out of memory, which is the
-   *    bound the old post-parse position relied on.
-   *  - the regular-file check refuses everything the read cannot safely consume:
-   *    `readFile` on a directory fails with a native `EISDIR` (an `InternalError`
-   *    at this boundary, where the format dispatch used to answer `InvalidParams`),
-   *    and on a FIFO it blocks forever — which would hold this tool's mutation slot
-   *    until the process restarts, the same trigger sync's `classifyRequestedPath`
-   *    closed on its own route. Neither parser check rejects those: a directory has
-   *    a small size and a FIFO reports size 0.
-   *
-   * `validateFilePath` and `validateFileSize` are re-run idempotently by the parse
-   * that follows; a regular file with an unsupported extension is still rejected
-   * there, by the parser, with its own message.
-   */
-  private async readPreParseContentHash(filePath: string): Promise<string> {
-    await this.parser.validateFilePath(filePath)
-    this.parser.validateFileSize(filePath)
-    if (!(await stat(filePath)).isFile()) {
-      throw new ValidationError(`Ingest source is not a regular file: ${filePath}`)
-    }
-    return computeContentHash(await readFile(filePath))
-  }
-
-  /**
    * ingest_file tool handler (re-ingestion support, transaction processing, rollback capability)
    *
    * `options.skipOptimize` is internal: sync compacts once per run, so its reuse
@@ -617,7 +581,21 @@ export class RAGServer {
     raw: unknown,
     options: { skipOptimize?: boolean; images?: boolean } = {}
   ): Promise<{ content: RagTextContentBlock[] }> {
-    const args = parseIngestFileInput(raw)
+    const result = await this.ingestFile(parseIngestFileInput(raw), options)
+    return {
+      content: this.withWarnings([
+        {
+          type: 'text',
+          text: JSON.stringify(result, null, 2),
+        },
+      ]),
+    }
+  }
+
+  private async ingestFile(
+    args: IngestFileInput,
+    options: { skipOptimize?: boolean; images?: boolean } = {}
+  ): Promise<IngestResult> {
     const isRawData = await isPathInRawDataDir(args.filePath, this.dbPath)
     // Skip the configError gate only for paths structurally inside
     // `<dbPath>/raw-data/` (internal invocation from handleIngestData).
@@ -641,39 +619,40 @@ export class RAGServer {
     const isPdf = args.filePath.toLowerCase().endsWith('.pdf')
     const isDocx = args.filePath.toLowerCase().endsWith('.docx')
     const images = (isPdf || isDocx) && (options.images ?? this.storeImages)
-    let text: string
-    let title: string | null = null
-    let chunks: Awaited<ReturnType<typeof buildChunksAndEmbeddings>>['chunks']
-    let embeddings: Awaited<ReturnType<typeof buildChunksAndEmbeddings>>['embeddings']
-    let visualAttachments:
-      | Awaited<ReturnType<typeof prepareVisualPdfChunks>>['visualAttachments']
-      | undefined
+    let title: string | null
+    let vectorChunks: VectorChunk[] | undefined
+    let preparedFile: PreparedFileIngest | undefined
     let omittedImageCount = 0
-    // Set only by the raw-data branch, which already reads the whole file, so
-    // the contentHash below costs no second read there.
-    const sourceBytes = isRawData ? await readFile(args.filePath) : undefined
-    // The hash covers the raw file bytes as they were BEFORE the parse, so a file
-    // rewritten during the parse/chunk/embed window leaves a hash that is OLDER
-    // than the disk bytes and the next sync re-ingests it. Hashing afterwards
-    // stored the new bytes' hash against chunks built from the old ones, and every
-    // later sync then read `disk hash == stored hash` and skipped the file forever.
-    const contentHash =
-      sourceBytes === undefined
-        ? await this.readPreParseContentHash(args.filePath)
-        : computeContentHash(sourceBytes)
-    if (sourceBytes !== undefined) {
+    if (isRawData) {
       // Raw-data files: skip parser validation, read directly.
-      text = sourceBytes.toString('utf-8')
+      const sourceBytes = await readFile(args.filePath)
+      const text = sourceBytes.toString('utf-8')
       const meta = await loadMetaJson(args.filePath)
       title = meta?.title ?? null
       console.error(`Read raw-data file: ${args.filePath} (${text.length} characters)`)
-      ;({ chunks, embeddings } = await buildChunksAndEmbeddings(text, this.chunker, this.embedder))
-    } else if (isPdf && (visualArg === true || images)) {
-      // Visual dispatch delegates to `prepareVisualPdfChunks`, which owns
-      // the dynamic `pdf-visual` import so the default path does not load
-      // visual dependencies. This handler keeps its backup/rollback/
-      // optimize/response-shaping persistence semantics.
-      const visualResult = await prepareVisualPdfChunks(
+      const { chunks, embeddings } = await buildChunksAndEmbeddings(
+        text,
+        this.chunker,
+        this.embedder
+      )
+      vectorChunks = buildVectorChunks({
+        filePath: args.filePath,
+        chunks,
+        embeddings,
+        fileSize: text.length,
+        fileTitle: title,
+        contentHash: computeContentHash(sourceBytes),
+      })
+    } else {
+      // The MCP boundary accepts an arbitrary client path, unlike CLI ingestion
+      // paths that have already passed a regular-file collector. Reject a FIFO
+      // before the shared whole-file hash read can block the mutation slot.
+      await this.parser.validateFilePath(args.filePath)
+      this.parser.validateFileSize(args.filePath)
+      if (!(await stat(args.filePath)).isFile()) {
+        throw new ValidationError(`Ingest source is not a regular file: ${args.filePath}`)
+      }
+      preparedFile = await prepareFileForIngest(
         args.filePath,
         this.parser,
         this.chunker,
@@ -691,23 +670,8 @@ export class RAGServer {
             : {}),
         }
       )
-      chunks = visualResult.chunks
-      embeddings = visualResult.embeddings
-      text = visualResult.text
-      title = visualResult.title
-      visualAttachments = visualResult.visualAttachments
-      omittedImageCount = visualResult.omittedImageCount
-    } else if (isPdf) {
-      const result = await this.parser.parsePdf(args.filePath, this.embedder)
-      text = result.content
-      title = result.title || null
-      ;({ chunks, embeddings } = await buildChunksAndEmbeddings(text, this.chunker, this.embedder))
-    } else {
-      const result = await this.parser.parseFile(args.filePath, { images })
-      text = result.content
-      title = result.title || null
-      ;({ chunks, embeddings, visualAttachments, omittedImageCount } =
-        await buildChunksFromParseResult(result, this.chunker, this.embedder))
+      title = preparedFile.title
+      omittedImageCount = preparedFile.omittedImageCount
     }
 
     if (omittedImageCount > 0) {
@@ -718,7 +682,8 @@ export class RAGServer {
 
     // Fail-fast: Prevent data loss when chunking produces 0 chunks
     // This check must happen BEFORE delete to preserve existing data on re-ingest
-    if (chunks.length === 0) {
+    const chunkCount = vectorChunks?.length ?? preparedFile?.chunks.length ?? 0
+    if (chunkCount === 0) {
       throw new NoChunksError(
         ErrorCode.InvalidParams,
         `No chunks generated from file: ${args.filePath}. The file may be empty or all content was filtered (minimum ${this.minChunkLength} characters required). Existing data has been preserved.`
@@ -736,17 +701,12 @@ export class RAGServer {
       console.error(`Backup created: ${backup.length} chunks for ${args.filePath}`)
     }
 
-    // Create vector chunks BEFORE the destructive delete, so a construction
-    // failure (e.g. a missing embedding) cannot leave the file with no rows.
-    const vectorChunks = buildVectorChunks({
-      filePath: args.filePath,
-      chunks,
-      embeddings,
-      fileSize: text.length,
-      fileTitle: title || null,
-      contentHash,
-      ...(visualAttachments === undefined ? {} : { visualAttachments }),
-    })
+    // Preserve the original server ordering: row construction follows the
+    // backup read but still completes before the destructive delete.
+    if (preparedFile !== undefined) {
+      vectorChunks = buildPreparedFileVectorChunks(preparedFile)
+    }
+    const chunksToInsert = vectorChunks as VectorChunk[]
 
     // Delete existing data
     await this.vectorStore.deleteChunks(args.filePath)
@@ -754,8 +714,8 @@ export class RAGServer {
 
     // Insert vectors (transaction processing)
     try {
-      await this.vectorStore.insertChunks(vectorChunks)
-      console.error(`Inserted ${vectorChunks.length} chunks for: ${args.filePath}`)
+      await this.vectorStore.insertChunks(chunksToInsert)
+      console.error(`Inserted ${chunksToInsert.length} chunks for: ${args.filePath}`)
 
       // Optimize once after both delete + insert (not per-operation), unless the
       // caller compacts once for the whole batch.
@@ -786,21 +746,11 @@ export class RAGServer {
       throw insertError
     }
 
-    // Result
-    const result: IngestResult = {
+    return {
       filePath: args.filePath,
-      chunkCount: chunks.length,
+      chunkCount,
       timestamp: new Date().toISOString(),
       fileTitle: title || null,
-    }
-
-    return {
-      content: this.withWarnings([
-        {
-          type: 'text',
-          text: JSON.stringify(result, null, 2),
-        },
-      ]),
     }
   }
 
@@ -998,31 +948,7 @@ export class RAGServer {
     // `assertConfigOk` throw propagate with original identity to the central
     // dispatcher mapper. The inner unlink try/catch blocks below are
     // local-effect (best-effort file cleanup) and are retained.
-    let targetPath: string
-    let skipValidation = false
-
-    if ('source' in args) {
-      // Generate raw-data path from source (extension is always .md)
-      // Internal path generation is secure, skip baseDir validation.
-      // The `source` branch never touches `baseDirs`, so it stays callable
-      // in degraded mode (configError present).
-      targetPath = generateRawDataPath(this.dbPath, args.source)
-      skipValidation = true
-    } else {
-      // Root-dependent branch: a user-supplied filePath is validated against
-      // the configured roots, so we must fail fast when the config is
-      // invalid. Placed AFTER the `source` branch so source-mode requests
-      // continue to work in degraded mode.
-      this.assertConfigOk()
-      // DB key = the verbatim resolve()-stored path; look up as-is (realpath
-      // stays in validateFilePath; see BaseDirsConfig for the path policy).
-      targetPath = args.filePath
-    }
-
-    // Only validate user-provided filePath (not internally generated paths)
-    if (!skipValidation) {
-      await this.parser.validateFilePath(targetPath)
-    }
+    const targetPath = await this.resolveDocumentTarget(args)
 
     // Delete chunks from vector database
     const removedChunks = await this.vectorStore.deleteChunks(targetPath)
@@ -1092,29 +1018,7 @@ export class RAGServer {
     const before = args.before ?? 2
     const after = args.after ?? 2
 
-    // Dual-input resolution (mirrors handleDeleteFile).
-    // Use the same non-empty predicates as the XOR check above so an empty
-    // string ('' / whitespace-only) is ignored here too, not just in validation.
-    //
-    // configError gating happens AFTER the input-shape validation but BEFORE
-    // any parser/DB access on the user-supplied filePath. The `source` branch
-    // never touches `baseDirs`, so it stays callable in degraded mode; the
-    // `filePath` branch must fail fast because `parser.validateFilePath`
-    // depends on the configured roots being valid.
-    let targetPath: string
-    let skipValidation = false
-    if ('source' in args) {
-      targetPath = generateRawDataPath(this.dbPath, args.source)
-      skipValidation = true
-    } else {
-      this.assertConfigOk()
-      // DB key = the verbatim resolve()-stored path; look up as-is (realpath
-      // stays in validateFilePath; see BaseDirsConfig for the path policy).
-      targetPath = args.filePath
-    }
-    if (!skipValidation) {
-      await this.parser.validateFilePath(targetPath)
-    }
+    const targetPath = await this.resolveDocumentTarget(args)
 
     // Range composition (handler-side clamp; primitive stays feature-agnostic).
     const minIdx = Math.max(0, args.chunkIndex - before)
@@ -1146,6 +1050,19 @@ export class RAGServer {
         },
       ]),
     }
+  }
+
+  /** Resolve the shared filePath/source reference without changing its DB-key spelling. */
+  private async resolveDocumentTarget(reference: DeleteFileInput): Promise<string> {
+    if ('source' in reference) {
+      // Generated raw-data paths do not depend on configured document roots, so
+      // source-mode operations remain callable while root configuration is invalid.
+      return generateRawDataPath(this.dbPath, reference.source)
+    }
+
+    this.assertConfigOk()
+    await this.parser.validateFilePath(reference.filePath)
+    return reference.filePath
   }
 
   /**
@@ -1302,19 +1219,16 @@ export class RAGServer {
         pruned: result.pruned,
       },
       warnings: coverageWarnings(result.coverage, this.maxFileSize),
-      error: result.error === null ? null : syncErrorText(result.error),
+      error: result.error === null ? null : formatSyncError(result.error),
     })
   }
 
   /**
-   * Sync's `ingestFile` collaborator: the ordinary MCP ingest path, so a sync
-   * upsert keeps the same backup/rollback semantics as `ingest_file`, reduced to
-   * the chunk count the core needs. The zero-chunk file is the one difference —
-   * `handleIngestFile` rejects it to protect the existing index, while sync
-   * counts it as `empty` and leaves its prior rows alone.
-   *
-   * The count is read back out of the handler's own response block rather than
-   * duplicating the handler to return it twice.
+   * Sync's `ingestFile` collaborator uses the same typed ingestion operation as
+   * `ingest_file`, preserving its backup and rollback semantics while returning
+   * only the chunk count the sync core needs. A zero-chunk file is reported as
+   * `empty`; the typed operation rejects it before delete, leaving prior rows
+   * unchanged.
    *
    * Compaction is the second difference: the sync core runs one `optimize()` for
    * the whole run, so the per-file one is skipped here. A rollback still compacts
@@ -1323,11 +1237,8 @@ export class RAGServer {
    */
   private async ingestFileForSync(filePath: string, images: boolean): Promise<number> {
     try {
-      const response = await this.handleIngestFile({ filePath }, { skipOptimize: true, images })
-      const { chunkCount } = JSON.parse(response.content[0]?.text ?? '{}') as {
-        chunkCount?: number
-      }
-      return chunkCount ?? 0
+      const result = await this.ingestFile({ filePath }, { skipOptimize: true, images })
+      return result.chunkCount
     } catch (error) {
       if (error instanceof NoChunksError) return 0
       throw error

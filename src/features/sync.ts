@@ -125,6 +125,11 @@ export interface SyncError {
   filePath: string | null
 }
 
+/** Append an attributable path only when the underlying message does not already contain it. */
+export function formatSyncError({ message, filePath }: SyncError): string {
+  return filePath === null || message.includes(filePath) ? message : `${message} (${filePath})`
+}
+
 export interface SyncCounters {
   upserted: number
   skipped: number

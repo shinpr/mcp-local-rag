@@ -1,11 +1,9 @@
-// HTML Workflow E2E Test
-// Test Type: End-to-End Test
-// Tests complete HTML ingestion workflow: ingest_data -> query_documents
+// In-process integration coverage for HTML ingest_data and query workflows.
 
 import { mkdir, rm } from 'node:fs/promises'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { RAGServer } from '../../server/index.js'
-import { testModelCacheDir, withTestDevice } from '../test-device.js'
+import { testModelCacheDir, withTestDevice } from '../../__tests__/test-device.js'
+import { RAGServer } from '../index.js'
 
 // ============================================
 // Test Configuration
@@ -25,7 +23,7 @@ const testConfig = {
 // Tests
 // ============================================
 
-describe('HTML Workflow E2E', () => {
+describe('RAGServer HTML workflow integration', () => {
   let server: RAGServer
 
   beforeAll(async () => {

@@ -239,6 +239,19 @@ describe('parseIngestFileInput', () => {
       /visual.*boolean/
     )
   })
+
+  it.each(['high', 1, null])('rejects visualQuality=%j', (visualQuality) => {
+    expect(() => parseIngestFileInput({ filePath: '/docs/a.pdf', visualQuality })).toThrow(
+      /visualQuality.*fast.*quality/
+    )
+  })
+
+  it.each([undefined, ''])('normalizes visualQuality=%j to the default', (visualQuality) => {
+    expect(parseIngestFileInput({ filePath: '/docs/a.pdf', visual: true, visualQuality })).toEqual({
+      filePath: '/docs/a.pdf',
+      visual: true,
+    })
+  })
 })
 
 describe('parseDeleteFileInput', () => {

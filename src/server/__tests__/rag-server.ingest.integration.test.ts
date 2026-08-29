@@ -70,6 +70,22 @@ describe('AC-008: File Re-ingestion', () => {
     expect(targetFiles[0].chunkCount).toBe(updatedChunkCount)
   }, 60000)
 
+  it('compacts once after a successful direct ingestion', async () => {
+    const testFile = resolve(localTestDataDir, 'test-optimize.txt')
+    writeFileSync(testFile, 'Content that produces a persisted chunk. '.repeat(20))
+    const vectorStore = (
+      localRagServer as unknown as {
+        vectorStore: { optimize(): Promise<void> }
+      }
+    ).vectorStore
+    const optimizeSpy = vi.spyOn(vectorStore, 'optimize')
+
+    await localRagServer.handleIngestFile({ filePath: testFile })
+
+    expect(optimizeSpy).toHaveBeenCalledTimes(1)
+    optimizeSpy.mockRestore()
+  })
+
   it('persists and queries one coherent DOCX table row with the core title', async () => {
     const testFile = resolve(localTestDataDir, 'issue-176.docx')
     const expectedTitle = 'DOCX Field Reference'

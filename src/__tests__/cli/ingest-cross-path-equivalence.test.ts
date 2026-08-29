@@ -1,60 +1,13 @@
-// VLM PDF Enrichment - Phase 0 Cross-Path Equivalence Integration Test
-// Design Doc: docs/design/vlm-pdf-enrichment-design.md
-// Covers: AC-008 (Phase 0 — same chunk rows via MCP and CLI entry points)
-// Test Type: Integration Test (in-process, real components throughout)
-// Implementation Timing: Phase 0 (must pass before Phase 4 wiring)
-//
-// Lane: integration. Justification: AC-008 Phase 0 cross-path equivalence
-// witness — MCP and CLI paths must produce the same chunk rows for the same
-// input. The integration budget rule lives in the integration-e2e-testing
-// skill; this file's role is the AC-008 witness.
-//
-// Design rationale (must read before changing this file):
-//   Under vitest's `isolate: false` (vitest.config.mjs:18) the module
-//   registry is shared across files in the same pool (`pool: 'forks',
-//   maxWorkers: 1`). Module-level `vi.mock` factories LEAK across files
-//   in that mode: the per-file mock registry is not honored for modules
-//   already in the shared cache, and replacements registered by this
-//   file persist into other files that consume the same module. Earlier
-//   iterations that mocked DocumentParser / SemanticChunker / Embedder /
-//   VectorStore therefore broke `rag-server.search.integration.test.ts`
-//   (which depends on real semantic search behavior) and made the suite
-//   order-dependent.
-//
-//   This redesign uses real components throughout:
-//     - real on-disk fixture (tmp directory + real `.md` file)
-//     - real RAGServer (its internal DocumentParser / SemanticChunker /
-//       Embedder / VectorStore are all real instances)
-//     - real CLI-side DocumentParser / SemanticChunker / Embedder /
-//       VectorStore (independent instances, separate dbPath)
-//     - `vi.spyOn` on each VectorStore INSTANCE's `insertChunks`:
-//       instance-level spy with no module replacement → no leakage
-//     - `vi.spyOn(SemanticChunker.prototype, 'chunkText')`: prototype
-//       spy that observes both callers' invocations. Restored in
-//       `afterAll` so other test files see the original method.
-//
-//   There are NO `vi.mock` calls in this file. There is NO call to
-//   `vi.resetModules`. The file does NOT import `cli/ingest.ts` (which
-//   would transitively load `cli/common.js` and `cli/options.js`, defeating
-//   the per-file mocks in `src/__tests__/cli/ingest.test.ts`). Instead it
-//   reproduces the CLI persistence path inline below — a deliberate,
-//   load-bearing duplication of `ingestSingleFile` whose ONLY purpose is
-//   to keep this test's module graph minimal under `isolate: false`.
-//
-//   IMPORTANT: when `src/cli/ingest.ts`'s `ingestSingleFile` chunk-row
-//   shape changes, update `cliInlineIngest` below to match.
+// Cross-entry integration proof for VLM enrichment AC-008. Both paths use real
+// parser, chunker, embedder, and VectorStore instances; only instance methods are
+// spied so the shared Vitest module registry is not replaced.
 
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { SemanticChunker } from '../../chunker/index.js'
+import { ingestSingleFile } from '../../cli/ingest.js'
 import { Embedder } from '../../embedder/index.js'
-import {
-  buildChunksAndEmbeddings,
-  buildChunksFromParseResult,
-  buildVectorChunks,
-  computeContentHash,
-} from '../../ingest/compute.js'
 import { DocumentParser } from '../../parser/index.js'
 import { RAGServer } from '../../server/index.js'
 import { type VectorChunk, VectorStore } from '../../vectordb/index.js'
@@ -125,61 +78,6 @@ function stripVolatile(chunk: VectorChunk): Omit<VectorChunk, 'id' | 'timestamp'
  */
 function getServerVectorStore(server: RAGServer): VectorStore {
   return (server as unknown as { vectorStore: VectorStore }).vectorStore
-}
-
-/**
- * Inline reproduction of `src/cli/ingest.ts > ingestSingleFile` (CLI path).
- * Kept here to avoid importing `src/cli/ingest.ts`, which would transitively
- * load `src/cli/common.js` and `src/cli/options.js` and defeat the per-file
- * `vi.mock` factories in `src/__tests__/cli/ingest.test.ts` under
- * `isolate: false`. Parser-to-chunker mapping is not reproduced here: both
- * production routes and this harness delegate it to `buildChunksFromParseResult`.
- */
-async function cliInlineIngest(
-  filePath: string,
-  parser: DocumentParser,
-  chunker: SemanticChunker,
-  embedder: Embedder,
-  vectorStore: VectorStore
-): Promise<number> {
-  const isPdf = filePath.toLowerCase().endsWith('.pdf')
-  let text: string
-  let title: string | null = null
-  let parsedFileResult: Awaited<ReturnType<DocumentParser['parseFile']>> | undefined
-  if (isPdf) {
-    const result = await parser.parsePdf(filePath, embedder)
-    text = result.content
-    title = result.title || null
-  } else {
-    const result = await parser.parseFile(filePath)
-    parsedFileResult = result
-    text = result.content
-    title = result.title || null
-  }
-
-  const { chunks, embeddings } =
-    parsedFileResult === undefined
-      ? await buildChunksAndEmbeddings(text, chunker, embedder)
-      : await buildChunksFromParseResult(parsedFileResult, chunker, embedder)
-  if (chunks.length === 0) {
-    return 0
-  }
-
-  // Construction (including the source-byte hash) completes before the
-  // destructive delete, mirroring `ingestSingleFile`.
-  const contentHash = computeContentHash(readFileSync(filePath))
-  const vectorChunks = buildVectorChunks({
-    filePath,
-    chunks,
-    embeddings,
-    fileSize: text.length,
-    fileTitle: title,
-    contentHash,
-  })
-
-  await vectorStore.deleteChunks(filePath)
-  await vectorStore.insertChunks(vectorChunks)
-  return vectorChunks.length
 }
 
 // ============================================
@@ -277,8 +175,8 @@ describe('VLM PDF Enrichment - Phase 0 Equivalence (AC-008)', () => {
     rmSync(testRoot, { recursive: true, force: true })
   })
 
-  // AC-008: handleIngestFile and the isolated CLI persistence harness produce
-  // identical chunk rows while sharing the production parser-to-chunker boundary.
+  // AC-008: the MCP handler and actual CLI ingestion operation produce the same
+  // persistable rows for the same input.
   it('AC-008: keeps Markdown chunks equivalent and preserves literal parser text', async () => {
     serverInsertCalls.length = 0
     cliInsertCalls.length = 0
@@ -287,8 +185,8 @@ describe('VLM PDF Enrichment - Phase 0 Equivalence (AC-008)', () => {
     // Act: server path
     await server.handleIngestFile({ filePath: fixtureFilePath })
 
-    // Act: CLI path (inline reproduction — see file header comment)
-    await cliInlineIngest(fixtureFilePath, cliParser, cliChunker, cliEmbedder, cliVectorStore)
+    // Act: CLI path
+    await ingestSingleFile(fixtureFilePath, cliParser, cliChunker, cliEmbedder, cliVectorStore)
 
     // Assert: each caller invoked insertChunks exactly once
     expect(serverInsertCalls).toHaveLength(1)
@@ -335,7 +233,7 @@ describe('VLM PDF Enrichment - Phase 0 Equivalence (AC-008)', () => {
     chunkerSpy.mockClear()
 
     await server.handleIngestFile({ filePath: docxFixtureFilePath })
-    await cliInlineIngest(docxFixtureFilePath, cliParser, cliChunker, cliEmbedder, cliVectorStore)
+    await ingestSingleFile(docxFixtureFilePath, cliParser, cliChunker, cliEmbedder, cliVectorStore)
 
     expect(serverInsertCalls).toHaveLength(1)
     expect(cliInsertCalls).toHaveLength(1)

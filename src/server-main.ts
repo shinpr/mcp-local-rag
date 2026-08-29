@@ -2,7 +2,7 @@
 import { resolveDevice, resolveDtype } from './cli/options.js'
 import { RAGServer } from './server/index.js'
 import { BaseDirsConfigError, parseBaseDirsEnv, resolveBaseDirs } from './utils/base-dirs.js'
-import { DEFAULT_MAX_FILE_SIZE } from './utils/limits.js'
+import { DEFAULT_MAX_FILE_SIZE, MAX_CHUNK_MIN_LENGTH } from './utils/limits.js'
 import { checkSensitivePath } from './utils/sensitive-path.js'
 import type { GroupingMode } from './vectordb/index.js'
 
@@ -74,8 +74,8 @@ export function parseHybridWeight(value: string | undefined): ParseResult<number
 export function parseChunkMinLength(value: string | undefined): ParseResult<number> {
   if (!value) return { value: undefined }
   const parsed = Number.parseInt(value, 10)
-  if (Number.isNaN(parsed) || parsed < 1 || parsed > 10000) {
-    const warning = `Invalid CHUNK_MIN_LENGTH value: "${value.slice(0, 100)}". Expected integer between 1 and 10000. Ignoring.`
+  if (Number.isNaN(parsed) || parsed < 1 || parsed > MAX_CHUNK_MIN_LENGTH) {
+    const warning = `Invalid CHUNK_MIN_LENGTH value: "${value.slice(0, 100)}". Expected integer between 1 and ${MAX_CHUNK_MIN_LENGTH}. Ignoring.`
     return { value: undefined, warning }
   }
   return { value: parsed }
