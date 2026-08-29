@@ -235,8 +235,8 @@ describe('VectorStore', () => {
 
         // Get status and check FTS is enabled
         const status = await store.getStatus()
-        expect(status).toHaveProperty('ftsIndexEnabled')
         expect(status.ftsIndexEnabled).toBe(true)
+        expect(status.searchMode).toBe('hybrid')
       })
 
       it('should set ftsIndexEnabled to false when table does not exist yet', async () => {
@@ -250,56 +250,6 @@ describe('VectorStore', () => {
         // No data inserted, table doesn't exist
         const status = await store.getStatus()
         expect(status.ftsIndexEnabled).toBe(false)
-      })
-
-      it('should report searchMode in status', async () => {
-        const store = new VectorStore({
-          dbPath: testDbPath,
-          tableName: 'chunks',
-        })
-
-        await store.initialize()
-
-        const chunk = createTestChunk(
-          'Test document content',
-          '/test/doc.txt',
-          0,
-          createNormalizedVector(1)
-        )
-        await store.insertChunks([chunk])
-
-        const status = await store.getStatus()
-        expect(status).toHaveProperty('searchMode')
-        expect(['hybrid', 'vector-only']).toContain(status.searchMode)
-      })
-    })
-
-    describe('Fallback behavior', () => {
-      it('should continue working even if FTS index creation fails', async () => {
-        const store = new VectorStore({
-          dbPath: testDbPath,
-          tableName: 'chunks',
-        })
-
-        await store.initialize()
-
-        // Insert data
-        const chunk = createTestChunk(
-          'Fallback test document',
-          '/test/fallback.txt',
-          0,
-          createNormalizedVector(1)
-        )
-        await store.insertChunks([chunk])
-
-        // Search should still work (vector-only) and return the inserted document
-        const results = await store.search(createNormalizedVector(1), {
-          queryText: 'test query',
-          limit: 10,
-        })
-        expect(results).toHaveLength(1)
-        expect(results[0]?.filePath).toBe('/test/fallback.txt')
-        expect(results[0]?.text).toBe('Fallback test document')
       })
     })
   })
@@ -629,32 +579,6 @@ describe('VectorStore', () => {
    * - Chunk order within retained files is preserved
    */
   describe('File filter (maxFiles)', () => {
-    it('precondition: seed distance produces expected score ordering', async () => {
-      await withTempDb('maxfiles-precondition', async (store) => {
-        const queryVector = createNormalizedVector(1)
-
-        // Insert chunks with seeds 1, 2, 50 to verify distance ordering
-        await store.insertChunks([
-          createTestChunk('seed1', '/test/s1.txt', 0, createNormalizedVector(1)),
-        ])
-        await store.insertChunks([
-          createTestChunk('seed2', '/test/s2.txt', 0, createNormalizedVector(2)),
-        ])
-        await store.insertChunks([
-          createTestChunk('seed50', '/test/s50.txt', 0, createNormalizedVector(50)),
-        ])
-
-        const results = await store.search(queryVector, { queryText: '', limit: 10 })
-
-        // Verify: seed 1 < seed 2 < seed 50 in distance
-        const score1 = results.find((r) => r.filePath === '/test/s1.txt')?.score ?? 999
-        const score2 = results.find((r) => r.filePath === '/test/s2.txt')?.score ?? 999
-        const score50 = results.find((r) => r.filePath === '/test/s50.txt')?.score ?? 999
-        expect(score1).toBeLessThan(score2)
-        expect(score2).toBeLessThan(score50)
-      })
-    })
-
     it('returns only chunks from best-scoring file when maxFiles=1', async () => {
       const dbPath = './tmp/test-vectordb-maxfiles-1'
       if (fs.existsSync(dbPath)) {

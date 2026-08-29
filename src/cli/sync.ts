@@ -17,6 +17,7 @@ import { resolve, sep } from 'node:path'
 import { SemanticChunker } from '../chunker/index.js'
 import type { Embedder } from '../embedder/index.js'
 import {
+  formatSyncError,
   runSync as runSyncCore,
   type SyncCollaborators,
   type SyncCoverage,
@@ -283,12 +284,7 @@ export async function runSync(args: string[], globalOptions: GlobalOptions = {})
     }
 
     if (result.error !== null) {
-      const { message, filePath } = result.error
-      // Scope and existence errors already name the path in the message; a
-      // per-file ingest failure ("Missing embedding for chunk 1") does not, and
-      // there the suffix is the only thing identifying the file.
-      const location = filePath === null || message.includes(filePath) ? '' : ` (${filePath})`
-      console.error(`Error: ${message}${location}`)
+      console.error(`Error: ${formatSyncError(result.error)}`)
       process.exitCode = 1
       return
     }

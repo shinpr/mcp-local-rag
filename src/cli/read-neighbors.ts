@@ -1,6 +1,7 @@
 // CLI read-neighbors subcommand — read N chunks before/after a target chunk within one document
 
 import { resolve } from 'node:path'
+import { MAX_NEIGHBOR_COUNT } from '../utils/limits.js'
 import {
   extractSourceFromPath,
   generateRawDataPath,
@@ -177,12 +178,12 @@ export async function runReadNeighbors(
     const chunkIndex = parsed.chunkIndex
 
     const before = parsed.before ?? READ_NEIGHBORS_DEFAULTS.before
-    if (before > 50) {
-      throw new Error(`before must be between 0 and 50 (got ${before})`)
+    if (before > MAX_NEIGHBOR_COUNT) {
+      throw new Error(`before must be between 0 and ${MAX_NEIGHBOR_COUNT} (got ${before})`)
     }
     const after = parsed.after ?? READ_NEIGHBORS_DEFAULTS.after
-    if (after > 50) {
-      throw new Error(`after must be between 0 and 50 (got ${after})`)
+    if (after > MAX_NEIGHBOR_COUNT) {
+      throw new Error(`after must be between 0 and ${MAX_NEIGHBOR_COUNT} (got ${after})`)
     }
 
     // XOR: exactly one of --file-path / --source

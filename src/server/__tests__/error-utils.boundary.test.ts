@@ -5,7 +5,28 @@ import { FileOperationError, ValidationError } from '../../parser/index.js'
 import { VlmError } from '../../pdf-visual/types.js'
 import { BaseDirsConfigError } from '../../utils/base-dirs.js'
 import { DatabaseError } from '../../vectordb/types.js'
-import { formatErrorForClient, formatErrorForLog, logError, toMcpError } from '../error-utils.js'
+import {
+  appendConfigWarnings,
+  formatErrorForClient,
+  formatErrorForLog,
+  logError,
+  toMcpError,
+} from '../error-utils.js'
+
+describe('appendConfigWarnings', () => {
+  it('renders multiple warnings in one annotated content block', () => {
+    const content = [{ type: 'text' as const, text: 'result' }]
+
+    expect(appendConfigWarnings(content, ['first issue', 'second issue'])).toEqual([
+      { type: 'text', text: 'result' },
+      {
+        type: 'text',
+        text: 'Warning: Tell the user about this configuration issue. first issue | second issue',
+        annotations: { audience: ['user', 'assistant'], priority: 0.3 },
+      },
+    ])
+  })
+})
 
 describe('formatErrorForClient', () => {
   let originalNodeEnv: string | undefined

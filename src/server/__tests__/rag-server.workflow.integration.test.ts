@@ -1,27 +1,14 @@
-// RAG MCP Server E2E Test - Design Doc: rag-mcp-server-design.md (v1.1)
-// Generated: 2025-10-31
-// Test Type: End-to-End Test
-// Implementation Timing: After all implementations complete
+// In-process integration coverage for complete ingest, search, and re-ingest flows.
 
 import { copyFileSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { RAGServer } from '../../server/index.js'
-import { testModelCacheDir, withTestDevice } from '../test-device.js'
+import { testModelCacheDir, withTestDevice } from '../../__tests__/test-device.js'
+import { RAGServer } from '../index.js'
 
-// ============================================
-// E2E Test: Complete RAG Workflow
-// ============================================
-
-describe('RAG MCP Server E2E Test', () => {
-  // Note: Each test case uses independent RAGServer instance (to prevent inter-test interference)
-
-  // --------------------------------------------
-  // --------------------------------------------
-  describe('Complete RAG Flow (Phase 1: PDF/TXT/MD)', () => {
-    // User Scenario: File ingestion from MCP client → search workflow
-    // Validation: End-to-end document ingestion → search → result retrieval works correctly
-    it('User Journey: Ingest PDF file from MCP client → Search with natural language query → Retrieve related documents', async () => {
+describe('RAGServer workflow integration', () => {
+  describe('text-file ingestion and search', () => {
+    it('ingests a text file and retrieves it for a related query', async () => {
       // 1. Start MCP server (test case dedicated)
       const testDbPath = resolve('./tmp/e2e-lancedb-test1')
       const testDataDir = resolve('./tmp/e2e-data-test1')
@@ -40,20 +27,16 @@ describe('RAG MCP Server E2E Test', () => {
       await ragServer.initialize()
 
       try {
-        expect(ragServer).toBeDefined()
-
         // 2. Ingest TXT file (using TXT for testing since PDF parser requires actual PDF)
         const txtFile = resolve(testDataDir, 'sample-pdf.txt')
         writeFileSync(
           txtFile,
-          'This is a sample document for E2E testing. TypeScript type safety is important. ' +
+          'This is a sample document for integration testing. TypeScript type safety is important. ' +
             'TypeScript provides better tooling at any scale. ' +
             'TypeScript is a strongly typed programming language.'
         )
 
         const ingestResult = await ragServer.handleIngestFile({ filePath: txtFile })
-        expect(ingestResult.content[0].text).toBeDefined()
-
         const ingestData = JSON.parse(ingestResult.content[0].text)
         expect(ingestData.chunkCount).toBeGreaterThan(0)
         expect(ingestData.filePath).toBe(txtFile)
@@ -85,12 +68,8 @@ describe('RAG MCP Server E2E Test', () => {
     })
   })
 
-  // --------------------------------------------
-  // --------------------------------------------
-  describe('Complete RAG Flow (Phase 2: DOCX support, File re-ingestion)', () => {
-    // User Scenario: Ingest DOCX file → Search
-    // Validation: DOCX file can be ingested and searched
-    it('User Journey: Ingest DOCX file → Search with natural language query → Retrieve related documents', async () => {
+  describe('DOCX ingestion and replacement', () => {
+    it('ingests a DOCX file and retrieves it for a related query', async () => {
       // 1. Start MCP server (test case dedicated)
       const testDbPath = resolve('./tmp/e2e-lancedb-test2')
       const testDataDir = resolve('./tmp/e2e-data-test2')
@@ -109,16 +88,12 @@ describe('RAG MCP Server E2E Test', () => {
       await ragServer.initialize()
 
       try {
-        expect(ragServer).toBeDefined()
-
         // 2. Ingest valid DOCX file from fixtures
         const fixtureDocx = resolve('./tests/fixtures/sample-e2e.docx')
         const docxFile = resolve(testDataDir, 'sample.docx')
         copyFileSync(fixtureDocx, docxFile)
 
         const ingestResult = await ragServer.handleIngestFile({ filePath: docxFile })
-        expect(ingestResult.content[0].text).toBeDefined()
-
         const ingestData = JSON.parse(ingestResult.content[0].text)
         expect(ingestData.chunkCount).toBeGreaterThan(0)
 
@@ -140,9 +115,7 @@ describe('RAG MCP Server E2E Test', () => {
       }
     })
 
-    // User Scenario: File re-ingestion → Search
-    // Validation: Update existing file and re-ingest, search with new content
-    it('User Journey: Update existing file and re-ingest → Search with new content → Old content not included in search results', async () => {
+    it('replaces indexed content when the same file is ingested again', async () => {
       // 1. Start MCP server (test case dedicated)
       const testDbPath = resolve('./tmp/e2e-lancedb-test3')
       const testDataDir = resolve('./tmp/e2e-data-test3')
@@ -161,8 +134,6 @@ describe('RAG MCP Server E2E Test', () => {
       await ragServer.initialize()
 
       try {
-        expect(ragServer).toBeDefined()
-
         // 2. Initial file ingestion (old content: "TypeScript")
         const v1File = resolve(testDataDir, 'sample-v1.txt')
         writeFileSync(

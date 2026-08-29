@@ -1,5 +1,6 @@
 // CLI query subcommand — search ingested documents
 
+import { MAX_QUERY_LIMIT, MIN_QUERY_LIMIT } from '../utils/limits.js'
 import { extractSourceFromPath, isManagedRawDataPath } from '../utils/raw-data-utils.js'
 import { createEmbedder, createVectorStore, formatCliError } from './common.js'
 import type { GlobalOptions } from './options.js'
@@ -51,7 +52,7 @@ const HELP_TEXT = `Usage: mcp-local-rag [global-options] query [options] <query-
 Search ingested documents using hybrid vector + keyword matching.
 
 Options:
-  --limit <n>            Max results (default: ${QUERY_DEFAULTS.limit}, range: 1-20)
+  --limit <n>            Max results (default: ${QUERY_DEFAULTS.limit}, range: ${MIN_QUERY_LIMIT}-${MAX_QUERY_LIMIT})
   --scope <prefix>       Restrict results to a path prefix (repeatable for multiple prefixes)
   -h, --help             Show this help
 
@@ -86,7 +87,7 @@ export function parseArgs(args: string[]): ParsedArgs {
       case '--limit': {
         const value = requireFlagValue(args, i, '--limit')
         if (!/^\d+$/.test(value)) {
-          console.error('--limit must be between 1 and 20')
+          console.error(`--limit must be between ${MIN_QUERY_LIMIT} and ${MAX_QUERY_LIMIT}`)
           process.exit(1)
         }
         options.limit = Number.parseInt(value, 10)
@@ -135,8 +136,8 @@ export function parseArgs(args: string[]): ParsedArgs {
  */
 function resolveLimit(rawLimit: number | undefined): number {
   const limit = rawLimit ?? QUERY_DEFAULTS.limit
-  if (!Number.isFinite(limit) || limit < 1 || limit > 20) {
-    console.error('--limit must be between 1 and 20')
+  if (!Number.isFinite(limit) || limit < MIN_QUERY_LIMIT || limit > MAX_QUERY_LIMIT) {
+    console.error(`--limit must be between ${MIN_QUERY_LIMIT} and ${MAX_QUERY_LIMIT}`)
     process.exit(1)
   }
   return limit

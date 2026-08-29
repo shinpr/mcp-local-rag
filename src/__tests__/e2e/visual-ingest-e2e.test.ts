@@ -58,7 +58,7 @@ const E2E_ENABLED = process.env['RUN_E2E'] === '1'
 // ============================================
 
 // Resolve relative to the current working directory (vitest is launched from
-// project root). Mirrors the path style used by `rag-workflow.e2e.test.ts`.
+// project root), matching the in-process workflow fixtures.
 const BINARY_PATH = resolve('./dist/index.js')
 /** Pre-cached model lives under `./models/` per the project default. */
 const DEFAULT_CACHE_DIR = resolve('./models')

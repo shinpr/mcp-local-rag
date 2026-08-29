@@ -23,7 +23,7 @@
     "noImplicitThis": true,                  // Prohibit implicit this
     "alwaysStrict": true,                    // Always enable strict mode
     
-    // Additional safety checks (currently disabled in this PR)
+    // Additional safety checks
     "noUncheckedIndexedAccess": true,       // Safety checks for index access
     "exactOptionalPropertyTypes": true,      // Strict type checking for optional properties
     "noPropertyAccessFromIndexSignature": true, // Prohibit property access from index signature

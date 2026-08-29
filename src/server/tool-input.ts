@@ -10,7 +10,9 @@
 
 import { isAbsolute } from 'node:path'
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js'
-import type { ContentFormat } from '../utils/raw-data-utils.js'
+import { QUALITY_PROFILES, type QualityProfile } from '../pdf-visual/types.js'
+import { MAX_NEIGHBOR_COUNT, MAX_QUERY_LIMIT, MIN_QUERY_LIMIT } from '../utils/limits.js'
+import { CONTENT_FORMATS, type ContentFormat } from '../utils/raw-data-utils.js'
 import type {
   DeleteFileInput,
   IngestDataInput,
@@ -21,8 +23,6 @@ import type {
   SyncStartInput,
   SyncStatusInput,
 } from './types.js'
-
-const CONTENT_FORMATS: readonly ContentFormat[] = ['text', 'html', 'markdown']
 
 const SCOPE_ERROR = 'scope must be a non-empty string or a non-empty array of non-empty strings'
 
@@ -73,7 +73,12 @@ export function parseQueryDocumentsInput(raw: unknown): QueryDocumentsInput {
     // enforces and the CLI `--limit` accepts. Rejecting here returns a clean
     // McpError(InvalidParams) instead of letting an out-of-range value reach
     // search() and surface as a DatabaseError.
-    if (typeof limit !== 'number' || !Number.isInteger(limit) || limit < 1 || limit > 20) {
+    if (
+      typeof limit !== 'number' ||
+      !Number.isInteger(limit) ||
+      limit < MIN_QUERY_LIMIT ||
+      limit > MAX_QUERY_LIMIT
+    ) {
       throw new McpError(ErrorCode.InvalidParams, 'limit must be an integer between 1 and 20')
     }
     input.limit = limit
@@ -148,8 +153,7 @@ export function parseIngestFileInput(raw: unknown): IngestFileInput {
   if (
     visualQuality !== undefined &&
     visualQuality !== '' &&
-    visualQuality !== 'fast' &&
-    visualQuality !== 'quality'
+    !QUALITY_PROFILES.includes(visualQuality as QualityProfile)
   ) {
     throw new McpError(
       ErrorCode.InvalidParams,
@@ -160,7 +164,9 @@ export function parseIngestFileInput(raw: unknown): IngestFileInput {
   return {
     filePath,
     ...(visual !== undefined ? { visual } : {}),
-    ...(visualQuality === 'fast' || visualQuality === 'quality' ? { visualQuality } : {}),
+    ...(QUALITY_PROFILES.includes(visualQuality as QualityProfile)
+      ? { visualQuality: visualQuality as QualityProfile }
+      : {}),
   }
 }
 
@@ -195,7 +201,7 @@ export function parseReadChunkNeighborsInput(raw: unknown): ReadChunkNeighborsIn
     if (value !== undefined && (!Number.isInteger(value) || (value as number) < 0)) {
       throw new McpError(ErrorCode.InvalidParams, `${label} must be a non-negative integer`)
     }
-    if (typeof value === 'number' && value > 50) {
+    if (typeof value === 'number' && value > MAX_NEIGHBOR_COUNT) {
       throw new McpError(
         ErrorCode.InvalidParams,
         `${label} must be between 0 and 50 (got ${value})`

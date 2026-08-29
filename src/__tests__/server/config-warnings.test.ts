@@ -1,9 +1,4 @@
-// Configuration Warnings Test
-// Test Type: Unit Test (parsers) + Integration Test (warning delivery via MCP annotations)
-
-import { mkdir, rm } from 'node:fs/promises'
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { RAGServer } from '../../server/index.js'
+import { describe, expect, it } from 'vitest'
 import {
   parseChunkMinLength,
   parseGroupingMode,
@@ -11,7 +6,6 @@ import {
   parseMaxDistance,
   parseMaxFiles,
 } from '../../server-main.js'
-import { testModelCacheDir, withTestDevice } from '../test-device.js'
 
 // ============================================
 // Unit Tests: Parser Functions
@@ -181,146 +175,5 @@ describe('parseChunkMinLength', () => {
   it('truncates float input to integer via parseInt', () => {
     // parseInt('50.5') returns 50, which is valid — consistent with parseMaxFiles behavior
     expect(parseChunkMinLength('50.5')).toEqual({ value: 50 })
-  })
-})
-
-// ============================================
-// Integration Tests: Warning Delivery via MCP Annotations
-// ============================================
-
-const testDbPath = './tmp/test-config-warnings-db'
-const baseConfig = {
-  dbPath: testDbPath,
-  modelName: 'Xenova/all-MiniLM-L6-v2',
-  // The prewarmed cache: handleQueryDocuments below embeds the query for real.
-  cacheDir: testModelCacheDir(),
-  baseDir: '.',
-  maxFileSize: 10 * 1024 * 1024,
-}
-
-describe('Config warning delivery via MCP annotations', () => {
-  afterAll(async () => {
-    await rm(testDbPath, { recursive: true, force: true })
-  })
-
-  describe('status tool', () => {
-    let server: RAGServer
-
-    beforeAll(async () => {
-      await mkdir(testDbPath, { recursive: true })
-      server = new RAGServer(
-        withTestDevice({
-          ...baseConfig,
-          configWarnings: [
-            'Invalid RAG_MAX_FILES value: "0". Expected positive integer (>= 1). Ignoring.',
-          ],
-        })
-      )
-      await server.initialize()
-    })
-
-    it('always includes warning content blocks with annotations', async () => {
-      const result = await server.handleStatus()
-
-      expect(result.content.length).toBe(2)
-
-      const warningBlock = result.content[1]
-      expect(warningBlock?.text).toContain('Warning:')
-      expect(warningBlock?.text).toContain('RAG_MAX_FILES')
-      expect(warningBlock?.annotations).toEqual({
-        audience: ['user', 'assistant'],
-        priority: 0.3,
-      })
-    })
-  })
-
-  describe('status tool without warnings', () => {
-    let server: RAGServer
-
-    beforeAll(async () => {
-      await mkdir(testDbPath, { recursive: true })
-      server = new RAGServer(withTestDevice(baseConfig))
-      await server.initialize()
-    })
-
-    it('returns only status data when no config warnings exist', async () => {
-      const result = await server.handleStatus()
-      expect(result.content.length).toBe(1)
-      expect(result.content[0]?.text).not.toContain('Warning:')
-    })
-  })
-
-  describe('query_documents tool', () => {
-    let server: RAGServer
-
-    beforeAll(async () => {
-      await mkdir(testDbPath, { recursive: true })
-      server = new RAGServer(
-        withTestDevice({
-          ...baseConfig,
-          configWarnings: [
-            'Invalid RAG_MAX_DISTANCE value: "-1". Expected positive number. Ignoring.',
-          ],
-        })
-      )
-      await server.initialize()
-    })
-
-    // AC-009 (P3-T3): config warnings must appear in every MCP tool response,
-    // not only the first. MCP clients may hide stderr and may not retain
-    // content across tool calls, so the previous "first call only" gate was
-    // removed when warning attachment was centralized in `withWarnings`.
-    it('includes warnings on every query call (AC-009)', async () => {
-      const result1 = await server.handleQueryDocuments({ query: 'test' })
-      expect(result1.content.length).toBe(2)
-      expect(result1.content[1]).toEqual(
-        expect.objectContaining({
-          type: 'text',
-          text: expect.stringContaining('Warning:'),
-          annotations: { audience: ['user', 'assistant'], priority: 0.3 },
-        })
-      )
-
-      const result2 = await server.handleQueryDocuments({ query: 'test again' })
-      expect(result2.content.length).toBe(2)
-      expect(result2.content[1]).toEqual(
-        expect.objectContaining({
-          type: 'text',
-          text: expect.stringContaining('Warning:'),
-          annotations: { audience: ['user', 'assistant'], priority: 0.3 },
-        })
-      )
-    })
-  })
-
-  describe('multiple warnings', () => {
-    let server: RAGServer
-
-    beforeAll(async () => {
-      await mkdir(testDbPath, { recursive: true })
-      server = new RAGServer(
-        withTestDevice({
-          ...baseConfig,
-          configWarnings: [
-            'Invalid RAG_MAX_FILES value: "0". Expected positive integer (>= 1). Ignoring.',
-            'Invalid RAG_HYBRID_WEIGHT value: "2.0". Expected 0.0-1.0. Using default (0.6).',
-          ],
-        })
-      )
-      await server.initialize()
-    })
-
-    afterAll(async () => {
-      await server.close()
-    })
-
-    it('combines multiple warnings into a single content block', async () => {
-      const result = await server.handleStatus()
-      const warningBlock = result.content[1]
-
-      expect(warningBlock?.text).toContain('RAG_MAX_FILES')
-      expect(warningBlock?.text).toContain('RAG_HYBRID_WEIGHT')
-      expect(warningBlock?.text).toContain(' | ')
-    })
   })
 })

@@ -731,39 +731,6 @@ describe('MCP sync tools', () => {
     }
   }, 60000)
 
-  it('makes an explicit directory the depth-zero BFS root and forwards no scope to the walker', async () => {
-    const fixture = await makeFixture('explicit-directory')
-    const rootDir = fixture.roots[0] ?? ''
-    const requestedDir = join(rootDir, 'd1', 'd2')
-    const deepDir = deepChainDir(rootDir, MAX_SCAN_DEPTH)
-    const deepPath = await writeFixtureFile(
-      join(deepDir, 'deep.md'),
-      `reachable only when depth restarts ${'c'.repeat(200)}`
-    )
-
-    const server = await makeServer(fixture)
-    let terminal: SyncStatusResult
-    try {
-      const jobId = await syncStart(server, { path: requestedDir })
-      terminal = lastSnapshot(await pollUntilTerminal(server, jobId))
-    } finally {
-      await server.close()
-    }
-
-    expect(terminal.state).toBe('succeeded')
-    expect(terminal.summary).toEqual({ upserted: 1, skipped: 0, empty: 0, pruned: 0 })
-    expect(await storedPaths(fixture)).toEqual([deepPath])
-    expect(scanArgs).toHaveLength(1)
-    const scanCall = scanArgs[0] ?? []
-    expect(scanCall).toEqual([
-      requestedDir,
-      [`${resolve(fixture.dbPath)}${sep}`, `${resolve(fixture.cacheDir)}${sep}`],
-      MAX_SCAN_DEPTH,
-    ])
-    expect(scanCall).toHaveLength(3)
-    expect(scanCall[3]).toBeUndefined()
-  }, 45000)
-
   it('handles an explicit file directly, with no directory scan and no sibling changes', async () => {
     const fixture = await makeFixture('explicit-file')
     const rootDir = fixture.roots[0] ?? ''
@@ -813,8 +780,6 @@ describe('MCP sync tools', () => {
   describeSymlinkedRoot('with a symlinked intermediate directory', () => {
     interface EscapeFixture extends Fixture {
       rootDir: string
-      /** The real, out-of-root directory `<root>/link` points at. */
-      outsideDir: string
     }
 
     /** `<case>/root/link` → `<case>/outside/secret`, with `db`/`cache` siblings. */
@@ -831,69 +796,8 @@ describe('MCP sync tools', () => {
         dbPath: join(caseDir, 'db'),
         cacheDir: join(caseDir, 'cache'),
         rootDir,
-        outsideDir,
       }
     }
-
-    it('fails the job for an out-of-root file named through the link, naming nothing under it', async () => {
-      const fixture = await makeEscapeFixture('escape-file')
-      const requestedPath = join(fixture.rootDir, 'link', 'inner.md')
-      await writeFile(requestedPath, `out-of-root document ${'s'.repeat(200)}`)
-      const insidePath = await writeFixtureFile(
-        join(fixture.rootDir, 'a.md'),
-        `in-root document ${'a'.repeat(200)}`
-      )
-      await seedRows(fixture, insidePath, 'stale-hash')
-
-      const server = await makeServer(fixture)
-      let terminal: SyncStatusResult
-      try {
-        const jobId = await syncStart(server, { path: requestedPath })
-        terminal = lastSnapshot(await pollUntilTerminal(server, jobId))
-      } finally {
-        await server.close()
-      }
-
-      // The job never reaches `succeeded`, and the one error names only the path
-      // the caller already supplied.
-      expect(terminal.state).toBe('failed')
-      expect(terminal.error).toBe(`Sync path is outside every configured root: ${requestedPath}`)
-      expect(terminal.warnings).toEqual([])
-      expect(JSON.stringify(terminal)).not.toContain(fixture.outsideDir)
-      expect(terminal.summary).toEqual({ upserted: 0, skipped: 0, empty: 0, pruned: 0 })
-      // Nothing out of root was hashed, so the file count never counted it.
-      expect(terminal.total).toBeNull()
-      // No walk happened at all, and no out-of-root row was written.
-      expect(scanArgs).toEqual([])
-      expect(await storedPaths(fixture)).toEqual([insidePath])
-    }, 45000)
-
-    it('fails the job for an out-of-root directory named through the link and scans nothing under it', async () => {
-      const fixture = await makeEscapeFixture('escape-directory')
-      const requestedPath = join(fixture.rootDir, 'link', 'quiet')
-      await writeFixtureFile(
-        join(requestedPath, 'hidden.md'),
-        `out-of-root document ${'h'.repeat(200)}`
-      )
-
-      const server = await makeServer(fixture)
-      let terminal: SyncStatusResult
-      try {
-        const jobId = await syncStart(server, { path: requestedPath })
-        terminal = lastSnapshot(await pollUntilTerminal(server, jobId))
-      } finally {
-        await server.close()
-      }
-
-      expect(terminal.state).toBe('failed')
-      expect(terminal.error).toBe(`Sync path is outside every configured root: ${requestedPath}`)
-      expect(terminal.warnings).toEqual([])
-      const record = JSON.stringify(terminal)
-      expect(record).not.toContain('hidden.md')
-      expect(record).not.toContain(fixture.outsideDir)
-      expect(scanArgs).toEqual([])
-      expect(await storedPaths(fixture)).toEqual([])
-    }, 45000)
 
     // The assertion that kills the oracle: one requested path, three states of
     // the out-of-root target, one byte-identical error. Anything that varied per

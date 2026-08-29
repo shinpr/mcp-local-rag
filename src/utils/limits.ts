@@ -20,5 +20,15 @@ export const DEFAULT_MAX_FILE_SIZE = 104_857_600
  */
 export const MAX_FILE_SIZE_LIMIT = 524_288_000
 
+/** Inclusive result-count range shared by CLI, MCP validation, and VectorStore. */
+export const MIN_QUERY_LIMIT = 1
+export const MAX_QUERY_LIMIT = 20
+
+/** Maximum number of adjacent chunks accepted on either side of a target. */
+export const MAX_NEIGHBOR_COUNT = 50
+
+/** Inclusive upper bound for the configurable minimum chunk length. */
+export const MAX_CHUNK_MIN_LENGTH = 10_000
+
 /** Maximum encoded bytes for one visual attachment returned with a chunk. */
 export const MAX_VISUAL_RENDITION_BYTES = 512 * 1024

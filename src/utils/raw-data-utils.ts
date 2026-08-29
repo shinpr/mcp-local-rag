@@ -73,10 +73,9 @@ export function normalizeSource(source: string): string {
 // Format Utilities
 // ============================================
 
-/**
- * Content format type for ingest_data
- */
-export type ContentFormat = 'text' | 'html' | 'markdown'
+/** Formats accepted by ingest_data at runtime and in its public schema. */
+export const CONTENT_FORMATS = ['text', 'html', 'markdown'] as const
+export type ContentFormat = (typeof CONTENT_FORMATS)[number]
 
 const RAW_DATA_EXTENSION = 'md'
 

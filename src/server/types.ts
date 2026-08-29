@@ -1,5 +1,6 @@
 // Type definitions for RAGServer
 
+import type { QualityProfile } from '../pdf-visual/types.js'
 import type { BaseDirsConfigError } from '../utils/base-dirs.js'
 import type { ContentFormat } from '../utils/raw-data-utils.js'
 import type { GroupingMode } from '../vectordb/index.js'
@@ -115,7 +116,7 @@ export interface IngestFileInput {
    * empty string for unspecified optional parameters; the transport decoder
    * normalizes it before this type reaches the handler.
    */
-  visualQuality?: 'fast' | 'quality'
+  visualQuality?: QualityProfile
 }
 
 /**

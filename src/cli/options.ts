@@ -1,6 +1,6 @@
 // Shared CLI global options — parsed before subcommand routing
 
-import { MAX_FILE_SIZE_LIMIT } from '../utils/limits.js'
+import { MAX_CHUNK_MIN_LENGTH, MAX_FILE_SIZE_LIMIT } from '../utils/limits.js'
 import { checkSensitivePath } from '../utils/sensitive-path.js'
 
 // ============================================
@@ -49,8 +49,8 @@ export function validateMaxFileSize(value: number): string | undefined {
  * Returns an error message if invalid, or undefined if valid.
  */
 export function validateChunkMinLength(value: number): string | undefined {
-  if (!Number.isFinite(value) || value < 1 || value > 10000) {
-    return '--chunk-min-length must be between 1 and 10000'
+  if (!Number.isFinite(value) || value < 1 || value > MAX_CHUNK_MIN_LENGTH) {
+    return `--chunk-min-length must be between 1 and ${MAX_CHUNK_MIN_LENGTH}`
   }
   return undefined
 }

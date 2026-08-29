@@ -1,20 +1,15 @@
 // CLI ingest subcommand — bulk file ingestion with single optimize() at end
 
-import { readFile, stat } from 'node:fs/promises'
+import { stat } from 'node:fs/promises'
 import { resolve, sep } from 'node:path'
 
 import { SemanticChunker } from '../chunker/index.js'
 import type { Embedder } from '../embedder/index.js'
-import {
-  buildChunksFromParseResult,
-  buildVectorChunks,
-  computeContentHash,
-} from '../ingest/compute.js'
-import { prepareVisualPdfChunks } from '../ingest/visual.js'
+import { buildPreparedFileVectorChunks, prepareFileForIngest } from '../ingest/file.js'
 import { DocumentParser } from '../parser/index.js'
-import type { QualityProfile } from '../pdf-visual/types.js'
+import { QUALITY_PROFILES, type QualityProfile } from '../pdf-visual/types.js'
 import type { BaseDirsConfig, BaseDirsConfigWarning } from '../utils/base-dirs.js'
-import { DEFAULT_MAX_FILE_SIZE } from '../utils/limits.js'
+import { DEFAULT_MAX_FILE_SIZE, MAX_CHUNK_MIN_LENGTH } from '../utils/limits.js'
 import type { VectorStore } from '../vectordb/index.js'
 import {
   createEmbedder,
@@ -79,6 +74,10 @@ interface ParsedArgs {
   help: boolean
 }
 
+function isQualityProfile(value: string): value is QualityProfile {
+  return QUALITY_PROFILES.some((profile) => profile === value)
+}
+
 // ============================================
 // Defaults
 // ============================================
@@ -98,7 +97,7 @@ Ingest a single file or all supported files under a directory.
 Options:
   --base-dir <path>          Base directory for documents (repeatable: pass once per root; default: BASE_DIRS/BASE_DIR env or cwd)
   --max-file-size <n>        Max file size in bytes (default: ${INGEST_DEFAULTS.maxFileSize})
-  --chunk-min-length <n>     Minimum chunk length in characters (default: 50, range: 1-10000)
+  --chunk-min-length <n>     Minimum chunk length in characters (default: 50, range: 1-${MAX_CHUNK_MIN_LENGTH})
   --visual                   Enable VLM captioning for PDF figure pages (PDFs only; no effect on other types)
   --images                   Store bounded PDF figures/tables and Mammoth DOCX images
   --visual-quality <profile> VLM profile when --visual is set: fast (default, lightweight) or quality (Qwen2.5-VL-3B, ~10x cache, ~2x inference)
@@ -177,7 +176,7 @@ export function parseArgs(args: string[]): ParsedArgs {
         break
       case '--visual-quality': {
         const value = requireFlagValue(args, i, '--visual-quality')
-        if (value !== 'fast' && value !== 'quality') {
+        if (!isQualityProfile(value)) {
           console.error(
             `Invalid value for --visual-quality: "${value.slice(0, 100)}". Expected "fast" or "quality".`
           )
@@ -308,40 +307,6 @@ export type IngestSingleFileOptions =
     }
 
 /**
- * Read the source file's raw bytes and hash them for `contentHash`.
- *
- * Separate from the parser read on purpose: the parser hands back decoded text,
- * while sync compares the bytes on disk.
- *
- * Called BEFORE parsing, which is what fixes the direction of the remaining race.
- * The reads are still two, so a file rewritten mid-ingestion cannot be captured as
- * one snapshot; taking the hash first makes the stored hash the OLDER of the two,
- * so the next sync sees a mismatch and re-ingests. Hashing afterwards paired
- * chunks built from the old bytes with the new bytes' hash, and every later sync
- * then read `disk hash == stored hash` and skipped the file forever.
- *
- * The parser's two boundary checks therefore have to run here rather than
- * implicitly ahead of this read: `validateFilePath` refuses a path outside every
- * configured root — or one reaching outside through a symlinked ancestor — before
- * its bytes are touched, and `validateFileSize` keeps a whole oversized file out
- * of memory (the bound the old post-parse position relied on). Both are the
- * parser's own semantics, re-run idempotently by the parse that follows.
- *
- * Unlike the MCP surface, no "is this a regular file" check is needed here:
- * every path reaching `ingestSingleFile` has already passed a collector that
- * accepts only regular files with supported extensions — `collectFiles` for the
- * `ingest` subcommand, `classifyRequestedPath` / `bfsCollectSupportedFiles` for
- * `sync` — so a directory or a FIFO (whose read never returns) cannot arrive.
- * `RAGServer.readPreParseContentHash` takes a client-supplied path with no such
- * collector in front of it and carries that check.
- */
-async function readContentHash(filePath: string, parser: DocumentParser): Promise<string> {
-  await parser.validateFilePath(filePath)
-  parser.validateFileSize(filePath)
-  return computeContentHash(await readFile(filePath))
-}
-
-/**
  * Ingest a single file: hash, parse, chunk, embed, delete old chunks, insert new
  * chunks. Returns the number of chunks inserted.
  *
@@ -362,94 +327,30 @@ export async function ingestSingleFile(
   vectorStore: VectorStore,
   options?: IngestSingleFileOptions
 ): Promise<number> {
-  // Hash before anything parses the file: see `readContentHash` for why the order
-  // is load-bearing rather than incidental.
-  const contentHash = await readContentHash(filePath, parser)
-
-  // Parse file
   const isPdf = filePath.toLowerCase().endsWith('.pdf')
-  if (isPdf && (options?.visual === true || options?.images === true)) {
-    // Visual dispatch — delegates the shared visual-PDF flow to
-    // `prepareVisualPdfChunks` (NFR-1: the dynamic `pdf-visual` import lives
-    // inside that helper, not here). This branch keeps the CLI persistence
-    // model (delete + insert; bulk-loop optimize at the end of `runIngest`).
-    //
-    // `profile` and `cacheDir` are required by `prepareVisualPdfChunks`;
-    // the CLI bulk-loop always supplies them from the resolved CLI options
-    // (`runIngest` defaults `visualQuality` to `'fast'` when `--visual` is
-    // set without `--visual-quality`).
-    const visualResult = await prepareVisualPdfChunks(filePath, parser, chunker, embedder, {
-      images: options.images === true,
-      ...(options.visual
-        ? {
-            captioner: {
-              profile: options.profile,
-              cacheDir: options.cacheDir,
-              device: options.device,
-            },
-          }
-        : {}),
-    })
-    const { chunks, embeddings } = visualResult
-    if (chunks.length === 0) {
-      console.error(`  Warning: 0 chunks generated (file may be empty or too short)`)
-      return 0
-    }
-    const title = visualResult.title
-    if (visualResult.omittedImageCount > 0) {
-      console.error(
-        `  Warning: skipped ${visualResult.omittedImageCount} undecodable or oversized PDF image(s)`
-      )
-    }
-
-    // Persistence — identical to the default branch below; inlined here so
-    // chunks/embeddings produced on the visual path persist correctly. The
-    // joined enriched-page text is taken from the helper to preserve the
-    // pre-existing `metadata.fileSize` semantics (post-enrichment,
-    // pre-chunking text length). Construction runs before the delete so a
-    // failure here cannot leave the file absent from the index.
-    const vectorChunks = buildVectorChunks({
-      filePath,
-      chunks,
-      embeddings,
-      fileSize: visualResult.text.length,
-      fileTitle: title,
-      contentHash,
-      visualAttachments: visualResult.visualAttachments,
-    })
-    await vectorStore.deleteChunks(filePath)
-    await vectorStore.insertChunks(vectorChunks)
-    return vectorChunks.length
+  const prepared = await prepareFileForIngest(filePath, parser, chunker, embedder, {
+    images: options?.images === true,
+    ...(options?.visual === true
+      ? {
+          captioner: {
+            profile: options.profile,
+            cacheDir: options.cacheDir,
+            device: options.device,
+          },
+        }
+      : {}),
+  })
+  if (prepared.omittedImageCount > 0) {
+    console.error(
+      `  Warning: skipped ${prepared.omittedImageCount} undecodable or oversized ${isPdf ? 'PDF' : 'DOCX'} image(s)`
+    )
   }
-
-  const parsedFileResult = isPdf
-    ? await parser.parsePdf(filePath, embedder)
-    : await parser.parseFile(filePath, { images: options?.images === true })
-  const text = parsedFileResult.content
-  const title = parsedFileResult.title || null
-
-  // Chunk text + generate embeddings via the shared computation layer.
-  const { chunks, embeddings, visualAttachments, omittedImageCount } =
-    await buildChunksFromParseResult(parsedFileResult, chunker, embedder)
-  if (omittedImageCount > 0) {
-    console.error(`  Warning: skipped ${omittedImageCount} undecodable or oversized DOCX image(s)`)
-  }
-  if (chunks.length === 0) {
+  if (prepared.chunks.length === 0) {
     console.error(`  Warning: 0 chunks generated (file may be empty or too short)`)
     return 0
   }
 
-  // Build vector chunks before the destructive delete: a construction failure
-  // (e.g. a missing embedding) then leaves the previously indexed rows intact.
-  const vectorChunks = buildVectorChunks({
-    filePath,
-    chunks,
-    embeddings,
-    fileSize: text.length,
-    fileTitle: title,
-    contentHash,
-    visualAttachments,
-  })
+  const vectorChunks = buildPreparedFileVectorChunks(prepared)
 
   // Delete existing chunks for this file, then insert the new ones
   await vectorStore.deleteChunks(filePath)

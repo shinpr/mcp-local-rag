@@ -5,6 +5,7 @@ import { buildVectorChunks } from '../../ingest/compute.js'
 import { type VectorChunk, VectorStore } from '../../vectordb/index.js'
 import {
   executeSyncPlan,
+  formatSyncError,
   planSync,
   runSync,
   type SyncCollaborators,
@@ -15,6 +16,18 @@ import {
   type SyncPlan,
   type SyncScanResult,
 } from '../sync.js'
+
+describe('formatSyncError', () => {
+  it('adds an attributable path once', () => {
+    expect(formatSyncError({ message: 'Missing embedding', filePath: '/docs/a.md' })).toBe(
+      'Missing embedding (/docs/a.md)'
+    )
+    expect(formatSyncError({ message: 'Cannot read /docs/a.md', filePath: '/docs/a.md' })).toBe(
+      'Cannot read /docs/a.md'
+    )
+    expect(formatSyncError({ message: 'Optimize failed', filePath: null })).toBe('Optimize failed')
+  })
+})
 
 // Literal SHA-256 hex digests used as content identities. They are opaque
 // fixture values here: the planner compares them for equality and never
