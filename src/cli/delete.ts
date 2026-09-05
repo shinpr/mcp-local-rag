@@ -76,6 +76,11 @@ function parseArgs(args: string[]): DeleteArgs {
       console.error(HELP_TEXT)
       process.exit(1)
     } else {
+      if (filePath !== undefined) {
+        console.error(`Unexpected argument: ${arg}`)
+        console.error(HELP_TEXT)
+        process.exit(1)
+      }
       // Positional argument: file-path
       filePath = arg
       i++

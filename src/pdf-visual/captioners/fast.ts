@@ -65,6 +65,7 @@ export function createFastCaptioner(resolvedDevice: string): Captioner {
   })
 
   return {
+    dispose: loader.dispose,
     async caption(pngBytes: Uint8Array, pageNum: number): Promise<string | null> {
       try {
         const { processor, model } = await loader.ensureLoaded()

@@ -733,10 +733,33 @@ export async function filterPageBoundaryLayouts(
     splitItemsIntoSentencesWithY(page.items)
   )
 
+  const sampledSentences = sampleCenterPages(pages, cfg.samplePages).map(
+    (page) => pageSentences[pages.indexOf(page)] ?? []
+  )
+  const matchesRepeatedBoundary = (
+    sentence: SentenceWithY | undefined,
+    edge: 'first' | 'last'
+  ): boolean => {
+    if (!sentence) return false
+    // Page numbers may vary; other text and rounded position must repeat.
+    const key = (value: SentenceWithY): string =>
+      `${Math.round(value.y)}:${value.text.replace(/\d+/g, '#').replace(/\s+/g, ' ').trim()}`
+    const target = key(sentence)
+    return (
+      sampledSentences.filter((sentences) => {
+        const candidate =
+          edge === 'first' ? sentences[0] : sentences.length > 1 ? sentences.at(-1) : undefined
+        return candidate !== undefined && key(candidate) === target
+      }).length >= 2
+    )
+  }
+
   return pages.map((page, pageIndex) => {
     let cleaned = [...(pageSentences[pageIndex] ?? [])]
-    if (patterns.removeFirstSentence && cleaned.length > 0) cleaned = cleaned.slice(1)
-    if (patterns.removeLastSentence && cleaned.length > 0) cleaned = cleaned.slice(0, -1)
+    if (patterns.removeFirstSentence && matchesRepeatedBoundary(cleaned[0], 'first'))
+      cleaned = cleaned.slice(1)
+    if (patterns.removeLastSentence && matchesRepeatedBoundary(cleaned.at(-1), 'last'))
+      cleaned = cleaned.slice(0, -1)
     return buildSentenceLayout(page.pageNum, cleaned, page.items)
   })
 }

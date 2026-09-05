@@ -57,11 +57,22 @@ export function createModelLoader(
   modelName: string,
   resolvedDevice: string,
   load: (opts: ReturnType<typeof buildModelLoadOptions>) => Promise<LoadedModel>
-): { ensureLoaded: () => Promise<LoadedModel> } {
+): { ensureLoaded: () => Promise<LoadedModel>; dispose: () => Promise<void> } {
   let loaded: LoadedModel | null = null
   let state: CaptionerLoadState = { kind: 'pending' }
 
   return {
+    async dispose(): Promise<void> {
+      const model = loaded?.model
+      loaded = null
+      if (model) {
+        try {
+          await (model as { dispose(): Promise<unknown> }).dispose()
+        } catch (error) {
+          console.error('Error disposing captioner model:', error)
+        }
+      }
+    },
     async ensureLoaded(): Promise<LoadedModel> {
       if (state.kind === 'ok' && loaded) return loaded
       if (state.kind === 'failed') throw state.cause

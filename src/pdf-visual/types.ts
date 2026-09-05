@@ -58,6 +58,7 @@ export interface CaptionerConfig {
  */
 export interface Captioner {
   caption(pngBytes: Uint8Array, pageNum: number): Promise<string | null>
+  dispose(): Promise<void>
 }
 
 export type VisualBBox = [number, number, number, number]

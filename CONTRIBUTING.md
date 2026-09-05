@@ -35,6 +35,7 @@ This runs the following in order:
 | Unused exports | `pnpm run check:unused` | No dead exports |
 | Circular deps | `pnpm run check:deps` | No circular dependencies |
 | Build | `pnpm run build` | TypeScript compilation |
+| Test type check | `pnpm run type-check:test` | Strict TypeScript checking of tests |
 | Test | `pnpm run test` | All tests pass |
 
 Fix lint/format issues automatically:

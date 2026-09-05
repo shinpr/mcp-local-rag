@@ -125,11 +125,12 @@ function sourceOffsetAt(mapped: MappedText, offset: number, fallback: number): n
 }
 
 function restoreCode(text: string, blocks: CodeBlockInfo[]): string {
-  let restored = text
-  for (const block of blocks) {
-    restored = restored.replace(block.placeholder, () => block.content)
-  }
-  return restored
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: NUL delimiters identify masked code placeholders.
+  const placeholderPattern = /(\u0000(?:CODE_BLOCK|INLINE_CODE)\u0000)(\d+)\1/g
+  return text.replace(placeholderPattern, (placeholder, _prefix, index: string) => {
+    const block = blocks[Number(index)]
+    return block?.placeholder === placeholder ? block.content : placeholder
+  })
 }
 
 function trimmedRange(text: string, start: number, end: number): [number, number] | null {

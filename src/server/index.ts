@@ -1,7 +1,7 @@
 // RAGServer implementation with MCP tools
 
 import { randomUUID } from 'node:crypto'
-import { readFile, stat, unlink } from 'node:fs/promises'
+import { readFile, stat, unlink, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { resolve, sep } from 'node:path'
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
@@ -582,6 +582,8 @@ export class RAGServer {
     options: { skipOptimize?: boolean; images?: boolean } = {}
   ): Promise<{ content: RagTextContentBlock[] }> {
     const result = await this.ingestFile(parseIngestFileInput(raw), options)
+    // Insertion has committed. Maintenance errors must not restore old rows.
+    if (options.skipOptimize !== true) await this.vectorStore.optimize()
     return {
       content: this.withWarnings([
         {
@@ -594,7 +596,7 @@ export class RAGServer {
 
   private async ingestFile(
     args: IngestFileInput,
-    options: { skipOptimize?: boolean; images?: boolean } = {}
+    options: { images?: boolean } = {}
   ): Promise<IngestResult> {
     const isRawData = await isPathInRawDataDir(args.filePath, this.dbPath)
     // Skip the configError gate only for paths structurally inside
@@ -607,8 +609,6 @@ export class RAGServer {
     // BaseDirsConfig for the path policy).
     const visualArg = args.visual
     const visualQuality = args.visualQuality ?? 'fast'
-
-    let backup: VectorChunk[] | null = null
 
     // No outer error-mapping catch: failures propagate with original identity
     // to the central dispatcher mapper. The inner insert/rollback try/catch
@@ -696,7 +696,7 @@ export class RAGServer {
     // before deleting; if the read fails it propagates here — leaving the
     // existing data untouched — rather than proceeding into the delete with
     // an empty/partial backup.
-    backup = await this.vectorStore.getChunksByFilePath(args.filePath)
+    const backup = await this.vectorStore.getChunksByFilePath(args.filePath)
     if (backup.length > 0) {
       console.error(`Backup created: ${backup.length} chunks for ${args.filePath}`)
     }
@@ -716,32 +716,23 @@ export class RAGServer {
     try {
       await this.vectorStore.insertChunks(chunksToInsert)
       console.error(`Inserted ${chunksToInsert.length} chunks for: ${args.filePath}`)
-
-      // Optimize once after both delete + insert (not per-operation), unless the
-      // caller compacts once for the whole batch.
-      if (options.skipOptimize !== true) {
-        await this.vectorStore.optimize()
-      }
-
-      // Delete backup on success
-      backup = null
     } catch (insertError) {
-      // Rollback on error
-      if (backup && backup.length > 0) {
-        console.error('Ingestion failed, rolling back...', insertError)
-        try {
+      console.error('Ingestion failed, rolling back...', insertError)
+      try {
+        // insertChunks can fail during setup after writing rows. Remove that
+        // version before restoring the backup, including failed first ingests.
+        await this.vectorStore.deleteChunks(args.filePath)
+        if (backup.length > 0) {
           await this.vectorStore.insertChunks(backup)
           await this.vectorStore.optimize()
-          console.error(`Rollback completed: ${backup.length} chunks restored`)
-        } catch (rollbackError) {
-          // Rollback also failed: throw a distinct error (cause = insertError)
-          // so the client learns the prior data may be lost, not just that the insert failed.
-          console.error('Rollback failed:', rollbackError)
-          throw new DatabaseError(
-            `Ingest failed and rollback failed for ${args.filePath}; existing data may not have been restored. Original insert error: ${(insertError as Error).message}`,
-            insertError as Error
-          )
         }
+        console.error(`Rollback completed: ${backup.length} chunks restored`)
+      } catch (rollbackError) {
+        console.error('Rollback failed:', rollbackError)
+        throw new DatabaseError(
+          `Ingest failed and rollback failed for ${args.filePath}; existing data may not have been restored. Original insert error: ${(insertError as Error).message}`,
+          insertError as Error
+        )
       }
       throw insertError
     }
@@ -803,32 +794,59 @@ export class RAGServer {
       title = result.source !== 'filename' ? result.title : null
     }
 
-    // Save content to raw-data directory
-    const rawDataPath = await saveRawData(this.dbPath, args.metadata.source, contentToSave)
+    const rawDataPath = generateRawDataPath(this.dbPath, args.metadata.source)
+    const artifactPaths = [rawDataPath, generateMetaJsonPath(rawDataPath)]
+    // Capture both artifacts before either write. Only ENOENT means creation;
+    // an unreadable existing source must fail before it can be overwritten.
+    const previousArtifacts = await Promise.all(
+      artifactPaths.map(async (path) => {
+        try {
+          return { path, content: await readFile(path) }
+        } catch (error) {
+          if (!isEnoent(error)) throw error
+          return { path, content: null }
+        }
+      })
+    )
 
-    // Save metadata sidecar (.meta.json) alongside the raw-data file
-    await saveMetaJson(rawDataPath, {
-      title,
-      source: args.metadata.source,
-      format: args.metadata.format,
-    })
-
-    console.error(`Saved raw data: ${args.metadata.source} -> ${rawDataPath}`)
-
-    // Call existing ingest_file internally with rollback on failure
+    let result: { content: RagTextContentBlock[] }
     try {
-      return await this.handleIngestFile({ filePath: rawDataPath })
+      await saveRawData(this.dbPath, args.metadata.source, contentToSave)
+      await saveMetaJson(rawDataPath, {
+        title,
+        source: args.metadata.source,
+        format: args.metadata.format,
+      })
+      console.error(`Saved raw data: ${args.metadata.source} -> ${rawDataPath}`)
+      result = await this.handleIngestFile({ filePath: rawDataPath }, { skipOptimize: true })
     } catch (ingestError) {
-      // Rollback: delete the raw-data file and .meta.json if ingest fails
-      try {
-        await unlink(rawDataPath)
-        await unlink(generateMetaJsonPath(rawDataPath))
-        console.error(`Rolled back raw-data file: ${rawDataPath}`)
-      } catch {
+      const restored = await Promise.allSettled(
+        previousArtifacts.map(async ({ path, content }) => {
+          if (content !== null) {
+            await writeFile(path, content)
+          } else {
+            try {
+              await unlink(path)
+            } catch (error) {
+              if (!isEnoent(error)) throw error
+            }
+          }
+        })
+      )
+      if (restored.some((outcome) => outcome.status === 'rejected')) {
         console.warn(`Failed to rollback raw-data file: ${rawDataPath}`)
+        throw new DatabaseError(
+          `Ingest failed and raw-data rollback failed for ${rawDataPath}; original artifacts may not have been restored.`,
+          ingestError as Error
+        )
       }
+      console.error(`Rolled back raw-data file: ${rawDataPath}`)
       throw ingestError
     }
+    // Both artifacts and index now describe the replacement. A maintenance
+    // failure remains visible to the caller without undoing committed content.
+    await this.vectorStore.optimize()
+    return result
   }
 
   /**
@@ -1237,7 +1255,7 @@ export class RAGServer {
    */
   private async ingestFileForSync(filePath: string, images: boolean): Promise<number> {
     try {
-      const result = await this.ingestFile({ filePath }, { skipOptimize: true, images })
+      const result = await this.ingestFile({ filePath }, { images })
       return result.chunkCount
     } catch (error) {
       if (error instanceof NoChunksError) return 0

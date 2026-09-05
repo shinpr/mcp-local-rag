@@ -2,7 +2,7 @@
 import { resolveDevice, resolveDtype } from './cli/options.js'
 import { RAGServer } from './server/index.js'
 import { BaseDirsConfigError, parseBaseDirsEnv, resolveBaseDirs } from './utils/base-dirs.js'
-import { DEFAULT_MAX_FILE_SIZE, MAX_CHUNK_MIN_LENGTH } from './utils/limits.js'
+import { DEFAULT_MAX_FILE_SIZE, MAX_CHUNK_MIN_LENGTH, MAX_FILE_SIZE_LIMIT } from './utils/limits.js'
 import { checkSensitivePath } from './utils/sensitive-path.js'
 import type { GroupingMode } from './vectordb/index.js'
 
@@ -177,13 +177,22 @@ export async function resolveServerConfig(
     configWarnings.push(baseDirsResult.error.message)
   }
 
+  const sizeValue = env['MAX_FILE_SIZE']
+  let maxFileSize = sizeValue ? Number(sizeValue) : DEFAULT_MAX_FILE_SIZE
+  if (!Number.isInteger(maxFileSize) || maxFileSize < 1 || maxFileSize > MAX_FILE_SIZE_LIMIT) {
+    configWarnings.push(
+      `Invalid MAX_FILE_SIZE value: "${sizeValue?.slice(0, 100)}". Expected integer between 1 and ${MAX_FILE_SIZE_LIMIT}. Using default (${DEFAULT_MAX_FILE_SIZE}).`
+    )
+    maxFileSize = DEFAULT_MAX_FILE_SIZE
+  }
+
   const config: ConstructorParameters<typeof RAGServer>[0] = {
     dbPath: env['DB_PATH'] || './lancedb/',
     modelName: env['MODEL_NAME'] || 'Xenova/all-MiniLM-L6-v2',
     cacheDir: env['CACHE_DIR'] || './models/',
     baseDirs: baseDirsForServer,
     rawBaseDirs: rawBaseDirsForServer,
-    maxFileSize: Number.parseInt(env['MAX_FILE_SIZE'] || String(DEFAULT_MAX_FILE_SIZE), 10),
+    maxFileSize,
     device,
     storeImages: false,
   }

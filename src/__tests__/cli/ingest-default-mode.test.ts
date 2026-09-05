@@ -22,7 +22,7 @@ beforeAll(async () => {
     visualBarrelLoaded = true
     return {
       detectVisualRegions: () => [],
-      createCaptioner: () => ({ caption: vi.fn() }),
+      createCaptioner: () => ({ caption: vi.fn(), dispose: vi.fn().mockResolvedValue(undefined) }),
       processVisualRegions: async () => [],
     }
   })

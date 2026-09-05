@@ -297,7 +297,7 @@ describe('ingest_file — contentHash is read before the parse', () => {
     }
   })
 
-  it('reads the raw-data file exactly once when ingesting data', async () => {
+  it('reads new raw-data bytes once after checking for a previous source', async () => {
     const fixture = makeFixture('ingest-data-single-read')
     const server = await makeServer(fixture)
     try {
@@ -307,13 +307,15 @@ describe('ingest_file — contentHash is read before the parse', () => {
       })
       expect(result.isError).toBeUndefined()
 
-      // `ingest_data` already holds the bytes it just wrote, so the pre-parse hash
-      // must reuse them rather than adding a read of its own.
+      // One ENOENT read checks for the prior artifact needed for rollback;
+      // the successful read supplies both chunking and the content hash.
+      // Hashing must not add a third read of the newly written source.
       const rawDataDir = join(fixture.dbPath, 'raw-data')
       const rawDataReads = readPaths.filter(
         (path) => path.startsWith(rawDataDir) && path.endsWith('.md')
       )
-      expect(rawDataReads).toHaveLength(1)
+      expect(rawDataReads).toHaveLength(2)
+      expect(await storedHashes(fixture)).toEqual([sha256(CONTENT_BEFORE)])
     } finally {
       await server.close()
     }

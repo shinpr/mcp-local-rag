@@ -80,7 +80,8 @@ const mocks = vi.hoisted(() => {
     }
   })
 
-  const mockModelInstance = { generate: mockGenerate }
+  const mockDispose = vi.fn(async () => {})
+  const mockModelInstance = { dispose: mockDispose, generate: mockGenerate }
 
   // RawImage.fromBlob resolves to an object with a `.resize()` method; the
   // production code chains `.resize(448, 448)` and we assert on the args.
@@ -98,6 +99,7 @@ const mocks = vi.hoisted(() => {
 
   return {
     state,
+    mockDispose,
     env,
     AutoProcessor: { from_pretrained: mockProcessorFromPretrained },
     // The captioner-fast spec also imports `AutoModelForImageTextToText` from
@@ -155,6 +157,7 @@ describe('createCaptioner — quality profile dispatch (Qwen2.5-VL-3B-Instruct-O
   })
 
   beforeEach(() => {
+    mocks.mockDispose.mockClear()
     mocks.state.decodedText = 'a valid quality caption'
     mocks.state.fromPretrainedThrows = null
     mocks.state.generateThrows = null
@@ -167,6 +170,33 @@ describe('createCaptioner — quality profile dispatch (Qwen2.5-VL-3B-Instruct-O
     mocks.mockResize.mockClear()
     mocks.mockProcessorInstance.mockClear()
     mocks.env.cacheDir = ''
+  })
+
+  it.each([false, true])(
+    'releases the acquired model after generation failure=%s',
+    async (fail) => {
+      const captioner = createCaptioner({
+        profile: 'quality',
+        cacheDir: './tmp/models',
+        device: 'cpu',
+      })
+      if (fail) mocks.state.generateThrows = new Error('Generation failed')
+      if (fail) await expect(captioner.caption(new Uint8Array([1]), 1)).rejects.toThrow()
+      else await captioner.caption(new Uint8Array([1]), 1)
+      await captioner.dispose()
+      await captioner.dispose()
+      expect(mocks.mockDispose).toHaveBeenCalledTimes(1)
+    }
+  )
+
+  it('does not load a model when disposed before captioning', async () => {
+    const captioner = createCaptioner({
+      profile: 'quality',
+      cacheDir: './tmp/models',
+      device: 'cpu',
+    })
+    await captioner.dispose()
+    expect(mocks.mockDispose).not.toHaveBeenCalled()
   })
 
   it('forwards the quality-profile Qwen model identifier to both from_pretrained calls', async () => {

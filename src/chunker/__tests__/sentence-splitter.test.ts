@@ -323,3 +323,14 @@ describe('splitIntoSentenceUnits', () => {
     expect(() => splitIntoSentenceUnits('valid text', ranges)).toThrow(/atomic range/i)
   })
 })
+
+it('preserves code and source offsets across many placeholders', () => {
+  const lines = Array.from({ length: 64 }, (_, i) => `Use \`symbol_${i}\` with \`$&\` and \`$$\`.`)
+  lines.splice(32, 0, '```js\nconst value = "$`";\n```')
+  const source = lines.join('\n')
+  const units = splitIntoSentenceUnits(source)
+  expect(units.map((unit) => unit.text)).toEqual(lines)
+  for (const unit of units) {
+    expect(source.slice(unit.sourceStart, unit.sourceEnd)).toBe(unit.text)
+  }
+})

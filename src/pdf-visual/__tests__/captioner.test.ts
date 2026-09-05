@@ -91,9 +91,8 @@ const mocks = vi.hoisted(() => {
     }
   )
 
-  const mockModelInstance = {
-    generate: mockGenerate,
-  }
+  const mockDispose = vi.fn(async () => {})
+  const mockModelInstance = { dispose: mockDispose, generate: mockGenerate }
 
   const mockFromBlob = vi.fn((_blob: Blob) => {
     if (state.fromBlobThrows) throw state.fromBlobThrows
@@ -104,6 +103,7 @@ const mocks = vi.hoisted(() => {
 
   return {
     state,
+    mockDispose,
     env,
     AutoProcessor: { from_pretrained: mockProcessorFromPretrained },
     AutoModelForImageTextToText: { from_pretrained: mockModelFromPretrained },
@@ -162,6 +162,7 @@ describe('createCaptioner — fast profile dispatch (CaptionerConfig flow)', () 
   })
 
   beforeEach(() => {
+    mocks.mockDispose.mockClear()
     // Reset mock state between tests.
     mocks.state.decodedText = 'a valid caption'
     mocks.state.fromPretrainedThrows = null
@@ -175,6 +176,43 @@ describe('createCaptioner — fast profile dispatch (CaptionerConfig flow)', () 
   })
 
   // ----- fast profile resolves its own model identifier -----
+
+  it.each([false, true])(
+    'releases the acquired model after generation failure=%s',
+    async (fail) => {
+      const captioner = createCaptioner({
+        profile: 'fast',
+        cacheDir: './tmp/models',
+        device: 'cpu',
+      })
+      if (fail) mocks.state.generateThrows = new Error('Generation failed')
+      if (fail) await expect(captioner.caption(new Uint8Array([1]), 1)).rejects.toThrow()
+      else await captioner.caption(new Uint8Array([1]), 1)
+      await captioner.dispose()
+      await captioner.dispose()
+      expect(mocks.mockDispose).toHaveBeenCalledTimes(1)
+    }
+  )
+
+  it('reports disposal failure without failing otherwise successful ingestion', async () => {
+    const captioner = createCaptioner(BASE_CONFIG)
+    await captioner.caption(new Uint8Array([1]), 1)
+    const failure = new Error('Session release failed')
+    mocks.mockDispose.mockRejectedValueOnce(failure)
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      await expect(captioner.dispose()).resolves.toBeUndefined()
+      expect(log).toHaveBeenCalledWith('Error disposing captioner model:', failure)
+    } finally {
+      log.mockRestore()
+    }
+  })
+
+  it('does not load a model when disposed before captioning', async () => {
+    const captioner = createCaptioner({ profile: 'fast', cacheDir: './tmp/models', device: 'cpu' })
+    await captioner.dispose()
+    expect(mocks.mockDispose).not.toHaveBeenCalled()
+  })
 
   it('forwards the fast-profile model identifier as the first argument to from_pretrained', async () => {
     // Arrange: model identifier is owned by `captioners/fast.ts`, not the

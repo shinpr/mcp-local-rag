@@ -7,6 +7,10 @@ on:
     branches: [ main, develop ]
 
 env:
+  # CI uses bundled CPU binaries and WebGPU, not CUDA. Both flags are needed
+  # because dependencies include older and newer onnxruntime-node installers.
+  ONNXRUNTIME_NODE_INSTALL: skip
+  ONNXRUNTIME_NODE_INSTALL_CUDA: skip
   # Pinned revision of Xenova/all-MiniLM-L6-v2. Bump together with any model
   # change; the model cache key includes it, so bumping invalidates the cache.
   HF_MODEL_REVISION: 751bff37182d3f1213fa05d7196b954e230abad9
@@ -42,6 +46,17 @@ jobs:
 
     - name: Type check
       run: pnpm run build
+
+    - name: Test type check
+      run: pnpm run type-check:test
+
+    - name: Unused exports
+      if: runner.os == 'Linux'
+      run: pnpm run check:unused
+
+    - name: Circular dependencies
+      if: runner.os == 'Linux'
+      run: pnpm run check:deps
 
   # Single owner of the external (HuggingFace) dependency. Downloads the model
   # files once and publishes them via the GitHub Actions cache, so the test
@@ -215,10 +230,6 @@ jobs:
       run: pnpm run build
 
     - name: Smoke-test the published package in isolation
-      # The CPU native binary is bundled; skip onnxruntime-node's postinstall,
-      # which otherwise downloads CUDA EP binaries from NuGet (flaky on CI).
-      env:
-        ONNXRUNTIME_NODE_INSTALL: skip
       run: |
         pnpm pack --pack-destination "${RUNNER_TEMP}"
         SMOKE_DIR="$(mktemp -d)"

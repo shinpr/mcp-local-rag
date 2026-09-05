@@ -2,7 +2,7 @@
 // Handles: base64url encoding, source normalization, file saving, source extraction
 
 import { access, mkdir, readFile, realpath, writeFile } from 'node:fs/promises'
-import { basename, dirname, join, resolve, sep } from 'node:path'
+import { basename, dirname, join, posix, resolve, sep } from 'node:path'
 
 // ============================================
 // Base64URL Encoding/Decoding
@@ -201,7 +201,7 @@ export function extractSourceFromPath(filePath: string): string | null {
     return null
   }
 
-  const fileName = filePath.slice(rawDataIndex + rawDataMarker.length)
+  const fileName = posix.basename(normalized)
   const dotIndex = fileName.lastIndexOf('.')
 
   if (dotIndex === -1) {

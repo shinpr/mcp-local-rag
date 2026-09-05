@@ -5,6 +5,7 @@ import {
   parseHybridWeight,
   parseMaxDistance,
   parseMaxFiles,
+  resolveServerConfig,
 } from '../../server-main.js'
 
 // ============================================
@@ -175,5 +176,22 @@ describe('parseChunkMinLength', () => {
   it('truncates float input to integer via parseInt', () => {
     // parseInt('50.5') returns 50, which is valid — consistent with parseMaxFiles behavior
     expect(parseChunkMinLength('50.5')).toEqual({ value: 50 })
+  })
+})
+
+describe('MAX_FILE_SIZE configuration', () => {
+  it.each(['invalid', '0', '-1', '524288001', 'Infinity', '12oops', '1.5'])(
+    'warns and retains the default for %s',
+    async (value) => {
+      const config = await resolveServerConfig({ MAX_FILE_SIZE: value }, process.cwd())
+      expect(config.maxFileSize).toBe(104_857_600)
+      expect(config.configWarnings?.join('\n')).toContain('Invalid MAX_FILE_SIZE')
+    }
+  )
+
+  it.each(['1', '524288000'])('accepts valid size %s', async (value) => {
+    const config = await resolveServerConfig({ MAX_FILE_SIZE: value }, process.cwd())
+    expect(config.maxFileSize).toBe(Number(value))
+    expect(config.configWarnings?.join('\n') ?? '').not.toContain('Invalid MAX_FILE_SIZE')
   })
 })
