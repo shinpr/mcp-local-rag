@@ -67,6 +67,7 @@ const mocks = vi.hoisted(() => {
 
     // ---------------- doc.destroy spy ----------------
     destroy: vi.fn(),
+    dispose: vi.fn().mockResolvedValue(undefined),
   }
 })
 
@@ -180,6 +181,7 @@ const pdfVisualFactory = () => ({
   },
   createCaptioner: () => ({
     caption: async () => 'synthetic caption text',
+    dispose: mocks.dispose,
   }),
 })
 
@@ -449,6 +451,14 @@ describe('VLM PDF Enrichment - Visual Mode', () => {
   // @lane: integration
   // @dependency: ingestSingleFile, parser (parsePdfPages mocked), chunker, embedder, vectorStore (mocked), pdf-visual (real-shaped mock)
   // @complexity: medium
+  it.each([false, true])('releases the captioner when chunking fails=%s', async (fail) => {
+    mocks.stat.mockResolvedValue(mockFileStat())
+    if (fail) mocks.chunkText.mockRejectedValueOnce(new Error('Chunking failed'))
+    await captureRun(() => runIngest(['--visual', resolve('/tmp/test/lifecycle.pdf')]))
+    expect(mocks.dispose).toHaveBeenCalledTimes(1)
+    expect(mocks.destroy).toHaveBeenCalledTimes(1)
+  })
+
   it('AC-002: visual mode enriches page 2 with caption substring', async () => {
     // Arrange: 3-page PDF, page 2 is the only candidate (default state).
     const filePath = resolve('/tmp/test/ac002.pdf')

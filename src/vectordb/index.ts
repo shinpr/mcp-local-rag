@@ -48,6 +48,7 @@ export type {
 export class VectorStore {
   private db: Connection | null = null
   private table: Table | null = null
+  private openingTable: Promise<void> | null = null
   private readonly config: VectorStoreConfig
   private ftsEnabled = false
 
@@ -67,28 +68,35 @@ export class VectorStore {
       // causing "Failed to search vectors" errors until restart.
       this.db = await connect(this.config.dbPath, { readConsistencyInterval: 0 })
 
-      // Check table existence and create if needed
-      const tableNames = await this.db.tableNames()
-      if (tableNames.includes(this.config.tableName)) {
-        // Open existing table
-        this.table = await this.db.openTable(this.config.tableName)
-        console.error(`VectorStore: Opened existing table "${this.config.tableName}"`)
-
-        // Ensure FTS index exists (migration for existing databases)
-        await this.ensureFtsIndex()
-
-        // Ensure schema is up to date (add new columns for existing tables)
-        await this.ensureSchemaVersion()
-      } else {
-        // Create new table (schema auto-defined on first data insertion)
-        console.error(
-          `VectorStore: Table "${this.config.tableName}" will be created on first data insertion`
-        )
-      }
+      await this.openExistingTable()
 
       console.error(`VectorStore initialized: ${this.config.dbPath}`)
     } catch (error) {
       throw new DatabaseError('Failed to initialize VectorStore', error as Error)
+    }
+  }
+
+  /** Discover a table created after this connection was initialized. */
+  private async openExistingTable(): Promise<void> {
+    if (this.openingTable) return this.openingTable
+    if (this.table || !this.db) return
+    const db = this.db
+    this.openingTable = (async () => {
+      try {
+        if (!(await db.tableNames()).includes(this.config.tableName)) return
+        this.table = await db.openTable(this.config.tableName)
+        await this.ensureFtsIndex()
+        await this.ensureSchemaVersion()
+      } catch (error) {
+        this.table = null
+        this.ftsEnabled = false
+        throw new DatabaseError('Failed to open existing table', error as Error)
+      }
+    })()
+    try {
+      await this.openingTable
+    } finally {
+      this.openingTable = null
     }
   }
 
@@ -99,6 +107,7 @@ export class VectorStore {
    * @returns Number of chunks removed (0 when nothing matched)
    */
   async deleteChunks(filePath: string): Promise<number> {
+    await this.openExistingTable()
     if (!this.table) {
       // If table doesn't exist, no deletion targets, return normally
       console.error('VectorStore: Skipping deletion as table does not exist')
@@ -147,6 +156,7 @@ export class VectorStore {
    * @returns Array of chunk rows sorted ascending by chunkIndex
    */
   async getChunksByRange(filePath: string, minIdx: number, maxIdx: number): Promise<ChunkRow[]> {
+    await this.openExistingTable()
     if (!this.table) {
       console.error('VectorStore: Skipping range read as table does not exist')
       return []
@@ -164,7 +174,11 @@ export class VectorStore {
       // Backtick-quoted camelCase columns; numeric literals unquoted
       const predicate = `\`filePath\` = '${escapedFilePath}' AND \`chunkIndex\` >= ${minIdx} AND \`chunkIndex\` <= ${maxIdx}`
 
-      const raw = await this.table.query().where(predicate).toArray()
+      const raw = await this.table
+        .query()
+        .where(predicate)
+        .select(['filePath', 'chunkIndex', 'text', 'fileTitle'])
+        .toArray()
       const rows = raw.map((row) => toChunkRow(row))
       // Contractual ascending sort; do not rely on storage order.
       rows.sort((a, b) => a.chunkIndex - b.chunkIndex)
@@ -186,6 +200,7 @@ export class VectorStore {
    * @param filePath - File path (absolute)
    */
   async getChunksByFilePath(filePath: string): Promise<VectorChunk[]> {
+    await this.openExistingTable()
     if (!this.table) {
       return []
     }
@@ -210,6 +225,7 @@ export class VectorStore {
     }
 
     try {
+      await this.openExistingTable()
       if (!this.table) {
         // Create table on first insertion
         if (!this.db) {
@@ -337,6 +353,7 @@ export class VectorStore {
    * during bulk operations.
    */
   async optimize(): Promise<void> {
+    await this.openExistingTable()
     if (!this.table || !this.ftsEnabled) {
       return
     }
@@ -360,6 +377,7 @@ export class VectorStore {
    */
   async search(queryVector: number[], options: SearchOptions = {}): Promise<SearchResult[]> {
     const { queryText, limit = 10, scope } = options
+    await this.openExistingTable()
     if (!this.table) {
       console.error('VectorStore: Returning empty results as table does not exist')
       return []
@@ -478,6 +496,7 @@ export class VectorStore {
       }
     }
 
+    await this.openExistingTable()
     if (!this.table || ids.length === 0) {
       return {
         rows: ids.map((id) => ({ id, attachments: [] })),
@@ -567,6 +586,7 @@ export class VectorStore {
       contentHash: string | null
     }[]
   > {
+    await this.openExistingTable()
     if (!this.table) {
       return []
     }
@@ -601,6 +621,7 @@ export class VectorStore {
    * @returns Array of file information
    */
   async listFiles(): Promise<{ filePath: string; chunkCount: number; timestamp: string }[]> {
+    await this.openExistingTable()
     if (!this.table) {
       return [] // Return empty array if table doesn't exist
     }
@@ -660,6 +681,7 @@ export class VectorStore {
     ftsIndexEnabled: boolean
     searchMode: 'hybrid' | 'vector-only'
   }> {
+    await this.openExistingTable()
     if (!this.table) {
       return {
         documentCount: 0,

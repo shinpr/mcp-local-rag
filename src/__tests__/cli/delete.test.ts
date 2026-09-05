@@ -125,6 +125,14 @@ describe('CLI delete', () => {
     process.exitCode = undefined
   })
 
+  it('rejects multiple paths before opening storage', async () => {
+    const { output, error } = await captureStderr(() => runDelete(['a.md', 'b.md']))
+    expect((error as Error).message).toBe('process.exit(1)')
+    expect(output.join('\n')).toContain('Unexpected argument: b.md')
+    expect(mocks.initialize).not.toHaveBeenCalled()
+    expect(mocks.deleteChunks).not.toHaveBeenCalled()
+  })
+
   // --------------------------------------------
   // --help shows usage and exits with code 0
   // --------------------------------------------

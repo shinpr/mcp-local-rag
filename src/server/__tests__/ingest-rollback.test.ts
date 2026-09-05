@@ -2,11 +2,12 @@
 // Test Type: Unit Test (spy-based, compatible with isolate: false)
 // Tests rollback behavior when insertChunks fails during re-ingestion
 
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { testModelCacheDir, withTestDevice } from '../../__tests__/test-device.js'
-import type { VectorChunk } from '../../vectordb/index.js'
+import * as rawDataUtils from '../../utils/raw-data-utils.js'
+import type { VectorChunk, VectorStore } from '../../vectordb/index.js'
 import { DatabaseError } from '../../vectordb/types.js'
 import { RAGServer } from '../index.js'
 
@@ -37,6 +38,127 @@ describe('Ingest Rollback', () => {
     await ragServer.close()
     rmSync(testDbPath, { recursive: true, force: true })
     rmSync(testDataDir, { recursive: true, force: true })
+  })
+
+  it.each([false, true])(
+    'removes partially inserted rows before restoring existing=%s',
+    async (existing) => {
+      const filePath = resolve(testDataDir, `partial-insert-${existing}.txt`)
+      const store = (ragServer as unknown as { vectorStore: VectorStore }).vectorStore
+      if (existing) {
+        writeFileSync(filePath, 'Prior material for partial insert. '.repeat(20))
+        await ragServer.handleIngestFile({ filePath })
+      }
+      const originalRows = await store.getChunksByFilePath(filePath)
+      const insert = store.insertChunks.bind(store)
+      const spy = vi.spyOn(store, 'insertChunks').mockImplementationOnce(async (rows) => {
+        await insert(rows)
+        throw new Error('Post-insert setup failed')
+      })
+      try {
+        writeFileSync(filePath, 'Replacement material for partial insert. '.repeat(20))
+        await expect(ragServer.handleIngestFile({ filePath })).rejects.toThrow(
+          'Post-insert setup failed'
+        )
+        expect(await store.getChunksByFilePath(filePath)).toEqual(originalRows)
+      } finally {
+        spy.mockRestore()
+      }
+    }
+  )
+
+  it('keeps only committed replacement rows when optimization fails', async () => {
+    const filePath = resolve(testDataDir, 'post-commit.txt')
+    writeFileSync(filePath, 'Original material for optimization test. '.repeat(20))
+    await ragServer.handleIngestFile({ filePath })
+    const store = (ragServer as unknown as { vectorStore: VectorStore }).vectorStore
+    const optimize = vi
+      .spyOn(store, 'optimize')
+      .mockRejectedValueOnce(new Error('Optimization failed'))
+    try {
+      writeFileSync(filePath, 'Replacement material for optimization test. '.repeat(20))
+      await expect(ragServer.handleIngestFile({ filePath })).rejects.toThrow('Optimization failed')
+      const rows = await store.getChunksByFilePath(filePath)
+      expect(rows.length).toBeGreaterThan(0)
+      expect(rows.every((row) => row.text.includes('Replacement material'))).toBe(true)
+      expect(new Set(rows.map((row) => row.chunkIndex)).size).toBe(rows.length)
+    } finally {
+      optimize.mockRestore()
+    }
+  })
+
+  it.each(['empty', 'insert', 'sidecar', 'optimize'] as const)(
+    'preserves coherent source artifacts and rows after a replacement %s failure',
+    async (failure) => {
+      const source = `audit-replacement-${failure}`
+      const metadata = { source, format: 'markdown' as const }
+      const original = `# Original title\n\n${'Original content for source preservation. '.repeat(15)}`
+      const replacement = `# Replacement title\n\n${'Replacement content for source preservation. '.repeat(15)}`
+      await ragServer.handleIngestData({ content: original, metadata })
+      const filePath = rawDataUtils.generateRawDataPath(testDbPath, source)
+      const metaPath = rawDataUtils.generateMetaJsonPath(filePath)
+      const originalMeta = readFileSync(metaPath, 'utf8')
+      const store = (ragServer as unknown as { vectorStore: VectorStore }).vectorStore
+      const originalRows = await store.getChunksByFilePath(filePath)
+      const saveMeta = rawDataUtils.saveMetaJson
+      const spy =
+        failure === 'insert'
+          ? vi.spyOn(store, 'insertChunks').mockRejectedValueOnce(new Error('Insert failed'))
+          : failure === 'optimize'
+            ? vi.spyOn(store, 'optimize').mockRejectedValueOnce(new Error('Optimization failed'))
+            : failure === 'sidecar'
+              ? vi.spyOn(rawDataUtils, 'saveMetaJson').mockImplementationOnce(async (...args) => {
+                  await saveMeta(...args)
+                  throw new Error('Sidecar write failed')
+                })
+              : undefined
+      try {
+        await expect(
+          ragServer.handleIngestData({
+            content: failure === 'empty' ? '   ' : replacement,
+            metadata,
+          })
+        ).rejects.toThrow()
+        const rows = await store.getChunksByFilePath(filePath)
+        if (failure === 'optimize') {
+          expect(readFileSync(filePath, 'utf8')).toBe(replacement)
+          expect(JSON.parse(readFileSync(metaPath, 'utf8')).title).toBe('Replacement title')
+          expect(rows.length).toBeGreaterThan(0)
+          expect(rows.every((row) => row.text.includes('Replacement'))).toBe(true)
+          expect(new Set(rows.map((row) => row.chunkIndex)).size).toBe(rows.length)
+        } else {
+          expect(readFileSync(filePath, 'utf8')).toBe(original)
+          expect(readFileSync(metaPath, 'utf8')).toBe(originalMeta)
+          expect(rows).toEqual(originalRows)
+        }
+      } finally {
+        spy?.mockRestore()
+      }
+    }
+  )
+
+  it('removes both newly created artifacts if sidecar saving fails', async () => {
+    const source = 'audit-first-sidecar-failure'
+    const filePath = rawDataUtils.generateRawDataPath(testDbPath, source)
+    const saveMeta = rawDataUtils.saveMetaJson
+    const spy = vi.spyOn(rawDataUtils, 'saveMetaJson').mockImplementationOnce(async (...args) => {
+      await saveMeta(...args)
+      throw new Error('Sidecar write failed')
+    })
+    try {
+      await expect(
+        ragServer.handleIngestData({
+          content: 'New source content. '.repeat(20),
+          metadata: { source, format: 'text' },
+        })
+      ).rejects.toThrow('Sidecar write failed')
+      expect(existsSync(filePath)).toBe(false)
+      expect(existsSync(rawDataUtils.generateMetaJsonPath(filePath))).toBe(false)
+      const store = (ragServer as unknown as { vectorStore: VectorStore }).vectorStore
+      expect(await store.getChunksByFilePath(filePath)).toEqual([])
+    } finally {
+      spy.mockRestore()
+    }
   })
 
   // Rollback-restores-original is verified observably below ('restores the full

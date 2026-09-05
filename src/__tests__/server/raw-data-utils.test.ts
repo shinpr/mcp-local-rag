@@ -316,3 +316,14 @@ describe('Raw Data Utilities', () => {
     })
   })
 })
+
+it.each(['/', '\\'])(
+  'decodes sources with a raw-data ancestor using %s separators',
+  (separator) => {
+    const source = 'https://example.com/manual'
+    const path = generateRawDataPath(resolve('tmp/raw-data/index'), source)
+      .replaceAll('\\', '/')
+      .replaceAll('/', separator)
+    expect(extractSourceFromPath(path)).toBe(source)
+  }
+)

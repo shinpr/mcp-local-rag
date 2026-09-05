@@ -85,6 +85,61 @@ describe('VectorStore', () => {
     }
   }
 
+  it.each(['status', 'search', 'files', 'hashes', 'range', 'backup', 'delete', 'insert'] as const)(
+    'discovers an externally created table on the first %s operation',
+    async (operation) => {
+      const reader = new VectorStore({ dbPath: testDbPath, tableName: 'chunks' })
+      const writer = new VectorStore({ dbPath: testDbPath, tableName: 'chunks' })
+      try {
+        await reader.initialize()
+        await writer.initialize()
+        const chunk = createTestChunk(
+          'External document body',
+          '/docs/external.md',
+          0,
+          createNormalizedVector(1)
+        )
+        await writer.insertChunks([chunk])
+        switch (operation) {
+          case 'status':
+            expect((await reader.getStatus()).chunkCount).toBe(1)
+            break
+          case 'search':
+            expect(await reader.search(chunk.vector)).toHaveLength(1)
+            break
+          case 'files':
+            expect(await reader.listFiles()).toHaveLength(1)
+            break
+          case 'hashes':
+            expect(await reader.listChunkHashes()).toHaveLength(1)
+            break
+          case 'range':
+            expect(await reader.getChunksByRange(chunk.filePath, 0, 0)).toHaveLength(1)
+            break
+          case 'backup':
+            expect(await reader.getChunksByFilePath(chunk.filePath)).toHaveLength(1)
+            break
+          case 'delete':
+            expect(await reader.deleteChunks(chunk.filePath)).toBe(1)
+            break
+          case 'insert': {
+            await reader.insertChunks([
+              createTestChunk('Next body', '/docs/next.md', 0, chunk.vector),
+            ])
+            expect((await writer.getStatus()).chunkCount).toBe(2)
+          }
+        }
+        await writer.insertChunks([
+          createTestChunk('Later body', '/docs/later.md', 0, chunk.vector),
+        ])
+        expect(await reader.getChunksByRange('/docs/later.md', 0, 0)).toHaveLength(1)
+      } finally {
+        await reader.close()
+        await writer.close()
+      }
+    }
+  )
+
   describe('deleteChunks behavior', () => {
     it('removes all chunks for the given file path', async () => {
       const store = new VectorStore({ dbPath: testDbPath, tableName: 'chunks' })
@@ -2315,6 +2370,59 @@ describe('visualAttachments schema and hydration', () => {
       timestamp: new Date().toISOString(),
     }
   }
+
+  it('discovers attachments after external table creation and keeps range reads narrow', async () => {
+    const dbPath = './tmp/test-vectordb-external-attachments'
+    fs.rmSync(dbPath, { recursive: true, force: true })
+    const reader = new VectorStore({ dbPath, tableName: 'chunks' })
+    const writer = new VectorStore({ dbPath, tableName: 'chunks' })
+    const attachment = { imageIndex: 0, mimeType: 'image/png', data: png }
+    const row = chunk('/external.pdf', JSON.stringify([attachment]))
+    try {
+      await reader.initialize()
+      await writer.initialize()
+      await writer.insertChunks([row])
+      expect(await reader.hydrateVisualAttachments([{ id: row.id }])).toMatchObject({
+        rows: [{ id: row.id, attachments: [attachment] }],
+        omittedCount: 0,
+      })
+      expect(await reader.getChunksByRange(row.filePath, 0, 0)).toEqual([
+        { filePath: row.filePath, chunkIndex: 0, text: row.text, fileTitle: null },
+      ])
+      const backup = await reader.getChunksByFilePath(row.filePath)
+      expect(backup[0]?.visualAttachments).toBe(row.visualAttachments)
+      expect(backup[0]?.vector).toEqual(row.vector)
+    } finally {
+      await reader.close()
+      await writer.close()
+      fs.rmSync(dbPath, { recursive: true, force: true })
+    }
+  })
+
+  it('finishes opening a newly discovered legacy table before concurrent reads', async () => {
+    const dbPath = './tmp/test-vectordb-concurrent-discovery'
+    fs.rmSync(dbPath, { recursive: true, force: true })
+    const reader = new VectorStore({ dbPath, tableName: 'chunks' })
+    const { connect } = await import('@lancedb/lancedb')
+    const writer = await connect(dbPath)
+    try {
+      await reader.initialize()
+      const { fileTitle: _title, visualAttachments: _images, ...legacy } = chunk('/legacy.pdf')
+      await writer.createTable('chunks', [legacy])
+      const [hashes, range, images] = await Promise.all([
+        reader.listChunkHashes(),
+        reader.getChunksByRange(legacy.filePath, 0, 0),
+        reader.hydrateVisualAttachments([{ id: legacy.id }]),
+      ])
+      expect(hashes).toEqual([{ filePath: legacy.filePath, contentHash: null }])
+      expect(range).toHaveLength(1)
+      expect(images.rows).toEqual([{ id: legacy.id, attachments: [] }])
+    } finally {
+      await reader.close()
+      await writer.close()
+      fs.rmSync(dbPath, { recursive: true, force: true })
+    }
+  })
 
   it('adds the missing column once and treats a legacy row as having no images', async () => {
     const dbPath = './tmp/test-vectordb-visual-migration'

@@ -845,3 +845,44 @@ describe('pdf-filter', () => {
     })
   })
 })
+
+it('preserves unmatched and relocated boundaries, including an outlier inside the sample', async () => {
+  const pages: PageData[] = Array.from({ length: 7 }, (_, i) => ({
+    pageNum: i + 1,
+    items: [
+      {
+        text:
+          i === 0 ? 'Unique cover title.' : i === 3 ? 'Unique section title.' : 'Repeated header.',
+        x: 0,
+        y: i === 6 ? 600 : 800,
+        fontSize: 12,
+        hasEOL: true,
+      },
+      { text: `Body ${i}.`, x: 0, y: 400, fontSize: 12, hasEOL: true },
+      {
+        text:
+          i === 0
+            ? 'Unique cover ending.'
+            : i === 3
+              ? 'Unique section ending.'
+              : 'Repeated footer.',
+        x: 0,
+        y: i === 6 ? 100 : 20,
+        fontSize: 12,
+        hasEOL: true,
+      },
+    ],
+  }))
+  const embedder: EmbedderInterface = {
+    embedBatch: vi.fn(async (texts: string[]) => texts.map(() => [1, 0])),
+  }
+  const result = await filterPageBoundarySentences(pages, embedder)
+  expect(result[0]).toContain('Unique cover title.')
+  expect(result[0]).toContain('Unique cover ending.')
+  expect(result[3]).toContain('Unique section title.')
+  expect(result[3]).toContain('Unique section ending.')
+  expect(result[6]).toContain('Repeated header.')
+  expect(result[6]).toContain('Repeated footer.')
+  expect(result[1]).toBe('Body 1.')
+  expect(embedder.embedBatch).toHaveBeenCalledTimes(2)
+})

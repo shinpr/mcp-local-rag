@@ -300,11 +300,15 @@ export async function prepareVisualPdfChunks(
         doc as Parameters<typeof pdfVisual.detectVisualRegions>[1]
       )
       const captioner = pdfVisual.createCaptioner(captionerConfig)
-      processed = await pdfVisual.processVisualRegions(
-        regions,
-        doc as Parameters<typeof pdfVisual.processVisualRegions>[1],
-        { captioner, includeImages: options.images }
-      )
+      try {
+        processed = await pdfVisual.processVisualRegions(
+          regions,
+          doc as Parameters<typeof pdfVisual.processVisualRegions>[1],
+          { captioner, includeImages: options.images }
+        )
+      } finally {
+        await captioner.dispose()
+      }
     } else {
       const detector = await import('../pdf-visual/detector.js')
       const regions = detector.detectVisualRegions(

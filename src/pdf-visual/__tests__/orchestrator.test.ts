@@ -45,7 +45,10 @@ describe('processVisualRegions', () => {
   it('isolates caption failures between regions', async () => {
     const warning = vi.spyOn(console, 'warn').mockImplementation(() => {})
     mocks.renderPage.mockRejectedValueOnce(new Error('render failed'))
-    const captioner: Captioner = { caption: vi.fn().mockResolvedValue('surviving caption') }
+    const captioner: Captioner = {
+      caption: vi.fn().mockResolvedValue('surviving caption'),
+      dispose: vi.fn().mockResolvedValue(undefined),
+    }
 
     const result = await processVisualRegions(regions, doc, { captioner })
 
