@@ -34,10 +34,10 @@ import { AutoModelForImageTextToText, AutoProcessor } from '@huggingface/transfo
 import type { Captioner } from '../types.js'
 import { VlmError } from '../types.js'
 import {
+  asVlmModel,
+  asVlmProcessor,
   createModelLoader,
   decodePngToRawImage,
-  isVlmModel,
-  isVlmProcessor,
   postProcess,
 } from './shared.js'
 
@@ -88,15 +88,9 @@ export function createFastCaptioner(resolvedDevice: string): Captioner {
             content: [{ type: 'image' }, { type: 'text', text: PROMPT }],
           },
         ]
-        // The processor and model are untyped at the transformers.js boundary;
-        // check the surface this profile uses. IDEFICS3 takes an image array.
-        if (!isVlmProcessor(processor) || !isVlmModel(model)) {
-          throw new VlmError('Loaded captioner does not expose the expected VLM surface', {
-            pageNum,
-          })
-        }
-        const proc = processor
-        const mdl = model
+        // IDEFICS3 takes an image array.
+        const proc = asVlmProcessor(processor)
+        const mdl = asVlmModel(model)
 
         const chatPrompt = proc.apply_chat_template(messages, { add_generation_prompt: true })
         const inputs = await proc(chatPrompt, [rawImage])
@@ -110,7 +104,7 @@ export function createFastCaptioner(resolvedDevice: string): Captioner {
 
         // `outputs.slice(null, [inputLen, null])` strips the prompt tokens.
         const inputLen = inputs.input_ids.dims[1]
-        if (inputLen === undefined) {
+        if (typeof inputLen !== 'number') {
           throw new VlmError('Captioner returned an input tensor without a token dimension', {
             pageNum,
           })

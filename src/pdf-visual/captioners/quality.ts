@@ -21,10 +21,10 @@ import { AutoProcessor, Qwen2_5_VLForConditionalGeneration } from '@huggingface/
 import type { Captioner } from '../types.js'
 import { VlmError } from '../types.js'
 import {
+  asVlmModel,
+  asVlmProcessor,
   createModelLoader,
   decodePngToRawImage,
-  isVlmModel,
-  isVlmProcessor,
   postProcess,
 } from './shared.js'
 
@@ -93,16 +93,10 @@ export function createQualityCaptioner(resolvedDevice: string): Captioner {
             content: [{ type: 'image' }, { type: 'text', text: PROMPT }],
           },
         ]
-        // The processor and model are untyped at the transformers.js boundary;
-        // check the surface this profile uses. Qwen2.5-VL takes a single image
-        // (not an array), per the onnx-community reference `processor(text, image)`.
-        if (!isVlmProcessor(processor) || !isVlmModel(model)) {
-          throw new VlmError('Loaded captioner does not expose the expected VLM surface', {
-            pageNum,
-          })
-        }
-        const proc = processor
-        const mdl = model
+        // Qwen2.5-VL takes a single image (not an array), per the
+        // onnx-community reference `processor(text, image)`.
+        const proc = asVlmProcessor(processor)
+        const mdl = asVlmModel(model)
 
         const chatPrompt = proc.apply_chat_template(messages, { add_generation_prompt: true })
         const inputs = await proc(chatPrompt, rawImage)
@@ -116,7 +110,7 @@ export function createQualityCaptioner(resolvedDevice: string): Captioner {
         // `dims.at(-1)` reads the last dimension defensively — matches the
         // onnx-community reference example.
         const inputLen = inputs.input_ids.dims.at(-1)
-        if (inputLen === undefined) {
+        if (typeof inputLen !== 'number') {
           throw new VlmError('Captioner returned an input tensor without a token dimension', {
             pageNum,
           })

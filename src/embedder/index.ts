@@ -41,15 +41,19 @@ interface IndexedEmbeddingInput {
 }
 
 /**
- * The transformers.js pipeline as this module calls it. Results are typed as
- * loosely as the runtime admits, so the shape checks below stay live.
+ * The transformers.js pipeline as this module calls it.
+ *
+ * Every result field is typed as loosely as the runtime admits — `dims`
+ * included, since {@link isEmbeddingPipeline} establishes only that the value
+ * is callable and carries a `tokenizer`. That keeps each call site's own shape
+ * check load-bearing rather than dead under an optimistic declaration.
  */
 interface EmbeddingPipeline {
-  (input: string, options: unknown): Promise<{ data?: unknown; dims?: number[] } | null | undefined>
+  (input: string, options: unknown): Promise<{ data?: unknown; dims?: unknown } | null | undefined>
   (
     input: string[],
     options: unknown
-  ): Promise<{ data?: unknown; dims?: number[] } | null | undefined>
+  ): Promise<{ data?: unknown; dims?: unknown } | null | undefined>
   tokenizer: (
     input: string[],
     options: {
@@ -342,7 +346,7 @@ export class Embedder {
         // Validate the output shape before slicing so a runtime/model contract
         // change surfaces as a clear error rather than silently wrong vectors.
         const dims = output?.dims
-        const dim = dims?.[dims.length - 1]
+        const dim = Array.isArray(dims) ? dims[dims.length - 1] : undefined
         const data = output?.data
         if (
           !(data instanceof Float32Array) ||

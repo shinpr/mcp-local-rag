@@ -24,6 +24,9 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 // Mock setup (vi.hoisted for isolate:false; installed via doMock in beforeAll)
 // ============================================================================
 
+/** The options shape both walkers pass; forwarded verbatim by `realDelegate`. */
+type ReaddirOptions = { withFileTypes: true; encoding: 'utf8' }
+
 interface ScanMocks {
   readdir: Mock
   join: Mock
@@ -75,9 +78,14 @@ function eaccesError(path: string): NodeJS.ErrnoException {
 /**
  * readdir impl backed by the REAL filesystem: records the queried dir, throws
  * EACCES for any path in `deny`, otherwise delegates to the real readdir.
+ *
+ * The caller's `options` are FORWARDED, never re-supplied: substituting the
+ * options the walker is supposed to pass would let it request the wrong ones
+ * and still receive Dirent entries here, so the test would correct the defect
+ * instead of observing it.
  */
 function realDelegate(deny: Set<string> = new Set()) {
-  return async (dirPath: string) => {
+  return async (dirPath: string, options: ReaddirOptions) => {
     visited.push(dirPath)
     if (deny.has(dirPath)) {
       throw eaccesError(dirPath)
@@ -86,7 +94,7 @@ function realDelegate(deny: Set<string> = new Set()) {
     if (actualReaddir === undefined) {
       throw new Error('readdir factory did not capture the real implementation')
     }
-    return actualReaddir(dirPath, { withFileTypes: true, encoding: 'utf8' })
+    return actualReaddir(dirPath, options)
   }
 }
 

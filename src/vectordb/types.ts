@@ -181,9 +181,29 @@ export interface LanceDBRawResult {
 /**
  * Type guard for DocumentMetadata
  */
-/** True for a value whose numeric `length` lets `Array.from` read it as numbers. */
-function isArrayLikeOfNumbers(value: unknown): value is ArrayLike<number> {
+/** A non-null object with a numeric `length` — indices read as `unknown`. */
+function isArrayLike(value: unknown): value is ArrayLike<unknown> {
   return isRecord(value) && typeof value['length'] === 'number'
+}
+
+/**
+ * A non-numeric element is rejected, never repaired: coercing, dropping, or
+ * padding it would change the vector's content or its dimension, and a
+ * corrupted embedding shows up only as quietly worse search results.
+ */
+function toEmbeddingVector(value: unknown): number[] {
+  if (!isArrayLike(value)) {
+    throw new DatabaseError('Invalid chunk row shape from LanceDB (vector)')
+  }
+  const elements = Array.from(value)
+  const vector: number[] = []
+  for (const element of elements) {
+    if (typeof element !== 'number') {
+      throw new DatabaseError('Invalid chunk row shape from LanceDB (non-numeric vector element)')
+    }
+    vector.push(element)
+  }
+  return vector
 }
 
 function isDocumentMetadata(value: unknown): value is DocumentMetadata {
@@ -270,15 +290,12 @@ export function toVectorChunk(raw: unknown): VectorChunk {
   if (!isDocumentMetadata(metadata)) {
     throw new DatabaseError('Invalid chunk row shape from LanceDB (metadata)')
   }
-  if (!isArrayLikeOfNumbers(vector)) {
-    throw new DatabaseError('Invalid chunk row shape from LanceDB (vector)')
-  }
   return {
     id,
     filePath,
     chunkIndex,
     text,
-    vector: Array.from(vector),
+    vector: toEmbeddingVector(vector),
     metadata,
     fileTitle: typeof fileTitle === 'string' && fileTitle.length > 0 ? fileTitle : null,
     // Omit the key rather than store '' or undefined: the create path seeds ''

@@ -36,35 +36,36 @@ export function buildModelLoadOptions(resolvedDevice: string): {
 }
 
 /**
- * The VLM processor as both captioner profiles call it: a callable that
- * tokenizes prompt + image, plus the two template/decode helpers.
- * transformers.js supplies no type for this surface, so it is checked once at
- * the boundary instead of asserted at each use.
+ * `apply_chat_template` is declared to return TOKENIZED output by default, not
+ * the string the profiles pass on.
  */
 export type VlmProcessor = {
   apply_chat_template: (messages: unknown, options: { add_generation_prompt: boolean }) => string
   batch_decode: (tokens: unknown, options: { skip_special_tokens: boolean }) => string[]
-} & ((prompt: string, images: unknown) => Promise<{ input_ids: { dims: number[] } }>)
+} & ((prompt: string, images: unknown) => Promise<{ input_ids: { dims: unknown[] } }>)
 
-/** The VLM itself, reduced to the generate call both profiles make. */
+/** Picks the tensor side of `generate`'s declared model-output-or-tensor union. */
 export interface VlmModel {
   generate: (inputs: unknown) => Promise<{
     slice: (axis: null, range: [number, number | null]) => unknown
   }>
 }
 
-export function isVlmProcessor(value: unknown): value is VlmProcessor {
-  return (
-    typeof value === 'function' &&
-    'apply_chat_template' in value &&
-    typeof value.apply_chat_template === 'function' &&
-    'batch_decode' in value &&
-    typeof value.batch_decode === 'function'
-  )
+/**
+ * Not a guard: member existence says nothing about return values. The captioner
+ * tests replace the library, so they prove these call sites are right GIVEN
+ * this contract, not that the library still honors it — only `fast` runs
+ * against the real one, in `visual-ingest-e2e.test.ts`.
+ */
+export function asVlmProcessor(processor: unknown): VlmProcessor {
+  // biome-ignore lint/nursery/noUnsafeTypeAssertion: narrows the library's `Processor`, see above
+  return processor as VlmProcessor
 }
 
-export function isVlmModel(value: unknown): value is VlmModel {
-  return isObjectLike(value) && typeof value['generate'] === 'function'
+/** Present a loaded model as {@link VlmModel}. See {@link asVlmProcessor}. */
+export function asVlmModel(model: unknown): VlmModel {
+  // biome-ignore lint/nursery/noUnsafeTypeAssertion: picks `generate`'s tensor branch, see VlmModel
+  return model as VlmModel
 }
 
 /** The processor + model pair produced by a profile's load callback. */
