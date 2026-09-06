@@ -10,7 +10,6 @@
 
 import type { Document as MupdfDocument, Page as MupdfPage } from 'mupdf'
 
-import { isRecord } from '../utils/type-guards.js'
 import {
   type EmbedderInterface,
   type FilteredTextFragment,
@@ -43,77 +42,6 @@ interface StextJson {
       font: { size: number; name?: string; weight?: string }
     }>
   }>
-}
-
-/**
- * Rebuild mupdf's structured-text JSON as {@link StextJson}. The JSON crosses a
- * native boundary, so each field the per-page loop reads is checked here once
- * and malformed blocks or lines are dropped rather than trusted downstream.
- */
-function toStextJson(parsed: unknown): StextJson {
-  if (!isRecord(parsed) || !Array.isArray(parsed['blocks'])) {
-    return { blocks: [] }
-  }
-  const blocks: StextJson['blocks'] = []
-  for (const rawBlock of parsed['blocks']) {
-    if (!isRecord(rawBlock) || typeof rawBlock['type'] !== 'string') {
-      continue
-    }
-    const bbox = rawBlock['bbox']
-    const base = { type: rawBlock['type'], ...(isStextBbox(bbox) ? { bbox } : {}) }
-    const rawLines = rawBlock['lines']
-    if (!Array.isArray(rawLines)) {
-      blocks.push(base)
-      continue
-    }
-    const lines: NonNullable<StextJson['blocks'][number]['lines']> = []
-    for (const rawLine of rawLines) {
-      const line = toStextLine(rawLine)
-      if (line !== null) {
-        lines.push(line)
-      }
-    }
-    blocks.push({ ...base, lines })
-  }
-  return { blocks }
-}
-
-function toStextLine(
-  rawLine: unknown
-): NonNullable<StextJson['blocks'][number]['lines']>[number] | null {
-  if (!isRecord(rawLine)) {
-    return null
-  }
-  const { text, x, y, bbox, font } = rawLine
-  if (typeof text !== 'string' || typeof x !== 'number' || typeof y !== 'number') {
-    return null
-  }
-  if (!isRecord(font) || typeof font['size'] !== 'number') {
-    return null
-  }
-  const name = font['name']
-  const weight = font['weight']
-  return {
-    text,
-    x,
-    y,
-    ...(isStextBbox(bbox) ? { bbox } : {}),
-    font: {
-      size: font['size'],
-      ...(typeof name === 'string' ? { name } : {}),
-      ...(typeof weight === 'string' ? { weight } : {}),
-    },
-  }
-}
-
-function isStextBbox(value: unknown): value is StextBbox {
-  return (
-    isRecord(value) &&
-    typeof value['x'] === 'number' &&
-    typeof value['y'] === 'number' &&
-    typeof value['w'] === 'number' &&
-    typeof value['h'] === 'number'
-  )
 }
 
 /**
@@ -164,11 +92,23 @@ interface ExtractedPdf {
  * Lifecycle: this helper does NOT call `doc.destroy()` — disposal stays
  * with the caller.
  */
-/** Read one page's structured text, releasing the native handle either way. */
+/**
+ * Read one page's structured text, releasing the native handle either way.
+ *
+ * `asJSON()` is typed `string`, so the parsed structure is where MuPDF's
+ * documented StructuredText output contract meets {@link StextJson}, this
+ * module's declaration of the part of it the page loop reads. Asserting it
+ * here keeps that single connection in one place; validating instead would
+ * mean inventing a policy for malformed output, and dropping elements would
+ * shift the `blockOrdinal`/`lineOrdinal` provenance recorded downstream.
+ *
+ * @see https://mupdf.readthedocs.io/en/1.28.0/reference/javascript/types/StructuredText.html
+ */
 function readPageStext(page: MupdfPage, stextOptions: string): StextJson {
   const stext = page.toStructuredText(stextOptions)
   try {
-    return toStextJson(JSON.parse(stext.asJSON()))
+    // biome-ignore lint/nursery/noUnsafeTypeAssertion: connects MuPDF's documented asJSON() contract to StextJson
+    return JSON.parse(stext.asJSON()) as StextJson
   } finally {
     stext.destroy()
   }

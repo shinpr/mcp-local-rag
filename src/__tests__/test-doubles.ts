@@ -84,6 +84,15 @@ export function parseJson<T>(text: string): T {
   return JSON.parse(text) as T
 }
 
+/** Read a value as an array, failing the test when it is not one. */
+export function expectArray(value: unknown): unknown[] {
+  expect(Array.isArray(value)).toBe(true)
+  if (!Array.isArray(value)) {
+    throw new Error(`Expected an array, received ${String(value)}`)
+  }
+  return value
+}
+
 /** Read a value as a string, failing the test when it is not one. */
 export function expectString(value: unknown): string {
   expect(typeof value).toBe('string')
