@@ -1,5 +1,4 @@
 // CLI Common Helpers Tests
-// Test Type: Unit Test
 // Tests createVectorStore and createEmbedder factory functions
 
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
@@ -64,7 +63,9 @@ describe('cli/common', () => {
   })
 
   afterAll(() => {
-    for (const p of MOCKED_PATHS) vi.doUnmock(p)
+    for (const p of MOCKED_PATHS) {
+      vi.doUnmock(p)
+    }
     vi.resetModules()
   })
 

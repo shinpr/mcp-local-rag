@@ -1,5 +1,4 @@
 // ingest_data Tool Test
-// Test Type: Integration Test
 // Tests handleIngestData functionality including HTML parsing and raw-data storage
 
 import { mkdir, readFile, rm } from 'node:fs/promises'

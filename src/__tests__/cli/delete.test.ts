@@ -1,5 +1,4 @@
 // CLI Delete Tests
-// Test Type: Unit Test
 // Tests runDelete functionality with mocked dependencies
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -49,6 +48,7 @@ const MOCKED_PATHS = ['../../cli/common.js', 'node:fs/promises'] as const
 
 import { mkdir, rm, writeFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
+import { expectError, expectString } from '../test-doubles.js'
 import { formatCliErrorShim } from './cli-error-shim.js'
 
 let runDelete: typeof import('../../cli/delete.js').runDelete
@@ -97,7 +97,9 @@ describe('CLI delete', () => {
 
   afterAll(async () => {
     await rm(cleanupDbPath, { recursive: true, force: true })
-    for (const p of MOCKED_PATHS) vi.doUnmock(p)
+    for (const p of MOCKED_PATHS) {
+      vi.doUnmock(p)
+    }
     vi.resetModules()
   })
 
@@ -127,7 +129,7 @@ describe('CLI delete', () => {
 
   it('rejects multiple paths before opening storage', async () => {
     const { output, error } = await captureStderr(() => runDelete(['a.md', 'b.md']))
-    expect((error as Error).message).toBe('process.exit(1)')
+    expect(expectError(error).message).toBe('process.exit(1)')
     expect(output.join('\n')).toContain('Unexpected argument: b.md')
     expect(mocks.initialize).not.toHaveBeenCalled()
     expect(mocks.deleteChunks).not.toHaveBeenCalled()
@@ -140,7 +142,7 @@ describe('CLI delete', () => {
     const { output, error } = await captureStderr(() => runDelete(['--help']))
 
     expect(error).toBeInstanceOf(Error)
-    expect((error as Error).message).toBe('process.exit(0)')
+    expect(expectError(error).message).toBe('process.exit(0)')
 
     const joined = output.join('\n')
     expect(joined).toContain('Usage: mcp-local-rag')
@@ -153,7 +155,7 @@ describe('CLI delete', () => {
     const { output, error } = await captureStderr(() => runDelete(['-h']))
 
     expect(error).toBeInstanceOf(Error)
-    expect((error as Error).message).toBe('process.exit(0)')
+    expect(expectError(error).message).toBe('process.exit(0)')
 
     const joined = output.join('\n')
     expect(joined).toContain('Usage: mcp-local-rag')
@@ -167,7 +169,7 @@ describe('CLI delete', () => {
     const { output, error } = await captureStderr(() => runDelete([]))
 
     expect(error).toBeInstanceOf(Error)
-    expect((error as Error).message).toBe('process.exit(1)')
+    expect(expectError(error).message).toBe('process.exit(1)')
 
     const joined = output.join('\n')
     expect(joined).toContain('Either <file-path> or --source is required')
@@ -182,7 +184,7 @@ describe('CLI delete', () => {
     )
 
     expect(error).toBeInstanceOf(Error)
-    expect((error as Error).message).toBe('process.exit(1)')
+    expect(expectError(error).message).toBe('process.exit(1)')
 
     const joined = output.join('\n')
     expect(joined).toContain('Cannot specify both')
@@ -203,7 +205,7 @@ describe('CLI delete', () => {
 
     // Verify JSON output to stdout
     expect(stdoutSpy).toHaveBeenCalledTimes(1)
-    const writtenData = stdoutSpy.mock.calls[0]![0] as string
+    const writtenData = expectString(stdoutSpy.mock.calls[0]?.[0])
     const parsed = JSON.parse(writtenData)
     expect(parsed.filePath).toBe(resolve('/path/to/file.md'))
     expect(parsed.deleted).toBe(true)
@@ -220,7 +222,7 @@ describe('CLI delete', () => {
     expect(error).toBeUndefined()
 
     expect(stdoutSpy).toHaveBeenCalledTimes(1)
-    const writtenData = stdoutSpy.mock.calls[0]![0] as string
+    const writtenData = expectString(stdoutSpy.mock.calls[0]?.[0])
     const parsed = JSON.parse(writtenData)
     expect(parsed.filePath).toBe(resolve('/path/to/file.md'))
     expect(parsed.deleted).toBe(true)
@@ -242,7 +244,7 @@ describe('CLI delete', () => {
 
     expect(error).toBeUndefined()
 
-    const writtenData = stdoutSpy.mock.calls[0]![0] as string
+    const writtenData = expectString(stdoutSpy.mock.calls[0]?.[0])
     const parsed = JSON.parse(writtenData)
     expect(parsed.removedChunks).toBe(0)
     expect(parsed.existed).toBe(true)
@@ -258,7 +260,7 @@ describe('CLI delete', () => {
 
     // Verify deleteChunks was called with a generated raw-data path
     expect(mocks.deleteChunks).toHaveBeenCalledTimes(1)
-    const calledPath = mocks.deleteChunks.mock.calls[0]![0] as string
+    const calledPath = expectString(mocks.deleteChunks.mock.calls[0]?.[0])
     expect(calledPath).toContain('raw-data')
     expect(calledPath).toMatch(/\.md$/)
 
@@ -267,7 +269,7 @@ describe('CLI delete', () => {
 
     // Verify JSON output
     expect(stdoutSpy).toHaveBeenCalledTimes(1)
-    const writtenData = stdoutSpy.mock.calls[0]![0] as string
+    const writtenData = expectString(stdoutSpy.mock.calls[0]?.[0])
     const parsed = JSON.parse(writtenData)
     expect(parsed.deleted).toBe(true)
     expect(parsed.removedChunks).toBe(0)
@@ -295,11 +297,11 @@ describe('CLI delete', () => {
 
     // unlink should be called twice: once for .md, once for .meta.json
     expect(mocks.unlink).toHaveBeenCalledTimes(2)
-    const unlinkCalls = mocks.unlink.mock.calls.map((c: unknown[]) => c[0] as string)
+    const unlinkCalls = mocks.unlink.mock.calls.map((c: unknown[]) => expectString(c[0]))
     expect(unlinkCalls.some((p: string) => p.endsWith('.md'))).toBe(true)
     expect(unlinkCalls.some((p: string) => p.endsWith('.meta.json'))).toBe(true)
 
-    const writtenData = stdoutSpy.mock.calls[0]![0] as string
+    const writtenData = expectString(stdoutSpy.mock.calls[0]?.[0])
     const parsed = JSON.parse(writtenData)
     expect(parsed.removedChunks).toBe(0)
     expect(parsed.existed).toBe(true)
@@ -332,7 +334,7 @@ describe('CLI delete', () => {
 
     // Should still output success JSON
     expect(stdoutSpy).toHaveBeenCalledTimes(1)
-    const writtenData = stdoutSpy.mock.calls[0]![0] as string
+    const writtenData = expectString(stdoutSpy.mock.calls[0]?.[0])
     const parsed = JSON.parse(writtenData)
     expect(parsed.deleted).toBe(true)
     expect(parsed.removedChunks).toBe(0)
@@ -347,7 +349,7 @@ describe('CLI delete', () => {
     await captureStderr(() => runDelete(['--source', 'https://example.com/missing']))
 
     expect(mocks.unlink).toHaveBeenCalledTimes(2)
-    const paths = mocks.unlink.mock.calls.map((c: unknown[]) => c[0] as string)
+    const paths = mocks.unlink.mock.calls.map((c: unknown[]) => expectString(c[0]))
     expect(paths.some((p: string) => p.endsWith('.md'))).toBe(true)
     expect(paths.some((p: string) => p.endsWith('.meta.json'))).toBe(true)
   })
@@ -376,7 +378,7 @@ describe('CLI delete', () => {
     const { output, error } = await captureStderr(() => runDelete(['--unknown']))
 
     expect(error).toBeInstanceOf(Error)
-    expect((error as Error).message).toBe('process.exit(1)')
+    expect(expectError(error).message).toBe('process.exit(1)')
 
     const joined = output.join('\n')
     expect(joined).toContain('Unknown option: --unknown')
@@ -389,7 +391,7 @@ describe('CLI delete', () => {
     const { output, error } = await captureStderr(() => runDelete(['--source']))
 
     expect(error).toBeInstanceOf(Error)
-    expect((error as Error).message).toBe('process.exit(1)')
+    expect(expectError(error).message).toBe('process.exit(1)')
 
     const joined = output.join('\n')
     expect(joined).toContain('Missing value for --source')
@@ -399,7 +401,7 @@ describe('CLI delete', () => {
     const { output, error } = await captureStderr(() => runDelete(['--source', '--other']))
 
     expect(error).toBeInstanceOf(Error)
-    expect((error as Error).message).toBe('process.exit(1)')
+    expect(expectError(error).message).toBe('process.exit(1)')
 
     const joined = output.join('\n')
     expect(joined).toContain('Missing value for --source')

@@ -1,37 +1,21 @@
-// Multi-root MCP server integration tests (P3-T4).
+// Multi-root MCP server integration tests.
 //
-// Scope: closes the remaining end-to-end gaps for Phase 3 not already covered
-// by P3-T2 (`rag-server.files.integration.test.ts`, multi-root list_files
-// shape) and P3-T3 (`rag-server.warning-visibility.test.ts`, content-block
-// warnings + configError fail-fast with stubbed warnings).
+// Adds the end-to-end gaps not covered by the list_files-shape and
+// warning-visibility files: ingest → list round-trip with per-root annotation,
+// delete scoped to one root, query and read_chunk_neighbors across roots,
+// raw-data behavior unchanged under multi-root, and the precedence /
+// nested-pruning warnings produced by the REAL `resolveBaseDirs` rather than
+// stubbed strings.
 //
-// What this file adds (and intentionally does not duplicate):
-//   - End-to-end multi-root ingest_file → list_files round-trip showing each
-//     file is annotated with its producing root and persists to one DB.
-//   - End-to-end multi-root delete_file scoped to one root, leaving other
-//     root's chunks intact.
-//   - End-to-end multi-root query_documents returning chunks from any root.
-//   - End-to-end multi-root read_chunk_neighbors against a file under a
-//     non-first root.
-//   - Raw-data ingest_data behavior unchanged in multi-root mode (response
-//     shape preserved; warnings additive only) — covers AC-009 raw-data path.
-//   - Precedence + nested-pruning warning content produced by REAL
-//     `resolveBaseDirs` (not stubbed strings), surfaced via RAGServer
-//     responses (AC-003, AC-013).
-//   - Invalid `BASE_DIRS` end-to-end via real `resolveBaseDirs`: degraded-mode
-//     RAGServer keeps `status` callable and root-dependent tools throw a
-//     structured McpError (AC-010 end-to-end).
-//
-// Construction style: this file wires RAGServer the same way `server-main.ts`
-// does (resolveBaseDirs → RAGServer({ baseDirs, configWarnings, configError }))
-// so the assertions exercise the real configuration pipeline rather than
-// stubbed values. We deliberately do NOT call `startServer()` because it
-// owns `process.exit` semantics that are unsafe inside a vitest worker.
+// RAGServer is wired the way `server-main.ts` wires it, so the assertions
+// exercise the real configuration pipeline. `startServer()` is deliberately
+// not called: it owns `process.exit`, which is unsafe in a vitest worker.
 
 import { mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { testModelCacheDir, withTestDevice } from '../../__tests__/test-device.js'
+import { expectError } from '../../__tests__/test-doubles.js'
 import { resolveServerConfig } from '../../server-main.js'
 import { BaseDirsConfigError, displayPath, resolveBaseDirs } from '../../utils/base-dirs.js'
 import { MAX_SCAN_DEPTH } from '../../utils/limits.js'
@@ -44,17 +28,23 @@ import { scanBaseDir } from '../list-scanner.js'
 
 type ContentBlock = { type: string; text: string; annotations?: unknown }
 
+/** One block of an MCP tool result, before the text-block narrowing below. */
+type ResultBlock = { type: string; text?: string | undefined; annotations?: unknown }
+
 /** Find the first content block whose text contains `needle`. */
-function findBlock(content: ReadonlyArray<ContentBlock>, needle: string): ContentBlock | undefined {
-  return content.find((b) => b.type === 'text' && b.text.includes(needle))
+function findBlock(content: ReadonlyArray<ResultBlock>, needle: string): ContentBlock | undefined {
+  for (const block of content) {
+    if (block.type === 'text' && typeof block.text === 'string' && block.text.includes(needle)) {
+      return { ...block, text: block.text }
+    }
+  }
+  return undefined
 }
 
 /**
- * Build a RAGServer the same way `server-main.ts` does, but with explicit
- * inputs so tests can simulate env without mutating `process.env` (which
- * vitest workers share). Returns the constructed (uninitialized) server plus
- * the resolved warnings/error so callers can assert on the resolver output
- * directly when useful.
+ * Wire a RAGServer the way `server-main.ts` does, but from explicit inputs —
+ * vitest workers share `process.env`. Returns the resolver output too, so a
+ * caller can assert on it directly.
  */
 async function buildServerFromResolver(opts: {
   dbPath: string
@@ -84,7 +74,9 @@ async function buildServerFromResolver(opts: {
   if (result.ok) {
     baseDirs = result.config.baseDirs
     rawBaseDirs = result.config.rawBaseDirs
-    for (const w of result.warnings) warnings.push(w.message)
+    for (const w of result.warnings) {
+      warnings.push(w.message)
+    }
   } else {
     // Degraded mode mirror of server-main.ts (post-Finding-#4): pass an empty
     // `baseDirs` so any handler bypassing `assertConfigOk` fails closed at the
@@ -296,7 +288,7 @@ describe('AC-009: ingest_data behavior unchanged in multi-root mode (warnings ad
     expect(parsed.filePath).toContain('raw-data')
 
     // Warning block is additive.
-    const warningBlock = findBlock(result.content as ContentBlock[], PRECEDENCE_WARNING)
+    const warningBlock = findBlock(result.content, PRECEDENCE_WARNING)
     expect(warningBlock).toBeDefined()
   }, 60000)
 
@@ -394,10 +386,7 @@ describe('AC-003/AC-013: real resolveBaseDirs warnings surface in MCP responses'
 
       // Warning content block visible on status response.
       const status = await server.handleStatus()
-      const warnBlock = findBlock(
-        status.content as ContentBlock[],
-        'BASE_DIRS is set; BASE_DIR is ignored'
-      )
+      const warnBlock = findBlock(status.content, 'BASE_DIRS is set; BASE_DIR is ignored')
       expect(warnBlock).toBeDefined()
     } finally {
       await server.close()
@@ -430,7 +419,7 @@ describe('AC-003/AC-013: real resolveBaseDirs warnings surface in MCP responses'
       expect(parsed.baseDirs[0].startsWith(realpathSync(rootA))).toBe(true)
 
       // Warning content block visible on list_files response.
-      const warnBlock = findBlock(listed.content as ContentBlock[], 'Nested base directory pruned')
+      const warnBlock = findBlock(listed.content, 'Nested base directory pruned')
       expect(warnBlock).toBeDefined()
     } finally {
       await server.close()
@@ -465,13 +454,9 @@ describe('AC-003/AC-013: real resolveBaseDirs warnings surface in MCP responses'
   }, 60000)
 })
 
-// =============================================================================
-// Finding #10 (post-launch review): list_files survives a permission-denied
-// error on one root and emits a per-root warning instead of failing the
-// whole call. Mocks `node:fs/promises.readdir` so this is deterministic
-// across CI environments — the production code under test is the new BFS
-// loop in `scanBaseDir`.
-// =============================================================================
+// `list_files` survives a permission-denied error on one root, warning per
+// root instead of failing the call. `readdir` is mocked so this is
+// deterministic across CI environments.
 describe('post-launch finding #10: list_files per-root error tolerance', () => {
   const testBase = resolve('./tmp/test-list-files-per-root-err')
   const rootA = resolve(testBase, 'rootA')
@@ -503,7 +488,9 @@ describe('post-launch finding #10: list_files per-root error tolerance', () => {
     // at the syscall layer (Linux/macOS only; Windows skips this test).
     // We rely on the bounded BFS new in Finding #10 to capture the error
     // as a per-root warning and keep scanning rootB.
-    if (process.platform === 'win32') return
+    if (process.platform === 'win32') {
+      return
+    }
 
     const { chmodSync } = await import('node:fs')
     chmodSync(rootA, 0o000)
@@ -527,10 +514,7 @@ describe('post-launch finding #10: list_files per-root error tolerance', () => {
       // Warning content block names the failing root via `displayPath`
       // (HOME prefix is collapsed to `~` to avoid leaking the OS username
       // through MCP responses; see Finding #10 sanitization).
-      const warningBlock = findBlock(
-        result.content as ContentBlock[],
-        `cannot read directory: ${displayPath(rootA)}`
-      )
+      const warningBlock = findBlock(result.content, `cannot read directory: ${displayPath(rootA)}`)
       expect(warningBlock).toBeDefined()
       // The raw OS error message must not leak into the warning text.
       expect(warningBlock?.text ?? '').not.toContain('permission denied')
@@ -542,16 +526,13 @@ describe('post-launch finding #10: list_files per-root error tolerance', () => {
   }, 60000)
 })
 
-// =============================================================================
-// `scanBaseDir` as a presentation adapter over the single bounded walker.
+// `scanBaseDir` owns no traversal — only the `list_files` warning wording, the
+// once-per-call depth warning, and the sort. These pin that presentation so the
+// shared walker cannot silently change `list_files` output.
 //
-// After consolidation `scanBaseDir` owns no traversal — only the `list_files`
-// warning wording, the once-per-call depth warning, and the sort. These
-// assertions pin that presentation contract byte-for-byte so the shared walker
-// cannot silently change `list_files` output. Mock-free on purpose: a
-// non-existent directory makes an attempted `readdir` observable as an ENOENT
-// warning, so its absence proves the scope pushdown skipped the syscall.
-// =============================================================================
+// Mock-free on purpose: against a non-existent directory an attempted `readdir`
+// is observable as an ENOENT warning, so its ABSENCE proves scope pushdown
+// skipped the syscall.
 describe('scanBaseDir presentation contract over the shared walker', () => {
   const testBase = resolve('./tmp/test-list-scanner-adapter')
   const root = resolve(testBase, 'root')
@@ -618,14 +599,9 @@ describe('scanBaseDir presentation contract over the shared walker', () => {
   })
 })
 
-// =============================================================================
-// Finding #3 + Finding #4 (post-launch review): the MCP server entry point
-// must apply the sensitive-path policy to env-resolved roots and must not
-// fall back to cwd on a config error.
-//
-// These tests call the REAL entry-point resolver (`resolveServerConfig` from
-// server-main.ts) so the assertions are anchored to production logic, not a copy.
-// =============================================================================
+// The MCP entry point must apply the sensitive-path policy to env-resolved
+// roots and must not fall back to cwd on a config error. These call the REAL
+// `resolveServerConfig`, so the assertions hold against production wiring.
 describe('post-launch findings #3 + #4: server-main wiring rejects sensitive roots and never falls back to cwd', () => {
   const testBase = resolve('./tmp/test-server-main-policy')
   const dbPath = resolve(testBase, 'lancedb')
@@ -641,10 +617,8 @@ describe('post-launch findings #3 + #4: server-main wiring rejects sensitive roo
   })
 
   /**
-   * Build a server via the REAL entry-point resolver (`resolveServerConfig`
-   * from server-main.ts), passing a synthetic env + cwd. Anchors the test to
-   * production wiring instead of a copy, without invoking `startServer` (which
-   * calls `process.exit` on errors and starts the MCP transport).
+   * Build a server through the REAL `resolveServerConfig`, so the test is
+   * anchored to production wiring, without `startServer`'s `process.exit`.
    */
   async function buildServerLikeMain(opts: {
     envBaseDirs?: string | undefined
@@ -688,7 +662,7 @@ describe('post-launch findings #3 + #4: server-main wiring rejects sensitive roo
     await server.initialize()
     try {
       const status = await server.handleStatus()
-      const diagnostic = findBlock(status.content as ContentBlock[], 'Configuration error:')
+      const diagnostic = findBlock(status.content, 'Configuration error:')
       expect(diagnostic).toBeDefined()
       expect(diagnostic?.text).toMatch(/sensitive system path/)
     } finally {
@@ -754,11 +728,11 @@ describe('AC-010: invalid BASE_DIRS end-to-end (real resolveBaseDirs)', () => {
         .then(() => null)
         .catch((e) => e)
       expect(listError).toBeInstanceOf(BaseDirsConfigError)
-      expect((listError as Error).message).toMatch(/BASE_DIRS/)
+      expect(expectError(listError).message).toMatch(/BASE_DIRS/)
 
       // status remains callable and surfaces the configError as a diagnostic block.
       const status = await server.handleStatus()
-      const diagnostic = findBlock(status.content as ContentBlock[], 'Configuration error:')
+      const diagnostic = findBlock(status.content, 'Configuration error:')
       expect(diagnostic).toBeDefined()
       expect(diagnostic?.text).toMatch(/BASE_DIRS/)
     } finally {
@@ -766,15 +740,10 @@ describe('AC-010: invalid BASE_DIRS end-to-end (real resolveBaseDirs)', () => {
     }
   }, 60000)
 
-  // AC interpretation: [AC-010] Root-dependent tools — the ones that read or
-  // write through `baseDirs` — fail fast with the resolver's structured error
-  // end-to-end. After the post-launch scope review, the fail-fast set is
-  // narrower than every tool: `query_documents` (DB only) and `ingest_data`
-  // (DB + dbPath/raw-data only) operate without reading any configured root,
-  // so they MUST remain callable in degraded mode. The `source`-mode branches
-  // of `delete_file` / `read_chunk_neighbors` likewise route around the
-  // configured roots and stay callable. `filePath` mode for either dual-mode
-  // tool, plus `ingest_file` and `list_files`, fail fast.
+  // [AC-010] Only root-dependent tools fail fast: `query_documents` (DB only),
+  // `ingest_data` (DB + raw-data), and the `source` mode of `delete_file` /
+  // `read_chunk_neighbors` route around the configured roots and stay callable.
+  // `filePath` mode of either, plus `ingest_file` and `list_files`, fail fast.
   it('root-dependent tools (filePath/list/ingest_file) fail fast with the resolver error message', async () => {
     const { server } = await buildServerFromResolver({
       dbPath,

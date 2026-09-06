@@ -1,35 +1,21 @@
-// `createCaptioner` (`fast` profile dispatch) unit test.
+// `createCaptioner` with the `fast` profile, which routes to
+// `captioners/fast.ts`.
 //
-// Phase 1 of the visual-quality-mode refactor routes the dispatcher's `fast`
-// profile to `captioners/fast.ts`, which is a verbatim port of the v0.14.0
-// captioner. The mock surface and assertions in this file were authored
-// against that port and continue to apply: the model class is still
-// `AutoModelForImageTextToText`, the processor is still called with an array-
-// form image list, generation options are still
-// `{max_new_tokens:128, repetition_penalty:1.15, no_repeat_ngram_size:3}`.
+// Pins the profile-specific choices a shared test cannot: the model class
+// (`AutoModelForImageTextToText`), the array-form image list, the generation
+// options (`max_new_tokens: 128`, `repetition_penalty: 1.15`,
+// `no_repeat_ngram_size: 3`), and the model identifier now living inside the
+// profile rather than in `CaptionerConfig`.
 //
-// What changed at the dispatcher boundary:
-//   - `CaptionerConfig` no longer carries `modelName`. The model identifier
-//     (`HuggingFaceTB/SmolVLM-256M-Instruct`) lives inside `captioners/fast.ts`.
-//   - Construction is `createCaptioner({ profile: 'fast', cacheDir, device? })`.
+// `postProcess`'s own rules are pinned in `captioners-shared.test.ts`, which
+// both profiles share.
 //
-// Verification points:
-//   - `from_pretrained` receives the `fast`-profile model identifier and the
-//     dispatcher-exposed `VLM_DTYPE`; model loading also receives the
-//     resolved device.
-//   - `model.generate` receives the `fast`-profile decoding options
-//     (`max_new_tokens`, `repetition_penalty`, `no_repeat_ngram_size`).
-//   - The decoded text is returned through `shared.postProcess`. The control-char,
-//     trim, emptiness, and length-cap rules are pinned directly on that function
-//     in `captioners-shared.test.ts`, which both profiles share.
-//   - Load / decode / generate failures throw `VlmError` with `pageNum` + `cause`.
-//
-// `@huggingface/transformers` is mocked via `vi.hoisted` per the project-wide
-// constraint (`vitest.config.mjs` sets `isolate: false`, so mocks must be
-// hoisted to be visible inside `vi.mock` factories before the SUT imports the
-// module).
+// `@huggingface/transformers` is mocked via `vi.hoisted`, required because
+// `isolate: false` means the mock must be visible inside the factory before
+// the SUT imports the module.
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { expectError, expectInstanceOf, expectRecord } from '../../__tests__/test-doubles.js'
 
 // ============================================
 // Mocks (vi.hoisted — required for `@huggingface/transformers`)
@@ -53,17 +39,23 @@ const mocks = vi.hoisted(() => {
   }
 
   const mockProcessorFromPretrained = vi.fn(async (_modelName: string, _options: unknown) => {
-    if (state.fromPretrainedThrows) throw state.fromPretrainedThrows
+    if (state.fromPretrainedThrows) {
+      throw state.fromPretrainedThrows
+    }
     return mockProcessorInstance
   })
 
   const mockModelFromPretrained = vi.fn(async (_modelName: string, _options: unknown) => {
-    if (state.fromPretrainedThrows) throw state.fromPretrainedThrows
+    if (state.fromPretrainedThrows) {
+      throw state.fromPretrainedThrows
+    }
     return mockModelInstance
   })
 
   const mockGenerate = vi.fn(async (_inputs: unknown) => {
-    if (state.generateThrows) throw state.generateThrows
+    if (state.generateThrows) {
+      throw state.generateThrows
+    }
     // Mock tensor that supports `.slice(null, [start, end])`.
     return {
       slice: (_axis: null, _range: [number, number]) => ({ _isSlicedTokens: true }),
@@ -95,11 +87,13 @@ const mocks = vi.hoisted(() => {
   const mockModelInstance = { dispose: mockDispose, generate: mockGenerate }
 
   const mockFromBlob = vi.fn((_blob: Blob) => {
-    if (state.fromBlobThrows) throw state.fromBlobThrows
+    if (state.fromBlobThrows) {
+      throw state.fromBlobThrows
+    }
     return { width: 100, height: 100, channels: 3, data: new Uint8ClampedArray(0) }
   })
 
-  const env = { cacheDir: '' as string }
+  const env: { cacheDir: string } = { cacheDir: '' }
 
   return {
     state,
@@ -157,7 +151,9 @@ describe('createCaptioner — fast profile dispatch (CaptionerConfig flow)', () 
   })
 
   afterAll(() => {
-    for (const p of MOCKED_PATHS) vi.doUnmock(p)
+    for (const p of MOCKED_PATHS) {
+      vi.doUnmock(p)
+    }
     vi.resetModules()
   })
 
@@ -185,9 +181,14 @@ describe('createCaptioner — fast profile dispatch (CaptionerConfig flow)', () 
         cacheDir: './tmp/models',
         device: 'cpu',
       })
-      if (fail) mocks.state.generateThrows = new Error('Generation failed')
-      if (fail) await expect(captioner.caption(new Uint8Array([1]), 1)).rejects.toThrow()
-      else await captioner.caption(new Uint8Array([1]), 1)
+      if (fail) {
+        mocks.state.generateThrows = new Error('Generation failed')
+      }
+      if (fail) {
+        await expect(captioner.caption(new Uint8Array([1]), 1)).rejects.toThrow()
+      } else {
+        await captioner.caption(new Uint8Array([1]), 1)
+      }
       await captioner.dispose()
       await captioner.dispose()
       expect(mocks.mockDispose).toHaveBeenCalledTimes(1)
@@ -299,14 +300,10 @@ describe('createCaptioner — fast profile dispatch (CaptionerConfig flow)', () 
     // Assert: the captioner pins decoding options that affect retrieval
     // quality. Pinning them in a test makes accidental changes loud.
     expect(mocks.mockGenerate).toHaveBeenCalledTimes(1)
-    const arg = mocks.mockGenerate.mock.calls[0]?.[0] as {
-      max_new_tokens?: number
-      repetition_penalty?: number
-      no_repeat_ngram_size?: number
-    }
-    expect(arg?.max_new_tokens).toBe(128)
-    expect(arg?.repetition_penalty).toBe(1.15)
-    expect(arg?.no_repeat_ngram_size).toBe(3)
+    const arg = expectRecord(mocks.mockGenerate.mock.calls[0]?.[0])
+    expect(arg['max_new_tokens']).toBe(128)
+    expect(arg['repetition_penalty']).toBe(1.15)
+    expect(arg['no_repeat_ngram_size']).toBe(3)
   })
 
   // ----- Failure: model load -----
@@ -327,13 +324,13 @@ describe('createCaptioner — fast profile dispatch (CaptionerConfig flow)', () 
 
     // Per-page wrap: VlmError with pageNum + user-facing message.
     expect(captured).toBeInstanceOf(VlmError)
-    expect((captured as InstanceType<typeof VlmError>).pageNum).toBe(1)
-    expect((captured as InstanceType<typeof VlmError>).message).toBe('Captioning failed for page 1')
+    expect(expectInstanceOf(captured, VlmError).pageNum).toBe(1)
+    expect(expectInstanceOf(captured, VlmError).message).toBe('Captioning failed for page 1')
 
     // The immediate cause is the wrapper produced by ensureLoaded(); its
     // message names the resolved modelName and device so operators can
     // identify the source.
-    const cause = (captured as InstanceType<typeof VlmError>).cause as Error
+    const cause = expectError(expectInstanceOf(captured, VlmError).cause)
     expect(cause).toBeInstanceOf(Error)
     expect(cause.message).toContain('Captioner load failed')
     expect(cause.message).toContain(`modelName=${FAST_MODEL_ID}`)
@@ -342,7 +339,7 @@ describe('createCaptioner — fast profile dispatch (CaptionerConfig flow)', () 
 
     // The original `from_pretrained` error is preserved via the Error.cause
     // chain so debugging is not lossy.
-    expect((cause as Error & { cause?: unknown }).cause).toBe(originalErr)
+    expect(expectRecord(cause)['cause']).toBe(originalErr)
   })
 
   // ----- F1: load-failure caching -----
@@ -367,12 +364,10 @@ describe('createCaptioner — fast profile dispatch (CaptionerConfig flow)', () 
     // Assert: all 3 page calls threw.
     expect(thrownErrors).toHaveLength(3)
 
-    // Assert: from_pretrained was invoked at most ONCE in total across all
-    // caption() calls. The processor load is the first attempt and it throws;
-    // the model load on the same call may or may not run depending on the
-    // sequence-vs-parallel semantics of the implementation. Either way the
-    // total combined call count across processor+model must NOT scale with
-    // page count.
+    // `from_pretrained` must be invoked at most ONCE in total across every
+    // caption() call. The processor load throws first; whether the model load
+    // also runs depends on sequence-vs-parallel semantics. Either way the
+    // combined count must not scale with page count.
     const totalLoadCalls =
       mocks.mockProcessorFromPretrained.mock.calls.length +
       mocks.mockModelFromPretrained.mock.calls.length
@@ -384,8 +379,8 @@ describe('createCaptioner — fast profile dispatch (CaptionerConfig flow)', () 
     // load-aware wrapper.
     for (const captured of thrownErrors) {
       expect(captured).toBeInstanceOf(VlmError)
-      const cause = (captured as InstanceType<typeof VlmError>).cause as Error & { cause?: unknown }
-      expect(cause.cause).toBe(originalErr)
+      const cause = expectError(expectInstanceOf(captured, VlmError).cause)
+      expect(expectRecord(cause)['cause']).toBe(originalErr)
     }
   })
 
@@ -406,9 +401,9 @@ describe('createCaptioner — fast profile dispatch (CaptionerConfig flow)', () 
     }
 
     expect(captured).toBeInstanceOf(VlmError)
-    expect((captured as InstanceType<typeof VlmError>).pageNum).toBe(7)
-    expect((captured as InstanceType<typeof VlmError>).message).toBe('Captioning failed for page 7')
-    expect((captured as InstanceType<typeof VlmError>).cause).toBe(originalErr)
+    expect(expectInstanceOf(captured, VlmError).pageNum).toBe(7)
+    expect(expectInstanceOf(captured, VlmError).message).toBe('Captioning failed for page 7')
+    expect(expectInstanceOf(captured, VlmError).cause).toBe(originalErr)
   })
 
   // ----- Failure: image decode -----
@@ -428,8 +423,8 @@ describe('createCaptioner — fast profile dispatch (CaptionerConfig flow)', () 
     }
 
     expect(captured).toBeInstanceOf(VlmError)
-    expect((captured as InstanceType<typeof VlmError>).pageNum).toBe(3)
-    expect((captured as InstanceType<typeof VlmError>).message).toBe('Captioning failed for page 3')
-    expect((captured as InstanceType<typeof VlmError>).cause).toBe(originalErr)
+    expect(expectInstanceOf(captured, VlmError).pageNum).toBe(3)
+    expect(expectInstanceOf(captured, VlmError).message).toBe('Captioning failed for page 3')
+    expect(expectInstanceOf(captured, VlmError).cause).toBe(originalErr)
   })
 })

@@ -14,6 +14,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, sep } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { expectDefined } from '../../__tests__/test-doubles.js'
 import {
   type BaseDirsConfig,
   BaseDirsConfigError,
@@ -207,7 +208,7 @@ describe('dedupAndPruneRoots', () => {
     const { roots, warnings } = dedupAndPruneRoots([resolvedParent, resolvedChild])
     expect(roots).toEqual([resolvedParent])
     expect(warnings).toHaveLength(1)
-    const warning = warnings[0] as BaseDirsConfigWarning
+    const warning = expectDefined(warnings[0])
     expect(warning.kind).toBe('nested-root-pruned')
     expect(warning.message).toContain(displayPath(resolvedParent))
     expect(warning.message).toContain(displayPath(resolvedChild))

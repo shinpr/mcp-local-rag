@@ -1,15 +1,21 @@
 // Ingest Rollback Tests
-// Test Type: Unit Test (spy-based, compatible with isolate: false)
 // Tests rollback behavior when insertChunks fails during re-ingestion
 
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
+import type { MockInstance } from 'vitest'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { testModelCacheDir, withTestDevice } from '../../__tests__/test-device.js'
+import { expectError, expectRecord, privateMembers } from '../../__tests__/test-doubles.js'
 import * as rawDataUtils from '../../utils/raw-data-utils.js'
 import type { VectorChunk, VectorStore } from '../../vectordb/index.js'
 import { DatabaseError } from '../../vectordb/types.js'
 import { RAGServer } from '../index.js'
+
+/** Rollback is only observable through the server's own store. */
+function privateVectorStore(server: RAGServer): VectorStore {
+  return privateMembers<{ vectorStore: VectorStore }>(server).vectorStore
+}
 
 describe('Ingest Rollback', () => {
   let ragServer: RAGServer
@@ -44,7 +50,7 @@ describe('Ingest Rollback', () => {
     'removes partially inserted rows before restoring existing=%s',
     async (existing) => {
       const filePath = resolve(testDataDir, `partial-insert-${existing}.txt`)
-      const store = (ragServer as unknown as { vectorStore: VectorStore }).vectorStore
+      const store = privateMembers<{ vectorStore: VectorStore }>(ragServer).vectorStore
       if (existing) {
         writeFileSync(filePath, 'Prior material for partial insert. '.repeat(20))
         await ragServer.handleIngestFile({ filePath })
@@ -71,7 +77,7 @@ describe('Ingest Rollback', () => {
     const filePath = resolve(testDataDir, 'post-commit.txt')
     writeFileSync(filePath, 'Original material for optimization test. '.repeat(20))
     await ragServer.handleIngestFile({ filePath })
-    const store = (ragServer as unknown as { vectorStore: VectorStore }).vectorStore
+    const store = privateMembers<{ vectorStore: VectorStore }>(ragServer).vectorStore
     const optimize = vi
       .spyOn(store, 'optimize')
       .mockRejectedValueOnce(new Error('Optimization failed'))
@@ -98,20 +104,29 @@ describe('Ingest Rollback', () => {
       const filePath = rawDataUtils.generateRawDataPath(testDbPath, source)
       const metaPath = rawDataUtils.generateMetaJsonPath(filePath)
       const originalMeta = readFileSync(metaPath, 'utf8')
-      const store = (ragServer as unknown as { vectorStore: VectorStore }).vectorStore
+      const store = privateMembers<{ vectorStore: VectorStore }>(ragServer).vectorStore
       const originalRows = await store.getChunksByFilePath(filePath)
       const saveMeta = rawDataUtils.saveMetaJson
-      const spy =
-        failure === 'insert'
-          ? vi.spyOn(store, 'insertChunks').mockRejectedValueOnce(new Error('Insert failed'))
-          : failure === 'optimize'
-            ? vi.spyOn(store, 'optimize').mockRejectedValueOnce(new Error('Optimization failed'))
-            : failure === 'sidecar'
-              ? vi.spyOn(rawDataUtils, 'saveMetaJson').mockImplementationOnce(async (...args) => {
-                  await saveMeta(...args)
-                  throw new Error('Sidecar write failed')
-                })
-              : undefined
+      function installFailure(): MockInstance | undefined {
+        switch (failure) {
+          case 'insert':
+            return vi.spyOn(store, 'insertChunks').mockRejectedValueOnce(new Error('Insert failed'))
+          case 'optimize':
+            return vi
+              .spyOn(store, 'optimize')
+              .mockRejectedValueOnce(new Error('Optimization failed'))
+          case 'sidecar':
+            return vi
+              .spyOn(rawDataUtils, 'saveMetaJson')
+              .mockImplementationOnce(async (...args) => {
+                await saveMeta(...args)
+                throw new Error('Sidecar write failed')
+              })
+          default:
+            return undefined
+        }
+      }
+      const spy = installFailure()
       try {
         await expect(
           ragServer.handleIngestData({
@@ -154,7 +169,7 @@ describe('Ingest Rollback', () => {
       ).rejects.toThrow('Sidecar write failed')
       expect(existsSync(filePath)).toBe(false)
       expect(existsSync(rawDataUtils.generateMetaJsonPath(filePath))).toBe(false)
-      const store = (ragServer as unknown as { vectorStore: VectorStore }).vectorStore
+      const store = privateMembers<{ vectorStore: VectorStore }>(ragServer).vectorStore
       expect(await store.getChunksByFilePath(filePath)).toEqual([])
     } finally {
       spy.mockRestore()
@@ -171,8 +186,7 @@ describe('Ingest Rollback', () => {
 
     await ragServer.handleIngestFile({ filePath: testFile })
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const vectorStore = (ragServer as any).vectorStore
+    const vectorStore = privateVectorStore(ragServer)
 
     // Both insert calls fail (new data insert + rollback restore): the prior
     // data is now gone. The handler surfaces a distinct DatabaseError that says
@@ -195,9 +209,9 @@ describe('Ingest Rollback', () => {
       thrown = e
     }
     expect(thrown).toBeInstanceOf(DatabaseError)
-    expect((thrown as Error).message).toContain('rollback failed')
-    expect((thrown as Error).message).toContain('may not have been restored')
-    expect((thrown as { cause?: unknown }).cause).toBe(insertError)
+    expect(expectError(thrown).message).toContain('rollback failed')
+    expect(expectError(thrown).message).toContain('may not have been restored')
+    expect(expectRecord(thrown)['cause']).toBe(insertError)
 
     // The rollback failure is still recorded on stderr for diagnostics.
     const logged = errorSpy.mock.calls.map((c) => c.join(' ')).join('\n')
@@ -213,8 +227,7 @@ describe('Ingest Rollback', () => {
     writeFileSync(testFile, 'Alpha beta gamma delta epsilon. '.repeat(80))
     await ragServer.handleIngestFile({ filePath: testFile })
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const vectorStore = (ragServer as any).vectorStore
+    const vectorStore = privateVectorStore(ragServer)
     const original: VectorChunk[] = await vectorStore.getChunksByFilePath(testFile)
     expect(original.length).toBeGreaterThan(0)
 
@@ -224,7 +237,7 @@ describe('Ingest Rollback', () => {
     const insertSpy = vi
       .spyOn(vectorStore, 'insertChunks')
       .mockRejectedValueOnce(new Error('Simulated insertion failure'))
-      .mockImplementationOnce((chunks: unknown) => origInsert(chunks))
+      .mockImplementationOnce((chunks: VectorChunk[]) => origInsert(chunks))
     const optimizeSpy = vi.spyOn(vectorStore, 'optimize')
 
     // Act: re-ingest with different content (different embeddings) — the old
@@ -255,8 +268,7 @@ describe('Ingest Rollback', () => {
     const testFile = resolve(testDataDir, 'rollback-new-file.txt')
     writeFileSync(testFile, 'New file content. '.repeat(50))
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const vectorStore = (ragServer as any).vectorStore
+    const vectorStore = privateVectorStore(ragServer)
 
     // Force the insert to fail (the only way to exercise the failure path).
     const insertSpy = vi

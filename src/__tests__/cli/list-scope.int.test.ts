@@ -13,11 +13,6 @@
 //     included with its stored filePath spelling; empty/whitespace/missing
 //     `--scope` exits non-zero with a stderr message and config resolution still
 //     fires even when scope is present.
-// @category: integration
-// @lane: integration
-// @dependency: CLI runList + real LanceDB + real-FS fixture (mkdir/symlink) + RAGServer (fixture ingest) + realpathForMatch spy
-// @complexity: high (real embed/DB ingest, scan-path pushdown spy, symlink-alias fixture)
-// ROI: 72
 //
 // Mocking strategy (shared-registry safe per project-context: isolate:false,
 // pool forks, maxWorkers 1): `../../utils/scan.js` is partial-mocked via
@@ -34,7 +29,9 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import type { GlobalOptions } from '../../cli/options.js'
 import { testModelCacheDir, withTestDevice } from '../test-device.js'
+import { expectError } from '../test-doubles.js'
 
 // Records every path passed to the (spied) realpathForMatch, in call order.
 const realpathCalls: string[] = []
@@ -80,7 +77,14 @@ async function installScanSpyAndImportModules(): Promise<void> {
  * to throw so a non-zero exit surfaces as a caught error rather than killing the
  * test runner.
  */
-function captureRunList(args: string[], globalOptions: Record<string, unknown>) {
+/** Everything one captured `runList` invocation produced. */
+interface CapturedRun {
+  stdout: string[]
+  stderr: string[]
+  error: unknown
+}
+
+function captureRunList(args: string[], globalOptions: GlobalOptions) {
   const stdout: string[] = []
   const stderr: string[] = []
   const stdoutSpy = vi
@@ -95,9 +99,9 @@ function captureRunList(args: string[], globalOptions: Record<string, unknown>) 
   const exitSpy = vi.spyOn(process, 'exit').mockImplementation((code) => {
     throw new Error(`process.exit(${code})`)
   })
-  return (runList as (a: string[], g?: unknown) => Promise<void>)(args, globalOptions)
-    .then(() => ({ stdout, stderr, error: undefined as unknown }))
-    .catch((error: unknown) => ({ stdout, stderr, error }))
+  return runList(args, globalOptions)
+    .then((): CapturedRun => ({ stdout, stderr, error: undefined }))
+    .catch((error: unknown): CapturedRun => ({ stdout, stderr, error }))
     .finally(() => {
       stdoutSpy.mockRestore()
       stderrSpy.mockRestore()
@@ -176,7 +180,9 @@ describe('INT-3: runList(--scope) — scoped files, sources split, pushdown proo
   }, 120000)
 
   afterAll(async () => {
-    if (server) await server.close()
+    if (server) {
+      await server.close()
+    }
     vi.doUnmock('../../utils/scan.js')
     vi.resetModules()
     rmSync(base, { recursive: true, force: true })
@@ -285,7 +291,7 @@ describe('INT-3: runList(--scope) — scoped files, sources split, pushdown proo
 
   it('documents --scope in the help text', async () => {
     const { stderr, error } = await captureRunList(['--help'], globalOptions)
-    expect((error as Error).message).toBe('process.exit(0)')
+    expect(expectError(error).message).toBe('process.exit(0)')
     const joined = stderr.join('\n')
     expect(joined).toContain('--scope')
   })
@@ -410,7 +416,9 @@ describeAlias('INT-3: runList(--scope) — symlink-alias contract (AC3)', () => 
   }, 120000)
 
   afterAll(async () => {
-    if (server) await server.close()
+    if (server) {
+      await server.close()
+    }
     vi.doUnmock('../../utils/scan.js')
     vi.resetModules()
     rmSync(base, { recursive: true, force: true })

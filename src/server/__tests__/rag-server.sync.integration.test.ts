@@ -1,22 +1,15 @@
-// MCP sync tools integration test (SYNC-004 / SYNC-006 / SYNC-007)
-// Test Type: Integration (real RAGServer, real VectorStore, real parser +
-// chunker, real filesystem under `tmp/`; only the embedder is stubbed)
+// MCP sync tools integration. Only the embedder is stubbed; the parser,
+// chunker, store and real filesystem under `tmp/` are used as-is.
 //
-// Work plan: docs/plans/20260726-feature-incremental-sync.md
-//   § Reference Contract Values → MCP Contract, § MCP Mutation Guard,
-//   § Binding Contracts (SYNC-004/006/007)
+// Mock isolation: `utils/scan.js` is imported by other test files, so the
+// factory is installed with `vi.doMock` in `beforeAll` and removed in
+// `afterAll`, with the server imported dynamically afterwards (see
+// project-context § Test Environment Constraints). It delegates to the real
+// walker, recording arguments and — when a test asks — parking the scan so a
+// job can be observed while provably still running.
 //
-// Mock isolation: `../../utils/scan.js` is imported by other test files, so the
-// factory is installed with `vi.doMock` in `beforeAll` and removed with
-// `vi.doUnmock` + `vi.resetModules` in `afterAll`, with the server module
-// imported dynamically afterwards (see `.claude/skills/project-context/SKILL.md`
-// § Test Environment Constraints). The factory delegates to the real walker: it
-// only records the verbatim argument list and, when a test asks for it, parks
-// the sync scan so a job can be observed while it is provably still running.
-//
-// Background work is never awaited with a sleep: every wait polls the real
-// `sync_status` handler until the job leaves `running`, which is the same
-// signal an MCP client has.
+// No wait is a timed sleep: every wait polls the real `sync_status` handler,
+// which is the same signal an MCP client has.
 
 import { createHash } from 'node:crypto'
 import { mkdirSync, rmSync, symlinkSync } from 'node:fs'
@@ -24,7 +17,9 @@ import { chmod, mkdir, rm, symlink, writeFile } from 'node:fs/promises'
 import { join, resolve, sep } from 'node:path'
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { withTestDevice } from '../../__tests__/test-device.js'
+import { parseJson, privateMembers } from '../../__tests__/test-doubles.js'
 import type { Embedder } from '../../embedder/index.js'
+import { isRecord } from '../../utils/type-guards.js'
 import type { SyncStatusResult } from '../types.js'
 
 // ============================================
@@ -63,7 +58,12 @@ const scanFactory = async (importOriginal: () => Promise<typeof import('../../ut
       ...args: Parameters<typeof actual.bfsCollectSupportedFiles>
     ) => {
       scanArgs.push(args)
-      if (scanGate !== null && args.length === 3) await scanGate.pending
+      // Park the sync walk only. The sync route passes no `scope` key at all,
+      // while the list route always forwards one (possibly `undefined`), so
+      // key presence separates the two callers without gating read-only tools.
+      if (scanGate !== null && !('scope' in (args[2] ?? {}))) {
+        await scanGate.pending
+      }
       return await actual.bfsCollectSupportedFiles(...args)
     },
   }
@@ -230,7 +230,7 @@ async function makeServer(fixture: Fixture): Promise<ServerInstance> {
       maxFileSize: 100 * 1024 * 1024,
     })
   )
-  const embedder = (server as unknown as { embedder: Embedder }).embedder
+  const embedder = privateMembers<{ embedder: Embedder }>(server).embedder
   vi.spyOn(embedder, 'embedBatch').mockImplementation(async (texts: string[]) => {
     if (texts.some((text) => text.includes(FAIL_MARKER))) {
       throw new Error('induced embedding failure')
@@ -257,10 +257,12 @@ type RegisteredHandler = (
  * owns the mutation guard and the tool switch.
  */
 function dispatch(server: ServerInstance, name: string, args: unknown): Promise<DispatchResult> {
-  const handler = (
-    server as unknown as { server: { _requestHandlers: Map<string, RegisteredHandler> } }
+  const handler = privateMembers<{ server: { _requestHandlers: Map<string, RegisteredHandler> } }>(
+    server
   ).server._requestHandlers.get('tools/call')
-  if (handler === undefined) throw new Error('tools/call handler not registered')
+  if (handler === undefined) {
+    throw new Error('tools/call handler not registered')
+  }
   return handler(
     { method: 'tools/call', params: { name, arguments: args } },
     { signal: new AbortController().signal }
@@ -274,14 +276,14 @@ function firstBlock(result: DispatchResult): string {
 async function syncStart(server: ServerInstance, args: unknown = {}): Promise<string> {
   const result = await dispatch(server, 'sync_start', args)
   expect(result.isError).toBeUndefined()
-  const { jobId } = JSON.parse(firstBlock(result)) as { jobId: string }
+  const { jobId } = parseJson<{ jobId: string }>(firstBlock(result))
   return jobId
 }
 
 async function syncStatus(server: ServerInstance, jobId: string): Promise<SyncStatusResult> {
   const result = await dispatch(server, 'sync_status', { jobId })
   expect(result.isError).toBeUndefined()
-  return JSON.parse(firstBlock(result)) as SyncStatusResult
+  return parseJson<SyncStatusResult>(firstBlock(result))
 }
 
 /**
@@ -299,7 +301,9 @@ async function pollUntilTerminal(
   while (Date.now() < deadline) {
     const snapshot = await syncStatus(server, jobId)
     snapshots.push(snapshot)
-    if (snapshot.state !== 'running') return snapshots
+    if (snapshot.state !== 'running') {
+      return snapshots
+    }
     await new Promise((resolveTick) => setImmediate(resolveTick))
   }
   throw new Error(`sync job ${jobId} never reached a terminal state`)
@@ -307,7 +311,9 @@ async function pollUntilTerminal(
 
 function lastSnapshot(snapshots: SyncStatusResult[]): SyncStatusResult {
   const last = snapshots.at(-1)
-  if (last === undefined) throw new Error('no status snapshot was collected')
+  if (last === undefined) {
+    throw new Error('no status snapshot was collected')
+  }
   return last
 }
 
@@ -346,7 +352,9 @@ describe('MCP sync tools', () => {
   afterAll(async () => {
     vi.restoreAllMocks()
     await rm(TMP_ROOT, { recursive: true, force: true })
-    for (const path of MOCKED_PATHS) vi.doUnmock(path)
+    for (const path of MOCKED_PATHS) {
+      vi.doUnmock(path)
+    }
     vi.resetModules()
   })
 
@@ -387,9 +395,9 @@ describe('MCP sync tools', () => {
       // The scan is parked at its first call, so no file has been hashed and
       // nothing has been written.
       expect(scanArgs).toHaveLength(1)
-      const statusBlock = JSON.parse(firstBlock(await dispatch(server, 'status', {}))) as {
+      const statusBlock = parseJson<{
         chunkCount: number
-      }
+      }>(firstBlock(await dispatch(server, 'status', {})))
       expect(statusBlock.chunkCount).toBe(0)
 
       gate.release()
@@ -640,16 +648,16 @@ describe('MCP sync tools', () => {
     expect(terminal.state).toBe('succeeded')
     expect(terminal.summary).toEqual({ upserted: 2, skipped: 0, empty: 0, pruned: 0 })
     // Both configured roots were scanned, each as its own BFS root, and each
-    // with exactly three arguments: forwarding a `scope` would hide an
-    // unobserved region from the coverage facts and make prune unsafe.
+    // with no `scope`: forwarding a `scope` would hide an unobserved region from
+    // the coverage facts and make prune unsafe.
     expect(scanArgs).toEqual(
       fixture.roots.map((root) => [
         root,
         [`${resolve(fixture.dbPath)}${sep}`, `${resolve(fixture.cacheDir)}${sep}`],
-        MAX_SCAN_DEPTH,
+        { maxDepth: MAX_SCAN_DEPTH },
       ])
     )
-    expect(scanArgs.every((args) => args.length === 3)).toBe(true)
+    expect(scanArgs.every((args) => !isRecord(args[2]) || !('scope' in args[2]))).toBe(true)
     const paths = await storedPaths(fixture)
     expect(paths).toEqual([firstPath, secondPath].sort())
     expect(paths).not.toContain(deepPath)
@@ -709,8 +717,9 @@ describe('MCP sync tools', () => {
     await writeFixtureFile(join(rootDir, 'second.md'), `second document ${'b'.repeat(200)}`)
 
     const server = await makeServer(fixture)
-    const vectorStore = (server as unknown as { vectorStore: InstanceType<typeof VectorStore> })
-      .vectorStore
+    const vectorStore = privateMembers<{ vectorStore: InstanceType<typeof VectorStore> }>(
+      server
+    ).vectorStore
     const optimizeSpy = vi.spyOn(vectorStore, 'optimize')
     try {
       const jobId = await syncStart(server)
@@ -767,15 +776,11 @@ describe('MCP sync tools', () => {
     ])
   }, 45000)
 
-  // --------------------------------------------
-  // A `path` named THROUGH a symlinked directory
-  // --------------------------------------------
-  //
-  // The MCP client fully controls `path` and is the untrusted party here.
-  // `resolve()` is lexical, so it cannot see that an intermediate component is a
-  // symbolic link: `<root>/link/x.md` passes a key-based containment check while
-  // its real location is outside every configured root. `ingest_file` already
-  // realpath-validates, so this surface must refuse the same paths.
+  // A `path` named THROUGH a symlinked directory. The MCP client fully
+  // controls `path` and is the untrusted party. `resolve()` is lexical, so
+  // `<root>/link/x.md` passes a key-based check while its real location is
+  // outside every root; `ingest_file` already realpath-validates, so this
+  // surface must refuse the same paths.
 
   describeSymlinkedRoot('with a symlinked intermediate directory', () => {
     interface EscapeFixture extends Fixture {

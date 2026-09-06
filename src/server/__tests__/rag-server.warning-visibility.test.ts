@@ -1,21 +1,17 @@
-// RAG MCP Server warning-visibility tests (P3-T3, AC-003 / AC-009 / AC-010 / AC-013)
+// Config warnings must be surfaced in EVERY tool response, not only
+// `query_documents` / `status`, and a `configError` must make root-dependent
+// tools fail fast while `status` stays callable and reports the message.
 //
-// Verifies that config warnings stored on the server are surfaced in EVERY
-// MCP tool response (not only `query_documents` / `status`), and that a
-// `configError` (invalid `BASE_DIRS`) makes root-dependent tools fail fast
-// while keeping `status` callable and exposing the error message.
-//
-// Most assertions use the early-validation path (configError throws before
-// any DB/embedder traffic) so the suite stays fast; the `status` callable
-// case uses an initialized server because `vectorStore.getStatus()` is
-// exercised. The warning-block shape (text content + annotations) is
-// asserted directly on handler return values — the protocol layer just
-// forwards the array, so per-handler assertions cover the MCP contract.
+// Most assertions use the early-validation path, which fires before any DB or
+// embedder traffic, so the suite stays fast. The warning-block shape is
+// asserted on handler return values, since the protocol layer just forwards
+// the array.
 
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { testModelCacheDir, withTestDevice } from '../../__tests__/test-device.js'
+import { expectDefined, expectRecord, privateMembers } from '../../__tests__/test-doubles.js'
 import type { Embedder } from '../../embedder/index.js'
 import { BaseDirsConfigError } from '../../utils/base-dirs.js'
 import { generateRawDataPath } from '../../utils/raw-data-utils.js'
@@ -34,23 +30,26 @@ const NESTED_PRUNED_WARNING =
  */
 type ContentBlock = { type: string; text: string; annotations?: unknown }
 
+/** One block of an MCP tool result, before the text-block narrowing below. */
+type ResultBlock = { type: string; text?: string | undefined; annotations?: unknown }
+
 function findWarningBlock(
-  content: ReadonlyArray<ContentBlock>,
+  content: ReadonlyArray<ResultBlock>,
   needle: string
 ): ContentBlock | undefined {
-  return content.find((b) => b.type === 'text' && b.text.includes(needle))
+  for (const block of content) {
+    if (block.type === 'text' && typeof block.text === 'string' && block.text.includes(needle)) {
+      return { ...block, text: block.text }
+    }
+  }
+  return undefined
 }
 
-// =============================================================================
-// Construction-only tests (no initialize/DB). Cover the early-error path that
-// fires BEFORE any I/O — root-dependent tools (the ones that touch
-// `baseDirs` directly, plus the user-supplied-filePath branches of dual-mode
-// tools) must reject when configError is present. Tools that do NOT touch
-// `baseDirs` (`query_documents`, `ingest_data`, and the source-mode branches
-// of `delete_file` / `read_chunk_neighbors`) MUST remain callable so MCP
-// users can still query, capture raw data, and operate by `source` while
-// they fix the config error visible from `status`.
-// =============================================================================
+// Construction-only: the early-error path, before any I/O. Root-dependent
+// tools must reject when a configError is present, while the ones that never
+// touch `baseDirs` — `query_documents`, `ingest_data`, and the source-mode
+// branches of `delete_file` / `read_chunk_neighbors` — must stay callable so a
+// user can keep working while fixing the config.
 describe('root-dependent tools fail fast on configError; non-root-dependent stay callable', () => {
   const testDbPath = resolve('./tmp/test-lancedb-warning-visibility-err')
   const testDataDir = resolve('./tmp/test-data-warning-visibility-err')
@@ -168,7 +167,7 @@ describe('P3-T3: status callable with configError and exposes diagnostic', () =>
     expect(result.content[0]?.type).toBe('text')
     // configError diagnostic must be visible in content (not only stderr).
     const errorBlock = findWarningBlock(
-      result.content as ContentBlock[],
+      result.content,
       'BASE_DIRS must be a JSON array of non-empty path strings'
     )
     expect(errorBlock).toBeDefined()
@@ -181,13 +180,9 @@ describe('P3-T3: status callable with configError and exposes diagnostic', () =>
   // `withWarnings` but never converted into a thrown McpError.
 
   it('query_documents remains callable in degraded mode (operates on DB only)', async () => {
-    // An uninitialized vector store returns an empty result set — the
-    // contract under test is that the handler does not throw an
-    // assertConfigOk error before the DB call. The handler attaches the
-    // configError-derived warning via `configWarnings` only when the caller
-    // also supplied them; this test fixture passes only `configError`, so we
-    // assert on callability + primary content shape, not on the warning
-    // block content (covered by the configWarnings suite below).
+    // An uninitialized store returns nothing; the contract here is that the
+    // handler does not throw an assertConfigOk error before the DB call. The
+    // warning-block content is covered by the configWarnings suite below.
     const result = await server.handleQueryDocuments({ query: 'no-op', limit: 1 })
     expect(result.content.length).toBeGreaterThanOrEqual(1)
     expect(result.content[0]?.type).toBe('text')
@@ -241,14 +236,9 @@ describe('P3-T3: status callable with configError and exposes diagnostic', () =>
   }, 60000)
 })
 
-// =============================================================================
-// Warnings present on every tool when configWarnings is non-empty.
-// We use the configError path to short-circuit root-dependent handlers and
-// inspect the rejection — but for that path the tool returns an error, not
-// content. So this block uses warnings WITHOUT a configError: the handler
-// must perform its normal flow AND attach warnings. For tools that need DB
-// state (query/ingest/...) we initialize a real server.
-// =============================================================================
+// Warnings on every tool. The configError path returns an error rather than
+// content, so this block uses warnings WITHOUT a configError: the handler must
+// run its normal flow AND attach them.
 describe('P3-T3: warnings appear in every tool response when warnings exist', () => {
   let server: RAGServer
   const testDbPath = resolve('./tmp/test-lancedb-warning-visibility-warn')
@@ -288,14 +278,14 @@ describe('P3-T3: warnings appear in every tool response when warnings exist', ()
   // status: warning content block must include the precedence warning.
   it('status response includes warning content block', async () => {
     const result = await server.handleStatus()
-    const block = findWarningBlock(result.content as ContentBlock[], PRECEDENCE_WARNING)
+    const block = findWarningBlock(result.content, PRECEDENCE_WARNING)
     expect(block).toBeDefined()
   })
 
   // list_files: nested-root pruning warning is exposed here too.
   it('list_files response includes nested-root pruning warning', async () => {
     const result = await server.handleListFiles()
-    const block = findWarningBlock(result.content as ContentBlock[], NESTED_PRUNED_WARNING)
+    const block = findWarningBlock(result.content, NESTED_PRUNED_WARNING)
     expect(block).toBeDefined()
   })
 
@@ -304,8 +294,8 @@ describe('P3-T3: warnings appear in every tool response when warnings exist', ()
   it('query_documents includes warnings on every call (not only the first)', async () => {
     const first = await server.handleQueryDocuments({ query: 'sample', limit: 1 })
     const second = await server.handleQueryDocuments({ query: 'sample', limit: 1 })
-    const firstBlock = findWarningBlock(first.content as ContentBlock[], PRECEDENCE_WARNING)
-    const secondBlock = findWarningBlock(second.content as ContentBlock[], PRECEDENCE_WARNING)
+    const firstBlock = findWarningBlock(first.content, PRECEDENCE_WARNING)
+    const secondBlock = findWarningBlock(second.content, PRECEDENCE_WARNING)
     expect(firstBlock).toBeDefined()
     expect(secondBlock).toBeDefined()
   })
@@ -313,7 +303,7 @@ describe('P3-T3: warnings appear in every tool response when warnings exist', ()
   // ingest_file: warning block accompanies the ingest result.
   it('ingest_file response includes warning content block', async () => {
     const result = await server.handleIngestFile({ filePath: sampleFile })
-    const block = findWarningBlock(result.content as ContentBlock[], PRECEDENCE_WARNING)
+    const block = findWarningBlock(result.content, PRECEDENCE_WARNING)
     expect(block).toBeDefined()
   })
 
@@ -324,7 +314,7 @@ describe('P3-T3: warnings appear in every tool response when warnings exist', ()
         'A short markdown document used solely to confirm warning visibility on ingest_data.',
       metadata: { source: 'clipboard://2026-05-23/warning-visibility', format: 'markdown' },
     })
-    const block = findWarningBlock(result.content as ContentBlock[], PRECEDENCE_WARNING)
+    const block = findWarningBlock(result.content, PRECEDENCE_WARNING)
     expect(block).toBeDefined()
   })
 
@@ -333,7 +323,7 @@ describe('P3-T3: warnings appear in every tool response when warnings exist', ()
     // Ingest a file first so chunkIndex 0 exists.
     await server.handleIngestFile({ filePath: sampleFile })
     const result = await server.handleReadChunkNeighbors({ filePath: sampleFile, chunkIndex: 0 })
-    const block = findWarningBlock(result.content as ContentBlock[], PRECEDENCE_WARNING)
+    const block = findWarningBlock(result.content, PRECEDENCE_WARNING)
     expect(block).toBeDefined()
   })
 
@@ -342,20 +332,18 @@ describe('P3-T3: warnings appear in every tool response when warnings exist', ()
     // Ensure something exists to delete (idempotent for delete semantics).
     await server.handleIngestFile({ filePath: sampleFile })
     const result = await server.handleDeleteFile({ filePath: sampleFile })
-    const block = findWarningBlock(result.content as ContentBlock[], PRECEDENCE_WARNING)
+    const block = findWarningBlock(result.content, PRECEDENCE_WARNING)
     expect(block).toBeDefined()
   })
 
   // Annotations remain on the warning block (assistant/user audience, priority 0.3).
   it('warning content blocks carry MCP annotations', async () => {
     const result = await server.handleStatus()
-    const block = findWarningBlock(result.content as ContentBlock[], PRECEDENCE_WARNING)
+    const block = findWarningBlock(result.content, PRECEDENCE_WARNING)
     expect(block).toBeDefined()
-    const annotations = (block as { annotations?: { audience?: string[]; priority?: number } })
-      .annotations
-    expect(annotations).toBeDefined()
-    expect(annotations?.audience).toEqual(['user', 'assistant'])
-    expect(annotations?.priority).toBe(0.3)
+    const annotations = expectRecord(expectDefined(block).annotations)
+    expect(annotations['audience']).toEqual(['user', 'assistant'])
+    expect(annotations['priority']).toBe(0.3)
   })
 })
 
@@ -458,7 +446,7 @@ describe('query_documents attachment warning isolation', () => {
   let server: RAGServer
 
   function internals(value: RAGServer): { embedder: Embedder; vectorStore: VectorStore } {
-    return value as unknown as { embedder: Embedder; vectorStore: VectorStore }
+    return privateMembers<{ embedder: Embedder; vectorStore: VectorStore }>(value)
   }
 
   beforeAll(() => {

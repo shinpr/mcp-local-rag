@@ -56,7 +56,10 @@ if (firstArg !== undefined && isSubcommand(firstArg)) {
     process.exit(1)
   })
 
-  startServer()
+  startServer().catch((error: unknown) => {
+    console.error('Failed to start server:', error)
+    process.exit(1)
+  })
 } else {
   console.error(`Unknown command: ${sanitizeForEcho(firstArg ?? '')}`)
   console.error(`Available commands: ${SUBCOMMANDS.join(', ')}`)

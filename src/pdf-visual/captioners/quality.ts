@@ -1,44 +1,32 @@
 // `quality` visual-quality profile — Qwen2.5-VL-3B-Instruct-ONNX.
 //
-// Verbatim port of the working-tree captioner validated during the visual-
-// quality design discussion. Higher fidelity than `fast` on figures with
-// in-image text (axis labels, panel sub-labels, annotations), at the cost of
-// a materially larger model cache (~10× `fast`) and ~2× per-page inference
-// time on CPU. Shares the profile-agnostic load/decode mechanics with `fast`
-// via `shared.ts`; keeps its own model class, prompt, resize, processor call
-// shape, and generation options.
+// Higher fidelity than `fast` on figures with in-image text (axis labels,
+// panel sub-labels), at ~10x the model cache and ~2x per-page inference on
+// CPU. Shares the load/decode mechanics with `fast` via `shared.ts`, and keeps
+// its own model class, prompt, resize, processor call shape and generation
+// options.
 //
-// Implementation contract:
-//   1. Lazy-load processor + model on first `caption()` call with the pinned
-//      DTYPE and the resolved device. `env.cacheDir` is set by the dispatcher
-//      (`captioner.ts`) before this profile is constructed.
-//   2. Decode PNG bytes via `RawImage.fromBlob(...)` and resize to 448x448 —
-//      matches the onnx-community Qwen2-VL reference example. Qwen2.5-VL
-//      supports dynamic resolution natively, but the reference example uses
-//      a fixed resize for stable behavior.
-//   3. Build chat-style input via `processor.apply_chat_template(messages,
-//      { add_generation_prompt: true })` with the Qwen2.5-VL conversation
-//      shape `[{role:'user', content:[{type:'image'},{type:'text',text:...}]}]`.
-//      The shape is hard-coded against the Qwen2.5-VL family; swapping in a
-//      non-Qwen-VL model requires a new profile.
-//   4. Call `model.generate({ ...inputs, max_new_tokens: 128 })`. The
-//      `repetition_penalty` / `no_repeat_ngram_size` options used by `fast`
-//      are intentionally absent — on Qwen2.5-VL they cause forced variant
-//      generation (e.g. "Cycles per cycle" → "Cpu cycles/cycle" → "Cnt
-//      cyles/clk") whenever a figure naturally repeats a phrase.
-//   5. Decode via `processor.batch_decode(newTokens, { skip_special_tokens: true })`
-//      where `newTokens = outputs.slice(null, [inputs.input_ids.dims.at(-1), null])`.
-//      `dims.at(-1)` reads the last dimension defensively — matches the
-//      onnx-community reference example.
-//   6. Post-processing via `shared.postProcess` (same pipeline as `fast`).
-//   7. On model load / image decode / generation failure throw `VlmError`
-//      with `pageNum` + `cause`. No silent fallback to `fast`.
+// Three details are not inferable from the code:
+//   - The image is resized to a fixed 448x448 matching the onnx-community
+//     reference example, though Qwen2.5-VL supports dynamic resolution.
+//   - `repetition_penalty` / `no_repeat_ngram_size`, which `fast` uses, are
+//     deliberately absent: on Qwen2.5-VL they force variant generation
+//     whenever a figure repeats a phrase ("Cycles per cycle" becomes "Cpu
+//     cycles/cycle", then "Cnt cyles/clk").
+//   - The conversation shape is hard-coded against the Qwen2.5-VL family, so a
+//     non-Qwen-VL model needs a new profile.
 
 import { AutoProcessor, Qwen2_5_VLForConditionalGeneration } from '@huggingface/transformers'
 
 import type { Captioner } from '../types.js'
 import { VlmError } from '../types.js'
-import { createModelLoader, decodePngToRawImage, postProcess } from './shared.js'
+import {
+  asVlmModel,
+  asVlmProcessor,
+  createModelLoader,
+  decodePngToRawImage,
+  postProcess,
+} from './shared.js'
 
 const MODEL_NAME = 'onnx-community/Qwen2.5-VL-3B-Instruct-ONNX'
 
@@ -49,12 +37,9 @@ const MODEL_NAME = 'onnx-community/Qwen2.5-VL-3B-Instruct-ONNX'
 const QWEN_INPUT_SIZE = 448
 
 /**
- * Static prompt — tuned for retrieval search indexing. Asks the VLM to scan
- * the whole image before composing output so coverage spans every region,
- * then produces a two-part response (Summary + Keywords) suitable for
- * embedding + downstream semantic / lexical search. No length specifiers —
- * output length is controlled by `max_new_tokens` because length specs
- * narrow coverage.
+ * Static prompt, tuned for retrieval indexing: scan the whole image before
+ * composing, then answer as Summary + Keywords. No length specifier — length
+ * is `max_new_tokens`'s job, because a spec in the prompt narrows coverage.
  */
 const PROMPT = `Describe this PDF page image for retrieval search indexing.
 
@@ -108,19 +93,10 @@ export function createQualityCaptioner(resolvedDevice: string): Captioner {
             content: [{ type: 'image' }, { type: 'text', text: PROMPT }],
           },
         ]
-        // The processor and model are dynamic in type at the boundary;
-        // narrow to a minimal callable / generate-able shape here. Qwen2.5-VL
-        // processor takes a single image (not an array), per the
-        // onnx-community reference example signature `processor(text, image)`.
-        const proc = processor as {
-          apply_chat_template: (m: unknown, o: { add_generation_prompt: boolean }) => string
-          batch_decode: (t: unknown, o: { skip_special_tokens: boolean }) => string[]
-        } & ((prompt: string, image: unknown) => Promise<{ input_ids: { dims: number[] } }>)
-        const mdl = model as {
-          generate: (inputs: unknown) => Promise<{
-            slice: (axis: null, range: [number, number | null]) => unknown
-          }>
-        }
+        // Qwen2.5-VL takes a single image (not an array), per the
+        // onnx-community reference `processor(text, image)`.
+        const proc = asVlmProcessor(processor)
+        const mdl = asVlmModel(model)
 
         const chatPrompt = proc.apply_chat_template(messages, { add_generation_prompt: true })
         const inputs = await proc(chatPrompt, rawImage)
@@ -133,7 +109,12 @@ export function createQualityCaptioner(resolvedDevice: string): Captioner {
         // `outputs.slice(null, [inputLen, null])` strips the prompt tokens.
         // `dims.at(-1)` reads the last dimension defensively — matches the
         // onnx-community reference example.
-        const inputLen = inputs.input_ids.dims.at(-1) as number
+        const inputLen = inputs.input_ids.dims.at(-1)
+        if (typeof inputLen !== 'number') {
+          throw new VlmError('Captioner returned an input tensor without a token dimension', {
+            pageNum,
+          })
+        }
         const newTokens = outputs.slice(null, [inputLen, null])
 
         const decoded = proc.batch_decode(newTokens, { skip_special_tokens: true })
@@ -141,7 +122,9 @@ export function createQualityCaptioner(resolvedDevice: string): Captioner {
 
         return postProcess(text)
       } catch (err) {
-        if (err instanceof VlmError) throw err
+        if (err instanceof VlmError) {
+          throw err
+        }
         const cause = err instanceof Error ? err : new Error(String(err))
         throw new VlmError(`Captioning failed for page ${pageNum}`, { cause, pageNum })
       }

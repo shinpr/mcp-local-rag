@@ -1,5 +1,4 @@
 // CLI Query Tests
-// Test Type: Unit Test
 // Tests runQuery functionality with mocked dependencies
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -49,13 +48,16 @@ const rawDataUtilsFactory = () => ({
     .mockImplementation((filePath: string) => filePath.includes('/raw-data/')),
   isPathInRawDataDir: vi.fn().mockResolvedValue(false),
   extractSourceFromPath: vi.fn().mockImplementation((filePath: string) => {
-    if (!filePath.includes('/raw-data/')) return null
+    if (!filePath.includes('/raw-data/')) {
+      return null
+    }
     return 'https://example.com/page'
   }),
 })
 
 const MOCKED_PATHS = ['../../cli/common.js', '../../utils/raw-data-utils.js'] as const
 
+import { expectError } from '../test-doubles.js'
 import { formatCliErrorShim } from './cli-error-shim.js'
 
 let parseArgs: typeof import('../../cli/query.js').parseArgs
@@ -107,7 +109,9 @@ describe('CLI query', () => {
   })
 
   afterAll(() => {
-    for (const p of MOCKED_PATHS) vi.doUnmock(p)
+    for (const p of MOCKED_PATHS) {
+      vi.doUnmock(p)
+    }
     vi.resetModules()
   })
 
@@ -132,7 +136,7 @@ describe('CLI query', () => {
     const { stderr, error } = await captureOutput(() => runQuery(['--help']))
 
     expect(error).toBeInstanceOf(Error)
-    expect((error as Error).message).toBe('process.exit(0)')
+    expect(expectError(error).message).toBe('process.exit(0)')
 
     const joined = stderr.join('\n')
     expect(joined).toContain('Usage: mcp-local-rag')
@@ -145,7 +149,7 @@ describe('CLI query', () => {
     const { stderr, error } = await captureOutput(() => runQuery(['-h']))
 
     expect(error).toBeInstanceOf(Error)
-    expect((error as Error).message).toBe('process.exit(0)')
+    expect(expectError(error).message).toBe('process.exit(0)')
 
     const joined = stderr.join('\n')
     expect(joined).toContain('Usage: mcp-local-rag')
@@ -159,7 +163,7 @@ describe('CLI query', () => {
     const { stderr, error } = await captureOutput(() => runQuery([]))
 
     expect(error).toBeInstanceOf(Error)
-    expect((error as Error).message).toBe('process.exit(1)')
+    expect(expectError(error).message).toBe('process.exit(1)')
 
     const joined = stderr.join('\n')
     expect(joined).toContain('Usage: mcp-local-rag')
@@ -173,7 +177,7 @@ describe('CLI query', () => {
     const { stderr, error } = await captureOutput(() => runQuery(['--limit', '0', 'search text']))
 
     expect(error).toBeInstanceOf(Error)
-    expect((error as Error).message).toBe('process.exit(1)')
+    expect(expectError(error).message).toBe('process.exit(1)')
 
     const joined = stderr.join('\n')
     expect(joined).toContain('--limit must be between 1 and 20')
@@ -183,7 +187,7 @@ describe('CLI query', () => {
     const { stderr, error } = await captureOutput(() => runQuery(['--limit', '21', 'search text']))
 
     expect(error).toBeInstanceOf(Error)
-    expect((error as Error).message).toBe('process.exit(1)')
+    expect(expectError(error).message).toBe('process.exit(1)')
 
     const joined = stderr.join('\n')
     expect(joined).toContain('--limit must be between 1 and 20')
@@ -193,7 +197,7 @@ describe('CLI query', () => {
     const { stderr, error } = await captureOutput(() => runQuery(['--limit', 'abc', 'search text']))
 
     expect(error).toBeInstanceOf(Error)
-    expect((error as Error).message).toBe('process.exit(1)')
+    expect(expectError(error).message).toBe('process.exit(1)')
 
     const joined = stderr.join('\n')
     expect(joined).toContain('--limit must be between 1 and 20')
@@ -203,7 +207,7 @@ describe('CLI query', () => {
     const { stderr, error } = await captureOutput(() => runQuery(['--limit']))
 
     expect(error).toBeInstanceOf(Error)
-    expect((error as Error).message).toBe('process.exit(1)')
+    expect(expectError(error).message).toBe('process.exit(1)')
 
     const joined = stderr.join('\n')
     expect(joined).toContain('Missing value for --limit')
@@ -215,7 +219,7 @@ describe('CLI query', () => {
     )
 
     expect(error).toBeInstanceOf(Error)
-    expect((error as Error).message).toBe('process.exit(1)')
+    expect(expectError(error).message).toBe('process.exit(1)')
 
     const joined = stderr.join('\n')
     expect(joined).toContain('Missing value for --limit')
@@ -366,7 +370,7 @@ describe('CLI query', () => {
     const { stderr, error } = await captureOutput(() => runQuery(['--scope', '', 'search text']))
 
     expect(error).toBeInstanceOf(Error)
-    expect((error as Error).message).toBe('process.exit(1)')
+    expect(expectError(error).message).toBe('process.exit(1)')
 
     const joined = stderr.join('\n')
     expect(joined).toContain('--scope')
@@ -417,7 +421,7 @@ describe('CLI query', () => {
     const { stderr, error } = await captureOutput(() => runQuery(['--unknown', 'search text']))
 
     expect(error).toBeInstanceOf(Error)
-    expect((error as Error).message).toBe('process.exit(1)')
+    expect(expectError(error).message).toBe('process.exit(1)')
 
     const joined = stderr.join('\n')
     expect(joined).toContain('Unknown option: --unknown')
@@ -429,7 +433,7 @@ describe('CLI query', () => {
     )
 
     expect(error).toBeInstanceOf(Error)
-    expect((error as Error).message).toBe('process.exit(1)')
+    expect(expectError(error).message).toBe('process.exit(1)')
 
     const joined = stderr.join('\n')
     expect(joined).toContain('Unknown option: --db-path')
@@ -444,7 +448,7 @@ describe('CLI query', () => {
     const { stderr, error } = await captureOutput(() => runQuery(['search text']))
 
     expect(error).toBeInstanceOf(Error)
-    expect((error as Error).message).toBe('process.exit(1)')
+    expect(expectError(error).message).toBe('process.exit(1)')
 
     const joined = stderr.join('\n')
     expect(joined).toContain('Database connection failed')

@@ -1,16 +1,9 @@
-// Collect-predicate classification tests for `src/utils/scan.ts`.
-// Test Type: Unit (`classifyScanEntry`, pure) + Integration (`classifyRequestedPath`,
-// real filesystem fixtures under the gitignored project-root `tmp/`)
+// The collect predicates of `src/utils/scan.ts`, against real fixtures.
 //
-// Why this file exists: sync accepts a path a caller names as well as a path the
-// walk discovers, and only the discovered one used to pass the walker's four
-// predicates. Everything here is that shared decision — a symbolic link is never
-// followed, an excluded prefix is never entered, an unsupported extension is not a
-// document, and something that is neither a regular file nor a directory (a FIFO,
-// whose read never returns) is refused.
-//
-// No module mocking: `../scan.js` is imported by other test files, and the
-// functions under test need no collaborator substitution.
+// Sync accepts a path a caller names as well as one the walk discovers, and
+// only the discovered one used to pass these: a symbolic link is never
+// followed, an excluded prefix never entered, an unsupported extension is not
+// a document, and a FIFO — whose read never returns — is refused.
 
 import { execFileSync } from 'node:child_process'
 import { lstatSync, mkdirSync, rmSync, symlinkSync } from 'node:fs'
@@ -152,8 +145,12 @@ describe('classifyRequestedPath', () => {
     await writeFile(unsupportedFile, 'not a document')
     await writeFile(managedFile, 'captured content')
     await writeFile(outsideTarget, 'a secret outside every root')
-    if (symlinkSupported()) symlinkSync(outsideTarget, linkPath, 'file')
-    if (fifoSupported()) execFileSync('mkfifo', [fifoPath])
+    if (symlinkSupported()) {
+      symlinkSync(outsideTarget, linkPath, 'file')
+    }
+    if (fifoSupported()) {
+      execFileSync('mkfifo', [fifoPath])
+    }
   })
 
   afterAll(async () => {
@@ -202,13 +199,11 @@ describe('classifyRequestedPath', () => {
 // ============================================
 
 describe('exclude-prefix comparison, case differences', () => {
-  // Exclude prefixes are built with `resolve()` only, which preserves case, so on
-  // Windows — where the filesystem does not — `BASE_DIRS` and `DB_PATH` spelled
-  // with different case left database and cache files classified as documents.
-  // Worse than a plain miss: the prune guard compares case-folded keys
-  // (`toSyncPathKey`), so those files were ingested and then never prunable.
-  // `platform` is a parameter for the same reason `toSyncPathKey` takes one — the
-  // Windows branch has to be provable from a POSIX host.
+  // Exclude prefixes are built with `resolve()` only, which preserves case, so
+  // on Windows a `BASE_DIRS` and `DB_PATH` differing in case left database
+  // files classified as documents. Worse than a plain miss: the prune guard
+  // compares case-folded keys, so those files were ingested and then never
+  // prunable. `platform` is a parameter so that branch is provable on POSIX.
   const caseDir = join(TMP_ROOT, 'case-fold')
   const dbDir = join(caseDir, 'LanceDB')
   const dbFile = join(dbDir, 'raw.md')
@@ -229,13 +224,10 @@ describe('exclude-prefix comparison, case differences', () => {
 
   const walkedFiles = async (platform: NodeJS.Platform): Promise<string[]> =>
     (
-      await bfsCollectSupportedFiles(
-        caseDir,
-        [differentlyCasedDbPrefix],
-        MAX_SCAN_DEPTH,
-        undefined,
-        platform
-      )
+      await bfsCollectSupportedFiles(caseDir, [differentlyCasedDbPrefix], {
+        maxDepth: MAX_SCAN_DEPTH,
+        platform,
+      })
     ).files.sort()
 
   it('excludes a path that differs from its prefix only in case under win32', async () => {
@@ -265,13 +257,10 @@ describe('exclude-prefix comparison, case differences', () => {
   itWithSymlinks('does not descend into the excluded directory during a walk', async () => {
     symlinkSync(documentFile, join(dbDir, 'alias.md'), 'file')
 
-    const result = await bfsCollectSupportedFiles(
-      caseDir,
-      [`${dbDir}${sep}`],
-      MAX_SCAN_DEPTH,
-      undefined,
-      'linux'
-    )
+    const result = await bfsCollectSupportedFiles(caseDir, [`${dbDir}${sep}`], {
+      maxDepth: MAX_SCAN_DEPTH,
+      platform: 'linux',
+    })
 
     expect(result.files).toEqual([documentFile])
     expect(result.skippedSymlinks).toEqual([])

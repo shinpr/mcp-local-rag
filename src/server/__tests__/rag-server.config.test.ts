@@ -12,6 +12,7 @@ import { mkdirSync, rmSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { testModelCacheDir } from '../../__tests__/test-device.js'
+import { privateMembers } from '../../__tests__/test-doubles.js'
 import type { DocumentParser } from '../../parser/index.js'
 import { parseStoreImages, resolveServerConfig } from '../../server-main.js'
 import { BaseDirsConfigError } from '../../utils/base-dirs.js'
@@ -96,7 +97,7 @@ describe('RAGServerConfig degraded-mode construction guards (P3-T1)', () => {
       maxFileSize: 100 * 1024 * 1024,
       configError,
     })
-    const { parser } = server as unknown as { parser: DocumentParser }
+    const { parser } = privateMembers<{ parser: DocumentParser }>(server)
     await expect(parser.validateFilePath('/tmp/anything.txt')).rejects.toThrow(
       /No configured base directory/
     )

@@ -1,15 +1,12 @@
-// CLI sync subcommand — foreground incremental reconciliation of the index.
+// CLI sync subcommand — foreground incremental reconciliation.
 //
-// Composition root for `src/features/sync.ts`: this file supplies the real
-// collaborators (filesystem, scanner, hasher, store, ingestion) and renders the
-// result. Planning, prune eligibility, execution order, and the stop-on-first-
-// error policy all live in the core and are not reproduced here — including the
-// "inside a configured root" check, which the core answers by composing
-// `toSyncPathKey` with the unchanged `isUnderOrEqual`.
+// Composition root for `src/features/sync.ts`: supplies the real collaborators
+// and renders the result. Planning, prune eligibility, execution order and the
+// stop-on-first-error policy all live in the core, including the
+// "inside a configured root" check.
 //
-// The run stays attached to the process until it completes: backgrounding and
-// polling belong to the caller (SYNC-005), so there is no daemon, poller, or
-// watchdog here.
+// The run stays attached to the process: backgrounding and polling belong to
+// the caller, so there is no daemon or watchdog here.
 
 import { readFile, stat } from 'node:fs/promises'
 import { resolve, sep } from 'node:path'
@@ -86,7 +83,7 @@ function parseArgs(args: string[]): SyncArgs {
 
   let index = 0
   while (index < args.length) {
-    const arg = args[index]!
+    const arg = args[index] ?? ''
     switch (arg) {
       case '-h':
       case '--help':
@@ -122,7 +119,9 @@ function parseArgs(args: string[]): SyncArgs {
   }
 
   const parsed: SyncArgs = { help, baseDirs, images }
-  if (path !== undefined) parsed.path = path
+  if (path !== undefined) {
+    parsed.path = path
+  }
   return parsed
 }
 
@@ -162,8 +161,6 @@ function coverageWarnings(coverage: SyncCoverage, maxFileSize: number): string[]
 
 /**
  * Run the sync CLI subcommand.
- * @param args - Arguments after "sync"
- * @param globalOptions - Global options parsed before the subcommand
  */
 export async function runSync(args: string[], globalOptions: GlobalOptions = {}): Promise<void> {
   const parsed = parseArgs(args)
@@ -216,20 +213,20 @@ export async function runSync(args: string[], globalOptions: GlobalOptions = {})
     // of the coverage arrays, which would hide an unobserved region and make
     // prune unsafe.
     scanDir: async (rootPath: string) =>
-      await bfsCollectSupportedFiles(rootPath, excludePaths, MAX_SCAN_DEPTH),
-    // Size first, bytes second: `MAX_FILE_SIZE` is otherwise enforced inside the
-    // parser, which runs long after the whole file would already be in memory
-    // here. Declining (`null`) keeps the rest of the run usable instead of
-    // aborting every future sync of the whole root on one oversized file.
+      await bfsCollectSupportedFiles(rootPath, excludePaths, { maxDepth: MAX_SCAN_DEPTH }),
+    // Size first, bytes second: `MAX_FILE_SIZE` is otherwise enforced inside
+    // the parser, long after the whole file is already in memory here.
+    // Declining (`null`) keeps the rest of the run usable rather than aborting
+    // every future sync of the root over one oversized file.
     //
     // The bound holds only against a non-racing filesystem: a writer that grows
-    // the file, or replaces it with a FIFO, between the `stat` and the `readFile`
-    // restores the unbounded read or an indefinite block. That actor needs local
-    // write access as this same user and can already reach the database directly,
-    // so this is a recorded limitation rather than a defended boundary — as with
-    // the watchdog limitation noted on `requestedPathRejection`.
+    // the file between the `stat` and the `readFile` restores the unbounded
+    // read. That actor already has local write access as this user and can
+    // reach the database directly, so this is a recorded limitation.
     hashFile: async (filePath: string) => {
-      if ((await stat(filePath)).size > config.maxFileSize) return null
+      if ((await stat(filePath)).size > config.maxFileSize) {
+        return null
+      }
       return computeContentHash(await readFile(filePath))
     },
     loadDbManifest: async () => await vectorStore.listChunkHashes(),
@@ -242,13 +239,12 @@ export async function runSync(args: string[], globalOptions: GlobalOptions = {})
         : { visual: false, images: false }
       const chunkCount = await ingestSingleFile(
         filePath,
-        parser,
-        chunker,
-        ensureEmbedder(),
-        vectorStore,
+        { parser, chunker, embedder: ensureEmbedder(), vectorStore },
         ingestOptions
       )
-      if (chunkCount > 0) console.error(`upserted ${filePath} (${chunkCount} chunks)`)
+      if (chunkCount > 0) {
+        console.error(`upserted ${filePath} (${chunkCount} chunks)`)
+      }
       return chunkCount
     },
     deleteExactPath: async (filePath: string) => await vectorStore.deleteChunks(filePath),

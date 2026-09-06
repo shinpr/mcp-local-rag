@@ -7,6 +7,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { buildDocxFixture, headingXml, tableXml } from '../../__tests__/docx-fixture.js'
 import { buildPdfWithImageBytes } from '../../__tests__/pdf-image-fixture.js'
 import { testModelCacheDir, withTestDevice } from '../../__tests__/test-device.js'
+import { parseJson, privateMembers } from '../../__tests__/test-doubles.js'
 import type { Embedder } from '../../embedder/index.js'
 import { parseHydratedVisualAttachments, type VisualAttachment } from '../../vectordb/types.js'
 import { RAGServer } from '../index.js'
@@ -73,11 +74,9 @@ describe('AC-008: File Re-ingestion', () => {
   it('compacts once after a successful direct ingestion', async () => {
     const testFile = resolve(localTestDataDir, 'test-optimize.txt')
     writeFileSync(testFile, 'Content that produces a persisted chunk. '.repeat(20))
-    const vectorStore = (
-      localRagServer as unknown as {
-        vectorStore: { optimize(): Promise<void> }
-      }
-    ).vectorStore
+    const vectorStore = privateMembers<{
+      vectorStore: { optimize(): Promise<void> }
+    }>(localRagServer).vectorStore
     const optimizeSpy = vi.spyOn(vectorStore, 'optimize')
 
     await localRagServer.handleIngestFile({ filePath: testFile })
@@ -106,22 +105,20 @@ describe('AC-008: File Re-ingestion', () => {
     writeFileSync(testFile, fixture)
 
     const ingestResult = await localRagServer.handleIngestFile({ filePath: testFile })
-    const ingestData = JSON.parse(ingestResult.content[0].text) as {
+    const ingestData = parseJson<{
       chunkCount: number
       fileTitle: string | null
-    }
+    }>(ingestResult.content[0].text)
     expect(ingestData.chunkCount).toBeGreaterThan(0)
     expect(ingestData.fileTitle).toBe(expectedTitle)
 
-    const vectorStore = (
-      localRagServer as unknown as {
-        vectorStore: {
-          getChunksByFilePath(
-            filePath: string
-          ): Promise<Array<{ text: string; fileTitle: string | null }>>
-        }
+    const vectorStore = privateMembers<{
+      vectorStore: {
+        getChunksByFilePath(
+          filePath: string
+        ): Promise<Array<{ text: string; fileTitle: string | null }>>
       }
-    ).vectorStore
+    }>(localRagServer).vectorStore
     const persisted = await vectorStore.getChunksByFilePath(testFile)
     const rowChunk = persisted.find((chunk) =>
       expectedValues.every((value) => chunk.text.includes(value))
@@ -133,11 +130,13 @@ describe('AC-008: File Re-ingestion', () => {
       query: 'Retry Policy Identifier 42',
       limit: 10,
     })
-    const queryRows = JSON.parse(queryResult.content[0].text) as Array<{
-      filePath: string
-      text: string
-      fileTitle: string | null
-    }>
+    const queryRows = parseJson<
+      Array<{
+        filePath: string
+        text: string
+        fileTitle: string | null
+      }>
+    >(queryResult.content[0].text)
     expect(
       queryRows.find(
         (row) =>
@@ -165,20 +164,18 @@ describe('AC-008: File Re-ingestion', () => {
           storeImages,
         })
       )
-      const embedder = (server as unknown as { embedder: Embedder }).embedder
+      const embedder = privateMembers<{ embedder: Embedder }>(server).embedder
       vi.spyOn(embedder, 'embedBatch').mockImplementation(async (texts) =>
         deterministicEmbeddings(texts)
       )
       return server
     }
     const readRows = async (server: RAGServer) =>
-      await (
-        server as unknown as {
-          vectorStore: {
-            getChunksByFilePath(path: string): Promise<Array<{ visualAttachments: string | null }>>
-          }
+      await privateMembers<{
+        vectorStore: {
+          getChunksByFilePath(path: string): Promise<Array<{ visualAttachments: string | null }>>
         }
-      ).vectorStore.getChunksByFilePath(testFile)
+      }>(server).vectorStore.getChunksByFilePath(testFile)
 
     const enabled = makeConfiguredServer(true)
     await enabled.initialize()
@@ -187,7 +184,7 @@ describe('AC-008: File Re-ingestion', () => {
       const rows = await readRows(enabled)
       expect(rows.length).toBeGreaterThan(0)
       const attachmentRows = rows
-        .map((row) => JSON.parse(row.visualAttachments ?? '[]') as VisualAttachment[])
+        .map((row) => parseJson<VisualAttachment[]>(row.visualAttachments ?? '[]'))
         .filter((attachments) => attachments.length > 0)
       expect(attachmentRows.length).toBeGreaterThan(0)
       for (const attachments of attachmentRows) {

@@ -8,7 +8,8 @@ import mammoth from 'mammoth'
 import type { Document as MupdfDocument } from 'mupdf'
 import { type AtomicTextRange, SemanticChunker } from '../chunker/index.js'
 import { withTrailingSeparator } from '../utils/base-dirs.js'
-import { AppError, isAppError } from '../utils/errors.js'
+import { AppError, isAppError, toError } from '../utils/errors.js'
+import { errorCode } from '../utils/type-guards.js'
 import { convertDocxDocumentToText, extractDocxCoreTitle } from './docx-parser.js'
 import { extractPdfPages } from './pdf-extract.js'
 import type { EmbedderInterface, FilteredTextFragment } from './pdf-filter.js'
@@ -56,13 +57,19 @@ export interface ParseFileOptions {
   images?: boolean
 }
 
+/** Title candidates a PDF carries before its text is chunked. */
+interface PdfTitleHints {
+  metadataTitle: string | undefined
+  page1FontHint: { text: string; fontSize: number } | undefined
+}
+
 async function resolvePdfTitle(
   filePath: string,
   pages: readonly { text: string }[],
-  metadataTitle: string | undefined,
-  page1FontHint: { text: string; fontSize: number } | undefined,
+  hints: PdfTitleHints,
   embedder: EmbedderInterface
 ): Promise<string> {
+  const { metadataTitle, page1FontHint } = hints
   const fileName = basename(filePath)
   let firstPageChunkText: string | undefined
   try {
@@ -72,26 +79,18 @@ async function resolvePdfTitle(
       firstPageChunkText = page1Chunks[0]?.text
     }
   } catch (titleError) {
-    if (isAppError(titleError)) throw titleError
+    if (isAppError(titleError)) {
+      throw titleError
+    }
     console.error(`Title extraction failed, falling back to filename: ${titleError}`)
   }
   return extractPdfTitle(metadataTitle, firstPageChunkText, fileName, page1FontHint).title
 }
 
 /**
- * DocumentParser configuration.
- *
- * Accepts either a single `baseDir` (legacy single-root shape — preserved for
- * backward compatibility with downstream callers that have not yet migrated
- * to the multi-root model) or a `baseDirs` array (multi-root shape produced
- * by `resolveBaseDirs`). Exactly one of the two MUST be supplied; supplying
- * both is rejected by the constructor so misconfiguration cannot silently
- * pick one source over the other.
- *
- * Behavior under a single allowed root (`{ baseDir }` or
- * `{ baseDirs: [oneRoot] }`) is byte-identical to the previous single-root
- * implementation — see `validateFilePath` for the iteration contract under
- * multiple roots.
+ * DocumentParser configuration. Exactly one of `baseDir` (legacy single root)
+ * or `baseDirs` must be supplied; the constructor rejects both, so a
+ * misconfiguration cannot silently pick one.
  */
 export type ParserConfig =
   | {
@@ -113,8 +112,8 @@ export type ParserConfig =
  * Validation error (equivalent to 400)
  */
 export class ValidationError extends AppError {
-  constructor(message: string, cause?: Error) {
-    super(message, 'parser', 'validation', cause)
+  constructor(message: string, options?: { cause?: Error }) {
+    super(message, 'parser', 'validation', options)
     this.name = 'ValidationError'
   }
 }
@@ -123,8 +122,8 @@ export class ValidationError extends AppError {
  * File operation error (equivalent to 500)
  */
 export class FileOperationError extends AppError {
-  constructor(message: string, cause?: Error) {
-    super(message, 'parser', 'io', cause)
+  constructor(message: string, options?: { cause?: Error }) {
+    super(message, 'parser', 'io', options)
     this.name = 'FileOperationError'
   }
 }
@@ -133,41 +132,24 @@ export class FileOperationError extends AppError {
 // DocumentParser Class
 // ============================================
 
-/**
- * Document parser class (PDF/DOCX/TXT/MD support)
- *
- * Responsibilities:
- * - File path validation (path traversal prevention)
- * - File size validation (100MB limit)
- * - Parse 4 formats (PDF/DOCX/TXT/MD)
- */
+/** Path and size validation plus PDF/DOCX/TXT/MD parsing. */
 export class DocumentParser {
   private readonly config: ParserConfig
   /** Raw allowed roots in input order (pre-realpath). Always non-empty. */
   private readonly rawBaseDirs: readonly string[]
   /**
-   * Lazily cached realpath-normalized allowed roots, each with a trailing
-   * path separator so the `startsWith` check is sibling-prefix safe (e.g.
-   * `/foo/bar/` must not match `/foo/barista/x.txt`). Order is preserved
-   * from `rawBaseDirs` so the legacy single-root rejection message keeps
-   * referencing the user-configured first root. Assumes the allowed roots
-   * are stable for the process lifetime.
+   * Realpath-normalized allowed roots, each with a trailing separator so the
+   * `startsWith` check cannot match a sibling (`/foo/bar/` vs `/foo/barista/`).
+   * Cached for the process lifetime.
    */
   private resolvedBaseDirs: string[] | null = null
 
   constructor(config: ParserConfig) {
     this.config = config
-    // Normalize the two accepted shapes into one internal raw-root list.
-    // The type system already rejects supplying both fields simultaneously,
-    // but defensively pick `baseDirs` first so a future relaxation does not
-    // accidentally fall back to the legacy single-root field.
-    //
-    // Empty `baseDirs` is accepted here so the parser can be constructed in
-    // the MCP server's degraded mode (configError present); `validateFilePath`
-    // fails closed in that case so no file is accepted while the empty root
-    // list stands. This is the only legitimate way to reach empty
-    // `rawBaseDirs`; production wiring always supplies a non-empty list when
-    // `configError` is absent.
+    // `baseDirs` wins so a future relaxation of the type cannot fall back to
+    // the legacy field. An empty list is accepted only so the parser is
+    // constructible in the server's degraded mode; `validateFilePath` then
+    // fails closed, accepting nothing.
     if (config.baseDirs !== undefined) {
       this.rawBaseDirs = config.baseDirs
     } else {
@@ -176,34 +158,18 @@ export class DocumentParser {
   }
 
   /**
-   * File path validation (Absolute path requirement + Path traversal prevention).
+   * THE place realpath is used: following symlinks here is what makes prefix
+   * containment unforgeable. Everything else stores and looks up resolve()
+   * paths — see {@link BaseDirsConfig}.
    *
-   * This is THE place realpath is used (with the base-dir resolver): the
-   * security/containment boundary. Following symlinks here makes prefix
-   * containment unforgeable. Stored/scanned/looked-up paths elsewhere use
-   * resolve() — see {@link BaseDirsConfig} for the path policy.
-   *
-   * Multi-root semantics: a file is accepted iff its realpath (or, for a
-   * non-symlink path that does not yet exist, its `resolve()`-normalized
-   * absolute path) is under ANY realpath-normalized allowed root using a
-   * trailing-separator prefix check. Broken symlinks are still rejected
-   * outright — the lstat-based detection mirrors the previous single-root
-   * behavior.
-   *
-   * Under a single allowed root the behavior is identical to the previous
-   * single-root implementation.
-   *
-   * @param filePath - File path to validate (must be absolute)
-   * @throws ValidationError - When path is not absolute or outside all allowed roots
+   * A file is accepted iff its realpath — or, for a not-yet-existing
+   * non-symlink, its resolve()d path — sits under any allowed root. A broken
+   * symlink is rejected outright.
    */
   async validateFilePath(filePath: string): Promise<void> {
-    // Fail-closed in degraded mode: when the parser was constructed with an
-    // empty allow-list (only legitimate when the MCP server is in degraded
-    // mode with a configError set), reject every path with a structured
-    // error rather than performing the realpath check against an empty
-    // surviving-roots set. Server-level `assertConfigOk` should have fired
-    // first; this is a defense-in-depth fallback for code paths that
-    // bypass that gate.
+    // Fail closed in degraded mode: an empty allow-list must reject every
+    // path, not run a prefix check against no roots. `assertConfigOk` should
+    // fire first; this covers paths that bypass it.
     if (this.rawBaseDirs.length === 0) {
       throw new ValidationError(
         'No configured base directory: file access is disabled. Resolve the BASE_DIR / BASE_DIRS configuration error reported by the `status` tool before retrying.'
@@ -245,7 +211,7 @@ export class DocumentParser {
       if (isSymlink) {
         throw new ValidationError(
           `Cannot resolve file path: ${filePath}. The file may not exist or is a broken symlink.`,
-          error as Error
+          { cause: toError(error) }
         )
       }
 
@@ -268,13 +234,7 @@ export class DocumentParser {
     }
   }
 
-  /**
-   * File size validation (100MB limit)
-   *
-   * @param filePath - File path to validate
-   * @throws ValidationError - When file size exceeds limit
-   * @throws FileOperationError - When file read fails
-   */
+  /** @throws ValidationError when the file exceeds the configured size limit. */
   validateFileSize(filePath: string): void {
     try {
       const stats = statSync(filePath)
@@ -288,21 +248,16 @@ export class DocumentParser {
         throw error
       }
       // Missing file is an input error, not an I/O fault.
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      if (errorCode(error) === 'ENOENT') {
         throw new ValidationError(`File not found: ${filePath}`)
       }
-      throw new FileOperationError(`Failed to check file size: ${filePath}`, error as Error)
+      throw new FileOperationError(`Failed to check file size: ${filePath}`, {
+        cause: toError(error),
+      })
     }
   }
 
-  /**
-   * File parsing (auto format detection)
-   *
-   * @param filePath - File path to parse
-   * @returns ParseResult with content and extracted title
-   * @throws ValidationError - Path traversal, size exceeded, unsupported format
-   * @throws FileOperationError - File read failed, parse failed
-   */
+  /** Parse a file, detecting the format from its extension. */
   async parseFile(filePath: string, options: ParseFileOptions = {}): Promise<ParseResult> {
     // Validation
     await this.validateFilePath(filePath)
@@ -323,18 +278,9 @@ export class DocumentParser {
   }
 
   /**
-   * PDF parsing with header/footer filtering
-   *
-   * Features:
-   * - Extracts text with position information (x, y, fontSize)
-   * - Semantic header/footer detection using embedding similarity
-   * - Uses hasEOL for proper line break handling
-   * - Extracts document title from PDF metadata and first page font heuristic
-   *
-   * @param filePath - PDF file path
-   * @param embedder - Embedder for semantic header/footer detection
-   * @returns ParseResult with content and extracted title
-   * @throws FileOperationError - File read failed, parse failed
+   * PDF parsing. Headers and footers are detected semantically by embedding
+   * similarity across pages, not by position alone, and the title comes from
+   * PDF metadata with a first-page largest-font fallback.
    */
   async parsePdf(filePath: string, embedder: EmbedderInterface): Promise<ParseResult> {
     // Validation
@@ -349,7 +295,7 @@ export class DocumentParser {
     try {
       const buffer = await readFile(filePath)
       const mupdf = await import('mupdf')
-      doc = mupdf.Document.openDocument(buffer, 'application/pdf') as MupdfDocument
+      doc = mupdf.Document.openDocument(buffer, 'application/pdf')
 
       const { pages, metadataTitle, page1FontHint } = await extractPdfPages(
         doc,
@@ -361,22 +307,24 @@ export class DocumentParser {
         .filter((t) => t.length > 0)
         .join('\n\n')
 
-      const title = await resolvePdfTitle(filePath, pages, metadataTitle, page1FontHint, embedder)
+      const title = await resolvePdfTitle(
+        filePath,
+        pages,
+        { metadataTitle, page1FontHint },
+        embedder
+      )
 
       console.error(`Parsed PDF: ${filePath} (${text.length} characters, ${pages.length} pages)`)
 
       return { content: text, title }
     } catch (error) {
-      // A foreign domain error (e.g. `EmbeddingError` raised while the parser
-      // uses the embedder) keeps its identity — rethrow it unchanged instead
-      // of relabeling it as a PDF parse failure. The parser's own
-      // `ValidationError`/`FileOperationError` are also `AppError` and so
-      // rethrow as-is, preserving their identity. Only a genuine non-`AppError`
-      // IO/mupdf failure wraps as `FileOperationError` with its `.cause` set.
+      // A foreign domain error (an `EmbeddingError` raised while the parser
+      // used the embedder) keeps its identity rather than being relabelled a
+      // PDF failure. Only a genuine non-`AppError` wraps as `FileOperationError`.
       if (isAppError(error)) {
         throw error
       }
-      throw new FileOperationError(`Failed to parse PDF: ${filePath}`, error as Error)
+      throw new FileOperationError(`Failed to parse PDF: ${filePath}`, { cause: toError(error) })
     } finally {
       // Release the native WASM handle exactly once per invocation, on both
       // success and error paths.
@@ -385,35 +333,13 @@ export class DocumentParser {
   }
 
   /**
-   * Per-page PDF parsing for the visual-enrichment path.
+   * Per-page PDF parsing for the visual path. Adds `preserve-images` so mupdf
+   * emits the image blocks the visual detector needs, and returns the open
+   * `Document` so the renderer can work on the same handle.
    *
-   * Opens a mupdf `Document`, delegates per-page extraction to the shared
-   * `extractPdfPages` helper with the `'preserve-whitespace,preserve-images'`
-   * stext option string so mupdf emits `block.type === 'image'` blocks for
-   * the downstream visual-candidate detector.
-   *
-   * Returns the open `Document` handle alongside the per-page records and
-   * title-resolution materials so the caller can:
-   *   - run the renderer (`page.toPixmap()`) on the same handle,
-   *   - feed `metadataTitle` + `pages[0].page1FontHint` into `extractPdfTitle`
-   *     after `buildChunksAndEmbeddings` returns.
-   *
-   * Disposal contract (asymmetric — read carefully):
-   *   - SUCCESS path: this method returns the open `doc` handle. The caller
-   *     owns disposal and MUST wrap the call site in
-   *     `try { ... } finally { doc.destroy() }`.
-   *   - ERROR path: when this method throws, `doc` has already been destroyed
-   *     internally before the exception propagates (so the caller never
-   *     receives a handle it would not know to clean up). Callers MUST NOT
-   *     call `doc.destroy()` on an error from this method.
-   * Title resolution stays here so visual captions cannot change PDF metadata.
-   * Visual candidate selection remains `pdf-visual/detector`'s responsibility.
-   *
-   * @param filePath - PDF file path (validated against BASE_DIR and size limit)
-   * @param embedder - Embedder for semantic header/footer detection
-   * @returns Open mupdf `Document`, resolved title, and per-page text/layout records.
-   * @throws ValidationError - Path traversal, size exceeded
-   * @throws FileOperationError - File read or parse failed (after destroying `doc` internally)
+   * Disposal is asymmetric: on success the CALLER owns `doc` and must
+   * `finally { doc.destroy() }`; on throw `doc` is already destroyed here, so
+   * the caller must NOT destroy it.
    */
   async parsePdfPages(
     filePath: string,
@@ -442,7 +368,7 @@ export class DocumentParser {
     try {
       const buffer = await readFile(filePath)
       const mupdf = await import('mupdf')
-      doc = mupdf.Document.openDocument(buffer, 'application/pdf') as MupdfDocument
+      doc = mupdf.Document.openDocument(buffer, 'application/pdf')
       const extracted = await extractPdfPages(doc, embedder, 'preserve-whitespace,preserve-images')
 
       const { pages: helperPages, metadataTitle, page1FontHint } = extracted
@@ -455,8 +381,7 @@ export class DocumentParser {
       const title = await resolvePdfTitle(
         filePath,
         helperPages,
-        metadataTitle,
-        page1FontHint,
+        { metadataTitle, page1FontHint },
         embedder
       )
 
@@ -477,18 +402,15 @@ export class DocumentParser {
       if (isAppError(error)) {
         throw error
       }
-      throw new FileOperationError(`Failed to parse PDF pages: ${filePath}`, error as Error)
+      throw new FileOperationError(`Failed to parse PDF pages: ${filePath}`, {
+        cause: toError(error),
+      })
     }
   }
 
   /**
-   * DOCX parsing (using mammoth)
-   *
-   * Uses DOCX package metadata plus one Mammoth HTML conversion for title and body extraction.
-   *
-   * @param filePath - DOCX file path
-   * @returns ParseResult with content and extracted title
-   * @throws FileOperationError - File read failed, parse failed
+   * DOCX parsing. One Mammoth HTML conversion serves both title and body, so
+   * the document is not converted twice.
    */
   private async parseDocx(filePath: string, includeImages: boolean): Promise<ParseResult> {
     try {
@@ -546,17 +468,11 @@ export class DocumentParser {
         ...(imageAnchors.length === 0 ? {} : { imageAnchors }),
       }
     } catch (error) {
-      throw new FileOperationError(`Failed to parse DOCX: ${filePath}`, error as Error)
+      throw new FileOperationError(`Failed to parse DOCX: ${filePath}`, { cause: toError(error) })
     }
   }
 
-  /**
-   * TXT parsing (using fs.readFile)
-   *
-   * @param filePath - TXT file path
-   * @returns ParseResult with content and extracted title
-   * @throws FileOperationError - File read failed
-   */
+  /** TXT parsing. */
   private async parseTxt(filePath: string): Promise<ParseResult> {
     try {
       const text = await readFile(filePath, 'utf-8')
@@ -565,17 +481,11 @@ export class DocumentParser {
       console.error(`Parsed TXT: ${filePath} (${text.length} characters)`)
       return { content: text, title: titleResult.title }
     } catch (error) {
-      throw new FileOperationError(`Failed to parse TXT: ${filePath}`, error as Error)
+      throw new FileOperationError(`Failed to parse TXT: ${filePath}`, { cause: toError(error) })
     }
   }
 
-  /**
-   * MD parsing (using fs.readFile)
-   *
-   * @param filePath - MD file path
-   * @returns ParseResult with content and extracted title
-   * @throws FileOperationError - File read failed
-   */
+  /** MD parsing. */
   private async parseMd(filePath: string): Promise<ParseResult> {
     try {
       const text = await readFile(filePath, 'utf-8')
@@ -584,7 +494,7 @@ export class DocumentParser {
       console.error(`Parsed MD: ${filePath} (${text.length} characters)`)
       return { content: text, title: titleResult.title }
     } catch (error) {
-      throw new FileOperationError(`Failed to parse MD: ${filePath}`, error as Error)
+      throw new FileOperationError(`Failed to parse MD: ${filePath}`, { cause: toError(error) })
     }
   }
 }

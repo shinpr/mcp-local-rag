@@ -83,57 +83,57 @@ function parseNonNegativeInteger(flag: string, rawValue: string | undefined): nu
  * Integer flags are validated syntactically (must be non-negative integer).
  * Semantic validation (required-ness, XOR) is performed in runReadNeighbors.
  */
+/** Flags whose value is taken verbatim, mapped to the field they fill. */
+const STRING_FLAGS = new Map<string, 'filePath' | 'source'>([
+  ['--file-path', 'filePath'],
+  ['--source', 'source'],
+])
+
+/** Flags whose value must parse as a non-negative integer. */
+const INTEGER_FLAGS = new Map<string, 'chunkIndex' | 'before' | 'after'>([
+  ['--chunk-index', 'chunkIndex'],
+  ['--before', 'before'],
+  ['--after', 'after'],
+])
+
+/** Take a flag's value, rejecting an absent one or the next flag. */
+function requireValue(flag: string, rawValue: string | undefined): string {
+  if (rawValue === undefined || rawValue.startsWith('-')) {
+    throw new Error(`Missing value for ${flag}`)
+  }
+  return rawValue
+}
+
 function parseArgs(args: string[]): ReadNeighborsArgs {
-  let help = false
-  let filePath: string | undefined
-  let source: string | undefined
-  let chunkIndex: number | undefined
-  let before: number | undefined
-  let after: number | undefined
+  const result: ReadNeighborsArgs = { help: false }
 
   let i = 0
   while (i < args.length) {
-    const arg = args[i]!
+    const arg = args[i] ?? ''
 
     if (arg === '-h' || arg === '--help') {
-      help = true
-      i++
-    } else if (arg === '--file-path') {
-      const value = args[++i]
-      if (value === undefined || value.startsWith('-')) {
-        throw new Error('Missing value for --file-path')
-      }
-      filePath = value
-      i++
-    } else if (arg === '--source') {
-      const value = args[++i]
-      if (value === undefined || value.startsWith('-')) {
-        throw new Error('Missing value for --source')
-      }
-      source = value
-      i++
-    } else if (arg === '--chunk-index') {
-      chunkIndex = parseNonNegativeInteger('--chunk-index', args[++i])
-      i++
-    } else if (arg === '--before') {
-      before = parseNonNegativeInteger('--before', args[++i])
-      i++
-    } else if (arg === '--after') {
-      after = parseNonNegativeInteger('--after', args[++i])
-      i++
-    } else if (arg.startsWith('-')) {
-      throw new Error(`Unknown option: ${arg}`)
-    } else {
-      throw new Error(`Unexpected argument: ${arg}`)
+      result.help = true
+      i += 1
+      continue
     }
+
+    const stringKey = STRING_FLAGS.get(arg)
+    if (stringKey !== undefined) {
+      result[stringKey] = requireValue(arg, args[i + 1])
+      i += 2
+      continue
+    }
+
+    const integerKey = INTEGER_FLAGS.get(arg)
+    if (integerKey !== undefined) {
+      result[integerKey] = parseNonNegativeInteger(arg, args[i + 1])
+      i += 2
+      continue
+    }
+
+    throw new Error(arg.startsWith('-') ? `Unknown option: ${arg}` : `Unexpected argument: ${arg}`)
   }
 
-  const result: ReadNeighborsArgs = { help }
-  if (filePath !== undefined) result.filePath = filePath
-  if (source !== undefined) result.source = source
-  if (chunkIndex !== undefined) result.chunkIndex = chunkIndex
-  if (before !== undefined) result.before = before
-  if (after !== undefined) result.after = after
   return result
 }
 
@@ -145,10 +145,55 @@ function parseArgs(args: string[]): ReadNeighborsArgs {
  * Run the read-neighbors CLI subcommand.
  * Reads chunks adjacent to a target chunkIndex within a single document.
  * Does NOT perform any search; this is an index-adjacent retrieval utility.
- *
- * @param args - Arguments after "read-neighbors"
- * @param globalOptions - Global options parsed before the subcommand
  */
+/** The neighbor window a validated request asks for. */
+interface NeighborRequest {
+  chunkIndex: number
+  before: number
+  after: number
+}
+
+/**
+ * Apply the same validation order as the MCP handler: chunkIndex, then the
+ * window bounds, then the file-path/source XOR.
+ */
+function validateRequest(parsed: ReadNeighborsArgs): NeighborRequest {
+  if (parsed.chunkIndex === undefined) {
+    throw new Error('--chunk-index is required and must be a non-negative integer')
+  }
+  const before = parsed.before ?? READ_NEIGHBORS_DEFAULTS.before
+  if (before > MAX_NEIGHBOR_COUNT) {
+    throw new Error(`before must be between 0 and ${MAX_NEIGHBOR_COUNT} (got ${before})`)
+  }
+  const after = parsed.after ?? READ_NEIGHBORS_DEFAULTS.after
+  if (after > MAX_NEIGHBOR_COUNT) {
+    throw new Error(`after must be between 0 and ${MAX_NEIGHBOR_COUNT} (got ${after})`)
+  }
+  if (parsed.filePath === undefined && parsed.source === undefined) {
+    throw new Error('Either --file-path or --source is required')
+  }
+  if (parsed.filePath !== undefined && parsed.source !== undefined) {
+    throw new Error('Cannot specify both --file-path and --source')
+  }
+  return { chunkIndex: parsed.chunkIndex, before, after }
+}
+
+/** Resolve the document to read from either input form. */
+function resolveTargetPath(parsed: ReadNeighborsArgs, dbPath: string): string {
+  if (parsed.source !== undefined) {
+    return generateRawDataPath(dbPath, parsed.source)
+  }
+  // DB key is the resolve()'d ingest path, so look up by resolve() (never
+  // realpath); validate here (mirrors runDelete; realpath stays there).
+  const targetPath = resolve(parsed.filePath ?? '')
+  const pathError = validatePath(targetPath, '--file-path')
+  if (pathError) {
+    console.error(pathError)
+    process.exit(1)
+  }
+  return targetPath
+}
+
 export async function runReadNeighbors(
   args: string[],
   globalOptions: GlobalOptions = {}
@@ -171,78 +216,31 @@ export async function runReadNeighbors(
   }
 
   try {
-    // Validation order matches the MCP handler: chunkIndex → before → after → XOR.
-    if (parsed.chunkIndex === undefined) {
-      throw new Error('--chunk-index is required and must be a non-negative integer')
-    }
-    const chunkIndex = parsed.chunkIndex
-
-    const before = parsed.before ?? READ_NEIGHBORS_DEFAULTS.before
-    if (before > MAX_NEIGHBOR_COUNT) {
-      throw new Error(`before must be between 0 and ${MAX_NEIGHBOR_COUNT} (got ${before})`)
-    }
-    const after = parsed.after ?? READ_NEIGHBORS_DEFAULTS.after
-    if (after > MAX_NEIGHBOR_COUNT) {
-      throw new Error(`after must be between 0 and ${MAX_NEIGHBOR_COUNT} (got ${after})`)
-    }
-
-    // XOR: exactly one of --file-path / --source
-    const hasFilePath = parsed.filePath !== undefined
-    const hasSource = parsed.source !== undefined
-    if (!hasFilePath && !hasSource) {
-      throw new Error('Either --file-path or --source is required')
-    }
-    if (hasFilePath && hasSource) {
-      throw new Error('Cannot specify both --file-path and --source')
-    }
-
-    // Resolve global config
+    const request = validateRequest(parsed)
     const globalConfig = resolveGlobalConfig(globalOptions)
-
-    // Determine target file path (dual-input resolution).
-    let targetPath: string
-    if (parsed.source !== undefined) {
-      // Generate raw-data path from source identifier.
-      targetPath = generateRawDataPath(globalConfig.dbPath, parsed.source)
-    } else {
-      // DB key is the resolve()'d ingest path, so look up by resolve() (never
-      // realpath); validate below (mirrors runDelete; realpath stays there).
-      targetPath = resolve(parsed.filePath!)
-      const pathError = validatePath(targetPath, '--file-path')
-      if (pathError) {
-        console.error(pathError)
-        process.exit(1)
-      }
-    }
+    const targetPath = resolveTargetPath(parsed, globalConfig.dbPath)
 
     const vectorStore = createVectorStore(globalConfig)
     try {
       await vectorStore.initialize()
 
-      const minIdx = Math.max(0, chunkIndex - before)
-      const maxIdx = chunkIndex + after
-      const rows = await vectorStore.getChunksByRange(targetPath, minIdx, maxIdx)
+      const rows = await vectorStore.getChunksByRange(
+        targetPath,
+        Math.max(0, request.chunkIndex - request.before),
+        request.chunkIndex + request.after
+      )
 
-      const isRaw = isManagedRawDataPath(targetPath, globalConfig.dbPath)
-      const sourceForAll = isRaw ? extractSourceFromPath(targetPath) : null
-      const items = rows.map((row) => {
-        const item: {
-          filePath: string
-          chunkIndex: number
-          text: string
-          isTarget: boolean
-          fileTitle: string | null
-          source?: string
-        } = {
-          filePath: row.filePath,
-          chunkIndex: row.chunkIndex,
-          text: row.text,
-          isTarget: row.chunkIndex === chunkIndex,
-          fileTitle: row.fileTitle ?? null,
-        }
-        if (sourceForAll) item.source = sourceForAll
-        return item
-      })
+      const sourceForAll = isManagedRawDataPath(targetPath, globalConfig.dbPath)
+        ? extractSourceFromPath(targetPath)
+        : null
+      const items = rows.map((row) => ({
+        filePath: row.filePath,
+        chunkIndex: row.chunkIndex,
+        text: row.text,
+        isTarget: row.chunkIndex === request.chunkIndex,
+        fileTitle: row.fileTitle ?? null,
+        ...(sourceForAll ? { source: sourceForAll } : {}),
+      }))
 
       process.stdout.write(`${JSON.stringify(items, null, 2)}\n`)
     } finally {

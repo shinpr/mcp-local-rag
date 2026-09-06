@@ -78,7 +78,9 @@ describe('parsePdfPages return shape', () => {
   })
 
   afterAll(() => {
-    for (const p of MOCKED_PATHS) vi.doUnmock(p)
+    for (const p of MOCKED_PATHS) {
+      vi.doUnmock(p)
+    }
     vi.resetModules()
   })
 

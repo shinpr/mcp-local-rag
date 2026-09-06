@@ -1,5 +1,4 @@
 // CLI Global Options Tests
-// Test Type: Unit Test
 // Tests parseGlobalOptions and resolveGlobalConfig
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'

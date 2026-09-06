@@ -1,12 +1,11 @@
 import type { Annotations } from '@modelcontextprotocol/sdk/types.js'
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js'
 import { getCauseChain, isAppError } from '../utils/errors.js'
+import { isRecord } from '../utils/type-guards.js'
 
 /**
- * Shape of a single MCP content block used by RAG server handlers. Mirrors
- * only the SDK text/image shapes needed by this server — defined here rather
- * than using the SDK's widely-imported content union so unrelated SDK
- * additions do not widen handler signatures later.
+ * The MCP content shapes this server emits. Defined here rather than reusing
+ * the SDK's union, so an SDK addition cannot widen handler signatures.
  */
 export type RagTextContentBlock = {
   type: 'text'
@@ -24,10 +23,8 @@ export type RagImageContentBlock = {
 export type RagContentBlock = RagTextContentBlock | RagImageContentBlock
 
 /**
- * Annotations applied to config-warning blocks. The audience covers both
- * the assistant (so it can decide to mention the warning to the user) and
- * the user (so MCP clients that render annotations visibly know to surface
- * it). Priority 0.3 keeps the block secondary to the primary tool result.
+ * Annotations for config-warning blocks: the audience covers the assistant and
+ * the user, and priority 0.3 keeps the block secondary to the tool result.
  */
 const WARNING_ANNOTATIONS: Annotations = {
   audience: ['user', 'assistant'],
@@ -35,10 +32,8 @@ const WARNING_ANNOTATIONS: Annotations = {
 }
 
 /**
- * Annotations applied to the config-error diagnostic block on `status`. The
- * priority is raised relative to a warning because a config error means the
- * server is degraded — `status` is the only tool still callable, and the
- * user needs to see the error message to recover.
+ * Annotations for the config-error block on `status`. The priority is above a
+ * warning's because a degraded server leaves `status` as the only way to recover.
  */
 const CONFIG_ERROR_ANNOTATIONS: Annotations = {
   audience: ['user', 'assistant'],
@@ -46,19 +41,16 @@ const CONFIG_ERROR_ANNOTATIONS: Annotations = {
 }
 
 /**
- * Build the (zero or one) warning content block for the supplied warnings.
+ * The (zero or one) warning content block for the supplied warnings.
  *
- * Returns `[]` when no warnings exist so the caller can spread the result
- * unconditionally without producing a spurious block. The single emitted
- * block joins all warnings with ` | ` so MCP clients display them together
- * — the per-warning structured form lives in the configuration layer
- * (`BaseDirsConfigWarning`); here we render a single user-facing string.
- *
- * Centralizing this in one helper keeps the warning content shape consistent
- * across handlers. Every handler must use this helper.
+ * `[]` when there are none, so a caller can spread it unconditionally. The
+ * structured per-warning form lives in the configuration layer; this renders
+ * one user-facing string. Every handler must go through here.
  */
 function buildConfigWarningBlocks(warnings: readonly string[]): RagContentBlock[] {
-  if (warnings.length === 0) return []
+  if (warnings.length === 0) {
+    return []
+  }
   return [
     {
       type: 'text',
@@ -83,10 +75,8 @@ export function appendConfigWarnings<T extends RagContentBlock[]>(
 }
 
 /**
- * Build a diagnostic content block exposing the supplied config-error
- * message. Used by `status` when the server is in degraded mode (invalid
- * `BASE_DIRS`) so the user can read the error via the MCP response without
- * inspecting stderr.
+ * Diagnostic block exposing a config error, so `status` can report a degraded
+ * server over MCP without the user inspecting stderr.
  */
 export function buildConfigErrorBlock(message: string): RagTextContentBlock {
   return {
@@ -97,53 +87,38 @@ export function buildConfigErrorBlock(message: string): RagTextContentBlock {
 }
 
 /**
- * Coerce an arbitrary thrown value into an `Error`. Preserves a real `Error`
- * unchanged (so its `name`/`cause`/`stack` survive); reconstructs from a
- * `{ message: string }` shape; otherwise stringifies. Centralized so every
- * boundary function shares one normalization rule.
+ * Coerce a thrown value into an `Error`, preserving a real one unchanged and
+ * reconstructing from a `{ message: string }` shape. One rule for every boundary.
  */
 function toError(error: unknown): Error {
   if (error instanceof Error) {
     return error
   }
-  if (
-    error !== null &&
-    typeof error === 'object' &&
-    'message' in error &&
-    typeof (error as { message: unknown }).message === 'string'
-  ) {
-    return new Error((error as { message: string }).message)
+  if (isRecord(error) && typeof error['message'] === 'string') {
+    return new Error(error['message'])
   }
   return new Error(String(error))
 }
 
 /**
- * Context supplied by each handler to {@link toMcpError}, encoding that
- * handler's client-message policy. `prefix` is the operation prefix applied to
- * the generic/native fallback message (e.g. `'Failed to ingest file'`).
- * Prefix-less handlers (`query_documents`/`list_files`/`status`) omit it.
+ * Each handler's client-message policy. `prefix` applies to the native-error
+ * fallback message only; prefix-less handlers omit it.
  */
 export type ToMcpErrorContext = {
   prefix?: string
 }
 
 /**
- * Build the controlled, type-appropriate message sent to the MCP client.
- *
- * Returns only the error's `.message`, regardless of `NODE_ENV`: the client
- * boundary never receives a stack trace or the raw `.cause` chain, so internal
- * details cannot leak to the client even in development. Full diagnostics
- * (stack + cause chain) belong in {@link formatErrorForLog} (stderr only).
+ * The controlled message sent to the MCP client: only `.message`, regardless
+ * of `NODE_ENV`, so no stack or cause chain can leak even in development.
  */
 export function formatErrorForClient(error: unknown): string {
   return toError(error).message
 }
 
 /**
- * Build the full diagnostic string for stderr logging: every link of the
- * `.cause` chain (via {@link getCauseChain}) followed by its stack. Never sent
- * to the client — this is the log-side counterpart of
- * {@link formatErrorForClient}.
+ * Full diagnostic string for stderr: every `.cause` link with its stack. Never
+ * sent to the client — the log-side counterpart of {@link formatErrorForClient}.
  */
 export function formatErrorForLog(error: unknown): string {
   const err = toError(error)
@@ -165,17 +140,13 @@ export function logError(context: string, error: unknown): void {
 }
 
 /**
- * Map an arbitrary handler error to an `McpError` for the client boundary.
+ * Map a handler error to an `McpError` for the client boundary.
  *
- * - An existing `McpError` passes through unchanged (preserves hand-built
- *   input-validation codes).
- * - A recognized `AppError` maps by its `kind`: `validation`/`config` →
- *   `InvalidParams`, everything else → `InternalError`. Its own message is used
- *   raw — **no** operation prefix is applied, even when `context.prefix` is set
- *   (e.g. `DatabaseError` stays prefix-less).
- * - Any other value (native `Error` or non-`Error`) maps to `InternalError`,
- *   and `context.prefix`, when present, is prepended to the controlled
- *   client message. The raw cause chain is never included.
+ * An existing `McpError` passes through, preserving hand-built validation
+ * codes. A recognized `AppError` maps by `kind` — `validation`/`config` to
+ * `InvalidParams`, else `InternalError` — and keeps its own message raw, with
+ * NO operation prefix even when `context.prefix` is set. Anything else becomes
+ * `InternalError` with the prefix applied. The cause chain is never included.
  */
 export function toMcpError(error: unknown, context: ToMcpErrorContext): McpError {
   if (error instanceof McpError) {

@@ -1,29 +1,25 @@
-// VLM PDF Enrichment - Visual Mode Integration Test
-// Design Doc: docs/design/vlm-pdf-enrichment-design.md
-// Covers: AC-002 (visual mode produces enriched chunks),
-//         AC-004 (per-page VLM failure tolerated),
-//         AC-005 (whole-VLM failure → text fallback),
-//         AC-006 (non-PDF + visual: true silent coercion),
-//         AC-007 (caption embeds correctly through chunker/embedder)
-// Test Type: Integration Test (in-process cli ingest dispatch + pdf-visual mocked)
-// Implementation Timing: Phase 4 (alongside dispatch-site wiring)
+// Visual-mode ingest integration: AC-002 (enriched chunks), AC-004 (per-page
+// VLM failure tolerated), AC-005 (whole-VLM failure falls back to text),
+// AC-006 (non-PDF + visual silently coerced), AC-007 (captions embed).
+// Design doc: docs/design/vlm-pdf-enrichment-design.md
 //
-// Lane: integration. Justification: AC-002/004/005/006/007 — visual-mode
-// behavior witnesses that require end-to-end dispatch through ingestSingleFile.
+// The mock of `../../pdf-visual/index.js` is REAL-SHAPED — every export
+// returns plausible values so the visual path completes. It must not collide
+// with the negative-side Proxy sentinel in ingest-default-mode.test.ts, which
+// is why the two live in separate files.
 //
-// vi.hoisted note: Required by isolate: false (vitest.config.mjs:16-18).
-// The mock of '../../pdf-visual/index.js' is a REAL-SHAPED mock — each
-// export is a callable that returns plausible values so the visual path
-// completes end-to-end. This mock MUST NOT collide with the negative-side
-// Proxy sentinel in ingest-default-mode.test.ts; the two live in separate
-// files for that reason (DD §Testing Strategy → NFR-1 probe).
-//
-// @huggingface/transformers is NOT loaded in this file because the captioner
-// is invoked only through the mocked pdf-visual surface. mupdf is also not
-// loaded — parser.parsePdfPages is mocked at the parser boundary.
+// Neither @huggingface/transformers nor mupdf loads here: the captioner is
+// reached only through the mocked pdf-visual surface, and parsePdfPages is
+// mocked at the parser boundary.
 
 import { resolve } from 'node:path'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { expectRecord } from '../test-doubles.js'
+
+/** A layout bounding box, as `[x0, y0, x1, y1]`. */
+function bbox(x0: number, y0: number, x1: number, y1: number): [number, number, number, number] {
+  return [x0, y0, x1, y1]
+}
 
 // ============================================
 // Mock Setup (vi.hoisted for isolate: false)
@@ -32,13 +28,20 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 // Captioner spy state — shared across the pdf-visual real-shaped mock and the
 // per-test arrange phase. The hoisted block is required because the mock
 // factories run before any `import` statement (isolate: false + vitest hoisting).
-const captionerSpy = vi.hoisted(() => ({
-  calls: [] as { pageNum: number }[],
-  // Single pageNum that should throw (set to 2 for AC-004). Null = no per-page throw.
-  throwOn: null as number | null,
-  // When true, every captioner.caption() call throws (AC-005).
+interface CaptionerSpy {
+  calls: { pageNum: number }[]
+  /** Single pageNum that should throw (set to 2 for AC-004). Null = no per-page throw. */
+  throwOn: number | null
+  /** When true, every captioner.caption() call throws (AC-005). */
+  throwAll: boolean
+  /** Pages flagged as visual candidates by the detector mock. Default: page 2. */
+  candidatePages: Set<number>
+}
+
+const captionerSpy = vi.hoisted<CaptionerSpy>(() => ({
+  calls: [],
+  throwOn: null,
   throwAll: false,
-  // Pages flagged as visual candidates by the detector mock. Default: page 2.
   candidatePages: new Set<number>([2]),
 }))
 
@@ -136,6 +139,16 @@ const cliCommonFactory = () => ({
 
 // Real-shaped region orchestrator. Captions remain isolated per region and
 // are inserted into the ordered document by `src/ingest/visual.ts`.
+/** Shape the stubbed `processVisualRegions` returns to the ingest pipeline. */
+type ProcessedRegion = {
+  pageNum: number
+  detectionIndex: number
+  bbox: [number, number, number, number]
+  evidence: 'raster'
+  caption: string | null
+  rendition?: { bytes: Uint8Array; mimeType: string }
+}
+
 const pdfVisualFactory = () => ({
   detectVisualRegions: (pages: { pageNum: number; stextJson: unknown }[]) =>
     pages
@@ -156,7 +169,7 @@ const pdfVisualFactory = () => ({
     _doc: unknown,
     options: { includeImages?: boolean }
   ) => {
-    const processed = []
+    const processed: ProcessedRegion[] = []
     for (const region of regions) {
       captionerSpy.calls.push({ pageNum: region.pageNum })
       if (captionerSpy.throwAll || captionerSpy.throwOn === region.pageNum) {
@@ -214,13 +227,10 @@ const MOCKED_PATHS = [
   '../../pdf-visual/renderer.js',
 ] as const
 
-// Dynamically imported after vi.resetModules() in beforeAll. This is the
-// load-bearing isolation mechanism under vitest's `isolate: false`: a sibling
-// test file that vi.mock's the same module paths (e.g., ingest.test.ts mocks
-// ../../cli/common.js) can otherwise win the module-registry race and bind
-// runIngest's closures to that file's factories instead of this file's.
-// Resetting the registry + re-importing here forces this file's factories to
-// be the ones the runIngest under test sees.
+// Dynamically imported after vi.resetModules() in beforeAll. Load-bearing
+// under `isolate: false`: a sibling file that mocks the same paths can
+// otherwise win the module-registry race and bind runIngest's closures to its
+// factories instead of this file's.
 let runIngest: typeof import('../../cli/ingest.js').runIngest
 
 // ============================================
@@ -261,12 +271,12 @@ function captureRun(fn: () => Promise<void>): Promise<{
   // Default-shape insertChunks that records every chunk for later assertion.
   mocks.insertChunks.mockImplementation((chunks: unknown[]) => {
     for (const c of chunks) {
-      const row = c as Record<string, unknown>
+      const row = expectRecord(c)
       inserted.push({
         filePath: String(row['filePath']),
         chunkIndex: Number(row['chunkIndex']),
         text: String(row['text']),
-        vector: Array.isArray(row['vector']) ? (row['vector'] as number[]) : [],
+        vector: Array.isArray(row['vector']) ? row['vector'].map(Number) : [],
         fileTitle: typeof row['fileTitle'] === 'string' ? row['fileTitle'] : null,
         visualAttachments:
           typeof row['visualAttachments'] === 'string' ? row['visualAttachments'] : null,
@@ -289,11 +299,8 @@ function mockFileStat() {
 }
 
 /**
- * Build a synthetic 3-page parsePdfPages result. Page 2 carries an image-block
- * stext entry (so the detector mock would, in a real run, mark it as a
- * candidate). The detector mock here ignores stextJson and uses
- * `captionerSpy.candidatePages` directly, but we still emit a realistic shape
- * for documentation purposes.
+ * Synthetic 3-page parsePdfPages result. Page 2 carries an image-block stext
+ * entry for realism; the detector mock reads `captionerSpy.candidatePages`.
  */
 function buildThreePageParseResult() {
   const page = (pageNum: number, text: string, blockType: 'text' | 'image') => ({
@@ -305,7 +312,7 @@ function buildThreePageParseResult() {
         blockOrdinal: 0,
         lineOrdinal: 0,
         fragmentOrdinal: 0,
-        bbox: [0, 0, 100, 10] as [number, number, number, number],
+        bbox: bbox(0, 0, 100, 10),
         text,
         pageTextStart: 0,
         pageTextEnd: text.length,
@@ -325,11 +332,8 @@ function buildThreePageParseResult() {
 }
 
 /**
- * Set up the chunker/embedder mocks so they preserve the inputs in a way the
- * tests can verify. The chunker emits one chunk per non-empty paragraph
- * boundary in the input (split on '\n\n' — same separator the dispatch site
- * uses to join enriched pages), capped at 4 chunks for sanity. The embedder
- * returns a non-empty vector for every chunk.
+ * The chunker emits one chunk per `\n\n` boundary — the same separator the
+ * dispatch site joins enriched pages with — capped at 4 for sanity.
  */
 function setupChunkerAndEmbedder() {
   mocks.chunkText.mockImplementation(async (text: string) => {
@@ -375,7 +379,9 @@ describe('VLM PDF Enrichment - Visual Mode', () => {
   })
 
   afterAll(() => {
-    for (const p of MOCKED_PATHS) vi.doUnmock(p)
+    for (const p of MOCKED_PATHS) {
+      vi.doUnmock(p)
+    }
     vi.resetModules()
   })
 
@@ -411,8 +417,10 @@ describe('VLM PDF Enrichment - Visual Mode', () => {
     process.exitCode = undefined
   })
 
+  const NO_FLAGS: string[] = []
+
   it.each([
-    { flags: [] as string[], captioned: false, storedImages: false },
+    { flags: NO_FLAGS, captioned: false, storedImages: false },
     { flags: ['--visual'], captioned: true, storedImages: false },
     { flags: ['--images'], captioned: false, storedImages: true },
     { flags: ['--visual', '--images'], captioned: true, storedImages: true },
@@ -435,25 +443,14 @@ describe('VLM PDF Enrichment - Visual Mode', () => {
     }
   )
 
-  // AC-002: "With visual: true, ingesting a 3-page PDF where page 2 contains
-  //         exactly one figure produces ingested chunks whose combined text
-  //         contains at least one occurrence of the substring
-  //         `[Visual content on page 2: ` followed by caption text and a
-  //         closing `]`."
-  // ROI: 72 (BV:9 × Freq:8 + Legal:0 + Defect:0) — feature-defining behavior
-  // Behavior: visual: true + figure on page 2 → caption substring present in
-  //           the chunks inserted into the vector store
-  // Verification items:
-  //   - At least one inserted chunk.text contains `[Visual content on page 2: `
-  //   - The caption text body is recoverable from the combined chunk text
-  //   - Pages 1 and 3 produce chunks with no `[Visual content on page` marker
-  // @category: core-functionality
-  // @lane: integration
-  // @dependency: ingestSingleFile, parser (parsePdfPages mocked), chunker, embedder, vectorStore (mocked), pdf-visual (real-shaped mock)
-  // @complexity: medium
+  // AC-002: `visual: true` on a 3-page PDF with a figure on page 2 produces a
+  // `[Visual content on page 2: ...]` caption in the inserted chunks, and none
+  // on pages 1 and 3.
   it.each([false, true])('releases the captioner when chunking fails=%s', async (fail) => {
     mocks.stat.mockResolvedValue(mockFileStat())
-    if (fail) mocks.chunkText.mockRejectedValueOnce(new Error('Chunking failed'))
+    if (fail) {
+      mocks.chunkText.mockRejectedValueOnce(new Error('Chunking failed'))
+    }
     await captureRun(() => runIngest(['--visual', resolve('/tmp/test/lifecycle.pdf')]))
     expect(mocks.dispose).toHaveBeenCalledTimes(1)
     expect(mocks.destroy).toHaveBeenCalledTimes(1)
@@ -486,24 +483,10 @@ describe('VLM PDF Enrichment - Visual Mode', () => {
     expect(nonVisualChunks.some((c) => c.text === 'page 3 plain text')).toBe(true)
   })
 
-  // AC-004: "When the VLM rejects exactly one page (simulated via a mock that
-  //         throws on pageNum === 2), the file ingest completes; the failing
-  //         page's text is included without a caption; chunks for other
-  //         visual-candidate pages contain `[Visual content on page N: ...]`;
-  //         a warn-level log line names the failed page."
-  // ROI: 48 (BV:8 × Freq:4 + Legal:0 + Defect:8)
-  // Behavior: Per-page failure on page 2 + success on others → ingest completes
-  // Verification items:
-  //   - No thrown error from ingestSingleFile
-  //   - Page 2 text appears in chunks but WITHOUT `[Visual content on page 2:`
-  //   - Other candidate pages still carry their `[Visual content on page N:`
-  //   - Warn-level log line contains the failed pageNum (asserted via console spy)
-  // Note: To exercise multiple candidate pages, set the mock so pages 2 AND 3
-  //       are candidates and only page 2 throws.
-  // @category: edge-case
-  // @lane: integration
-  // @dependency: ingestSingleFile, pdf-visual (mock with selective throw)
-  // @complexity: medium
+  // AC-004: a per-page VLM failure is tolerated — page 2's text is kept
+  // without a caption, other candidate pages keep theirs, and the failed page
+  // is named in a warning. Pages 2 AND 3 are candidates so the surviving case
+  // is exercised too.
   it('AC-004: per-page VLM failure on page 2 leaves that page text-only and other pages enriched', async () => {
     // Arrange: pages 2 AND 3 are candidates; captioner throws only on page 2.
     captionerSpy.candidatePages = new Set<number>([2, 3])
@@ -539,22 +522,8 @@ describe('VLM PDF Enrichment - Visual Mode', () => {
     expect(page2Warning.length).toBeGreaterThan(0)
   })
 
-  // AC-005: "When the VLM throws on every visual-candidate page, the file
-  //         ingest completes; chunks for the file contain the text-only
-  //         content with no `[Visual content on page` substrings; the file's
-  //         chunks are present in the index with text-only content; no error
-  //         is propagated to the caller."
-  // ROI: 64 (BV:8 × Freq:4 + Legal:0 + Defect:8) — explicit graceful-degradation contract
-  // Behavior: Whole-VLM failure → fall back to text-only chunks
-  // Verification items:
-  //   - No thrown error from ingestSingleFile
-  //   - No inserted chunk.text contains `[Visual content on page`
-  //   - Chunk count > 0 (the text path still produces chunks)
-  //   - ingestSingleFile returns the normal chunk-count value
-  // @category: edge-case
-  // @lane: integration
-  // @dependency: ingestSingleFile, pdf-visual (mock with throwAll=true)
-  // @complexity: medium
+  // AC-005: when the VLM throws on every candidate page, ingest still
+  // completes with text-only chunks and no error reaches the caller.
   it('AC-005: whole-VLM failure falls back to text-only chunks without propagating error', async () => {
     // Arrange: page 2 is candidate; captioner throws on EVERY call.
     captionerSpy.throwAll = true
@@ -586,19 +555,8 @@ describe('VLM PDF Enrichment - Visual Mode', () => {
     expect(summary).toContain('OK (3 chunks)')
   })
 
-  // AC-006: "Ingesting a .md file with visual: true runs the existing
-  //         parseFile() path unchanged and emits no warning. No VLM call is made."
-  // ROI: 24 (BV:6 × Freq:4 + Legal:0 + Defect:0)
-  // Behavior: visual: true + non-PDF → silent text-only path (no VLM)
-  // Verification items:
-  //   - captionerSpy.calls.length === 0
-  //   - No `[Visual content on page` substring in any chunk
-  //   - No warn-level log emitted
-  //   - parser.parseFile (NOT parsePdfPages) was the boundary entered
-  // @category: edge-case
-  // @lane: integration
-  // @dependency: ingestSingleFile, parser (parseFile mocked), pdf-visual (real-shaped mock — assert never called)
-  // @complexity: low
+  // AC-006: a non-PDF with `visual: true` takes the text-only path silently —
+  // no VLM call, no warning, `parseFile` rather than `parsePdfPages`.
   it('AC-006: visual: true on .md file silently behaves as visual: false', async () => {
     // Arrange: a .md fixture and a parseFile result. parsePdfPages must NOT be reached.
     const filePath = resolve('/tmp/test/ac006.md')

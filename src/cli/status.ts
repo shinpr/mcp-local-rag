@@ -55,8 +55,6 @@ function parseArgs(args: string[]): { help: boolean } {
 
 /**
  * Run the status CLI subcommand.
- * @param args - Arguments after "status" (should be empty or --help)
- * @param globalOptions - Global options parsed before the subcommand
  */
 export async function runStatus(args: string[], globalOptions: GlobalOptions = {}): Promise<void> {
   // Parse CLI options

@@ -27,6 +27,12 @@
 // mock surfaces do not leak across.
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import {
+  expectDefined,
+  expectError,
+  expectInstanceOf,
+  expectRecord,
+} from '../../__tests__/test-doubles.js'
 
 // ============================================
 // Mocks (vi.hoisted — required for `@huggingface/transformers`)
@@ -48,12 +54,16 @@ const mocks = vi.hoisted(() => {
   }
 
   const mockProcessorFromPretrained = vi.fn(async (_modelName: string, _options: unknown) => {
-    if (state.fromPretrainedThrows) throw state.fromPretrainedThrows
+    if (state.fromPretrainedThrows) {
+      throw state.fromPretrainedThrows
+    }
     return mockProcessorInstance
   })
 
   const mockModelFromPretrained = vi.fn(async (_modelName: string, _options: unknown) => {
-    if (state.fromPretrainedThrows) throw state.fromPretrainedThrows
+    if (state.fromPretrainedThrows) {
+      throw state.fromPretrainedThrows
+    }
     return mockModelInstance
   })
 
@@ -74,7 +84,9 @@ const mocks = vi.hoisted(() => {
   )
 
   const mockGenerate = vi.fn(async (_inputs: unknown) => {
-    if (state.generateThrows) throw state.generateThrows
+    if (state.generateThrows) {
+      throw state.generateThrows
+    }
     return {
       slice: (_axis: null, _range: [number, number | null]) => ({ _isSlicedTokens: true }),
     }
@@ -86,16 +98,20 @@ const mocks = vi.hoisted(() => {
   // RawImage.fromBlob resolves to an object with a `.resize()` method; the
   // production code chains `.resize(448, 448)` and we assert on the args.
   const mockResize = vi.fn((_w: number, _h: number) => {
-    if (state.resizeThrows) throw state.resizeThrows
+    if (state.resizeThrows) {
+      throw state.resizeThrows
+    }
     return { width: 448, height: 448, channels: 3, data: new Uint8ClampedArray(0) }
   })
 
   const mockFromBlob = vi.fn(async (_blob: Blob) => {
-    if (state.fromBlobThrows) throw state.fromBlobThrows
+    if (state.fromBlobThrows) {
+      throw state.fromBlobThrows
+    }
     return { resize: mockResize }
   })
 
-  const env = { cacheDir: '' as string }
+  const env: { cacheDir: string } = { cacheDir: '' }
 
   return {
     state,
@@ -152,7 +168,9 @@ describe('createCaptioner — quality profile dispatch (Qwen2.5-VL-3B-Instruct-O
   })
 
   afterAll(() => {
-    for (const p of MOCKED_PATHS) vi.doUnmock(p)
+    for (const p of MOCKED_PATHS) {
+      vi.doUnmock(p)
+    }
     vi.resetModules()
   })
 
@@ -180,9 +198,14 @@ describe('createCaptioner — quality profile dispatch (Qwen2.5-VL-3B-Instruct-O
         cacheDir: './tmp/models',
         device: 'cpu',
       })
-      if (fail) mocks.state.generateThrows = new Error('Generation failed')
-      if (fail) await expect(captioner.caption(new Uint8Array([1]), 1)).rejects.toThrow()
-      else await captioner.caption(new Uint8Array([1]), 1)
+      if (fail) {
+        mocks.state.generateThrows = new Error('Generation failed')
+      }
+      if (fail) {
+        await expect(captioner.caption(new Uint8Array([1]), 1)).rejects.toThrow()
+      } else {
+        await captioner.caption(new Uint8Array([1]), 1)
+      }
       await captioner.dispose()
       await captioner.dispose()
       expect(mocks.mockDispose).toHaveBeenCalledTimes(1)
@@ -237,10 +260,9 @@ describe('createCaptioner — quality profile dispatch (Qwen2.5-VL-3B-Instruct-O
     // (prompt, image). It must have been invoked once with the image as the
     // second argument — and that second argument MUST NOT be an array.
     expect(mocks.mockProcessorInstance).toHaveBeenCalledTimes(1)
-    const [promptArg, imageArg] = mocks.mockProcessorInstance.mock.calls[0] as unknown as [
-      string,
-      unknown,
-    ]
+    const call = expectDefined(mocks.mockProcessorInstance.mock.calls[0])
+    const promptArg = call[0]
+    const imageArg = call[1]
     expect(promptArg).toBe('CHAT_PROMPT_QUALITY')
     expect(Array.isArray(imageArg)).toBe(false)
   })
@@ -250,16 +272,12 @@ describe('createCaptioner — quality profile dispatch (Qwen2.5-VL-3B-Instruct-O
     await captioner.caption(PNG_BYTES, 1)
 
     expect(mocks.mockGenerate).toHaveBeenCalledTimes(1)
-    const arg = mocks.mockGenerate.mock.calls[0]?.[0] as {
-      max_new_tokens?: number
-      repetition_penalty?: number
-      no_repeat_ngram_size?: number
-    }
-    expect(arg?.max_new_tokens).toBe(128)
+    const arg = expectRecord(mocks.mockGenerate.mock.calls[0]?.[0])
+    expect(arg['max_new_tokens']).toBe(128)
     // These two options exist on `fast` but are explicitly absent on `quality`
     // because they cause forced variant generation on Qwen2.5-VL.
-    expect(arg?.repetition_penalty).toBeUndefined()
-    expect(arg?.no_repeat_ngram_size).toBeUndefined()
+    expect(arg['repetition_penalty']).toBeUndefined()
+    expect(arg['no_repeat_ngram_size']).toBeUndefined()
   })
 
   it('returns the decoded caption verbatim when post-processing leaves it unchanged', async () => {
@@ -284,14 +302,14 @@ describe('createCaptioner — quality profile dispatch (Qwen2.5-VL-3B-Instruct-O
     }
 
     expect(captured).toBeInstanceOf(VlmError)
-    expect((captured as InstanceType<typeof VlmError>).pageNum).toBe(5)
-    expect((captured as InstanceType<typeof VlmError>).message).toBe('Captioning failed for page 5')
+    expect(expectInstanceOf(captured, VlmError).pageNum).toBe(5)
+    expect(expectInstanceOf(captured, VlmError).message).toBe('Captioning failed for page 5')
 
-    const cause = (captured as InstanceType<typeof VlmError>).cause as Error
+    const cause = expectError(expectInstanceOf(captured, VlmError).cause)
     expect(cause.message).toContain('Captioner load failed')
     expect(cause.message).toContain(`modelName=${QUALITY_MODEL_ID}`)
     expect(cause.message).toContain('boom-quality-load')
-    expect((cause as Error & { cause?: unknown }).cause).toBe(originalErr)
+    expect(expectRecord(cause)['cause']).toBe(originalErr)
   })
 
   it('wraps generation failure in VlmError with pageNum + cause', async () => {
@@ -307,7 +325,7 @@ describe('createCaptioner — quality profile dispatch (Qwen2.5-VL-3B-Instruct-O
     }
 
     expect(captured).toBeInstanceOf(VlmError)
-    expect((captured as InstanceType<typeof VlmError>).pageNum).toBe(9)
-    expect((captured as InstanceType<typeof VlmError>).cause).toBe(originalErr)
+    expect(expectInstanceOf(captured, VlmError).pageNum).toBe(9)
+    expect(expectInstanceOf(captured, VlmError).cause).toBe(originalErr)
   })
 })

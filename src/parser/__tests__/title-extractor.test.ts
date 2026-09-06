@@ -1,5 +1,4 @@
 // Title Extractor Unit Tests
-// Test Type: Unit Test
 
 import { JSDOM } from 'jsdom'
 import { describe, expect, it } from 'vitest'

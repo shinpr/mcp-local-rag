@@ -1,13 +1,5 @@
-// Unit tests for `classifyIngestedSources` — the pure `sources` classifier
-// shared by the MCP `list_files` handler and the `list` CLI (extracted from the
-// byte-for-byte-identical inline blocks at src/server/index.ts:691-699 and
-// src/cli/list.ts:297-305).
-//
-// @category: unit
-// @lane: unit
-// @dependency: pure (looksLikeRawDataPath / extractSourceFromPath / matchesAnyScope) — no I/O
-// @complexity: medium (raw-data vs real-file branch × scope present/absent)
-// ROI: n/a (pure helper unit)
+// `classifyIngestedSources` — the pure `sources` classifier shared by the MCP
+// `list_files` handler and the `list` CLI.
 
 import { sep } from 'node:path'
 import { describe, expect, it } from 'vitest'

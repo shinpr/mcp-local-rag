@@ -1,5 +1,4 @@
 // CLI read-neighbors Tests
-// Test Type: Unit Test
 // Tests runReadNeighbors functionality with mocked dependencies.
 //
 // AC parity: runReadNeighbors does not instantiate an embedder; this test file
@@ -39,6 +38,7 @@ const cliCommonFactory = () => ({
 const MOCKED_PATHS = ['../../cli/common.js'] as const
 
 import { resolve, sep } from 'node:path'
+import { expectDefined, expectError, expectString, parseJson } from '../test-doubles.js'
 import { formatCliErrorShim } from './cli-error-shim.js'
 
 let runReadNeighbors: typeof import('../../cli/read-neighbors.js').runReadNeighbors
@@ -81,7 +81,9 @@ describe('CLI read-neighbors', () => {
   })
 
   afterAll(() => {
-    for (const p of MOCKED_PATHS) vi.doUnmock(p)
+    for (const p of MOCKED_PATHS) {
+      vi.doUnmock(p)
+    }
     vi.resetModules()
   })
 
@@ -114,7 +116,7 @@ describe('CLI read-neighbors', () => {
     const { output, error } = await captureStderr(() => runReadNeighbors(['--help']))
 
     expect(error).toBeInstanceOf(Error)
-    expect((error as Error).message).toBe('process.exit(0)')
+    expect(expectError(error).message).toBe('process.exit(0)')
 
     const joined = output.join('\n')
     expect(joined).toContain('Usage:')
@@ -183,7 +185,7 @@ describe('CLI read-neighbors', () => {
     )
 
     expect(error).toBeInstanceOf(Error)
-    expect((error as Error).message).toBe('process.exit(1)')
+    expect(expectError(error).message).toBe('process.exit(1)')
     expect(output.join('\n')).toContain('--chunk-index')
     expect(mocks.getChunksByRange).not.toHaveBeenCalled()
   })
@@ -197,7 +199,7 @@ describe('CLI read-neighbors', () => {
     )
 
     expect(error).toBeInstanceOf(Error)
-    expect((error as Error).message).toBe('process.exit(1)')
+    expect(expectError(error).message).toBe('process.exit(1)')
     expect(output.join('\n')).toContain('--chunk-index')
     expect(mocks.getChunksByRange).not.toHaveBeenCalled()
   })
@@ -211,7 +213,7 @@ describe('CLI read-neighbors', () => {
     )
 
     expect(error).toBeInstanceOf(Error)
-    expect((error as Error).message).toBe('process.exit(1)')
+    expect(expectError(error).message).toBe('process.exit(1)')
     expect(output.join('\n')).toContain('--before')
     expect(mocks.getChunksByRange).not.toHaveBeenCalled()
   })
@@ -263,7 +265,7 @@ describe('CLI read-neighbors', () => {
     const { error } = await captureStderr(() => runReadNeighbors(['--help']))
 
     expect(error).toBeInstanceOf(Error)
-    expect((error as Error).message).toBe('process.exit(0)')
+    expect(expectError(error).message).toBe('process.exit(0)')
     expect(mocks.getChunksByRange).not.toHaveBeenCalled()
   })
 
@@ -315,7 +317,7 @@ describe('CLI read-neighbors', () => {
       { filePath: '/abs/path.md', chunkIndex: 5, text: 'target', isTarget: true, fileTitle: 'Doc' },
       { filePath: '/abs/path.md', chunkIndex: 6, text: 'after', isTarget: false, fileTitle: 'Doc' },
     ]
-    const written = stdoutSpy.mock.calls[0]![0] as string
+    const written = expectString(stdoutSpy.mock.calls[0]?.[0])
     expect(written).toBe(`${JSON.stringify(expectedItems, null, 2)}\n`)
   })
 
@@ -342,7 +344,7 @@ describe('CLI read-neighbors', () => {
     expect(mocks.getChunksByRange).toHaveBeenCalledTimes(1)
 
     // The first argument is the generated raw-data path.
-    const [calledPath] = mocks.getChunksByRange.mock.calls[0] as [string, number, number]
+    const calledPath = expectString(mocks.getChunksByRange.mock.calls[0]?.[0])
     expect(calledPath).toContain(`raw-data${sep}`)
     expect(calledPath).toMatch(/\.md$/)
     // Not the raw source string itself.
@@ -351,17 +353,20 @@ describe('CLI read-neighbors', () => {
     // Response items should include the original source field extracted from the
     // raw-data path.
     expect(stdoutSpy).toHaveBeenCalledTimes(1)
-    const written = stdoutSpy.mock.calls[0]![0] as string
-    const parsed = JSON.parse(written) as Array<{
-      filePath: string
-      chunkIndex: number
-      text: string
-      isTarget: boolean
-      fileTitle: string | null
-      source?: string
-    }>
+    const written = expectString(stdoutSpy.mock.calls[0]?.[0])
+    const parsed =
+      parseJson<
+        Array<{
+          filePath: string
+          chunkIndex: number
+          text: string
+          isTarget: boolean
+          fileTitle: string | null
+          source?: string
+        }>
+      >(written)
     expect(parsed).toHaveLength(1)
-    expect(parsed[0]!.source).toBe(SOURCE)
-    expect(parsed[0]!.isTarget).toBe(true)
+    expect(expectDefined(parsed[0]).source).toBe(SOURCE)
+    expect(expectDefined(parsed[0]).isTarget).toBe(true)
   })
 })

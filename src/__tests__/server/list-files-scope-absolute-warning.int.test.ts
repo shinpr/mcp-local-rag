@@ -10,11 +10,6 @@
 //     (uningested files only — no embedding needed) → warning block naming each
 //     non-absolute prefix; absolute prefixes produce no such block and still
 //     return their scoped files[].
-// ROI: 80
-// @category: integration
-// @lane: integration
-// @dependency: RAGServer handler + real LanceDB + real-FS fixture (no embedder)
-// @complexity: low (no mocks; construct RAGServer, scan uningested fixture)
 
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
@@ -22,6 +17,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import type { RagContentBlock } from '../../server/error-utils.js'
 import { RAGServer } from '../../server/index.js'
 import { testModelCacheDir, withTestDevice } from '../test-device.js'
+import { parseJson } from '../test-doubles.js'
 
 const NON_ABSOLUTE_WARNING = /Warning: scope prefix "([^"]+)" is not absolute/
 
@@ -30,7 +26,9 @@ function warningPrefixes(content: RagContentBlock[]): string[] {
   for (const block of content) {
     if (block.type === 'text') {
       const match = NON_ABSOLUTE_WARNING.exec(block.text)
-      if (match?.[1] !== undefined) prefixes.push(match[1])
+      if (match?.[1] !== undefined) {
+        prefixes.push(match[1])
+      }
     }
   }
   return prefixes
@@ -41,7 +39,7 @@ function parsedFiles(content: RagContentBlock[]): string[] {
   if (first === undefined || first.type !== 'text') {
     throw new Error('expected a leading JSON text block')
   }
-  const parsed = JSON.parse(first.text) as { files: { filePath: string }[] }
+  const parsed = parseJson<{ files: { filePath: string }[] }>(first.text)
   return parsed.files.map((f) => f.filePath)
 }
 
@@ -73,7 +71,9 @@ describe('handleListFiles(scope) — non-absolute prefix warning (finding #2)', 
   }, 120000)
 
   afterAll(async () => {
-    if (server) await server.close()
+    if (server) {
+      await server.close()
+    }
     rmSync(base, { recursive: true, force: true })
   })
 

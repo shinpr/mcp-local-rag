@@ -1,27 +1,23 @@
-// Test Type: Integration — real filesystem fixture under the gitignored
-// project-root `tmp/`, `ingestSingleFile` wired to structural stubs, a real
-// `DocumentParser` for the boundary cases, and the real sync core (`runSync`)
-// deciding what a later sync does with the stored hash.
+// `contentHash` must be read before the parse. Real fixtures under `tmp/`,
+// `ingestSingleFile` on structural stubs, a real `DocumentParser` for the
+// boundary cases, and the real sync core deciding what a later sync does.
 //
-// Why this file exists: `contentHash` used to come from a second read taken after
-// parsing, chunking, and embedding, while the chunks came from the parser's read.
-// Embedding a document takes seconds, so an editor saving inside that window left
-// the index serving the old content under the new content's hash — and the next
-// sync then saw `disk hash == stored hash`, skipped the file, and the index stayed
-// wrong permanently. The hash is now taken before the parse, so a modification
-// during ingestion makes the stored hash OLDER than the disk bytes and the next
-// sync re-ingests: fail dirty, never fail clean. Being first also means nothing
-// else guards that read any more, so the checks that must precede it — containment
-// and size — are pinned here as well.
+// The hash used to come from a second read taken after parse, chunk and embed.
+// Embedding takes seconds, so an editor saving inside that window left the
+// index serving old content under the new content's hash — and the next sync
+// then saw a matching hash, skipped the file, and stayed wrong permanently.
+// Reading first makes the stored hash OLDER than disk instead, so the next
+// sync re-ingests: fail dirty, never fail clean.
+//
+// Being first also means nothing else guards that read, so containment and
+// size are pinned here too.
 //
 // Mock isolation: `node:fs/promises` is imported across the codebase, so the
-// wrapper is installed with `vi.doMock` in `beforeAll` and removed with
-// `vi.doUnmock` + `vi.resetModules` in `afterAll`, with the production modules
-// imported dynamically afterwards (see `.claude/skills/project-context/SKILL.md`
-// § Test Environment Constraints). It delegates every call to the real module and
-// only records which paths `readFile` was given, which is how "no byte read
-// happened" becomes observable. This file's own fixture I/O uses `node:fs`, so it
-// never enters that record.
+// wrapper is installed with `vi.doMock` in `beforeAll` and removed in
+// `afterAll` (see project-context § Test Environment Constraints). It
+// delegates to the real module and records which paths `readFile` was given,
+// which is how "no byte read happened" becomes observable. This file's own
+// fixture I/O uses `node:fs`, so it never enters that record.
 
 import { createHash } from 'node:crypto'
 import { mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
@@ -32,6 +28,7 @@ import type { Embedder } from '../../embedder/index.js'
 import type { SyncCollaborators } from '../../features/sync.js'
 import type { DocumentParser } from '../../parser/index.js'
 import type { VectorChunk, VectorStore } from '../../vectordb/index.js'
+import { asDouble } from '../test-doubles.js'
 
 // ============================================
 // Mock setup (scoped doMock — see header)
@@ -82,45 +79,47 @@ const HASH_AFTER = 'd81c99f614d793cb111431a2852d16593929a924e751b2e3034d57d6ed5c
 // ============================================
 
 /**
- * A parser that rewrites the file as a side effect of reading it: the stand-in
- * for an editor saving during the parse/chunk/embed window. It returns the text
- * it "read" (the pre-modification content), so the chunks belong to
- * {@link CONTENT_BEFORE} while the disk already holds {@link CONTENT_AFTER}.
+ * A parser that rewrites the file as a side effect of reading it — an editor
+ * saving during the parse/chunk/embed window. It returns the text it "read", so
+ * the chunks belong to {@link CONTENT_BEFORE} while disk holds
+ * {@link CONTENT_AFTER}.
  *
- * `validateFilePath` / `validateFileSize` are recording spies standing in for the
- * real parser's boundary checks; the cases that pin those two decisions use a real
- * `DocumentParser` instead of this stub.
+ * The cases that pin `validateFilePath` / `validateFileSize` use a real
+ * `DocumentParser` instead; here they are recording spies.
  */
 function racingParser(): DocumentParser {
-  return {
+  return asDouble<DocumentParser>({
     validateFilePath: vi.fn().mockResolvedValue(undefined),
     validateFileSize: vi.fn(),
     parseFile: async (filePath: string) => {
       writeFileSync(filePath, CONTENT_AFTER)
       return { content: CONTENT_BEFORE, title: 'Report' }
     },
-  } as unknown as DocumentParser
+  })
 }
 
 const singleChunkChunker = (): SemanticChunker =>
-  ({
-    chunkText: async () => [{ index: 0, text: 'one chunk of the pre-modification text' }],
-  }) as unknown as SemanticChunker
+  asDouble<SemanticChunker>({
+    chunkText: async () => {
+      const text = 'one chunk of the pre-modification text'
+      return [{ index: 0, text, sourceStart: 0, sourceEnd: text.length }]
+    },
+  })
 
 const fixedEmbedder = (): Embedder =>
-  ({
+  asDouble<Embedder>({
     embedBatch: async () => [[0.1, 0.2, 0.3]],
-  }) as unknown as Embedder
+  })
 
 /** Captures what persistence received, which is where `contentHash` is observable. */
 function capturingStore(): { store: VectorStore; inserted: VectorChunk[] } {
   const inserted: VectorChunk[] = []
-  const store = {
+  const store = asDouble<VectorStore>({
     deleteChunks: async () => 0,
     insertChunks: async (chunks: VectorChunk[]) => {
       inserted.push(...chunks)
     },
-  } as unknown as VectorStore
+  })
   return { store, inserted }
 }
 
@@ -130,10 +129,12 @@ async function ingestWithMidFlightModification(): Promise<VectorChunk[]> {
   const { store, inserted } = capturingStore()
   await ingestSingleFile(
     REPORT_PATH,
-    racingParser(),
-    singleChunkChunker(),
-    fixedEmbedder(),
-    store,
+    {
+      parser: racingParser(),
+      chunker: singleChunkChunker(),
+      embedder: fixedEmbedder(),
+      vectorStore: store,
+    },
     { visual: false }
   )
   return inserted
@@ -159,7 +160,9 @@ beforeAll(async () => {
 })
 
 afterAll(() => {
-  for (const path of MOCKED_PATHS) vi.doUnmock(path)
+  for (const path of MOCKED_PATHS) {
+    vi.doUnmock(path)
+  }
   vi.resetModules()
   rmSync(TMP_ROOT, { recursive: true, force: true })
 })
@@ -247,9 +250,16 @@ describe('ingestSingleFile — the pre-parse read is validated first', () => {
     const { store, inserted } = capturingStore()
 
     await expect(
-      ingestSingleFile(REPORT_PATH, realParser(8), singleChunkChunker(), fixedEmbedder(), store, {
-        visual: false,
-      })
+      ingestSingleFile(
+        REPORT_PATH,
+        {
+          parser: realParser(8),
+          chunker: singleChunkChunker(),
+          embedder: fixedEmbedder(),
+          vectorStore: store,
+        },
+        { visual: false }
+      )
     ).rejects.toThrow(/File size exceeds limit/)
 
     // The bound the old post-parse read position relied on: the whole file must
@@ -268,10 +278,12 @@ describe('ingestSingleFile — the pre-parse read is validated first', () => {
     await expect(
       ingestSingleFile(
         outsidePath,
-        realParser(1024 * 1024),
-        singleChunkChunker(),
-        fixedEmbedder(),
-        store,
+        {
+          parser: realParser(1024 * 1024),
+          chunker: singleChunkChunker(),
+          embedder: fixedEmbedder(),
+          vectorStore: store,
+        },
         { visual: false }
       )
     ).rejects.toThrow(/within a configured base directory/)

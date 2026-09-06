@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { expectDefined, privateMembers } from '../../__tests__/test-doubles.js'
 import { Embedder } from '../index.js'
 
 interface FakePipeline {
@@ -28,14 +29,14 @@ function createEmbedderWithFakePipeline(tokenLengths: Record<string, number>): {
         input_ids: texts.map((text) => Array.from({ length: tokenLengths[text] ?? 1 }, () => 1)),
       }),
     }
-  ) as FakePipeline
+  ) satisfies FakePipeline
 
   const embedder = new Embedder({
     modelPath: 'unused-by-fake-pipeline',
     batchSize: 16,
     cacheDir: 'unused-by-fake-pipeline',
   })
-  ;(embedder as unknown as { model: FakePipeline }).model = pipeline
+  privateMembers<{ model: FakePipeline }>(embedder).model = pipeline
 
   return { embedder, modelCalls }
 }
@@ -86,7 +87,7 @@ describe('Embedder batch outlier deferral', () => {
   it('defers multiple outliers individually after the normal batch', async () => {
     const shortTexts = Array.from({ length: 14 }, (_, index) => `short-${index}`)
     const texts = [
-      shortTexts[0]!,
+      expectDefined(shortTexts[0]),
       'longest',
       ...shortTexts.slice(1, 8),
       'longer',

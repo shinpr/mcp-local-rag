@@ -1,5 +1,4 @@
 // Sensitive-path policy unit tests
-// Test Type: Unit Test
 
 import { describe, expect, it } from 'vitest'
 
@@ -36,7 +35,11 @@ describe('buildSensitivePrefixes', () => {
     const identity = (p: string) => p
     const prefixes = buildSensitivePrefixes(identity)
     const counts = new Map<string, number>()
-    for (const p of prefixes) counts.set(p, (counts.get(p) ?? 0) + 1)
-    for (const [, n] of counts) expect(n).toBe(1)
+    for (const p of prefixes) {
+      counts.set(p, (counts.get(p) ?? 0) + 1)
+    }
+    for (const [, n] of counts) {
+      expect(n).toBe(1)
+    }
   })
 })

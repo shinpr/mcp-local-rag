@@ -1,6 +1,7 @@
 import type { Document as MupdfDocument } from 'mupdf'
 import * as mupdf from 'mupdf'
 
+import { isRecord } from '../utils/type-guards.js'
 import type { DetectedVisualRegion, VisualBBox, VisualEvidence } from './types.js'
 
 const MIN_IMAGE_BLOCK_WIDTH = 80
@@ -46,7 +47,9 @@ function clampRect(rect: VisualBBox, bounds: VisualBBox): VisualBBox {
 
 function unionRects(rects: readonly VisualBBox[]): VisualBBox | null {
   const first = rects[0]
-  if (!first) return null
+  if (!first) {
+    return null
+  }
   let [x0, y0, x1, y1] = first
   for (const rect of rects.slice(1)) {
     x0 = Math.min(x0, rect[0])
@@ -63,25 +66,37 @@ function padRect(rect: VisualBBox, pageBounds: VisualBBox): VisualBBox {
   return clampRect([rect[0] - xPad, rect[1] - yPad, rect[2] + xPad, rect[3] + yPad], pageBounds)
 }
 
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value)
+}
+
 function blockRect(block: unknown): VisualBBox | null {
-  if (typeof block !== 'object' || block === null) return null
-  const bbox = (block as { bbox?: unknown }).bbox
-  if (typeof bbox !== 'object' || bbox === null) return null
-  const { x, y, w, h } = bbox as Record<'x' | 'y' | 'w' | 'h', unknown>
-  if (![x, y, w, h].every((value) => typeof value === 'number' && Number.isFinite(value))) {
+  if (!isRecord(block)) {
     return null
   }
-  return [x as number, y as number, (x as number) + (w as number), (y as number) + (h as number)]
+  const bbox = block['bbox']
+  if (!isRecord(bbox)) {
+    return null
+  }
+  const { x, y, w, h } = bbox
+  if (!isFiniteNumber(x) || !isFiniteNumber(y) || !isFiniteNumber(w) || !isFiniteNumber(h)) {
+    return null
+  }
+  return [x, y, x + w, y + h]
 }
 
 function getBlocks(stextJson: unknown): unknown[] {
-  if (typeof stextJson !== 'object' || stextJson === null) return []
-  const blocks = (stextJson as { blocks?: unknown }).blocks
+  if (!isRecord(stextJson)) {
+    return []
+  }
+  const blocks = stextJson['blocks']
   return Array.isArray(blocks) ? blocks : []
 }
 
 function isLikelyCornerLogo(rect: VisualBBox, pageBounds: VisualBBox, areaRatio: number): boolean {
-  if (areaRatio > MAX_CORNER_LOGO_AREA_RATIO) return false
+  if (areaRatio > MAX_CORNER_LOGO_AREA_RATIO) {
+    return false
+  }
   const pageWidth = pageBounds[2] - pageBounds[0]
   const pageHeight = pageBounds[3] - pageBounds[1]
   const xBand = pageWidth * CORNER_LOGO_EDGE_BAND_RATIO
@@ -93,13 +108,18 @@ function isLikelyCornerLogo(rect: VisualBBox, pageBounds: VisualBBox, areaRatio:
 
 function collectRasterRects(stextJson: unknown, pageBounds: VisualBBox): VisualBBox[] {
   const pageArea = areaOf(pageBounds)
-  if (pageArea <= 0) return []
+  if (pageArea <= 0) {
+    return []
+  }
   const rects: VisualBBox[] = []
   for (const block of getBlocks(stextJson)) {
-    if (typeof block !== 'object' || block === null) continue
-    if ((block as { type?: unknown }).type !== 'image') continue
+    if (!isRecord(block) || block['type'] !== 'image') {
+      continue
+    }
     const rawRect = blockRect(block)
-    if (!rawRect) continue
+    if (!rawRect) {
+      continue
+    }
     const rect = clampRect(rawRect, pageBounds)
     const width = rect[2] - rect[0]
     const height = rect[3] - rect[1]
@@ -137,7 +157,9 @@ function collectVectorStrokeRects(
     strokePath(path: mupdf.Path, stroke: mupdf.StrokeState, ctm: mupdf.Matrix) {
       try {
         const raw = path.getBounds(stroke, ctm)
-        if (!raw.every(Number.isFinite)) return
+        if (!raw.every(Number.isFinite)) {
+          return
+        }
         const rect = clampRect([raw[0], raw[1], raw[2], raw[3]], pageBounds)
         const width = rect[2] - rect[0]
         const height = rect[3] - rect[1]
@@ -169,9 +191,49 @@ function collectVectorStrokeRects(
 }
 
 function axisGap(a0: number, a1: number, b0: number, b1: number): number {
-  if (a1 < b0) return b0 - a1
-  if (b1 < a0) return a0 - b1
+  if (a1 < b0) {
+    return b0 - a1
+  }
+  if (b1 < a0) {
+    return a0 - b1
+  }
   return 0
+}
+
+/** True when two rects are within `gap` on both axes. */
+function isWithinGap(left: VisualBBox, right: VisualBBox, gap: number): boolean {
+  return (
+    axisGap(left[0], left[2], right[0], right[2]) <= gap &&
+    axisGap(left[1], left[3], right[1], right[3]) <= gap
+  )
+}
+
+/**
+ * Flood-fill from `seed`, taking every still-remaining rect that is within
+ * `gap` of one already in the cluster. Taken indices leave `remaining`.
+ */
+function growCluster(
+  seed: number,
+  rects: readonly VisualBBox[],
+  remaining: Set<number>,
+  gap: number
+): number[] {
+  const indices = [seed]
+  for (let cursor = 0; cursor < indices.length; cursor += 1) {
+    const currentIndex = indices[cursor]
+    const current = currentIndex === undefined ? undefined : rects[currentIndex]
+    if (current === undefined) {
+      continue
+    }
+    for (const candidateIndex of remaining) {
+      const candidate = rects[candidateIndex]
+      if (candidate !== undefined && isWithinGap(current, candidate, gap)) {
+        remaining.delete(candidateIndex)
+        indices.push(candidateIndex)
+      }
+    }
+  }
+  return indices
 }
 
 function groupRects(rects: readonly VisualBBox[], pageBounds: VisualBBox): VisualBBox[][] {
@@ -182,23 +244,15 @@ function groupRects(rects: readonly VisualBBox[], pageBounds: VisualBBox): Visua
   const remaining = new Set(rects.map((_, index) => index))
   const groups: VisualBBox[][] = []
   while (remaining.size > 0) {
-    const seed = remaining.values().next().value as number
-    remaining.delete(seed)
-    const indices = [seed]
-    for (let cursor = 0; cursor < indices.length; cursor += 1) {
-      const current = rects[indices[cursor] as number] as VisualBBox
-      for (const candidateIndex of remaining) {
-        const candidate = rects[candidateIndex] as VisualBBox
-        if (
-          axisGap(current[0], current[2], candidate[0], candidate[2]) <= gap &&
-          axisGap(current[1], current[3], candidate[1], candidate[3]) <= gap
-        ) {
-          remaining.delete(candidateIndex)
-          indices.push(candidateIndex)
-        }
-      }
+    const seed = remaining.values().next().value
+    if (seed === undefined) {
+      break
     }
-    groups.push(indices.map((index) => rects[index] as VisualBBox))
+    remaining.delete(seed)
+    const indices = growCluster(seed, rects, remaining, gap)
+    groups.push(
+      indices.map((index) => rects[index]).filter((rect): rect is VisualBBox => rect !== undefined)
+    )
   }
   return groups
 }
@@ -216,14 +270,18 @@ function pageRegions(
     evidence = 'raster'
   } else {
     const vectorRects = collectVectorStrokeRects(page, pageRecord.pageNum, pageBounds)
-    if (vectorRects.length < VECTOR_STROKE_COUNT_THRESHOLD) return []
+    if (vectorRects.length < VECTOR_STROKE_COUNT_THRESHOLD) {
+      return []
+    }
     groups = groupRects(vectorRects, pageBounds)
     evidence = 'vector'
   }
 
   return groups.flatMap((group) => {
     const union = unionRects(group)
-    if (!union) return []
+    if (!union) {
+      return []
+    }
     const bbox = padRect(union, pageBounds)
     return [
       {
@@ -246,7 +304,9 @@ export function detectVisualRegions(
       page = doc.loadPage(pageRecord.pageNum - 1)
       const raw = page.getBounds()
       const bounds: VisualBBox = [raw[0], raw[1], raw[2], raw[3]]
-      if (areaOf(bounds) > 0) pending.push(...pageRegions(pageRecord, page, bounds))
+      if (areaOf(bounds) > 0) {
+        pending.push(...pageRegions(pageRecord, page, bounds))
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       console.warn(`detector: page scan failed on page ${pageRecord.pageNum}: ${message}`)

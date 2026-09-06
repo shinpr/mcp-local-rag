@@ -1,10 +1,20 @@
 // Lazy initialization tests for Embedder
 // TDD Red phase: These tests should fail initially
 
+import type { MockInstance } from 'vitest'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { getTestDevice, testModelCacheDir } from '../../__tests__/test-device.js'
+import { privateMembers } from '../../__tests__/test-doubles.js'
 import type { EmbedderConfig } from '../index.js'
 import { Embedder } from '../index.js'
+
+/**
+ * There is no public init-count surface, and mocking transformers instead
+ * would leak across files (`isolate: false`) and lose real-model coverage.
+ */
+function spyOnInitialize(embedder: Embedder): MockInstance {
+  return vi.spyOn(privateMembers<{ initialize: () => Promise<void> }>(embedder), 'initialize')
+}
 
 describe('Embedder - Lazy Initialization', () => {
   let testConfig: EmbedderConfig
@@ -53,14 +63,8 @@ describe('Embedder - Lazy Initialization', () => {
   it('should initialize only once for concurrent embed() calls', async () => {
     const embedder = new Embedder(testConfig)
 
-    // Verifies the lazy-init-once contract under concurrency. The private
-    // `initialize` is spied deliberately: there is no public init-count
-    // surface, and replacing the real-model integration with a mocked
-    // @huggingface/transformers pipeline would risk cross-file mock leakage
-    // (transformers is imported widely and vitest runs with isolate:false) and
-    // would lose real-model coverage. So the private spy is the deliberate,
-    // lower-risk choice here.
-    const initializeSpy = vi.spyOn(embedder as any, 'initialize')
+    // The lazy-init-once contract under concurrency.
+    const initializeSpy = spyOnInitialize(embedder)
 
     // Make 5 concurrent embed() calls
     const promises = Array.from({ length: 5 }, (_, i) => embedder.embed(`concurrent test ${i}`))
@@ -119,14 +123,8 @@ describe('Embedder - Lazy Initialization', () => {
     // First call triggers lazy initialization
     await embedder.embed('first call')
 
-    // Verifies the lazy-init-once contract: after init, embed() must not
-    // re-initialize. The private `initialize` is spied deliberately: there is
-    // no public init-count surface, and replacing the real-model integration
-    // with a mocked @huggingface/transformers pipeline would risk cross-file
-    // mock leakage (transformers is imported widely and vitest runs with
-    // isolate:false) and would lose real-model coverage. So the private spy is
-    // the deliberate, lower-risk choice here.
-    const initializeSpy = vi.spyOn(embedder as any, 'initialize')
+    // After init, embed() must not re-initialize.
+    const initializeSpy = spyOnInitialize(embedder)
 
     // Second and third calls should not trigger initialization
     await embedder.embed('second call')

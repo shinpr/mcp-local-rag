@@ -20,7 +20,9 @@ export interface ParseResult<T> {
  * Parse grouping mode from environment variable
  */
 export function parseGroupingMode(value: string | undefined): ParseResult<GroupingMode> {
-  if (!value) return { value: undefined }
+  if (!value) {
+    return { value: undefined }
+  }
   const normalized = value.toLowerCase().trim()
   if (normalized === 'similar' || normalized === 'related') {
     return { value: normalized }
@@ -33,7 +35,9 @@ export function parseGroupingMode(value: string | undefined): ParseResult<Groupi
  * Parse max distance from environment variable
  */
 export function parseMaxDistance(value: string | undefined): ParseResult<number> {
-  if (!value) return { value: undefined }
+  if (!value) {
+    return { value: undefined }
+  }
   const parsed = Number.parseFloat(value)
   if (Number.isNaN(parsed) || parsed <= 0 || !Number.isFinite(parsed)) {
     const warning = `Invalid RAG_MAX_DISTANCE value: "${value.slice(0, 100)}". Expected positive number. Ignoring.`
@@ -46,7 +50,9 @@ export function parseMaxDistance(value: string | undefined): ParseResult<number>
  * Parse max files from environment variable
  */
 export function parseMaxFiles(value: string | undefined): ParseResult<number> {
-  if (!value) return { value: undefined }
+  if (!value) {
+    return { value: undefined }
+  }
   const parsed = Number.parseInt(value, 10)
   if (Number.isNaN(parsed) || parsed < 1) {
     const warning = `Invalid RAG_MAX_FILES value: "${value.slice(0, 100)}". Expected positive integer (>= 1). Ignoring.`
@@ -59,7 +65,9 @@ export function parseMaxFiles(value: string | undefined): ParseResult<number> {
  * Parse hybrid weight from environment variable
  */
 export function parseHybridWeight(value: string | undefined): ParseResult<number> {
-  if (!value) return { value: undefined }
+  if (!value) {
+    return { value: undefined }
+  }
   const parsed = Number.parseFloat(value)
   if (Number.isNaN(parsed) || parsed < 0 || parsed > 1) {
     const warning = `Invalid RAG_HYBRID_WEIGHT value: "${value.slice(0, 100)}". Expected 0.0-1.0. Using default (0.6).`
@@ -72,7 +80,9 @@ export function parseHybridWeight(value: string | undefined): ParseResult<number
  * Parse chunk minimum length from environment variable
  */
 export function parseChunkMinLength(value: string | undefined): ParseResult<number> {
-  if (!value) return { value: undefined }
+  if (!value) {
+    return { value: undefined }
+  }
   const parsed = Number.parseInt(value, 10)
   if (Number.isNaN(parsed) || parsed < 1 || parsed > MAX_CHUNK_MIN_LENGTH) {
     const warning = `Invalid CHUNK_MIN_LENGTH value: "${value.slice(0, 100)}". Expected integer between 1 and ${MAX_CHUNK_MIN_LENGTH}. Ignoring.`
@@ -84,9 +94,15 @@ export function parseChunkMinLength(value: string | undefined): ParseResult<numb
 /** Parse the independent PDF image-storage toggle. */
 export function parseStoreImages(value: string | undefined): ParseResult<boolean> {
   const normalized = value?.trim().toLowerCase() ?? ''
-  if (normalized.length === 0) return { value: false }
-  if (['1', 'true', 'yes', 'on'].includes(normalized)) return { value: true }
-  if (['0', 'false', 'no', 'off'].includes(normalized)) return { value: false }
+  if (normalized.length === 0) {
+    return { value: false }
+  }
+  if (['1', 'true', 'yes', 'on'].includes(normalized)) {
+    return { value: true }
+  }
+  if (['0', 'false', 'no', 'off'].includes(normalized)) {
+    return { value: false }
+  }
   return {
     value: false,
     warning: `Invalid STORE_IMAGES value: "${value?.slice(0, 100)}". Expected one of 1, true, yes, on, 0, false, no, or off. Using false.`,
@@ -97,141 +113,177 @@ export function parseStoreImages(value: string | undefined): ParseResult<boolean
 // Server Startup
 // ============================================
 
-/**
- * Resolve the full RAGServer configuration from environment variables.
- *
- * Pure (no process.exit, no transport): `env` and `cwd` are passed in so the
- * entry-point wiring can be exercised directly in tests instead of via a copy.
- * Single source of truth for BASE_DIRS / BASE_DIR / cwd precedence, the
- * sensitive-path policy on both raw and realpath-normalized roots, and the
- * never-fall-back-to-cwd-on-error rule.
- */
-export async function resolveServerConfig(
-  env: NodeJS.ProcessEnv,
-  cwd: string
-): Promise<ConstructorParameters<typeof RAGServer>[0]> {
-  const device = resolveDevice(env['RAG_DEVICE'])
-  // Undefined when RAG_DTYPE is unset — threaded into config only when defined
-  // (see below), preserving the unset signal for the embedder's fp32 default.
-  const dtype = resolveDtype(env['RAG_DTYPE'])
-  const configWarnings: string[] = []
+/** Resolved server config type, named so helpers can share it. */
+type ServerConfig = ConstructorParameters<typeof RAGServer>[0]
 
-  // Sensitive-path pre-check on the RAW user-supplied paths, before the
-  // resolver realpath-normalizes them (on macOS `/etc` → `/private/etc`, which
-  // a post-realpath-only check would miss).
-  const rawSensitiveErrors: string[] = []
-  if (env['BASE_DIRS'] !== undefined && env['BASE_DIRS'].length > 0) {
-    const parsed = parseBaseDirsEnv(env['BASE_DIRS'])
-    if (parsed.ok) {
-      for (const raw of parsed.value) {
-        const sensitive = checkSensitivePath(raw, 'BASE_DIRS')
-        if (sensitive) rawSensitiveErrors.push(sensitive)
+/** Checked before realpath, which would turn `/etc` into `/private/etc`. */
+function collectRawSensitiveErrors(env: NodeJS.ProcessEnv): string[] {
+  const errors: string[] = []
+  const baseDirs = env['BASE_DIRS']
+  if (baseDirs !== undefined && baseDirs.length > 0) {
+    const parsed = parseBaseDirsEnv(baseDirs)
+    if (!parsed.ok) {
+      return errors
+    }
+    for (const raw of parsed.value) {
+      const sensitive = checkSensitivePath(raw, 'BASE_DIRS')
+      if (sensitive) {
+        errors.push(sensitive)
       }
     }
-  } else if (env['BASE_DIR'] !== undefined && env['BASE_DIR'].trim().length > 0) {
-    const sensitive = checkSensitivePath(env['BASE_DIR'], 'BASE_DIR')
-    if (sensitive) rawSensitiveErrors.push(sensitive)
+    return errors
+  }
+  const baseDir = env['BASE_DIR']
+  if (baseDir !== undefined && baseDir.trim().length > 0) {
+    const sensitive = checkSensitivePath(baseDir, 'BASE_DIR')
+    if (sensitive) {
+      errors.push(sensitive)
+    }
+  }
+  return errors
+}
+
+/** Roots the server will serve, plus whatever made them unusable. */
+interface ResolvedRoots {
+  baseDirs: string[]
+  /** Normal-path roots, index-aligned with `baseDirs`, for list_files display. */
+  rawBaseDirs: string[]
+  configError?: BaseDirsConfigError
+  warnings: string[]
+}
+
+/** No usable root: every tool that needs one fails closed with `error`. */
+function noRoots(error: BaseDirsConfigError): ResolvedRoots {
+  return { baseDirs: [], rawBaseDirs: [], configError: error, warnings: [error.message] }
+}
+
+async function resolveRoots(env: NodeJS.ProcessEnv, cwd: string): Promise<ResolvedRoots> {
+  // Raw sensitive-path matches take precedence over resolver errors.
+  const rawSensitiveErrors = collectRawSensitiveErrors(env)
+  if (rawSensitiveErrors.length > 0) {
+    return noRoots(new BaseDirsConfigError([...new Set(rawSensitiveErrors)].join('; ')))
   }
 
-  const baseDirsResult = await resolveBaseDirs({
+  const result = await resolveBaseDirs({
     envBaseDirs: env['BASE_DIRS'],
     envBaseDir: env['BASE_DIR'],
     cwd,
   })
+  if (!result.ok) {
+    return noRoots(result.error)
+  }
 
-  let baseDirsForServer: string[]
-  // Normal-path roots, index-aligned with baseDirsForServer, for list_files
-  // scan/display (see BaseDirsConfig for the path policy).
-  let rawBaseDirsForServer: string[]
-  let configError: BaseDirsConfigError | undefined
-  // Raw sensitive-path matches take precedence over resolver errors.
-  if (rawSensitiveErrors.length > 0) {
-    baseDirsForServer = []
-    rawBaseDirsForServer = []
-    configError = new BaseDirsConfigError([...new Set(rawSensitiveErrors)].join('; '))
-    configWarnings.push(configError.message)
-  } else if (baseDirsResult.ok) {
-    const sourceFlag =
-      env['BASE_DIRS'] !== undefined && env['BASE_DIRS'].length > 0 ? 'BASE_DIRS' : 'BASE_DIR'
-    const sensitiveErrors: string[] = []
-    for (const root of baseDirsResult.config.baseDirs) {
-      const sensitive = checkSensitivePath(root, sourceFlag)
-      if (sensitive) sensitiveErrors.push(sensitive)
+  const baseDirs = env['BASE_DIRS']
+  const sourceFlag = baseDirs !== undefined && baseDirs.length > 0 ? 'BASE_DIRS' : 'BASE_DIR'
+  const sensitiveErrors: string[] = []
+  for (const root of result.config.baseDirs) {
+    const sensitive = checkSensitivePath(root, sourceFlag)
+    if (sensitive) {
+      sensitiveErrors.push(sensitive)
     }
-    if (sensitiveErrors.length > 0) {
-      baseDirsForServer = []
-      rawBaseDirsForServer = []
-      configError = new BaseDirsConfigError([...new Set(sensitiveErrors)].join('; '))
-      configWarnings.push(configError.message)
-    } else {
-      baseDirsForServer = baseDirsResult.config.baseDirs
-      rawBaseDirsForServer = baseDirsResult.config.rawBaseDirs
-      for (const warning of baseDirsResult.warnings) {
-        configWarnings.push(warning.message)
-      }
+  }
+  if (sensitiveErrors.length > 0) {
+    return noRoots(new BaseDirsConfigError([...new Set(sensitiveErrors)].join('; ')))
+  }
+  return {
+    baseDirs: result.config.baseDirs,
+    rawBaseDirs: result.config.rawBaseDirs,
+    warnings: result.warnings.map((warning) => warning.message),
+  }
+}
+
+function resolveMaxFileSize(env: NodeJS.ProcessEnv): { value: number; warning?: string } {
+  const raw = env['MAX_FILE_SIZE']
+  const parsed = raw ? Number(raw) : DEFAULT_MAX_FILE_SIZE
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > MAX_FILE_SIZE_LIMIT) {
+    return {
+      value: DEFAULT_MAX_FILE_SIZE,
+      warning: `Invalid MAX_FILE_SIZE value: "${raw?.slice(0, 100)}". Expected integer between 1 and ${MAX_FILE_SIZE_LIMIT}. Using default (${DEFAULT_MAX_FILE_SIZE}).`,
     }
-  } else {
-    baseDirsForServer = []
-    rawBaseDirsForServer = []
-    configError = baseDirsResult.error
-    configWarnings.push(baseDirsResult.error.message)
   }
+  return { value: parsed }
+}
 
-  const sizeValue = env['MAX_FILE_SIZE']
-  let maxFileSize = sizeValue ? Number(sizeValue) : DEFAULT_MAX_FILE_SIZE
-  if (!Number.isInteger(maxFileSize) || maxFileSize < 1 || maxFileSize > MAX_FILE_SIZE_LIMIT) {
-    configWarnings.push(
-      `Invalid MAX_FILE_SIZE value: "${sizeValue?.slice(0, 100)}". Expected integer between 1 and ${MAX_FILE_SIZE_LIMIT}. Using default (${DEFAULT_MAX_FILE_SIZE}).`
-    )
-    maxFileSize = DEFAULT_MAX_FILE_SIZE
-  }
-
-  const config: ConstructorParameters<typeof RAGServer>[0] = {
-    dbPath: env['DB_PATH'] || './lancedb/',
-    modelName: env['MODEL_NAME'] || 'Xenova/all-MiniLM-L6-v2',
-    cacheDir: env['CACHE_DIR'] || './models/',
-    baseDirs: baseDirsForServer,
-    rawBaseDirs: rawBaseDirsForServer,
-    maxFileSize,
-    device,
-    storeImages: false,
-  }
-
-  // Quality-filter settings: applied only when defined; invalid values warn.
+/**
+ * Apply the quality-filter settings that are only set when defined, so an unset
+ * variable keeps meaning "use the downstream default". Returns their warnings.
+ */
+function applyOptionalSettings(config: ServerConfig, env: NodeJS.ProcessEnv): string[] {
   const maxDistance = parseMaxDistance(env['RAG_MAX_DISTANCE'])
   const grouping = parseGroupingMode(env['RAG_GROUPING'])
   const maxFiles = parseMaxFiles(env['RAG_MAX_FILES'])
   const hybridWeight = parseHybridWeight(env['RAG_HYBRID_WEIGHT'])
   const chunkMinLength = parseChunkMinLength(env['CHUNK_MIN_LENGTH'])
   const storeImages = parseStoreImages(env['STORE_IMAGES'])
-  if (maxDistance.value !== undefined) config.maxDistance = maxDistance.value
-  if (maxDistance.warning) configWarnings.push(maxDistance.warning)
-  if (grouping.value !== undefined) config.grouping = grouping.value
-  if (grouping.warning) configWarnings.push(grouping.warning)
-  if (maxFiles.value !== undefined) config.maxFiles = maxFiles.value
-  if (maxFiles.warning) configWarnings.push(maxFiles.warning)
-  if (hybridWeight.value !== undefined) config.hybridWeight = hybridWeight.value
-  if (hybridWeight.warning) configWarnings.push(hybridWeight.warning)
-  if (chunkMinLength.value !== undefined) config.chunkMinLength = chunkMinLength.value
-  if (chunkMinLength.warning) configWarnings.push(chunkMinLength.warning)
+
+  if (maxDistance.value !== undefined) {
+    config.maxDistance = maxDistance.value
+  }
+  if (grouping.value !== undefined) {
+    config.grouping = grouping.value
+  }
+  if (maxFiles.value !== undefined) {
+    config.maxFiles = maxFiles.value
+  }
+  if (hybridWeight.value !== undefined) {
+    config.hybridWeight = hybridWeight.value
+  }
+  if (chunkMinLength.value !== undefined) {
+    config.chunkMinLength = chunkMinLength.value
+  }
   config.storeImages = storeImages.value ?? false
-  if (storeImages.warning) configWarnings.push(storeImages.warning)
+
+  return [maxDistance, grouping, maxFiles, hybridWeight, chunkMinLength, storeImages]
+    .map((parsed) => parsed.warning)
+    .filter((warning): warning is string => warning !== undefined)
+}
+
+/**
+ * Single source of truth for BASE_DIRS / BASE_DIR / cwd precedence. A resolver
+ * error never falls back to cwd.
+ */
+export async function resolveServerConfig(
+  env: NodeJS.ProcessEnv,
+  cwd: string
+): Promise<ServerConfig> {
+  const roots = await resolveRoots(env, cwd)
+  const maxFileSize = resolveMaxFileSize(env)
+  const configWarnings = [...roots.warnings]
+  if (maxFileSize.warning !== undefined) {
+    configWarnings.push(maxFileSize.warning)
+  }
+
+  const config: ServerConfig = {
+    dbPath: env['DB_PATH'] || './lancedb/',
+    modelName: env['MODEL_NAME'] || 'Xenova/all-MiniLM-L6-v2',
+    cacheDir: env['CACHE_DIR'] || './models/',
+    baseDirs: roots.baseDirs,
+    rawBaseDirs: roots.rawBaseDirs,
+    maxFileSize: maxFileSize.value,
+    device: resolveDevice(env['RAG_DEVICE']),
+    storeImages: false,
+  }
+
+  configWarnings.push(...applyOptionalSettings(config, env))
 
   // Set dtype only when defined, so config.dtype === undefined keeps meaning
   // "RAG_DTYPE unset" (the embedder then applies its fp32 default).
-  if (dtype !== undefined) config.dtype = dtype
+  const dtype = resolveDtype(env['RAG_DTYPE'])
+  if (dtype !== undefined) {
+    config.dtype = dtype
+  }
 
-  if (configWarnings.length > 0) config.configWarnings = configWarnings
-  if (configError !== undefined) config.configError = configError
+  if (configWarnings.length > 0) {
+    config.configWarnings = configWarnings
+  }
+  if (roots.configError !== undefined) {
+    config.configError = roots.configError
+  }
 
   return config
 }
 
-/**
- * Start the RAG MCP Server
- * Configuration is read from environment variables only (no CLI flags).
- * This ensures the bare `mcp-local-rag` launch is suitable for MCP clients.
- */
+/** Env-only configuration, so a bare `mcp-local-rag` launch suits MCP clients. */
 export async function startServer(): Promise<void> {
   try {
     const config = await resolveServerConfig(process.env, process.cwd())

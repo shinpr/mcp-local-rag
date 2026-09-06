@@ -1,5 +1,4 @@
 // HTML Parser Test
-// Test Type: Unit Test
 
 import { describe, expect, it } from 'vitest'
 import { parseHtml } from '../html-parser.js'

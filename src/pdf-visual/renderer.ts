@@ -60,7 +60,7 @@ function renderCrop<T>(
     try {
       device?.close()
     } finally {
-      pixmap.destroy?.()
+      pixmap.destroy()
     }
   }
 }
@@ -86,7 +86,9 @@ function encodePixmapCandidates(
   for (const quality of qualities) {
     const rendition = encodePixmap(pixmap, mimeType, quality)
     renditions.push(rendition)
-    if (rendition.bytes.byteLength <= RENDITION_TARGET_BYTES) break
+    if (rendition.bytes.byteLength <= RENDITION_TARGET_BYTES) {
+      break
+    }
   }
   return renditions
 }
@@ -101,11 +103,13 @@ export async function renderPdfPage(
     page = doc.loadPage(pageNum - 1)
     return renderCrop(page, cropRect, captionScale(cropRect), (pixmap) => pixmap.asPNG())
   } catch (error) {
-    if (error instanceof VlmError) throw error
+    if (error instanceof VlmError) {
+      throw error
+    }
     const cause = error instanceof Error ? error : new Error(String(error))
     throw new VlmError('Failed to render PDF page', { cause, pageNum })
   } finally {
-    page?.destroy?.()
+    page?.destroy()
   }
 }
 
@@ -133,7 +137,9 @@ function selectForMime(
       if (rendition.bytes.byteLength <= MAX_VISUAL_RENDITION_BYTES && withinHardLimit === null) {
         withinHardLimit = rendition
       }
-      if (rendition.bytes.byteLength <= RENDITION_TARGET_BYTES) return rendition
+      if (rendition.bytes.byteLength <= RENDITION_TARGET_BYTES) {
+        return rendition
+      }
     }
   }
   return withinHardLimit
@@ -146,10 +152,14 @@ function selectBoundedRendition(
 ): ImageRendition {
   const edges = renditionEdges(sourceLongEdge)
   const rendition = selectForMime(edges, preferred, renderAtEdge)
-  if (rendition) return rendition
+  if (rendition) {
+    return rendition
+  }
   if (preferred === 'image/png') {
     const jpeg = selectForMime(edges, 'image/jpeg', renderAtEdge)
-    if (jpeg) return jpeg
+    if (jpeg) {
+      return jpeg
+    }
   }
   throw new Error('Rendition exceeds the encoded-size limit')
 }
@@ -162,30 +172,39 @@ export async function renderPdfRendition(
 ): Promise<ImageRendition> {
   let page: mupdf.Page | null = null
   try {
-    page = doc.loadPage(pageNum - 1)
+    const loadedPage = doc.loadPage(pageNum - 1)
+    page = loadedPage
     const { width, height } = cropDimensions(cropRect)
     const nativeLongEdge = Math.max(1, Math.floor(Math.max(width, height) * BASE_SCALE))
     return selectBoundedRendition(nativeLongEdge, preferredMime(evidence), (edge, mimeType) =>
-      renderCrop(page as mupdf.Page, cropRect, scaleForLongEdge(cropRect, edge), (pixmap) =>
+      renderCrop(loadedPage, cropRect, scaleForLongEdge(cropRect, edge), (pixmap) =>
         encodePixmapCandidates(pixmap, mimeType)
       )
     )
   } catch (error) {
-    if (error instanceof VlmError) throw error
+    if (error instanceof VlmError) {
+      throw error
+    }
     const cause = error instanceof Error ? error : new Error(String(error))
     throw new VlmError('Failed to render PDF rendition', { cause, pageNum })
   } finally {
-    page?.destroy?.()
+    page?.destroy()
   }
+}
+
+/** Pixel geometry and alpha handling for one render attempt. */
+interface RenderTarget {
+  width: number
+  height: number
+  preserveAlpha: boolean
 }
 
 function renderImageAtSize<T>(
   image: mupdf.Image,
-  width: number,
-  height: number,
-  preserveAlpha: boolean,
+  target: RenderTarget,
   consume: (pixmap: mupdf.Pixmap) => T
 ): T {
+  const { width, height, preserveAlpha } = target
   const pixmap = new mupdf.Pixmap(mupdf.ColorSpace.DeviceRGB, [0, 0, width, height], preserveAlpha)
   let device: mupdf.DrawDevice | null = null
   try {
@@ -199,7 +218,7 @@ function renderImageAtSize<T>(
     try {
       device?.close()
     } finally {
-      pixmap.destroy?.()
+      pixmap.destroy()
     }
   }
 }
@@ -215,18 +234,22 @@ export function renderImageRendition(
     image = loadedImage
     const sourceWidth = loadedImage.getWidth()
     const sourceHeight = loadedImage.getHeight()
-    if (sourceWidth <= 0 || sourceHeight <= 0) throw new Error('Image has invalid dimensions')
+    if (sourceWidth <= 0 || sourceHeight <= 0) {
+      throw new Error('Image has invalid dimensions')
+    }
 
     const sourceLongEdge = Math.max(sourceWidth, sourceHeight)
     return selectBoundedRendition(sourceLongEdge, sourceMimeType, (edge, mimeType) => {
       const scale = edge / sourceLongEdge
       const width = Math.max(1, Math.round(sourceWidth * scale))
       const height = Math.max(1, Math.round(sourceHeight * scale))
-      return renderImageAtSize(loadedImage, width, height, mimeType === 'image/png', (pixmap) =>
-        encodePixmapCandidates(pixmap, mimeType)
+      return renderImageAtSize(
+        loadedImage,
+        { width, height, preserveAlpha: mimeType === 'image/png' },
+        (pixmap) => encodePixmapCandidates(pixmap, mimeType)
       )
     })
   } finally {
-    image?.destroy?.()
+    image?.destroy()
   }
 }

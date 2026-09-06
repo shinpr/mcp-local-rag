@@ -1,50 +1,45 @@
-// INT-2: Walker-layer traversal-scope pushdown tests (Phase 1 Task 3).
+// Proves the `scope` predicate is pushed INTO the BFS walk rather than applied
+// as a post-scan filter, for BOTH walkers — `scanBaseDir` and
+// `bfsCollectSupportedFiles` are separate code paths.
 //
-// Proves the `scope` predicate is pushed INTO the BFS walk (not applied as a
-// post-scan filter) for BOTH walkers, which are separate BFS code paths both
-// changed in Task 02:
-//   - `scanBaseDir`            (src/server/list-scanner.ts)  → { files (sorted), warnings }
-//   - `bfsCollectSupportedFiles` (src/utils/scan.ts)         → { files (discovery order), unreadableDirs, depthLimited }
+// Mocking (shared-registry safe: doMock/doUnmock plus dynamic import, per
+// project-context):
+//   - `readdir` is wrapped to RECORD every queried directory into `visited[]`
+//     and optionally throw EACCES for a deny-path, otherwise delegating to the
+//     real one. The absence of a recorded directory is what proves pushdown.
+//   - `join` is switched to backslash-join only for the synthetic Windows case,
+//     since a real `\`-path tree cannot exist on a POSIX host.
 //
-// @category: integration
-// @lane: integration
-// @dependency: scope-match + walkers + real-FS fixture (mkdtemp) + readdir/join mocks
-// @complexity: high (dual walker, real-FS + synthetic separator fixtures, EACCES pushdown probe)
-// ROI: 88
-//
-// Mocking strategy (shared-registry safe per project-context: isolate:false,
-// pool forks, maxWorkers 1 → mocked module paths use doMock/doUnmock and the
-// walkers are dynamically imported after doMock):
-//   - `node:fs/promises` readdir is replaced by a wrapper that RECORDS every
-//     queried directory into `visited[]` and (optionally) throws EACCES for a
-//     designated deny-path, otherwise DELEGATES to the real readdir. This is the
-//     deterministic, cross-platform pushdown probe; the fixture FS is otherwise
-//     real (a real mkdtemp tree).
-//   - `node:path` join is a wrapper delegating to the real join by default, and
-//     switched to backslash-join ONLY for the synthetic Windows-separator case
-//     (a real `\`-path tree cannot be created on a POSIX host).
-//
-// Scope boundary: NO `realpathForMatch` assertions here — the walkers never call
-// it (that pushdown proof is Phase 2/3). A chmod-based real-FS unreadable
-// sentinel is auxiliary-only (chmod unreliable on Windows CI); the deterministic
-// EACCES-mock probe below fully discharges the walker-layer proof, so it is not
-// duplicated here.
+// No `realpathForMatch` assertions: the walkers never call it. The chmod-based
+// real-FS unreadable sentinel is auxiliary only, since chmod is unreliable on
+// Windows CI — the EACCES mock discharges the proof.
 
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
+import type { Mock } from 'vitest'
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // ============================================================================
 // Mock setup (vi.hoisted for isolate:false; installed via doMock in beforeAll)
 // ============================================================================
 
-const mocks = vi.hoisted(() => ({
+/** The options shape both walkers pass; forwarded verbatim by `realDelegate`. */
+type ReaddirOptions = { withFileTypes: true; encoding: 'utf8' }
+
+interface ScanMocks {
+  readdir: Mock
+  join: Mock
+  /** Captured real implementations, filled by the factories below. */
+  actualReaddir: typeof import('node:fs/promises').readdir | undefined
+  actualJoin: typeof import('node:path').join | undefined
+}
+
+const mocks = vi.hoisted<ScanMocks>(() => ({
   readdir: vi.fn(),
   join: vi.fn(),
-  // Captured real implementations, filled by the factories below.
-  actualReaddir: undefined as unknown as typeof import('node:fs/promises').readdir,
-  actualJoin: undefined as unknown as typeof import('node:path').join,
+  actualReaddir: undefined,
+  actualJoin: undefined,
 }))
 
 const fsPromisesFactory = async (
@@ -74,20 +69,32 @@ let bfsCollectSupportedFiles: typeof import('../scan.js').bfsCollectSupportedFil
 // ============================================================================
 
 function eaccesError(path: string): NodeJS.ErrnoException {
-  const err = new Error(`EACCES: permission denied, scandir '${path}'`) as NodeJS.ErrnoException
-  err.code = 'EACCES'
+  const err = Object.assign(new Error(`EACCES: permission denied, scandir '${path}'`), {
+    code: 'EACCES',
+  })
   return err
 }
 
 /**
  * readdir impl backed by the REAL filesystem: records the queried dir, throws
  * EACCES for any path in `deny`, otherwise delegates to the real readdir.
+ *
+ * The caller's `options` are FORWARDED, never re-supplied: substituting the
+ * options the walker is supposed to pass would let it request the wrong ones
+ * and still receive Dirent entries here, so the test would correct the defect
+ * instead of observing it.
  */
 function realDelegate(deny: Set<string> = new Set()) {
-  return async (dirPath: string, options?: unknown) => {
+  return async (dirPath: string, options: ReaddirOptions) => {
     visited.push(dirPath)
-    if (deny.has(dirPath)) throw eaccesError(dirPath)
-    return (mocks.actualReaddir as (p: string, o?: unknown) => Promise<unknown>)(dirPath, options)
+    if (deny.has(dirPath)) {
+      throw eaccesError(dirPath)
+    }
+    const actualReaddir = mocks.actualReaddir
+    if (actualReaddir === undefined) {
+      throw new Error('readdir factory did not capture the real implementation')
+    }
+    return actualReaddir(dirPath, options)
   }
 }
 
@@ -112,8 +119,7 @@ function useSyntheticTree(dirMap: Map<string, Array<[string, EntryType]>>) {
     visited.push(dirPath)
     const entries = dirMap.get(dirPath)
     if (!entries) {
-      const err = new Error(`ENOENT: ${dirPath}`) as NodeJS.ErrnoException
-      err.code = 'ENOENT'
+      const err = Object.assign(new Error(`ENOENT: ${dirPath}`), { code: 'ENOENT' })
       throw err
     }
     return entries.map(([name, type]) => mockDirent(name, type))
@@ -131,8 +137,7 @@ function useSyntheticBackslashTree(dirMap: Map<string, Array<[string, EntryType]
     visited.push(dirPath)
     const entries = dirMap.get(dirPath)
     if (!entries) {
-      const err = new Error(`ENOENT: ${dirPath}`) as NodeJS.ErrnoException
-      err.code = 'ENOENT'
+      const err = Object.assign(new Error(`ENOENT: ${dirPath}`), { code: 'ENOENT' })
       throw err
     }
     return entries.map(([name, type]) => mockDirent(name, type))
@@ -140,12 +145,21 @@ function useSyntheticBackslashTree(dirMap: Map<string, Array<[string, EntryType]
 }
 
 // Two walkers behind a uniform adapter so every case runs against both.
+/**
+ * What one walk observed, normalized across walkers so the shared cases can
+ * assert on it without knowing which walker produced it.
+ */
+interface WalkerObservation {
+  files: string[]
+  /** True when the walk reported the given directory as unreadable. */
+  warnedFor: (dir: string) => boolean
+  /** How many unreadable directories the walk reported. */
+  warnCount: number
+}
+
 interface WalkerAdapter {
   name: string
-  run: (root: string, scope?: string[]) => Promise<{ files: string[] }>
-  files: (result: unknown) => string[]
-  warnedFor: (result: unknown, dir: string) => boolean
-  warnCount: (result: unknown) => number
+  run: (root: string, scope?: string[]) => Promise<WalkerObservation>
 }
 
 let WALKERS: WalkerAdapter[]
@@ -186,7 +200,9 @@ let allDirs: string[]
 
 beforeAll(async () => {
   vi.resetModules()
-  for (const p of MOCKED_PATHS) vi.doUnmock(p)
+  for (const p of MOCKED_PATHS) {
+    vi.doUnmock(p)
+  }
   vi.doMock('node:fs/promises', fsPromisesFactory)
   vi.doMock('node:path', pathFactory)
   ;({ scanBaseDir } = await import('../../server/list-scanner.js'))
@@ -195,23 +211,25 @@ beforeAll(async () => {
   WALKERS = [
     {
       name: 'scanBaseDir',
-      run: (root, scope) => scanBaseDir(root, [], scope),
-      files: (r) => (r as { files: string[] }).files,
-      warnedFor: (r, dir) =>
-        (r as { warnings: string[] }).warnings.some((w) => w.includes(basename(dir))),
-      warnCount: (r) =>
-        (r as { warnings: string[] }).warnings.filter((w) => w.includes('cannot read directory'))
-          .length,
+      run: async (root, scope) => {
+        const result = await scanBaseDir(root, [], scope)
+        return {
+          files: result.files,
+          warnedFor: (dir) => result.warnings.some((w) => w.includes(basename(dir))),
+          warnCount: result.warnings.filter((w) => w.includes('cannot read directory')).length,
+        }
+      },
     },
     {
       name: 'bfsCollectSupportedFiles',
-      run: (root, scope) => bfsCollectSupportedFiles(root, [], undefined, scope),
-      files: (r) => (r as { files: string[] }).files,
-      warnedFor: (r, dir) =>
-        (r as { unreadableDirs: { dirPath: string }[] }).unreadableDirs.some(
-          (u) => u.dirPath === dir
-        ),
-      warnCount: (r) => (r as { unreadableDirs: unknown[] }).unreadableDirs.length,
+      run: async (root, scope) => {
+        const result = await bfsCollectSupportedFiles(root, [], { scope })
+        return {
+          files: result.files,
+          warnedFor: (dir) => result.unreadableDirs.some((u) => u.dirPath === dir),
+          warnCount: result.unreadableDirs.length,
+        }
+      },
     },
   ]
 
@@ -250,7 +268,9 @@ beforeAll(async () => {
 })
 
 afterAll(() => {
-  for (const p of MOCKED_PATHS) vi.doUnmock(p)
+  for (const p of MOCKED_PATHS) {
+    vi.doUnmock(p)
+  }
   vi.resetModules()
   rmSync(tmpRoot, { recursive: true, force: true })
 })
@@ -258,7 +278,13 @@ afterAll(() => {
 beforeEach(() => {
   visited.length = 0
   mocks.readdir.mockImplementation(realDelegate())
-  mocks.join.mockImplementation((...parts: string[]) => mocks.actualJoin(...parts))
+  mocks.join.mockImplementation((...parts: string[]) => {
+    const actualJoin = mocks.actualJoin
+    if (actualJoin === undefined) {
+      throw new Error('join factory did not capture the real implementation')
+    }
+    return actualJoin(...parts)
+  })
 })
 
 const sorted = (a: string[]) => [...a].sort()
@@ -271,10 +297,9 @@ describe.each([0, 1])('walker[%i]', (walkerIndex) => {
   const walker = () => WALKERS[walkerIndex]
 
   // AC: AC3 — in-scope files returned, out-of-scope excluded.
-  // Behavior: scope=[/base/a/b] → walk under a/b only → files = {in-b.md, deep.md}.
   it('includes in-scope files and excludes everything outside the scope prefix', async () => {
     const result = await walker().run(base, [dirAB])
-    const files = walker().files(result)
+    const files = result.files
     expect(sorted(files)).toEqual(sorted([fInB, fDeep]))
     for (const excluded of [fRoot, fBar, fInA, fBoundary, fOut]) {
       expect(files).not.toContain(excluded)
@@ -282,27 +307,24 @@ describe.each([0, 1])('walker[%i]', (walkerIndex) => {
   })
 
   // AC: AC5 — boundary-safe: /a/b must not match the name-prefix sibling /a/bc.
-  // Behavior: scope=[/base/a/b] → /a/bc pruned → boundary.md absent, a/bc never readdir'd.
   it('does not match the name-prefix sibling directory (/a/b vs /a/bc)', async () => {
     const result = await walker().run(base, [dirAB])
-    expect(walker().files(result)).not.toContain(fBoundary)
+    expect(result.files).not.toContain(fBoundary)
     expect(visited).not.toContain(dirABc)
   })
 
   // AC: AC5 — an exact file-path scope matches exactly that file.
-  // Behavior: scope=[/base/bar.md] → base read (ancestor), sibling dirs pruned → files = {bar.md}.
   it('matches an exact file-path scope', async () => {
     const result = await walker().run(base, [fBar])
-    expect(walker().files(result)).toEqual([fBar])
+    expect(result.files).toEqual([fBar])
     expect(visited).not.toContain(dirA)
     expect(visited).not.toContain(dirX)
   })
 
   // AC: AC3/AC5 — a deep scope is reachable via ancestor descent (no false pruning).
-  // Behavior: scope=[/base/a/b/c] → descend base→a→a/b→a/b/c → files = {deep.md}, in-b.md excluded.
   it('reaches a deep scope by descending its ancestor chain without false pruning', async () => {
     const result = await walker().run(base, [dirABC])
-    const files = walker().files(result)
+    const files = result.files
     expect(files).toEqual([fDeep])
     expect(files).not.toContain(fInB)
     expect(visited).toEqual(expect.arrayContaining([base, dirA, dirAB, dirABC]))
@@ -312,23 +334,21 @@ describe.each([0, 1])('walker[%i]', (walkerIndex) => {
 
   // AC: AC4a — a root intersecting no prefix is skipped entirely (zero readdir);
   // scope outside the base dir yields an empty result rather than an error.
-  // Behavior: scope=[/tmp/.../outside] on root=/base → root gate false → 0 readdir, files = [].
   it('skips a non-intersecting root entirely (zero readdir, empty result)', async () => {
     const result = await walker().run(base, [outsideBase])
-    expect(walker().files(result)).toEqual([])
+    expect(result.files).toEqual([])
     expect(visited).toHaveLength(0)
   })
 
   // AC: AC7 — scope absent is byte-for-byte the full traversal (regression guard).
-  // Behavior: scope undefined and scope [] both walk every dir and collect every supported file.
   it('leaves traversal and collection unchanged when scope is absent (undefined and [])', async () => {
     const undefinedRun = await walker().run(base, undefined)
-    const undefinedFiles = walker().files(undefinedRun)
+    const undefinedFiles = undefinedRun.files
     const undefinedVisited = [...visited]
 
     visited.length = 0
     const emptyRun = await walker().run(base, [])
-    const emptyFiles = walker().files(emptyRun)
+    const emptyFiles = emptyRun.files
     const emptyVisited = [...visited]
 
     expect(sorted(undefinedFiles)).toEqual(sorted(allFiles))
@@ -341,11 +361,10 @@ describe.each([0, 1])('walker[%i]', (walkerIndex) => {
   // AC: AC11 (Reference Contract, structure-order) — scope changes membership
   // only, never order. The scoped file list equals the unscoped file list
   // filtered to the surviving members, preserving relative order.
-  // Behavior: scope=[/base/a/b] → scoped files == unscoped files ∩ in-scope, same order.
   it('preserves file order under scope (membership-only change)', async () => {
-    const unscoped = walker().files(await walker().run(base, undefined))
+    const unscoped = (await walker().run(base, undefined)).files
     visited.length = 0
-    const scoped = walker().files(await walker().run(base, [dirAB]))
+    const scoped = (await walker().run(base, [dirAB])).files
     const survivors = new Set(scoped)
     expect(scoped).toEqual(unscoped.filter((f) => survivors.has(f)))
   })
@@ -359,47 +378,43 @@ describe.each([0, 1])('walker[%i]', (walkerIndex) => {
   // visited under scope (no recorded call, no warning). The companion sentinel
   // assertion proves the probe CAN fire when the path is not pruned, so the
   // non-visitation is real pushdown, not a dead probe.
-  // Behavior: deny=/base/x; scope=[/base/a/b] → x never readdir'd, no warning; unscoped → x readdir'd + warns.
   it('never descends into a scope-outside subtree (readdir EACCES probe is never called)', async () => {
     mocks.readdir.mockImplementation(realDelegate(new Set([dirX])))
     const scopedResult = await walker().run(base, [dirAB])
 
     // Pruned: the deny-path was never queried and produced no warning.
     expect(visited).not.toContain(dirX)
-    expect(walker().warnedFor(scopedResult, dirX)).toBe(false)
-    expect(walker().warnCount(scopedResult)).toBe(0)
+    expect(scopedResult.warnedFor(dirX)).toBe(false)
+    expect(scopedResult.warnCount).toBe(0)
     // Result is still correct.
-    expect(sorted(walker().files(scopedResult))).toEqual(sorted([fInB, fDeep]))
+    expect(sorted(scopedResult.files)).toEqual(sorted([fInB, fDeep]))
 
     // Sentinel validity: without scope the SAME deny fires — x is read and warns.
     visited.length = 0
     const unscopedResult = await walker().run(base, undefined)
     expect(visited).toContain(dirX)
-    expect(walker().warnedFor(unscopedResult, dirX)).toBe(true)
+    expect(unscopedResult.warnedFor(dirX)).toBe(true)
   })
 
   // AC: AC10 — an in-scope unreadable directory still warns exactly as today.
-  // Behavior: deny=/base/a/b (in scope); scope=[/base/a/b] → a/b visited, readdir throws → warning surfaced.
   it('still warns when an in-scope directory is unreadable', async () => {
     mocks.readdir.mockImplementation(realDelegate(new Set([dirAB])))
     const result = await walker().run(base, [dirAB])
     expect(visited).toContain(dirAB)
-    expect(walker().warnedFor(result, dirAB)).toBe(true)
+    expect(result.warnedFor(dirAB)).toBe(true)
   })
 
   // AC: AC10 — an ancestor directory descended to reach a deep scope still warns.
-  // Behavior: deny=/base/a (ancestor of scope); scope=[/base/a/b/c] → a visited, readdir throws → warning surfaced.
   it('still warns when an ancestor directory on the descent path is unreadable', async () => {
     mocks.readdir.mockImplementation(realDelegate(new Set([dirA])))
     const result = await walker().run(base, [dirABC])
     expect(visited).toContain(dirA)
-    expect(walker().warnedFor(result, dirA)).toBe(true)
+    expect(result.warnedFor(dirA)).toBe(true)
   })
 
   // AC: AC8 — cross-platform separator: a `\`-style prefix prunes correctly on a
   // synthetic Windows-style tree (host-OS independent; proves the walker
   // delegates separator handling to scope-match, not a hardcoded `/`).
-  // Behavior: scope=[C:\base\a\b] over a backslash tree → in-b.md collected, C:\base\a\bc pruned.
   it('prunes correctly with a backslash-style separator', async () => {
     const winBase = 'C:\\base'
     const dirMap = new Map<string, Array<[string, EntryType]>>([
@@ -417,23 +432,21 @@ describe.each([0, 1])('walker[%i]', (walkerIndex) => {
     useSyntheticBackslashTree(dirMap)
 
     const result = await walker().run(winBase, ['C:\\base\\a\\b'])
-    expect(walker().files(result)).toEqual(['C:\\base\\a\\b\\in-b.md'])
+    expect(result.files).toEqual(['C:\\base\\a\\b\\in-b.md'])
     expect(visited).not.toContain('C:\\base\\a\\bc')
   })
 })
 
-// ============================================================================
-// Path-granular scan coverage facts (`bfsCollectSupportedFiles` only).
+// Path-granular coverage facts (`bfsCollectSupportedFiles` only).
 //
-// Sync converts these paths into comparison-key prefixes that protect exactly
-// the unobserved regions from prune, so each fact must name the first unvisited
-// directory (or the skipped entry) rather than a boolean or a parent path.
-// ============================================================================
+// Sync turns these paths into prefixes that protect exactly the unobserved
+// regions from prune, so each fact must name the first unvisited directory —
+// not a boolean, and not a parent path.
 describe('bfsCollectSupportedFiles coverage facts', () => {
   it('reports the first unvisited directory in depthLimitedDirs and omits fully visited siblings', async () => {
     // maxDepth 3: base(0) a(1) x(1) a/b(2) a/bc(2) x/y(2) are read; a/b/c(3) is
     // dequeued and skipped, so it is the only unobserved region.
-    const result = await bfsCollectSupportedFiles(base, [], 3)
+    const result = await bfsCollectSupportedFiles(base, [], { maxDepth: 3 })
 
     expect(result.depthLimitedDirs).toEqual([dirABC])
     // Fully visited siblings/ancestors are observed and must stay prunable.
@@ -445,11 +458,11 @@ describe('bfsCollectSupportedFiles coverage facts', () => {
   })
 
   it('keeps depthLimited equal to depthLimitedDirs.length > 0', async () => {
-    const limited = await bfsCollectSupportedFiles(base, [], 3)
+    const limited = await bfsCollectSupportedFiles(base, [], { maxDepth: 3 })
     expect(limited.depthLimitedDirs.length).toBeGreaterThan(0)
     expect(limited.depthLimited).toBe(true)
 
-    const complete = await bfsCollectSupportedFiles(base, [], 10)
+    const complete = await bfsCollectSupportedFiles(base, [], { maxDepth: 10 })
     expect(complete.depthLimitedDirs).toEqual([])
     expect(complete.depthLimited).toBe(false)
   })
@@ -457,7 +470,7 @@ describe('bfsCollectSupportedFiles coverage facts', () => {
   it('records every depth-limited branch, one entry per first unvisited directory', async () => {
     // maxDepth 2: a/b, a/bc and x/y are all dequeued and skipped; a/b/c is never
     // enqueued, so descendants of an unobserved directory are not repeated.
-    const result = await bfsCollectSupportedFiles(base, [], 2)
+    const result = await bfsCollectSupportedFiles(base, [], { maxDepth: 2 })
 
     expect(sorted(result.depthLimitedDirs)).toEqual(sorted([dirAB, dirABc, dirXY]))
     expect(result.depthLimitedDirs).not.toContain(dirABC)
@@ -511,12 +524,12 @@ describe('bfsCollectSupportedFiles coverage facts', () => {
   it('counts depth from whichever root it is passed', async () => {
     // Same maxDepth, different roots: /base/a/b as its own depth-zero root
     // reaches deep.md, which /base cannot reach within the same budget.
-    const fromBase = await bfsCollectSupportedFiles(base, [], 2)
+    const fromBase = await bfsCollectSupportedFiles(base, [], { maxDepth: 2 })
     expect(fromBase.files).not.toContain(fDeep)
     expect(fromBase.depthLimitedDirs).toContain(dirAB)
 
     visited.length = 0
-    const fromSubtree = await bfsCollectSupportedFiles(dirAB, [], 2)
+    const fromSubtree = await bfsCollectSupportedFiles(dirAB, [], { maxDepth: 2 })
     expect(fromSubtree.files).toContain(fDeep)
     expect(fromSubtree.depthLimitedDirs).toEqual([])
     expect(visited).toEqual(expect.arrayContaining([dirAB, dirABC]))

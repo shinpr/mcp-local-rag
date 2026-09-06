@@ -28,14 +28,28 @@ export abstract class AppError extends Error {
   // `exactOptionalPropertyTypes`.
   override readonly cause?: Error
 
-  protected constructor(message: string, layer: AppErrorLayer, kind: AppErrorKind, cause?: Error) {
+  protected constructor(
+    message: string,
+    layer: AppErrorLayer,
+    kind: AppErrorKind,
+    options?: { cause?: Error }
+  ) {
     super(message)
     this.layer = layer
     this.kind = kind
-    if (cause !== undefined) {
-      this.cause = cause
+    if (options?.cause !== undefined) {
+      this.cause = options.cause
     }
   }
+}
+
+/**
+ * Narrow a caught value to an `Error` so it can be stored as a `cause`. A
+ * non-`Error` is wrapped as `String(value)`, so its text survives in the chain
+ * but its structure does not.
+ */
+export function toError(value: unknown): Error {
+  return value instanceof Error ? value : new Error(String(value))
 }
 
 /** Type guard: narrows an unknown value to the shared error taxonomy. */

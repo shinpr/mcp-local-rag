@@ -64,7 +64,9 @@ function maskCode(
   for (const fencedRange of [...fenced, { start: text.length, end: text.length }]) {
     const gap = text.slice(gapStart, fencedRange.start)
     for (const match of gap.matchAll(/`[^`]+`/g)) {
-      if (match.index === undefined) continue
+      if (match.index === undefined) {
+        continue
+      }
       matchedRanges.push({
         start: gapStart + match.index,
         end: gapStart + match.index + match[0].length,
@@ -89,7 +91,9 @@ function maskCode(
     })
   }
   for (const [index, range] of matchedRanges.entries()) {
-    if (range.start > cursor) append(text.slice(cursor, range.start), cursor, range.start, true)
+    if (range.start > cursor) {
+      append(text.slice(cursor, range.start), cursor, range.start, true)
+    }
     const content = text.slice(range.start, range.end)
     const placeholderPrefix = content.startsWith('```')
       ? CODE_BLOCK_PLACEHOLDER
@@ -99,7 +103,9 @@ function maskCode(
     append(placeholder, range.start, range.end, false)
     cursor = range.end
   }
-  if (cursor < text.length) append(text.slice(cursor), cursor, text.length, true)
+  if (cursor < text.length) {
+    append(text.slice(cursor), cursor, text.length, true)
+  }
   return { mapped: { text: mappedText, segments }, blocks }
 }
 
@@ -108,7 +114,10 @@ function sourceOffsetAt(mapped: MappedText, offset: number, fallback: number): n
   let high = mapped.segments.length - 1
   while (low <= high) {
     const middle = Math.floor((low + high) / 2)
-    const segment = mapped.segments[middle] as MappingSegment
+    const segment = mapped.segments[middle]
+    if (segment === undefined) {
+      break
+    }
     if (offset < segment.mappedStart) {
       high = middle - 1
     } else if (offset > segment.mappedEnd) {
@@ -141,7 +150,9 @@ function trimmedRange(text: string, start: number, end: number): [number, number
 }
 
 function splitOrdinaryRange(text: string, sourceStart: number, sourceEnd: number): SentenceUnit[] {
-  if (sourceStart >= sourceEnd) return []
+  if (sourceStart >= sourceEnd) {
+    return []
+  }
   const { mapped, blocks } = maskCode(text.slice(sourceStart, sourceEnd), sourceStart)
   // biome-ignore lint/suspicious/noControlCharactersInRegex: NUL delimiters identify masked code placeholders.
   const paragraphSeparator = /\n{2,}|\n(?=\S)|(?<=\u0000)\n/g
@@ -149,7 +160,9 @@ function splitOrdinaryRange(text: string, sourceStart: number, sourceEnd: number
   let cursor = 0
   for (const match of mapped.text.matchAll(paragraphSeparator)) {
     const separatorStart = match.index
-    if (separatorStart === undefined) continue
+    if (separatorStart === undefined) {
+      continue
+    }
     paragraphRanges.push([cursor, separatorStart])
     cursor = separatorStart + match[0].length
   }
@@ -158,10 +171,14 @@ function splitOrdinaryRange(text: string, sourceStart: number, sourceEnd: number
   const units: SentenceUnit[] = []
   const appendUnit = (start: number, end: number): void => {
     const range = trimmedRange(mapped.text, start, end)
-    if (!range) return
+    if (!range) {
+      return
+    }
     const [trimmedStart, trimmedEnd] = range
     const restored = restoreCode(mapped.text.slice(trimmedStart, trimmedEnd), blocks).trim()
-    if (!restored) return
+    if (!restored) {
+      return
+    }
     units.push({
       text: restored,
       atomic: false,
@@ -172,7 +189,9 @@ function splitOrdinaryRange(text: string, sourceStart: number, sourceEnd: number
 
   for (const [paragraphStart, paragraphEnd] of paragraphRanges) {
     const range = trimmedRange(mapped.text, paragraphStart, paragraphEnd)
-    if (!range) continue
+    if (!range) {
+      continue
+    }
     const [trimmedStart, trimmedEnd] = range
     const paragraph = mapped.text.slice(trimmedStart, trimmedEnd)
     if (/^#{1,6}\s/.test(paragraph)) {
@@ -207,9 +226,6 @@ const segmenter = new Intl.Segmenter('und', { granularity: 'sentence' })
  * These edge cases are acceptable for semantic chunking as:
  * 1. Short fragments will be grouped with adjacent sentences by similarity
  * 2. Fragments below minChunkLength are filtered out
- *
- * @param text - The text to split into sentences
- * @returns Array of sentences
  */
 export function splitIntoSentences(text: string): string[] {
   if (!text || text.trim().length === 0) {

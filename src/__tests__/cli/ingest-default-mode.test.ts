@@ -6,6 +6,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import type { SemanticChunker } from '../../chunker/index.js'
 import type { EmbedderInterface } from '../../chunker/semantic-chunker.js'
 import type { DocumentParser } from '../../parser/index.js'
+import { asDouble } from '../test-doubles.js'
 
 const tmpDir = resolve('./tmp/test-ingest-default-mode')
 const fixturePath = resolve(tmpDir, 'document.pdf')
@@ -38,7 +39,7 @@ afterAll(() => {
 describe('default PDF ingestion', () => {
   it('keeps the VLM barrel unloaded unless captioning is requested', async () => {
     const destroy = vi.fn()
-    const parser = {
+    const parser = asDouble<DocumentParser>({
       validateFilePath: vi.fn().mockResolvedValue(undefined),
       validateFileSize: vi.fn(),
       parsePdf: vi.fn().mockResolvedValue({ content: 'Default PDF text', title: 'Title' }),
@@ -49,29 +50,37 @@ describe('default PDF ingestion', () => {
           { pageNum: 1, text: 'Visual PDF text', textFragments: [], stextJson: { blocks: [] } },
         ],
       }),
-    } as unknown as DocumentParser
-    const chunker = {
+    })
+    const chunker = asDouble<SemanticChunker>({
       chunkText: vi
         .fn()
         .mockImplementation(async (text: string) => [
           { text, index: 0, sourceStart: 0, sourceEnd: text.length },
         ]),
-    } as unknown as SemanticChunker
-    const embedder = {
-      embedBatch: vi.fn().mockResolvedValue([[1, 0]]),
-    } as EmbedderInterface
-
-    const defaultResult = await prepareFileForIngest(fixturePath, parser, chunker, embedder, {
-      images: false,
     })
+    const embedder = asDouble<EmbedderInterface>({
+      embedBatch: vi.fn().mockResolvedValue([[1, 0]]),
+    })
+
+    const defaultResult = await prepareFileForIngest(
+      fixturePath,
+      { parser, chunker, embedder },
+      {
+        images: false,
+      }
+    )
 
     expect(buildPreparedFileVectorChunks(defaultResult)[0]?.text).toBe('Default PDF text')
     expect(visualBarrelLoaded).toBe(false)
 
-    await prepareFileForIngest(fixturePath, parser, chunker, embedder, {
-      images: false,
-      captioner: { profile: 'fast', cacheDir: tmpDir },
-    })
+    await prepareFileForIngest(
+      fixturePath,
+      { parser, chunker, embedder },
+      {
+        images: false,
+        captioner: { profile: 'fast', cacheDir: tmpDir },
+      }
+    )
 
     expect(visualBarrelLoaded).toBe(true)
     expect(destroy).toHaveBeenCalledOnce()

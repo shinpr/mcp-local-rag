@@ -1,27 +1,20 @@
-// AC-002 / AC-003 — parser PDF path must rethrow a FOREIGN `AppError`
-// (e.g. `EmbeddingError` raised while the parser uses the embedder) UNCHANGED,
-// instead of relabeling it as `FileOperationError("Failed to parse PDF...")`.
+// A FOREIGN `AppError` — an `EmbeddingError` raised while the parser uses the
+// embedder — must rethrow UNCHANGED rather than being relabelled
+// `FileOperationError("Failed to parse PDF...")`. A genuine non-`AppError`
+// mupdf/IO failure still wraps, with `.cause` preserved.
 //
-// Boundaries exercised here:
-//   - parsePdf: foreign `EmbeddingError` from the embedder (surfaced via the
-//     mocked `filterPageBoundaryLayouts` inside `extractPdfPages`) propagates
-//     as-is; a genuine non-`AppError` mupdf/IO failure still wraps as
-//     `FileOperationError` with `.cause` identity preserved.
-//   - parsePdfPages: same foreign-vs-genuine split; on the foreign path the
-//     mupdf `doc` handle is still destroyed exactly once before the rethrow.
-//   - title extraction: a foreign `AppError` thrown during page-1 chunking
-//     propagates (no filename fallback); a non-`AppError` title-local failure
-//     still falls back to the filename-derived title.
+// Covered at three boundaries: `parsePdf`, `parsePdfPages` (where the handle
+// must still be destroyed exactly once before the foreign rethrow), and title
+// extraction (a foreign error propagates; a title-local one falls back to the
+// filename).
 //
-// Mocking strategy mirrors `parsePdf-destroy.test.ts`: `vi.hoisted` + `vi.doMock`
-// of `mupdf`, `../pdf-filter.js`, `../title-extractor.js`, `../../chunker/index.js`
-// installed in `beforeAll` and removed in `afterAll`. Foreign-error injection
-// points: `mockFilterPageBoundaryLayouts` (reaches the outer catch via
-// `extractPdfPages`) and `mockChunkText` (reaches the title inner catch).
+// Injection points: `mockFilterPageBoundaryLayouts` reaches the outer catch via
+// `extractPdfPages`, `mockChunkText` reaches the title inner catch.
 
 import { mkdir, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { expectInstanceOf } from '../../__tests__/test-doubles.js'
 import type { EmbedderInterface } from '../pdf-filter.js'
 
 // ============================================
@@ -103,15 +96,16 @@ describe('parser PDF foreign-error reclassification (AC-002 / AC-003)', () => {
   })
 
   afterAll(() => {
-    for (const p of MOCKED_PATHS) vi.doUnmock(p)
+    for (const p of MOCKED_PATHS) {
+      vi.doUnmock(p)
+    }
     vi.resetModules()
   })
 
   /**
-   * Build a mupdf mock document. `destroyFn` is exposed so each test can
-   * assert disposal directly. The page bodies are minimal — the foreign /
-   * genuine error is injected via `mockFilterPageBoundaryLayouts`, not the
-   * page loop itself.
+   * `destroyFn` is exposed so each test asserts disposal directly. Page bodies
+   * are minimal: the error is injected via `mockFilterPageBoundaryLayouts`, not
+   * the page loop.
    */
   function setupMupdfMock(options?: { metadataTitle?: string }): {
     destroyFn: ReturnType<typeof vi.fn>
@@ -130,7 +124,9 @@ describe('parser PDF foreign-error reclassification (AC-002 / AC-003)', () => {
             ],
           })
         ),
+        destroy: vi.fn(),
       }),
+      destroy: vi.fn(),
     }
     const mockDoc = {
       countPages: vi.fn().mockReturnValue(1),
@@ -194,9 +190,7 @@ describe('parser PDF foreign-error reclassification (AC-002 / AC-003)', () => {
     expect(thrown).toBe(foreign)
     expect(thrown).toBeInstanceOf(EmbeddingError)
     expect(thrown).not.toBeInstanceOf(FileOperationError)
-    expect((thrown as InstanceType<typeof EmbeddingError>).message).toBe(
-      'Embedding failed for dtype int8'
-    )
+    expect(expectInstanceOf(thrown, EmbeddingError).message).toBe('Embedding failed for dtype int8')
   })
 
   it('parsePdf still wraps a genuine non-AppError IO/mupdf failure as FileOperationError with cause', async () => {
@@ -213,10 +207,10 @@ describe('parser PDF foreign-error reclassification (AC-002 / AC-003)', () => {
     }
 
     expect(thrown).toBeInstanceOf(FileOperationError)
-    expect((thrown as InstanceType<typeof FileOperationError>).message).toBe(
+    expect(expectInstanceOf(thrown, FileOperationError).message).toBe(
       `Failed to parse PDF: ${filePath}`
     )
-    expect((thrown as InstanceType<typeof FileOperationError>).cause).toBe(genuine)
+    expect(expectInstanceOf(thrown, FileOperationError).cause).toBe(genuine)
   })
 
   it('parsePdf still disposes doc on the foreign-error rethrow path (finally runs)', async () => {
@@ -264,10 +258,10 @@ describe('parser PDF foreign-error reclassification (AC-002 / AC-003)', () => {
     }
 
     expect(thrown).toBeInstanceOf(FileOperationError)
-    expect((thrown as InstanceType<typeof FileOperationError>).message).toBe(
+    expect(expectInstanceOf(thrown, FileOperationError).message).toBe(
       `Failed to parse PDF pages: ${filePath}`
     )
-    expect((thrown as InstanceType<typeof FileOperationError>).cause).toBe(genuine)
+    expect(expectInstanceOf(thrown, FileOperationError).cause).toBe(genuine)
   })
 
   it('parsePdfPages disposes doc exactly once before rethrowing a foreign EmbeddingError', async () => {

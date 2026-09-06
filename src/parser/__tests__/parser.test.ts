@@ -74,7 +74,9 @@ describe('DocumentParser', () => {
   })
 
   afterAll(() => {
-    for (const p of MOCKED_PATHS) vi.doUnmock(p)
+    for (const p of MOCKED_PATHS) {
+      vi.doUnmock(p)
+    }
     vi.resetModules()
   })
 
@@ -139,7 +141,9 @@ describe('DocumentParser', () => {
 
     it('should reject symlink pointing outside baseDir', async () => {
       // Symlinks require Developer Mode on Windows; skip if unavailable
-      if (process.platform === 'win32') return
+      if (process.platform === 'win32') {
+        return
+      }
       // Create outside directory and target file
       await mkdir(outsideDir, { recursive: true })
       const outsideFile = join(outsideDir, 'secret.txt')
@@ -160,7 +164,9 @@ describe('DocumentParser', () => {
 
     it('should reject broken symlink', async () => {
       // Symlinks require Developer Mode on Windows; skip if unavailable
-      if (process.platform === 'win32') return
+      if (process.platform === 'win32') {
+        return
+      }
       // Create symlink pointing to non-existent file
       const linkPath = join(testDir, 'broken-link.txt')
       await symlink('/nonexistent/path/to/file.txt', linkPath)
@@ -222,7 +228,9 @@ describe('DocumentParser', () => {
     })
 
     it('should reject symlink under root A whose realpath resolves outside both roots', async () => {
-      if (process.platform === 'win32') return
+      if (process.platform === 'win32') {
+        return
+      }
       await mkdir(outsideDir, { recursive: true })
       const outsideFile = join(outsideDir, 'secret.txt')
       await writeFile(outsideFile, 'secret')
@@ -240,7 +248,9 @@ describe('DocumentParser', () => {
     })
 
     it('should accept symlink under root A whose realpath resolves into root B', async () => {
-      if (process.platform === 'win32') return
+      if (process.platform === 'win32') {
+        return
+      }
       const targetInB = join(rootB, 'shared.txt')
       await writeFile(targetInB, 'shared content')
 
@@ -277,11 +287,11 @@ describe('DocumentParser', () => {
       // works, but every path validation must fail closed with a structured
       // error rather than silently permitting zero files OR silently
       // permitting every file. See Finding #4 in the post-launch review.
-      const parser = new DocumentParser({ baseDirs: [], maxFileSize })
+      const degradedParser = new DocumentParser({ baseDirs: [], maxFileSize })
       const probe = join(rootA, 'anything.txt')
       await writeFile(probe, 'x')
 
-      await expect(parser.validateFilePath(probe)).rejects.toThrow(
+      await expect(degradedParser.validateFilePath(probe)).rejects.toThrow(
         expect.objectContaining({
           name: 'ValidationError',
           message: expect.stringMatching(/No configured base directory/),
@@ -482,6 +492,11 @@ describe('DocumentParser', () => {
   describe('parsePdf', () => {
     const mockEmbedder: EmbedderInterface = { embedBatch: vi.fn() }
 
+    /** Flatten one page's items back into the text the real filter would emit. */
+    function joinPageItemTexts(pageData: { items: Array<{ text: string }> }): string {
+      return pageData.items.map((item) => item.text).join('\n')
+    }
+
     /**
      * Helper to build a mupdf mock document with configurable pages.
      * Each page entry defines: bounds, blocks (mupdf JSON structure), and optional metadata title.
@@ -499,10 +514,12 @@ describe('DocumentParser', () => {
       const mockPages = pages.map((pageDef) => {
         const mockStext = {
           asJSON: vi.fn().mockReturnValue(JSON.stringify({ blocks: pageDef.blocks })),
+          destroy: vi.fn(),
         }
         return {
           getBounds: vi.fn().mockReturnValue(pageDef.bounds),
           toStructuredText: vi.fn().mockReturnValue(mockStext),
+          destroy: vi.fn(),
         }
       })
 
@@ -523,7 +540,7 @@ describe('DocumentParser', () => {
       // filterPageBoundarySentences: pass through by joining item texts per page
       mockFilterPageBoundarySentences.mockImplementation(
         async (pageDataArr: Array<{ items: Array<{ text: string }> }>) =>
-          pageDataArr.map((p) => p.items.map((item) => item.text).join('\n'))
+          pageDataArr.map(joinPageItemTexts)
       )
 
       // extractPdfTitle: mirror real priority (metadata → font hint → filename)
@@ -534,9 +551,12 @@ describe('DocumentParser', () => {
           fileName: string,
           fontHint?: { text: string; fontSize: number }
         ) => {
-          if (metadata) return { title: metadata, source: 'metadata' as const }
-          if (fontHint && fontHint.fontSize > 14)
+          if (metadata) {
+            return { title: metadata, source: 'metadata' as const }
+          }
+          if (fontHint && fontHint.fontSize > 14) {
             return { title: fontHint.text.trim(), source: 'content' as const }
+          }
           return { title: fileName.replace(/\.pdf$/, ''), source: 'filename' as const }
         }
       )

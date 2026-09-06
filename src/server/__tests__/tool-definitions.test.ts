@@ -1,37 +1,49 @@
 import type { Tool } from '@modelcontextprotocol/sdk/types.js'
 import { describe, expect, it } from 'vitest'
+import { expectString } from '../../__tests__/test-doubles.js'
+import { isRecord } from '../../utils/type-guards.js'
 import { toolDefinitions } from '../tool-definitions.js'
 
 const findTool = (name: string): Tool => {
   const tool = toolDefinitions.find((t) => t.name === name)
-  if (!tool) throw new Error(`tool ${name} not found`)
+  if (!tool) {
+    throw new Error(`tool ${name} not found`)
+  }
   return tool
 }
 
-const propertyOf = (tool: Tool, property: string): Record<string, unknown> =>
-  (tool.inputSchema.properties as Record<string, Record<string, unknown>>)?.[property] ?? {}
+/** One property of a tool's JSON-schema input, or an empty record when absent. */
+function propertyOf(tool: Tool, property: string): Record<string, unknown> {
+  const properties = tool.inputSchema.properties
+  if (!isRecord(properties)) {
+    return {}
+  }
+  const value = properties[property]
+  return isRecord(value) ? value : {}
+}
 
 describe('list_files tool definition scope', () => {
   const listFiles = findTool('list_files')
-  const scope = (listFiles.inputSchema.properties as Record<string, unknown>)?.scope as
-    | Record<string, unknown>
-    | undefined
+  const scope = propertyOf(listFiles, 'scope')
 
   it('advertises an optional scope property', () => {
-    expect(scope).toBeDefined()
+    expect(Object.keys(scope).length).toBeGreaterThan(0)
     // scope is optional: list_files declares no required arguments (backward compatible)
     expect(listFiles.inputSchema.required).toBeUndefined()
   })
 
   it('uses the string | array<string> oneOf shape', () => {
-    expect(scope?.oneOf).toEqual([{ type: 'string' }, { type: 'array', items: { type: 'string' } }])
+    expect(scope['oneOf']).toEqual([
+      { type: 'string' },
+      { type: 'array', items: { type: 'string' } },
+    ])
   })
 
   // Regression guard with provenance: the description once carried the
   // query_documents wording, which claims stored-filePath semantics and
   // contradicts the scan-path basis list_files actually filters on.
   it('does not claim the query_documents stored-filePath semantics', () => {
-    expect(scope?.description as string).not.toMatch(/filePath equal to or under/)
+    expect(expectString(scope['description'])).not.toMatch(/filePath equal to or under/)
   })
 })
 

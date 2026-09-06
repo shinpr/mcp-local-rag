@@ -9,12 +9,7 @@
 //     traversal-pushdown stack runs in a fresh process → stdout JSON files[]
 //     lists only under-scope files and sources[] retains the raw-data source
 //     while excluding the out-of-scope ingested real file.
-// @category: service-integration-e2e
-// @lane: service-integration-e2e
-// @dependency: full CLI process (src/index.ts via tsx) + real LanceDB + real-FS
 //     fixture + RAGServer (fixture ingest, real embed) + shared pre-warmed model cache
-// @complexity: high (real child process spawn, real embed/DB ingest, full stack)
-// ROI: 84
 //
 // This E2E asserts BEHAVIORAL CORRECTNESS only: the spawn timeout is a perf
 // property (issue #165) and is NOT asserted here. The layered pushdown PROOFS
@@ -36,6 +31,7 @@ import { fileURLToPath } from 'node:url'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { RAGServer } from '../../server/index.js'
 import { testModelCacheDir, withTestDevice } from '../test-device.js'
+import { expectError, parseJson } from '../test-doubles.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
@@ -78,11 +74,12 @@ interface ParsedListResult {
 function parseSuccessfulListOutput(run: CliRun): ParsedListResult {
   expect(run.status, `CLI exited with ${run.status}; stderr:\n${run.stderr}`).toBe(0)
   try {
-    return JSON.parse(run.stdout) as ParsedListResult
+    return parseJson<ParsedListResult>(run.stdout)
   } catch (error) {
     throw new Error(
-      `CLI stdout was not valid JSON (${(error as Error).message}).\n` +
-        `--- stdout ---\n${run.stdout}\n--- stderr ---\n${run.stderr}`
+      `CLI stdout was not valid JSON (${expectError(error).message}).\n` +
+        `--- stdout ---\n${run.stdout}\n--- stderr ---\n${run.stderr}`,
+      { cause: error }
     )
   }
 }

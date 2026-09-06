@@ -50,21 +50,13 @@ interface IngestSummary {
 }
 
 interface IngestCliOptions {
-  /**
-   * Collected `--base-dir` values in CLI order. Repeatable: each flag
-   * occurrence appends one entry. An empty array means the flag was not
-   * provided (resolver then falls through to env / cwd).
-   */
+  /** Repeatable, in CLI order. Empty means unset — the resolver uses env / cwd. */
   baseDirs?: string[] | undefined
   maxFileSize?: number | undefined
   chunkMinLength?: number | undefined
   visual?: boolean | undefined
   images?: boolean | undefined
-  /**
-   * Visual-quality profile selector. Only meaningful when `visual` is true;
-   * silently ignored otherwise (mirrors the existing `--visual` precedent
-   * of silently coercing for non-PDF files). Defaults to `'fast'`.
-   */
+  /** Silently ignored unless `visual` is true. Defaults to `'fast'`. */
   visualQuality?: QualityProfile | undefined
 }
 
@@ -112,11 +104,31 @@ Global options (must appear before "ingest"):
 // Arg Parsing
 // ============================================
 
-/**
- * Parse ingest-specific CLI arguments into options and a positional path.
- * Flags: --base-dir, --max-file-size, -h/--help
- * Unknown flags (including global flags passed after subcommand) cause an error.
- */
+/** A global flag passed after the subcommand is an error, not a pass-through. */
+/** Read a flag whose value must be a bare non-negative integer. */
+function requireCountFlag(args: string[], flagIndex: number, flag: string): number {
+  const raw = requireFlagValue(args, flagIndex, flag)
+  if (!/^\d+$/.test(raw)) {
+    console.error(`Invalid value for ${flag}: "${raw.slice(0, 100)}"`)
+    process.exit(1)
+  }
+  return Number.parseInt(raw, 10)
+}
+
+/** Reject an unknown flag, or a second positional path. */
+function rejectUnexpectedArgument(arg: string, positional: string | undefined): void {
+  if (arg.startsWith('-')) {
+    console.error(`Unknown option: ${arg}`)
+    console.error(HELP_TEXT)
+    process.exit(1)
+  }
+  if (positional !== undefined) {
+    console.error(`Unexpected argument: ${arg}`)
+    console.error('Only one path is accepted. Use a directory to ingest multiple files.')
+    process.exit(1)
+  }
+}
+
 export function parseArgs(args: string[]): ParsedArgs {
   const options: IngestCliOptions = {}
   let positional: string | undefined
@@ -124,7 +136,7 @@ export function parseArgs(args: string[]): ParsedArgs {
 
   let i = 0
   while (i < args.length) {
-    const arg = args[i]!
+    const arg = args[i] ?? ''
     switch (arg) {
       case '-h':
       case '--help':
@@ -143,28 +155,14 @@ export function parseArgs(args: string[]): ParsedArgs {
         i = valueIndex + 1
         break
       }
-      case '--max-file-size': {
-        const raw = requireFlagValue(args, i, '--max-file-size')
-        if (!/^\d+$/.test(raw)) {
-          console.error(`Invalid value for --max-file-size: "${raw.slice(0, 100)}"`)
-
-          process.exit(1)
-        }
-        options.maxFileSize = Number.parseInt(raw, 10)
+      case '--max-file-size':
+        options.maxFileSize = requireCountFlag(args, i, '--max-file-size')
         i += 2
         break
-      }
-      case '--chunk-min-length': {
-        const raw = requireFlagValue(args, i, '--chunk-min-length')
-        if (!/^\d+$/.test(raw)) {
-          console.error(`Invalid value for --chunk-min-length: "${raw.slice(0, 100)}"`)
-
-          process.exit(1)
-        }
-        options.chunkMinLength = Number.parseInt(raw, 10)
+      case '--chunk-min-length':
+        options.chunkMinLength = requireCountFlag(args, i, '--chunk-min-length')
         i += 2
         break
-      }
       case '--visual':
         // Boolean toggle: no value consumed. Mirrors the -h/--help pattern.
         options.visual = true
@@ -187,16 +185,7 @@ export function parseArgs(args: string[]): ParsedArgs {
         break
       }
       default:
-        if (arg.startsWith('-')) {
-          console.error(`Unknown option: ${arg}`)
-          console.error(HELP_TEXT)
-          process.exit(1)
-        }
-        if (positional !== undefined) {
-          console.error(`Unexpected argument: ${arg}`)
-          console.error('Only one path is accepted. Use a directory to ingest multiple files.')
-          process.exit(1)
-        }
+        rejectUnexpectedArgument(arg, positional)
         positional = arg
         i++
         break
@@ -211,19 +200,10 @@ export function parseArgs(args: string[]): ParsedArgs {
 // ============================================
 
 /**
- * Resolve ingest config by merging global config with ingest-specific options.
+ * Merge global config with ingest-specific options (CLI > env > defaults).
  *
- * Base directories are resolved via the shared CLI resolver
- * ({@link resolveCliBaseDirsOrExit}) which applies the documented precedence
- * (CLI roots > `BASE_DIRS` > `BASE_DIR` > `cwd`), realpath-normalizes every
- * effective root, dedupes exact duplicates, and prunes nested roots. CLI
- * roots are pre-validated against the sensitive-path policy here so the
- * user sees `--base-dir`-attributed errors before the resolver touches the
- * filesystem.
- *
- * Other ingest-specific values (maxFileSize, chunkMinLength) follow the
- * existing CLI > env > defaults order and are validated against the same
- * ranges as before.
+ * CLI roots are pre-validated against the sensitive-path policy here, so the
+ * user gets `--base-dir`-attributed errors before the resolver touches disk.
  */
 export async function resolveConfig(
   globalConfig: ResolvedGlobalConfig,
@@ -307,39 +287,42 @@ export type IngestSingleFileOptions =
     }
 
 /**
- * Ingest a single file: hash, parse, chunk, embed, delete old chunks, insert new
- * chunks. Returns the number of chunks inserted.
+ * Ingest one file, returning the number of chunks inserted.
  *
- * When `options.visual === true` AND the file is a `.pdf`, routes through the
- * visual-enrichment path: `parsePdfPages` + VLM captioning (`pdf-visual`
- * orchestrator) + joined-text chunking. `pdf-visual` is loaded via dynamic
- * `await import('../pdf-visual/index.js')` so the default (non-visual) path
- * never pulls the VLM module into the bundle.
- *
- * Non-visual, non-PDF, and `visual: true` + non-PDF paths all use the default
- * text-only branch and never load `pdf-visual`.
+ * `visual: true` on a `.pdf` routes through VLM captioning. `pdf-visual` is
+ * loaded by dynamic import, so no other path pulls the VLM module in.
  */
+/** Collaborators one CLI ingest run needs, injected as a unit. */
+export interface SingleFileIngestCollaborators {
+  parser: DocumentParser
+  chunker: SemanticChunker
+  embedder: Embedder
+  vectorStore: VectorStore
+}
+
 export async function ingestSingleFile(
   filePath: string,
-  parser: DocumentParser,
-  chunker: SemanticChunker,
-  embedder: Embedder,
-  vectorStore: VectorStore,
+  collaborators: SingleFileIngestCollaborators,
   options?: IngestSingleFileOptions
 ): Promise<number> {
+  const { parser, chunker, embedder, vectorStore } = collaborators
   const isPdf = filePath.toLowerCase().endsWith('.pdf')
-  const prepared = await prepareFileForIngest(filePath, parser, chunker, embedder, {
-    images: options?.images === true,
-    ...(options?.visual === true
-      ? {
-          captioner: {
-            profile: options.profile,
-            cacheDir: options.cacheDir,
-            device: options.device,
-          },
-        }
-      : {}),
-  })
+  const prepared = await prepareFileForIngest(
+    filePath,
+    { parser, chunker, embedder },
+    {
+      images: options?.images === true,
+      ...(options?.visual === true
+        ? {
+            captioner: {
+              profile: options.profile,
+              cacheDir: options.cacheDir,
+              device: options.device,
+            },
+          }
+        : {}),
+    }
+  )
   if (prepared.omittedImageCount > 0) {
     console.error(
       `  Warning: skipped ${prepared.omittedImageCount} undecodable or oversized ${isPdf ? 'PDF' : 'DOCX'} image(s)`
@@ -363,11 +346,48 @@ export async function ingestSingleFile(
 // Main Entry Point
 // ============================================
 
+/** Run the ingest CLI subcommand. */
 /**
- * Run the ingest CLI subcommand.
- * @param args - Arguments after "ingest" (e.g., option flags and file/directory path)
- * @param globalOptions - Global options parsed before the subcommand
+ * The two variants are built explicitly so VLM fields only travel with the
+ * visual-true branch, carrying the cacheDir `resolveGlobalConfig` validated.
  */
+function buildIngestOptions(
+  options: IngestCliOptions,
+  globalConfig: ResolvedGlobalConfig
+): IngestSingleFileOptions {
+  if (!options.visual) {
+    return { visual: false, images: options.images === true }
+  }
+  return {
+    visual: true,
+    images: options.images === true,
+    // Default the profile to `'fast'` when `--visual-quality` was not
+    // provided. The flag is silently ignored when `--visual` itself is absent
+    // (mirrors the existing `--visual` precedent of silently coercing for
+    // non-PDF files).
+    profile: options.visualQuality ?? 'fast',
+    cacheDir: globalConfig.cacheDir,
+    device: resolveDevice(process.env['RAG_DEVICE']),
+  }
+}
+
+/** Require a positional path argument that names something on disk. */
+async function requireExistingPath(positional: string | undefined): Promise<string> {
+  if (!positional) {
+    console.error('Usage: mcp-local-rag ingest [options] <path>')
+    console.error('  Ingest a single file or all supported files under a directory.')
+    console.error('  Run with --help for all options.')
+    process.exit(1)
+  }
+  try {
+    await stat(positional)
+  } catch {
+    console.error(`Error: path does not exist: ${positional}`)
+    process.exit(1)
+  }
+  return positional
+}
+
 export async function runIngest(args: string[], globalOptions: GlobalOptions = {}): Promise<void> {
   // Parse CLI options
   const { positional, options, help } = parseArgs(args)
@@ -378,23 +398,7 @@ export async function runIngest(args: string[], globalOptions: GlobalOptions = {
     process.exit(0)
   }
 
-  // Validate positional argument
-  if (!positional) {
-    console.error('Usage: mcp-local-rag ingest [options] <path>')
-    console.error('  Ingest a single file or all supported files under a directory.')
-    console.error('  Run with --help for all options.')
-    process.exit(1)
-  }
-
-  const targetPath = positional
-
-  // Validate path exists
-  try {
-    await stat(targetPath)
-  } catch {
-    console.error(`Error: path does not exist: ${targetPath}`)
-    process.exit(1)
-  }
+  const targetPath = await requireExistingPath(positional)
 
   // Resolve config: CLI flags > env vars > defaults
   const globalConfig = resolveGlobalConfig(globalOptions)
@@ -436,50 +440,23 @@ export async function runIngest(args: string[], globalOptions: GlobalOptions = {
   const summary: IngestSummary = { succeeded: 0, failed: 0, totalChunks: 0 }
 
   try {
-    for (let i = 0; i < files.length; i++) {
-      const filePath = files[i]!
+    for (const [i, filePath] of files.entries()) {
       const label = `[${i + 1}/${files.length}]`
 
       try {
-        // Forward visual + VLM env-resolved options into the per-file ingestor.
-        // `ingestSingleFile` routes through the visual path when
-        // `options.visual === true && filePath.endsWith('.pdf')`. The two
-        // variants of `IngestSingleFileOptions` are built explicitly so the
-        // VLM fields only travel with the visual-true branch (the cacheDir is
-        // pre-validated by `resolveGlobalConfig` so the captioner does not
-        // re-read `process.env['CACHE_DIR']` raw).
-        const ingestOptions: IngestSingleFileOptions = options.visual
-          ? {
-              visual: true,
-              images: options.images === true,
-              // Default the profile to `'fast'` when `--visual-quality` was
-              // not provided. The flag is silently ignored when `--visual`
-              // itself is absent (mirrors the existing `--visual` precedent
-              // of silently coercing for non-PDF files).
-              profile: options.visualQuality ?? 'fast',
-              cacheDir: globalConfig.cacheDir,
-              device: resolveDevice(process.env['RAG_DEVICE']),
-            }
-          : options.images
-            ? { visual: false, images: true }
-            : { visual: false, images: false }
         const chunkCount = await ingestSingleFile(
           filePath,
-          parser,
-          chunker,
-          embedder,
-          vectorStore,
-          ingestOptions
+          { parser, chunker, embedder, vectorStore },
+          buildIngestOptions(options, globalConfig)
         )
         if (chunkCount === 0) {
           // 0 chunks is a skip/warning, not a failure
           console.error(`${label} ${filePath} ... SKIPPED (0 chunks)`)
-          summary.succeeded++
         } else {
           console.error(`${label} ${filePath} ... OK (${chunkCount} chunks)`)
-          summary.succeeded++
           summary.totalChunks += chunkCount
         }
+        summary.succeeded++
       } catch (error) {
         const reason = formatCliError(error)
         console.error(`${label} ${filePath} ... FAILED: ${reason}`)

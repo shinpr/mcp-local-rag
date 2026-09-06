@@ -70,6 +70,30 @@ Global options (must appear before "query"):
  * Flags: --limit, --scope (repeatable), -h/--help
  * Unknown flags (including global flags passed after subcommand) cause an error.
  */
+/** Reject an unknown flag, or a second positional query text. */
+function rejectUnexpectedArgument(arg: string, queryText: string | undefined): void {
+  if (arg.startsWith('-')) {
+    console.error(`Unknown option: ${arg}`)
+    console.error(HELP_TEXT)
+    process.exit(1)
+  }
+  if (queryText !== undefined) {
+    console.error(`Unexpected argument: ${arg}`)
+    console.error('Only one query text argument is accepted.')
+    process.exit(1)
+  }
+}
+
+/** Read one repeatable `--scope` value, rejecting an empty one. */
+function requireScopeValue(args: string[], flagIndex: number): string {
+  const value = requireFlagValue(args, flagIndex, '--scope').trim()
+  if (value.length === 0) {
+    console.error('--scope value must not be empty')
+    process.exit(1)
+  }
+  return value
+}
+
 export function parseArgs(args: string[]): ParsedArgs {
   const options: QueryCliOptions = {}
   let queryText: string | undefined
@@ -77,7 +101,7 @@ export function parseArgs(args: string[]): ParsedArgs {
 
   let i = 0
   while (i < args.length) {
-    const arg = args[i]!
+    const arg = args[i] ?? ''
     switch (arg) {
       case '-h':
       case '--help':
@@ -94,29 +118,12 @@ export function parseArgs(args: string[]): ParsedArgs {
         i += 2
         break
       }
-      case '--scope': {
-        const value = requireFlagValue(args, i, '--scope').trim()
-        if (value.length === 0) {
-          console.error('--scope value must not be empty')
-          process.exit(1)
-        }
-        const scope = options.scope ?? []
-        scope.push(value)
-        options.scope = scope
+      case '--scope':
+        options.scope = [...(options.scope ?? []), requireScopeValue(args, i)]
         i += 2
         break
-      }
       default:
-        if (arg.startsWith('-')) {
-          console.error(`Unknown option: ${arg}`)
-          console.error(HELP_TEXT)
-          process.exit(1)
-        }
-        if (queryText !== undefined) {
-          console.error(`Unexpected argument: ${arg}`)
-          console.error('Only one query text argument is accepted.')
-          process.exit(1)
-        }
+        rejectUnexpectedArgument(arg, queryText)
         queryText = arg
         i++
         break
@@ -149,8 +156,6 @@ function resolveLimit(rawLimit: number | undefined): number {
 
 /**
  * Run the query CLI subcommand.
- * @param args - Arguments after "query" (e.g., option flags and query text)
- * @param globalOptions - Global options parsed before the subcommand
  */
 export async function runQuery(args: string[], globalOptions: GlobalOptions = {}): Promise<void> {
   // Parse CLI options

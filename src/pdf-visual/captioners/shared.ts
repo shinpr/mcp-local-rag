@@ -1,42 +1,71 @@
-// Profile-agnostic helpers shared by every `captioners/*` profile.
-//
-// `stripControlChars` + `postProcess` are the post-generation pipeline
-// documented in the captioner contract: control-char stripping, whitespace
-// trim, empty → `null`, length cap with ellipsis. Both `fast` and `quality`
-// profiles run the captioner output through the same pipeline so caption
-// chunk shape is independent of profile.
-//
-// `VLM_DTYPE`, `buildModelLoadOptions`, `createModelLoader`, and
-// `decodePngToRawImage` are the profile-agnostic load/decode mechanics. The
-// model-class choice, prompt, processor call shape, and generation options
-// stay per-profile (that is where `fast` and `quality` genuinely diverge).
+// Profile-agnostic helpers shared by every `captioners/*` profile: the
+// post-generation pipeline (control-char strip, trim, empty → `null`, length
+// cap) so caption shape is independent of profile, plus the load/decode
+// mechanics. The model class, prompt, processor call shape and generation
+// options stay per-profile — that is where `fast` and `quality` diverge.
 
 import { type DeviceType, RawImage } from '@huggingface/transformers'
+
+import { isObjectLike } from '../../utils/type-guards.js'
 
 /**
  * ONNX quantization variant shared by both captioner profiles. Pinned to the
  * smallest viable variant; production has no user-facing knob.
  */
-const VLM_DTYPE = 'q4'
+const VLM_DTYPE = 'q4' as const
 
 /** Lazy-load lifecycle state for a captioner's processor + model. */
 type CaptionerLoadState = { kind: 'pending' } | { kind: 'ok' } | { kind: 'failed'; cause: Error }
 
 /**
  * Build the `from_pretrained` option objects (processor + model) with the
- * pinned dtype and resolved device. transformers.js declares `dtype` as a
- * literal union; cast through `unknown` to widen-to-string-then-back.
+ * pinned dtype and resolved device. `RAG_DEVICE` passes through with no
+ * allowlist (see `resolveDevice`) into a closed literal union.
  */
 export function buildModelLoadOptions(resolvedDevice: string): {
   dtypeOpt: { dtype: 'q4' }
   modelOpt: { dtype: 'q4'; device: DeviceType }
 } {
-  const dtypeOpt = { dtype: VLM_DTYPE } as unknown as { dtype: 'q4' }
-  const modelOpt = { dtype: VLM_DTYPE, device: resolvedDevice } as unknown as {
-    dtype: 'q4'
-    device: DeviceType
+  const dtypeOpt = { dtype: VLM_DTYPE }
+  const modelOpt = {
+    dtype: VLM_DTYPE,
+    // biome-ignore lint/nursery/noUnsafeTypeAssertion: RAG_DEVICE is a deliberate un-allowlisted passthrough to a closed literal union
+    device: resolvedDevice as DeviceType,
   }
   return { dtypeOpt, modelOpt }
+}
+
+/**
+ * `apply_chat_template` is declared to return TOKENIZED output by default, not
+ * the string the profiles pass on.
+ */
+export type VlmProcessor = {
+  apply_chat_template: (messages: unknown, options: { add_generation_prompt: boolean }) => string
+  batch_decode: (tokens: unknown, options: { skip_special_tokens: boolean }) => string[]
+} & ((prompt: string, images: unknown) => Promise<{ input_ids: { dims: unknown[] } }>)
+
+/** Picks the tensor side of `generate`'s declared model-output-or-tensor union. */
+export interface VlmModel {
+  generate: (inputs: unknown) => Promise<{
+    slice: (axis: null, range: [number, number | null]) => unknown
+  }>
+}
+
+/**
+ * Not a guard: member existence says nothing about return values. The captioner
+ * tests replace the library, so they prove these call sites are right GIVEN
+ * this contract, not that the library still honors it — only `fast` runs
+ * against the real one, in `visual-ingest-e2e.test.ts`.
+ */
+export function asVlmProcessor(processor: unknown): VlmProcessor {
+  // biome-ignore lint/nursery/noUnsafeTypeAssertion: narrows the library's `Processor`, see above
+  return processor as VlmProcessor
+}
+
+/** Present a loaded model as {@link VlmModel}. See {@link asVlmProcessor}. */
+export function asVlmModel(model: unknown): VlmModel {
+  // biome-ignore lint/nursery/noUnsafeTypeAssertion: picks `generate`'s tensor branch, see VlmModel
+  return model as VlmModel
 }
 
 /** The processor + model pair produced by a profile's load callback. */
@@ -46,12 +75,10 @@ export interface LoadedModel {
 }
 
 /**
- * Lazy model loader shared by both profiles. Encapsulates the
- * pending→ok/failed state machine and the identical load-failure wrapping
- * (`Captioner load failed (modelName=..., device=...)`). The per-profile
- * `load` callback owns the model-class choice and receives the shared option
- * objects. On first `ensureLoaded()` the model loads; subsequent calls return
- * the cached pair; a prior failure re-throws the same wrapped error.
+ * Lazy model loader shared by both profiles: owns the pending→ok/failed state
+ * machine and the identical load-failure wrapping. A prior failure re-throws
+ * the same wrapped error rather than retrying. The per-profile `load` callback
+ * owns the model-class choice.
  */
 export function createModelLoader(
   modelName: string,
@@ -63,19 +90,24 @@ export function createModelLoader(
 
   return {
     async dispose(): Promise<void> {
-      const model = loaded?.model
+      const model: unknown = loaded?.model
       loaded = null
-      if (model) {
+      const dispose = isObjectLike(model) ? model['dispose'] : undefined
+      if (typeof dispose === 'function') {
         try {
-          await (model as { dispose(): Promise<unknown> }).dispose()
+          await dispose.call(model)
         } catch (error) {
           console.error('Error disposing captioner model:', error)
         }
       }
     },
     async ensureLoaded(): Promise<LoadedModel> {
-      if (state.kind === 'ok' && loaded) return loaded
-      if (state.kind === 'failed') throw state.cause
+      if (state.kind === 'ok' && loaded) {
+        return loaded
+      }
+      if (state.kind === 'failed') {
+        throw state.cause
+      }
       try {
         loaded = await load(buildModelLoadOptions(resolvedDevice))
         state = { kind: 'ok' }
@@ -94,13 +126,14 @@ export function createModelLoader(
 }
 
 /**
- * Decode PNG bytes to a `RawImage`. `Blob` accepts `Uint8Array` directly (the
- * renderer returns `Uint8Array` from `Pixmap.asPNG()`), but the `BlobPart`
- * type omits `Uint8Array<ArrayBufferLike>` due to SharedArrayBuffer subtyping;
- * cast through `unknown`. Profiles needing a fixed input size resize the result.
+ * Decode PNG bytes to a `RawImage`. `BlobPart` omits `Uint8Array<ArrayBufferLike>`
+ * (SharedArrayBuffer subtyping), so the bytes are copied into a view that is
+ * definitely backed by a plain `ArrayBuffer`. Profiles needing a fixed input
+ * size resize the result.
  */
 export async function decodePngToRawImage(pngBytes: Uint8Array): Promise<RawImage> {
-  const blob = new Blob([pngBytes as unknown as ArrayBuffer], { type: 'image/png' })
+  const bytes = new Uint8Array(pngBytes)
+  const blob = new Blob([bytes], { type: 'image/png' })
   return RawImage.fromBlob(blob)
 }
 
@@ -119,8 +152,12 @@ function stripControlChars(input: string): string {
       out += input[i]
       continue
     }
-    if (code <= 0x1f) continue
-    if (code >= 0x7f && code <= 0x9f) continue
+    if (code <= 0x1f) {
+      continue
+    }
+    if (code >= 0x7f && code <= 0x9f) {
+      continue
+    }
     out += input[i]
   }
   return out
@@ -132,7 +169,11 @@ function stripControlChars(input: string): string {
  */
 export function postProcess(decoded: string): string | null {
   const stripped = stripControlChars(decoded).trim()
-  if (stripped.length === 0) return null
-  if (stripped.length > MAX_CAPTION_LENGTH) return `${stripped.slice(0, MAX_CAPTION_LENGTH)}…`
+  if (stripped.length === 0) {
+    return null
+  }
+  if (stripped.length > MAX_CAPTION_LENGTH) {
+    return `${stripped.slice(0, MAX_CAPTION_LENGTH)}…`
+  }
   return stripped
 }

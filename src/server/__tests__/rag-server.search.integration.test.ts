@@ -5,9 +5,9 @@ import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { testModelCacheDir, withTestDevice } from '../../__tests__/test-device.js'
+import { expectDefined, privateMembers } from '../../__tests__/test-doubles.js'
 import type { Embedder } from '../../embedder/index.js'
 import type { SearchResult, VectorStore } from '../../vectordb/index.js'
-import type { SearchOptions } from '../../vectordb/types.js'
 import { RAGServer } from '../index.js'
 
 describe('AC-004: Vector Search', () => {
@@ -176,7 +176,7 @@ describe('handleQueryDocuments → VectorStore.search() options boundary', () =>
   const dataDir = resolve('./tmp/test-data-search-options')
 
   function internals(s: RAGServer): { embedder: Embedder; vectorStore: VectorStore } {
-    return s as unknown as { embedder: Embedder; vectorStore: VectorStore }
+    return privateMembers<{ embedder: Embedder; vectorStore: VectorStore }>(s)
   }
 
   const queryVector = [0.1, 0.2, 0.3]
@@ -220,7 +220,9 @@ describe('handleQueryDocuments → VectorStore.search() options boundary', () =>
     })
 
     expect(searchSpy).toHaveBeenCalledTimes(1)
-    const [vector, options] = searchSpy.mock.calls[0] as [number[], SearchOptions]
+    const call = expectDefined(searchSpy.mock.calls[0])
+    const vector = call[0]
+    const options = expectDefined(call[1])
     expect(vector).toEqual(queryVector)
     expect(options).toEqual({ queryText: 'typescript', limit: 7, scope: ['/docs', '/src'] })
   })
@@ -233,7 +235,7 @@ describe('handleQueryDocuments → VectorStore.search() options boundary', () =>
 
     await server.handleQueryDocuments({ query: 'typescript' })
 
-    const [, options] = searchSpy.mock.calls[0] as [number[], SearchOptions]
+    const options = expectDefined(expectDefined(searchSpy.mock.calls[0])[1])
     // scope key omitted when absent → search() takes its scope-absent path
     expect(options.scope).toBeUndefined()
     // limit defaulting preserved (?? 10) and query threaded as queryText

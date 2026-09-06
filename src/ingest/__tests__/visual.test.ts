@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-
+import { expectDefined } from '../../__tests__/test-doubles.js'
 import type { ProcessedVisualRegion } from '../../pdf-visual/types.js'
 import { buildOrderedVisualDocument, type OrderedVisualPage } from '../visual.js'
 
@@ -68,7 +68,7 @@ describe('buildOrderedVisualDocument', () => {
 
     expect(result.regions.map(({ visualIndex }) => visualIndex)).toEqual([0, 1])
     expect(result.regions[0]?.anchorOffset).toBeLessThanOrEqual(
-      result.regions[1]?.anchorOffset as number
+      expectDefined(result.regions[1]).anchorOffset
     )
   })
 })

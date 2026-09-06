@@ -37,6 +37,7 @@ import { parseHtml } from '../parser/html-parser.js'
 import { DocumentParser, ValidationError } from '../parser/index.js'
 import { extractMarkdownTitle, extractTxtTitle } from '../parser/title-extractor.js'
 import { type BaseDirsConfigError, displayPath } from '../utils/base-dirs.js'
+import { toError } from '../utils/errors.js'
 import { MAX_SCAN_DEPTH } from '../utils/limits.js'
 import {
   checkRawDataArtifacts,
@@ -57,6 +58,7 @@ import {
   classifyRequestedPath,
 } from '../utils/scan.js'
 import { nonAbsolutePrefixes } from '../utils/scope-match.js'
+import { isRecord } from '../utils/type-guards.js'
 import { type VectorChunk, VectorStore } from '../vectordb/index.js'
 import { DatabaseError } from '../vectordb/types.js'
 import {
@@ -101,15 +103,9 @@ import type {
 } from './types.js'
 
 /**
- * Per-tool client-message policy consumed by the central dispatcher mapper
- * (`toMcpError(error, context)`). The `prefix`, when present, is prepended to
- * the controlled client message ONLY for native / non-`AppError` failures; a
- * recognized `AppError` (e.g. `DatabaseError`, `EmbeddingError`) always keeps
- * its own raw message regardless of the prefix (see `toMcpError`). This table
- * is the single source of truth for the Contract-Delta per-handler policy:
- * - `ingest_file` / `ingest_data` / `delete_file` / `read_chunk_neighbors`
- *   prepend an operation prefix on native errors.
- * - `query_documents` / `list_files` / `status` are prefix-less.
+ * Per-tool client-message policy for `toMcpError`. A `prefix` is prepended
+ * only to native / non-`AppError` failures; a recognized `AppError` keeps its
+ * own message.
  */
 const TOOL_ERROR_CONTEXT: Record<string, ToMcpErrorContext> = {
   ingest_file: { prefix: 'Failed to ingest file' },
@@ -129,6 +125,23 @@ const ATTACHMENT_WARNING_ANNOTATIONS = {
 } satisfies Annotations
 
 type QueryContent = [RagTextContentBlock, ...RagContentBlock[]]
+
+/**
+ * What one ingest source contributed before rows are stored. Raw-data sources
+ * arrive as finished `vectorChunks`; parsed files arrive as a `preparedFile`
+ * whose rows are built later, after the backup read.
+ */
+interface PreparedIngestSource {
+  title: string | null
+  omittedImageCount: number
+  vectorChunks?: VectorChunk[]
+  preparedFile?: PreparedFileIngest
+}
+
+/** Wrap a parser-normalized scalar-or-array input into an array. */
+function toArray(value: string | string[]): string[] {
+  return Array.isArray(value) ? value : [value]
+}
 
 function attachmentOmissionWarning(omittedCount: number): RagTextContentBlock {
   return {
@@ -158,31 +171,28 @@ const MUTATION_TOOLS: ReadonlySet<string> = new Set([
   'delete_file',
 ])
 
-const packageVersion = (createRequire(import.meta.url)('../../package.json') as { version: string })
-  .version
+const packageManifest: unknown = createRequire(import.meta.url)('../../package.json')
+const packageVersion =
+  isRecord(packageManifest) && typeof packageManifest['version'] === 'string'
+    ? packageManifest['version']
+    : '0.0.0'
 
 /**
  * Zero-chunk outcome of {@link RAGServer.handleIngestFile}, raised before any
- * destructive work so the existing index is preserved.
+ * destructive work so the existing index survives.
  *
- * An `McpError` subclass rather than a separate error type: the code and message
- * a client sees are unchanged, while the internal sync collaborator can tell
- * "this file produced nothing" apart from a genuine ingest failure and count it
- * as `empty` instead of failing the whole job.
+ * An `McpError` subclass so the client sees an unchanged code and message,
+ * while sync can count it as `empty` rather than as a failed job.
  */
 class NoChunksError extends McpError {}
 
 /**
- * Render the scanner's coverage facts as caller-facing warnings, one per
- * unobserved region, because each one is a reason prune was withheld there. The
- * wording is not a contract. Carried as JSON strings on the job record rather
- * than as content blocks, because status is a single pollable record — the
- * `list_files` warning blocks are unchanged.
+ * Render the scanner's coverage facts as warnings — each unobserved region is
+ * a reason prune was withheld there. The wording is not a contract.
  *
- * Paths go through `displayPath`, as `list_files` already does with the same
- * walker facts: the MCP client is remote to the operator's account, so the home
- * directory (and with it the OS username) is abbreviated to `~`. The CLI variant
- * deliberately prints the full path — that terminal belongs to the operator.
+ * Paths go through `displayPath`, as `list_files` does: the MCP client is
+ * remote to the operator's account, so `~` hides the OS username. The CLI
+ * variant prints full paths, since that terminal belongs to the operator.
  */
 function coverageWarnings(coverage: SyncCoverage, maxFileSize: number): string[] {
   return [
@@ -206,6 +216,12 @@ function coverageWarnings(coverage: SyncCoverage, maxFileSize: number): string[]
 }
 
 /** RAG server compliant with MCP Protocol */
+/** Formats whose embedded images this server can extract. */
+function supportsEmbeddedImages(filePath: string): boolean {
+  const lower = filePath.toLowerCase()
+  return lower.endsWith('.pdf') || lower.endsWith('.docx')
+}
+
 export class RAGServer {
   private readonly server: Server
   private readonly vectorStore: VectorStore
@@ -214,12 +230,9 @@ export class RAGServer {
   private readonly parser: DocumentParser
   private readonly dbPath: string
   /**
-   * One or more allowed document base directories — REALPATH-normalized
-   * (the validation/security domain). Passed to `DocumentParser` as the
-   * security boundary. NOT used for `list_files` scanning/display; that uses
-   * the NORMAL-path `rawBaseDirs` below. Normalized from either the legacy
-   * `{ baseDir }` config shape or the new `{ baseDirs }` shape so downstream
-   * readers do not need to branch on shape.
+   * Allowed document roots, REALPATH-normalized — the security boundary handed
+   * to `DocumentParser`. `list_files` scanning and display use the normal-path
+   * `rawBaseDirs` below instead.
    */
   private readonly baseDirs: readonly string[]
   /**
@@ -235,11 +248,8 @@ export class RAGServer {
   private readonly excludePaths: string[]
   private readonly configWarnings: string[]
   /**
-   * Structured base-dirs resolution error. When non-null, the server is in
-   * degraded mode: `status` remains callable so the user can diagnose the
-   * problem via MCP, while root-dependent tools should surface this error
-   * before doing DB or filesystem work. See `resolveBaseDirs` for the error
-   * semantics.
+   * When non-null the server is in degraded mode: `status` stays callable so the
+   * user can diagnose over MCP, while root-dependent tools must reject first.
    */
   private readonly configError: BaseDirsConfigError | null
   private readonly minChunkLength: number
@@ -252,10 +262,9 @@ export class RAGServer {
   private readonly device: string | undefined
   private readonly storeImages: boolean
   /**
-   * The one current-or-latest sync job this process retains (SYNC-006). A new
-   * `sync_start` replaces a terminal record, so the older id becomes unknown,
-   * and process exit simply discards it: there is no history, persistence,
-   * eviction policy, or recovery.
+   * The one current-or-latest sync job this process retains. A new `sync_start`
+   * replaces a terminal record, so the older id becomes unknown; there is no
+   * history, persistence or recovery.
    */
   private syncJob: SyncStatusResult | null = null
   /**
@@ -263,7 +272,7 @@ export class RAGServer {
    * mutation clears it when the request completes; a sync keeps it until its
    * job reaches a terminal state.
    */
-  private mutationInFlight = false
+  private mutationInFlight: boolean = false
 
   constructor(config: RAGServerConfig) {
     this.dbPath = config.dbPath
@@ -337,18 +346,12 @@ export class RAGServer {
   }
 
   /**
-   * Fail-fast guard for root-dependent tools. When a {@link BaseDirsConfigError}
-   * is stored on the instance the server is in degraded mode (invalid
-   * `BASE_DIRS` — see `resolveBaseDirs`) and every root-dependent tool MUST
-   * reject BEFORE any DB / embedder / parser access so the user sees the
-   * configuration problem unambiguously. Throws the stored
-   * {@link BaseDirsConfigError} (kind `config`) so the central dispatcher
-   * mapper renders it as `McpError(InvalidParams)` — error→code ownership
-   * stays in exactly one place instead of being hand-built here.
+   * Fail-fast guard for root-dependent tools in degraded mode: reject before any
+   * DB / embedder / parser access. Throws the stored error so the dispatcher
+   * mapper owns the code, rather than hand-building one here.
    *
-   * `status` deliberately does NOT call this helper; it remains callable in
-   * degraded mode and exposes the error via a diagnostic content block so
-   * the user can recover via MCP without inspecting stderr.
+   * `status` deliberately does not call this — it stays callable and reports the
+   * error in a diagnostic block, so recovery does not need stderr.
    */
   private assertConfigOk(): void {
     if (this.configError !== null) {
@@ -356,12 +359,7 @@ export class RAGServer {
     }
   }
 
-  /**
-   * Append the centralized config-warning blocks to a handler response.
-   * Every tool handler funnels through this method so the warning shape
-   * stays in exactly one place (design-doc-mandated countermeasure for the
-   * "warning shape changes touch many handlers" risk).
-   */
+  /** Every handler funnels through here, so the warning shape lives in one place. */
   private withWarnings<T extends RagContentBlock[]>(content: T): T {
     return appendConfigWarnings(content, this.configWarnings)
   }
@@ -369,11 +367,9 @@ export class RAGServer {
   /**
    * Take the single external-mutation slot, or describe the overlap.
    *
-   * Returns `null` when the slot was free (the caller now holds it), otherwise
-   * the responsive overlap result: an ordinary tool result with `isError: true`
-   * rather than a thrown error, so it never passes through `toMcpError`. When a
-   * sync holds the guard the message names its job id and points at
-   * `sync_status`, which is the only way for the caller to learn when to retry.
+   * Returns `null` when the slot was free. Otherwise an ordinary result with
+   * `isError: true` rather than a thrown error, naming the holding job id and
+   * pointing at `sync_status` — the only way to learn when to retry.
    */
   private acquireMutation(): { content: RagTextContentBlock[]; isError: true } | null {
     if (!this.mutationInFlight) {
@@ -401,13 +397,10 @@ export class RAGServer {
       tools: toolDefinitions,
     }))
 
-    // Tool invocation. The handlers are gutted of error mapping — every error
-    // they throw (with its ORIGINAL identity) is routed through the single
-    // central catch below, which logs the full cause chain to stderr and maps
-    // the error to an `McpError` for the client via `toMcpError(error,
-    // context)`. The per-tool `context` (see `TOOL_ERROR_CONTEXT`) encodes each
-    // handler's client-message prefix policy so the Contract-Delta per-handler
-    // table is preserved in exactly one place.
+    // The handlers carry no error mapping: every error reaches the single catch
+    // below with its ORIGINAL identity, which logs the full cause chain to
+    // stderr and maps it for the client. `TOOL_ERROR_CONTEXT` holds each
+    // handler's message policy, so that table lives in one place.
     this.server.setRequestHandler(
       CallToolRequestSchema,
       async (request: { params: { name: string; arguments?: unknown } }) => {
@@ -417,7 +410,9 @@ export class RAGServer {
         // cannot reacquire it and self-deadlock.
         if (MUTATION_TOOLS.has(toolName)) {
           const overlap = this.acquireMutation()
-          if (overlap !== null) return overlap
+          if (overlap !== null) {
+            return overlap
+          }
         }
         // `sync_start` hands the guard to the job it schedules, which releases
         // it on the terminal transition; every other mutation is request-scoped
@@ -460,7 +455,9 @@ export class RAGServer {
           logError(toolName, error)
           throw toMcpError(error, context)
         } finally {
-          if (releaseWhenRequestEnds) this.releaseMutation()
+          if (releaseWhenRequestEnds) {
+            this.releaseMutation()
+          }
         }
       }
     )
@@ -478,14 +475,8 @@ export class RAGServer {
    * query_documents tool handler
    */
   async handleQueryDocuments(args: QueryDocumentsInput): Promise<{ content: QueryContent }> {
-    // query_documents operates over the LanceDB only (no baseDirs access), so
-    // it stays callable in degraded mode (configError present). The warning
-    // and error blocks attached via `withWarnings` / status remain the user-
-    // visible diagnostic surface for the config problem.
-    //
-    // No local catch: any failure propagates with original identity to the
-    // central dispatcher mapper (prefix-less context for this tool).
-    // Generate query embedding
+    // query_documents reads only LanceDB, so it stays callable in degraded
+    // mode; `withWarnings` and `status` remain the diagnostic surface.
     const queryVector = await this.embedder.embed(args.query)
 
     // `args.scope` is parser-validated; array-wrap without re-validating, and
@@ -493,9 +484,7 @@ export class RAGServer {
     const searchResults = await this.vectorStore.search(queryVector, {
       queryText: args.query,
       limit: args.limit ?? 10,
-      ...(args.scope !== undefined
-        ? { scope: Array.isArray(args.scope) ? args.scope : [args.scope] }
-        : {}),
+      ...(args.scope !== undefined ? { scope: toArray(args.scope) } : {}),
     })
 
     // Format results with source restoration for raw-data files
@@ -562,7 +551,9 @@ export class RAGServer {
       }
     }
 
-    if (attachmentWarning) content.push(attachmentWarning)
+    if (attachmentWarning) {
+      content.push(attachmentWarning)
+    }
 
     // Append config warnings on every call because MCP clients may hide
     // stderr and may not retain context across calls.
@@ -570,12 +561,9 @@ export class RAGServer {
   }
 
   /**
-   * ingest_file tool handler (re-ingestion support, transaction processing, rollback capability)
-   *
    * `options.skipOptimize` is internal: sync compacts once per run, so its reuse
    * of this handler must not compact once per file (a 100-file sync would
-   * otherwise perform 101 compactions). The `ingest_file` and `ingest_data` tools
-   * omit it and keep compacting per call, which is the behavior they always had.
+   * otherwise perform 101 compactions). The tools omit it and compact per call.
    */
   async handleIngestFile(
     raw: unknown,
@@ -583,7 +571,9 @@ export class RAGServer {
   ): Promise<{ content: RagTextContentBlock[] }> {
     const result = await this.ingestFile(parseIngestFileInput(raw), options)
     // Insertion has committed. Maintenance errors must not restore old rows.
-    if (options.skipOptimize !== true) await this.vectorStore.optimize()
+    if (options.skipOptimize !== true) {
+      await this.vectorStore.optimize()
+    }
     return {
       content: this.withWarnings([
         {
@@ -591,6 +581,80 @@ export class RAGServer {
           text: JSON.stringify(result, null, 2),
         },
       ]),
+    }
+  }
+
+  /** What one ingest source contributed, before rows are built and stored. */
+  private async prepareRawDataIngest(filePath: string): Promise<PreparedIngestSource> {
+    // Raw-data files: skip parser validation, read directly.
+    const sourceBytes = await readFile(filePath)
+    const text = sourceBytes.toString('utf-8')
+    const meta = await loadMetaJson(filePath)
+    const title = meta?.title ?? null
+    console.error(`Read raw-data file: ${filePath} (${text.length} characters)`)
+    const { chunks, embeddings } = await buildChunksAndEmbeddings(text, this.chunker, this.embedder)
+    return {
+      title,
+      omittedImageCount: 0,
+      vectorChunks: buildVectorChunks({
+        filePath,
+        chunks,
+        embeddings,
+        fileSize: text.length,
+        fileTitle: title,
+        contentHash: computeContentHash(sourceBytes),
+      }),
+    }
+  }
+
+  private async prepareSourceFileIngest(
+    filePath: string,
+    options: Parameters<typeof prepareFileForIngest>[2]
+  ): Promise<PreparedIngestSource> {
+    // The MCP boundary accepts an arbitrary client path, unlike CLI ingestion
+    // paths that have already passed a regular-file collector. Reject a FIFO
+    // before the shared whole-file hash read can block the mutation slot.
+    await this.parser.validateFilePath(filePath)
+    this.parser.validateFileSize(filePath)
+    if (!(await stat(filePath)).isFile()) {
+      throw new ValidationError(`Ingest source is not a regular file: ${filePath}`)
+    }
+    const preparedFile = await prepareFileForIngest(
+      filePath,
+      { parser: this.parser, chunker: this.chunker, embedder: this.embedder },
+      options
+    )
+    return {
+      title: preparedFile.title,
+      omittedImageCount: preparedFile.omittedImageCount,
+      preparedFile,
+    }
+  }
+
+  /**
+   * Restore the pre-ingest state after a failed insert. A rollback that itself
+   * fails is reported as its own error, because the prior data may now be gone.
+   */
+  private async rollbackIngest(
+    filePath: string,
+    backup: VectorChunk[],
+    insertError: unknown
+  ): Promise<void> {
+    try {
+      // insertChunks can fail during setup after writing rows. Remove that
+      // version before restoring the backup, including failed first ingests.
+      await this.vectorStore.deleteChunks(filePath)
+      if (backup.length > 0) {
+        await this.vectorStore.insertChunks(backup)
+        await this.vectorStore.optimize()
+      }
+      console.error(`Rollback completed: ${backup.length} chunks restored`)
+    } catch (rollbackError) {
+      console.error('Rollback failed:', rollbackError)
+      throw new DatabaseError(
+        `Ingest failed and rollback failed for ${filePath}; existing data may not have been restored. Original insert error: ${toError(insertError).message}`,
+        { cause: toError(insertError) }
+      )
     }
   }
 
@@ -610,73 +674,26 @@ export class RAGServer {
     const visualArg = args.visual
     const visualQuality = args.visualQuality ?? 'fast'
 
-    // No outer error-mapping catch: failures propagate with original identity
-    // to the central dispatcher mapper. The inner insert/rollback try/catch
-    // below is retained — it is local-effect (data rollback) only.
-    // Parse file (with header/footer filtering for PDFs)
-    // For raw-data files (from ingest_data), read directly without validation
-    // since the path is internally generated and content is already processed
-    const isPdf = args.filePath.toLowerCase().endsWith('.pdf')
-    const isDocx = args.filePath.toLowerCase().endsWith('.docx')
-    const images = (isPdf || isDocx) && (options.images ?? this.storeImages)
-    let title: string | null
-    let vectorChunks: VectorChunk[] | undefined
-    let preparedFile: PreparedFileIngest | undefined
-    let omittedImageCount = 0
-    if (isRawData) {
-      // Raw-data files: skip parser validation, read directly.
-      const sourceBytes = await readFile(args.filePath)
-      const text = sourceBytes.toString('utf-8')
-      const meta = await loadMetaJson(args.filePath)
-      title = meta?.title ?? null
-      console.error(`Read raw-data file: ${args.filePath} (${text.length} characters)`)
-      const { chunks, embeddings } = await buildChunksAndEmbeddings(
-        text,
-        this.chunker,
-        this.embedder
-      )
-      vectorChunks = buildVectorChunks({
-        filePath: args.filePath,
-        chunks,
-        embeddings,
-        fileSize: text.length,
-        fileTitle: title,
-        contentHash: computeContentHash(sourceBytes),
-      })
-    } else {
-      // The MCP boundary accepts an arbitrary client path, unlike CLI ingestion
-      // paths that have already passed a regular-file collector. Reject a FIFO
-      // before the shared whole-file hash read can block the mutation slot.
-      await this.parser.validateFilePath(args.filePath)
-      this.parser.validateFileSize(args.filePath)
-      if (!(await stat(args.filePath)).isFile()) {
-        throw new ValidationError(`Ingest source is not a regular file: ${args.filePath}`)
-      }
-      preparedFile = await prepareFileForIngest(
-        args.filePath,
-        this.parser,
-        this.chunker,
-        this.embedder,
-        {
-          images,
+    // No outer error-mapping catch: failures reach the central dispatcher
+    // mapper with their original identity. The inner insert/rollback catch is
+    // local-effect only.
+    const prepared = isRawData
+      ? await this.prepareRawDataIngest(args.filePath)
+      : await this.prepareSourceFileIngest(args.filePath, {
+          images: supportsEmbeddedImages(args.filePath) && (options.images ?? this.storeImages),
           ...(visualArg === true
             ? {
-                captioner: {
-                  profile: visualQuality,
-                  cacheDir: this.cacheDir,
-                  device: this.device,
-                },
+                captioner: { profile: visualQuality, cacheDir: this.cacheDir, device: this.device },
               }
             : {}),
-        }
-      )
-      title = preparedFile.title
-      omittedImageCount = preparedFile.omittedImageCount
-    }
+        })
+    const title = prepared.title
+    let vectorChunks = prepared.vectorChunks
+    const preparedFile = prepared.preparedFile
 
-    if (omittedImageCount > 0) {
+    if (prepared.omittedImageCount > 0) {
       console.warn(
-        `Skipped ${omittedImageCount} undecodable or oversized image(s) in ${args.filePath}`
+        `Skipped ${prepared.omittedImageCount} undecodable or oversized image(s) in ${args.filePath}`
       )
     }
 
@@ -691,11 +708,9 @@ export class RAGServer {
     }
 
     // Back up existing chunks BEFORE the destructive delete, with their real
-    // stored vectors and the full chunk set, so a failed re-ingest can be
-    // rolled back without data loss or vector corruption (TD-7). Read this
-    // before deleting; if the read fails it propagates here — leaving the
-    // existing data untouched — rather than proceeding into the delete with
-    // an empty/partial backup.
+    // stored vectors, so a failed re-ingest rolls back without corrupting them.
+    // A failed read propagates from here, leaving the existing data untouched,
+    // rather than proceeding into the delete with a partial backup.
     const backup = await this.vectorStore.getChunksByFilePath(args.filePath)
     if (backup.length > 0) {
       console.error(`Backup created: ${backup.length} chunks for ${args.filePath}`)
@@ -706,7 +721,10 @@ export class RAGServer {
     if (preparedFile !== undefined) {
       vectorChunks = buildPreparedFileVectorChunks(preparedFile)
     }
-    const chunksToInsert = vectorChunks as VectorChunk[]
+    if (vectorChunks === undefined) {
+      throw new DatabaseError(`No chunks were prepared for ingest: ${args.filePath}`)
+    }
+    const chunksToInsert = vectorChunks
 
     // Delete existing data
     await this.vectorStore.deleteChunks(args.filePath)
@@ -718,22 +736,7 @@ export class RAGServer {
       console.error(`Inserted ${chunksToInsert.length} chunks for: ${args.filePath}`)
     } catch (insertError) {
       console.error('Ingestion failed, rolling back...', insertError)
-      try {
-        // insertChunks can fail during setup after writing rows. Remove that
-        // version before restoring the backup, including failed first ingests.
-        await this.vectorStore.deleteChunks(args.filePath)
-        if (backup.length > 0) {
-          await this.vectorStore.insertChunks(backup)
-          await this.vectorStore.optimize()
-        }
-        console.error(`Rollback completed: ${backup.length} chunks restored`)
-      } catch (rollbackError) {
-        console.error('Rollback failed:', rollbackError)
-        throw new DatabaseError(
-          `Ingest failed and rollback failed for ${args.filePath}; existing data may not have been restored. Original insert error: ${(insertError as Error).message}`,
-          insertError as Error
-        )
-      }
+      await this.rollbackIngest(args.filePath, backup, insertError)
       throw insertError
     }
 
@@ -746,25 +749,16 @@ export class RAGServer {
   }
 
   /**
-   * ingest_data tool handler
-   * Saves raw content to raw-data directory and calls handleIngestFile internally
-   *
-   * For HTML content:
-   * - Parses HTML and extracts main content using Readability
-   * - Converts to Markdown for better chunking
-   * - Saves as .md file
+   * Saves raw content under raw-data and re-enters `handleIngestFile`. HTML is
+   * reduced to its main content and converted to Markdown first, so chunking
+   * sees prose rather than markup.
    */
   async handleIngestData(args: IngestDataInput): Promise<{ content: RagTextContentBlock[] }> {
-    // ingest_data writes only to `dbPath`/raw-data — it never reads from a
-    // configured `baseDir`. Keeping it callable in degraded mode means a user
-    // with invalid BASE_DIRS can still capture raw-data via MCP while they
-    // diagnose the config error from `status`. The internal `handleIngestFile`
-    // call below operates on a generated raw-data path, which routes
-    // around `parser.validateFilePath`, so no baseDirs access happens.
-    //
-    // No outer error-mapping catch: failures propagate with original identity
-    // to the central dispatcher mapper. The inner raw-data rollback try/catch
-    // below is retained — it is local-effect (file cleanup) only.
+    // ingest_data writes only under `dbPath`/raw-data and never reads a
+    // configured `baseDir`, so it stays callable in degraded mode: a user with
+    // invalid BASE_DIRS can still capture raw-data while diagnosing. The
+    // internal `handleIngestFile` call takes a generated raw-data path, which
+    // routes around `parser.validateFilePath`.
     let contentToSave = args.content
     let title: string | null = null
 
@@ -803,7 +797,9 @@ export class RAGServer {
         try {
           return { path, content: await readFile(path) }
         } catch (error) {
-          if (!isEnoent(error)) throw error
+          if (!isEnoent(error)) {
+            throw error
+          }
           return { path, content: null }
         }
       })
@@ -828,7 +824,9 @@ export class RAGServer {
             try {
               await unlink(path)
             } catch (error) {
-              if (!isEnoent(error)) throw error
+              if (!isEnoent(error)) {
+                throw error
+              }
             }
           }
         })
@@ -837,7 +835,7 @@ export class RAGServer {
         console.warn(`Failed to rollback raw-data file: ${rawDataPath}`)
         throw new DatabaseError(
           `Ingest failed and raw-data rollback failed for ${rawDataPath}; original artifacts may not have been restored.`,
-          ingestError as Error
+          { cause: toError(ingestError) }
         )
       }
       console.error(`Rolled back raw-data file: ${rawDataPath}`)
@@ -850,23 +848,14 @@ export class RAGServer {
   }
 
   /**
-   * list_files tool handler
-   *
    * Scans the normal-path roots (`this.rawBaseDirs`) so scanned paths match the
-   * resolve()-stored DB keys (see {@link BaseDirsConfig} for the path policy).
+   * resolve()-stored DB keys (see {@link BaseDirsConfig}).
    *
-   * Scans every effective base directory (`this.rawBaseDirs`) for supported
-   * files and cross-references with ingested documents. Multi-root contract:
-   * - Returns top-level `baseDirs` (all effective roots in normal-path space,
-   *   nested-root-pruned by `resolveBaseDirs`).
-   * - Preserves legacy top-level `baseDir = rawBaseDirs[0]` for clients written
-   *   against the single-root shape.
-   * - Annotates each file entry with the producing `baseDir`.
-   * - De-duplicates exact duplicate file paths across roots (first occurrence
-   *   wins, preserving root iteration order).
-   * - Preserves raw-data / orphaned DB entries under `sources` with no
-   *   producing-root annotation.
-   * - Excludes `dbPath` and `cacheDir` uniformly across every root.
+   * Multi-root contract: a top-level `baseDir` is still reported as
+   * `rawBaseDirs[0]` for clients written against the single-root shape;
+   * duplicate paths across roots collapse to the first occurrence in root
+   * order; raw-data and orphaned DB entries stay under `sources` with no
+   * producing root.
    */
   async handleListFiles(input: ListFilesInput = {}): Promise<{ content: RagTextContentBlock[] }> {
     // Root-dependent tool: fail fast on configError BEFORE any DB / FS access.
@@ -877,12 +866,7 @@ export class RAGServer {
     // type admits `string | string[]`; array-wrap once (mirrors query_documents)
     // so scope threads uniformly into the walker and the sources classifier.
     // Undefined scope leaves both the scan and the sources split unchanged.
-    const scope =
-      input.scope === undefined
-        ? undefined
-        : Array.isArray(input.scope)
-          ? input.scope
-          : [input.scope]
+    const scope = input.scope === undefined ? undefined : toArray(input.scope)
     const ingested = await this.vectorStore.listFiles()
     const listed = await listDocuments({
       roots: this.rawBaseDirs,
@@ -1022,10 +1006,8 @@ export class RAGServer {
   }
 
   /**
-   * read_chunk_neighbors tool handler
-   * Returns chunks around a target chunkIndex within a single ingested document.
-   * Context-expansion utility — not a search tool. Mirrors handleDeleteFile's
-   * dual-input (filePath XOR source) resolution pattern.
+   * Context expansion around a chunkIndex, not a search tool. Mirrors
+   * handleDeleteFile's filePath-XOR-source resolution.
    */
   async handleReadChunkNeighbors(raw: unknown): Promise<{ content: RagTextContentBlock[] }> {
     const args = parseReadChunkNeighborsInput(raw)
@@ -1056,7 +1038,9 @@ export class RAGServer {
         isTarget: row.chunkIndex === args.chunkIndex,
         fileTitle: row.fileTitle ?? null,
       }
-      if (sourceForAll) item.source = sourceForAll
+      if (sourceForAll) {
+        item.source = sourceForAll
+      }
       return item
     })
 
@@ -1084,12 +1068,11 @@ export class RAGServer {
   }
 
   /**
-   * sync_start tool handler
+   * Registers the one current job and answers with its id without waiting: the
+   * caller polls `sync_status`.
    *
-   * Registers the one current job, schedules the run, and answers with its id
-   * without waiting for any of it: the caller polls `sync_status` (SYNC-006).
    * The scheduled promise is deliberately floating — an unexpected rejection is
-   * captured into the job record instead of escaping, and the run holds the
+   * captured into the job record rather than escaping, and the run holds the
    * external-mutation guard until it is terminal.
    */
   async handleSyncStart(input: SyncStartInput): Promise<{ content: RagTextContentBlock[] }> {
@@ -1107,7 +1090,7 @@ export class RAGServer {
       error: null,
     }
 
-    void this.runSyncJob(jobId, input.path)
+    this.runSyncJob(jobId, input.path)
       .catch((error: unknown) => {
         // Only an unexpected orchestration failure lands here: `runSync` already
         // returns its own controlled error. One error, no rollback, no retry.
@@ -1123,11 +1106,9 @@ export class RAGServer {
   }
 
   /**
-   * sync_status tool handler
-   *
    * Read-only, so it stays callable while a sync holds the mutation guard. Any
-   * id other than the current one is unknown: the record was replaced by a newer
-   * `sync_start` or lost with a previous server process.
+   * id but the current one is unknown — replaced by a newer `sync_start`, or
+   * lost with a previous server process.
    */
   async handleSyncStatus(input: SyncStatusInput): Promise<{ content: RagTextContentBlock[] }> {
     const job = this.syncJob
@@ -1144,15 +1125,17 @@ export class RAGServer {
 
   /** Patch the current job, ignoring a write aimed at a record already replaced. */
   private updateSyncJob(jobId: string, patch: Partial<SyncStatusResult>): void {
-    if (this.syncJob === null || this.syncJob.jobId !== jobId) return
+    if (this.syncJob === null || this.syncJob.jobId !== jobId) {
+      return
+    }
     this.syncJob = { ...this.syncJob, ...patch }
   }
 
   /**
-   * The scheduled body of one sync job: supply the real collaborators to the
-   * shared core (`src/features/sync.ts`) and fold its result into the pollable
-   * record. Planning, prune eligibility, and the stop-on-first-error policy stay
-   * in the core; path classification and depth therefore match the CLI exactly.
+   * One sync job's body: supply the real collaborators to the shared core and
+   * fold its result into the pollable record. Planning and the
+   * stop-on-first-error policy stay in the core, so path classification and
+   * depth match the CLI exactly.
    */
   private async runSyncJob(jobId: string, requestedPath: string | undefined): Promise<void> {
     let hashedFiles = 0
@@ -1174,7 +1157,7 @@ export class RAGServer {
       // none of the coverage arrays, which would hide an unobserved region and
       // make prune unsafe.
       scanDir: async (rootPath: string) =>
-        await bfsCollectSupportedFiles(rootPath, this.excludePaths, MAX_SCAN_DEPTH),
+        await bfsCollectSupportedFiles(rootPath, this.excludePaths, { maxDepth: MAX_SCAN_DEPTH }),
       // Size first, bytes second: `maxFileSize` is otherwise enforced inside the
       // parser, which runs long after the whole file would already be in memory
       // here. Declining (`null`) keeps the rest of the run usable instead of
@@ -1187,7 +1170,9 @@ export class RAGServer {
       // database directly, so this is a recorded limitation rather than a defended
       // boundary — as with the watchdog limitation noted on the mutation guard.
       hashFile: async (filePath: string) => {
-        if ((await stat(filePath)).size > this.maxFileSize) return null
+        if ((await stat(filePath)).size > this.maxFileSize) {
+          return null
+        }
         const contentHash = computeContentHash(await readFile(filePath))
         hashedFiles += 1
         return contentHash
@@ -1242,37 +1227,34 @@ export class RAGServer {
   }
 
   /**
-   * Sync's `ingestFile` collaborator uses the same typed ingestion operation as
-   * `ingest_file`, preserving its backup and rollback semantics while returning
-   * only the chunk count the sync core needs. A zero-chunk file is reported as
-   * `empty`; the typed operation rejects it before delete, leaving prior rows
-   * unchanged.
+   * Sync's `ingestFile` uses the same typed operation as `ingest_file`, keeping
+   * its backup and rollback semantics. A zero-chunk file is rejected before the
+   * delete, so prior rows survive, and is reported as `empty`.
    *
-   * Compaction is the second difference: the sync core runs one `optimize()` for
-   * the whole run, so the per-file one is skipped here. A rollback still compacts
-   * — that path restores rows and then aborts the run, so no later `optimize()`
-   * follows it.
+   * Per-file compaction is skipped because the sync core runs one `optimize()`
+   * for the whole run. A rollback still compacts — that path restores rows and
+   * then aborts, so no later `optimize()` follows.
    */
   private async ingestFileForSync(filePath: string, images: boolean): Promise<number> {
     try {
       const result = await this.ingestFile({ filePath }, { images })
       return result.chunkCount
     } catch (error) {
-      if (error instanceof NoChunksError) return 0
+      if (error instanceof NoChunksError) {
+        return 0
+      }
       throw error
     }
   }
 
   /**
-   * Serve this instance's tool registration over `transport`.
+   * Serve this instance's tool registration over `transport` — the registration
+   * itself, not a copy, since `this.server` is private. `run()` passes stdio; a
+   * test passes an in-memory pair.
    *
-   * Exposed because the registration itself — not a re-registered copy of it —
-   * is what an MCP client talks to, and `this.server` is private. `run()` passes
-   * the stdio transport; a test passes an in-memory pair.
-   *
-   * One instance serves at most one client: the sync job record and the mutation
-   * slot are per-process, so a transport that multiplexed clients would share one
-   * caller's job state and one caller's write lock with every other caller.
+   * One instance serves at most one client: the job record and the mutation slot
+   * are per-process, so a multiplexing transport would share one caller's write
+   * lock with every other caller.
    */
   async connect(transport: Transport): Promise<void> {
     await this.server.connect(transport)

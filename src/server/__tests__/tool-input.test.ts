@@ -1,5 +1,6 @@
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js'
 import { describe, expect, it } from 'vitest'
+import { expectInstanceOf } from '../../__tests__/test-doubles.js'
 import {
   parseDeleteFileInput,
   parseIngestDataInput,
@@ -61,7 +62,7 @@ describe('parseQueryDocumentsInput', () => {
       expect.unreachable('should have thrown')
     } catch (error) {
       expect(error).toBeInstanceOf(McpError)
-      expect((error as McpError).code).toBe(ErrorCode.InvalidParams)
+      expect(expectInstanceOf(error, McpError).code).toBe(ErrorCode.InvalidParams)
     }
   })
 
@@ -175,7 +176,7 @@ describe('parseListFilesInput', () => {
       expect.unreachable('should have thrown')
     } catch (error) {
       expect(error).toBeInstanceOf(McpError)
-      expect((error as McpError).code).toBe(ErrorCode.InvalidParams)
+      expect(expectInstanceOf(error, McpError).code).toBe(ErrorCode.InvalidParams)
     }
   })
 })
@@ -341,8 +342,8 @@ describe('parseSyncStartInput', () => {
       expect.unreachable('should have thrown')
     } catch (error) {
       expect(error).toBeInstanceOf(McpError)
-      expect((error as McpError).code).toBe(ErrorCode.InvalidParams)
-      expect((error as McpError).message).not.toContain('private/docs')
+      expect(expectInstanceOf(error, McpError).code).toBe(ErrorCode.InvalidParams)
+      expect(expectInstanceOf(error, McpError).message).not.toContain('private/docs')
     }
   })
 
@@ -352,7 +353,7 @@ describe('parseSyncStartInput', () => {
       expect.unreachable('should have thrown')
     } catch (error) {
       expect(error).toBeInstanceOf(McpError)
-      expect((error as McpError).code).toBe(ErrorCode.InvalidParams)
+      expect(expectInstanceOf(error, McpError).code).toBe(ErrorCode.InvalidParams)
     }
   })
 
@@ -361,7 +362,7 @@ describe('parseSyncStartInput', () => {
       parseSyncStartInput({ path: ['/Users/someone/private/docs'] })
       expect.unreachable('should have thrown')
     } catch (error) {
-      const { message } = error as McpError
+      const { message } = expectInstanceOf(error, McpError)
       expect(message).not.toContain('/Users/someone/private/docs')
       expect(message).not.toContain('\n')
       expect(message).not.toMatch(/\bat\s+\S+:\d+/)
@@ -406,7 +407,7 @@ describe('parseSyncStatusInput', () => {
       expect.unreachable('should have thrown')
     } catch (error) {
       expect(error).toBeInstanceOf(McpError)
-      expect((error as McpError).code).toBe(ErrorCode.InvalidParams)
+      expect(expectInstanceOf(error, McpError).code).toBe(ErrorCode.InvalidParams)
     }
   })
 
@@ -436,7 +437,7 @@ describe('parseSyncStatusInput', () => {
       parseSyncStatusInput({ jobId: 'abc\nUnknown sync job: forged' })
       expect.unreachable('should have thrown')
     } catch (error) {
-      const { message } = error as McpError
+      const { message } = expectInstanceOf(error, McpError)
       expect(message).not.toContain('forged')
       expect(message).not.toContain('\n')
     }
@@ -447,7 +448,7 @@ describe('parseSyncStatusInput', () => {
       parseSyncStatusInput({ jobId: ['/Users/someone/private/docs'] })
       expect.unreachable('should have thrown')
     } catch (error) {
-      const { message } = error as McpError
+      const { message } = expectInstanceOf(error, McpError)
       expect(message).not.toContain('/Users/someone/private/docs')
       expect(message).not.toMatch(/\bat\s+\S+:\d+/)
     }

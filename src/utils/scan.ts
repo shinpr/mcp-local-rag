@@ -1,27 +1,20 @@
-// Shared bounded directory scan for supported document files.
+// Shared bounded directory scan for supported document files: the single
+// walker behind CLI `ingest`, CLI `list`, and the MCP `list_files` scan.
 //
-// The single bounded directory walker behind the CLI `ingest` walker, the CLI
-// `list` walker, and the MCP server's `list_files` scan: bounded depth, symlink
-// skipping, exclude-path filtering, and supported-extension matching.
+// The collect predicates live in `classifyScanEntry` so a path a caller names
+// explicitly (`classifyRequestedPath`) is judged by the same rules as one the
+// walk discovers — sync accepts both, and only one used to be filtered.
 //
-// The four collect predicates live in `classifyScanEntry` so a path a caller
-// names explicitly (`classifyRequestedPath`) is judged by the same rules as a
-// path the walk discovers — sync accepts both, and only one of them used to be
-// filtered.
-//
-// Presentation (warning wording, when/where warnings are surfaced) and
-// post-processing (sort/dedup) stay with each caller — this helper returns
-// structured coverage facts (`unreadableDirs`, `depthLimitedDirs`,
-// `skippedSymlinks`, and the derived `depthLimited`) so callers preserve their
-// own, intentionally-different, user-facing messages. The path-granular facts
-// let a caller tell an unobserved region apart from an observed one instead of
-// treating any gap as a whole-scan failure.
+// Warning wording and sort/dedupe stay with each caller. This helper returns
+// path-granular coverage facts instead, so a caller can tell an unobserved
+// region apart from a whole-scan failure.
 
 import { lstat, readdir, realpath } from 'node:fs/promises'
 import { basename, dirname, extname, join } from 'node:path'
 import { SUPPORTED_EXTENSIONS } from '../parser/index.js'
 import { MAX_SCAN_DEPTH } from './limits.js'
 import { isInScope, isUnderOrEqual, shouldVisitDir } from './scope-match.js'
+import { errorCode } from './type-guards.js'
 
 /**
  * Canonical identity key for the `list`/`list_files` cross-reference: a file's
@@ -115,22 +108,15 @@ function isUnderExcludedPrefix(
 }
 
 /**
- * The collect predicates of {@link bfsCollectSupportedFiles} as one decision, so
- * a discovered directory entry and an explicitly requested path
- * ({@link classifyRequestedPath}) are judged by exactly the same rules instead of
- * by two implementations that can drift.
+ * The collect predicates of {@link bfsCollectSupportedFiles} as one decision,
+ * so a discovered entry and an explicitly requested path are judged by the same
+ * rules rather than by two implementations that drift.
  *
- * Evaluation order is part of the contract and matches the walk: a symbolic link
- * is reported as a link even under an excluded prefix, and a directory is
- * accepted without any extension test.
+ * Evaluation order is part of the contract: a symbolic link is reported as a
+ * link even under an excluded prefix, and a directory needs no extension test.
  *
- * `platform` is a parameter rather than a direct `process.platform` read — the
- * same reason `toSyncPathKey` takes one: the Windows exclusion semantics
- * ({@link isUnderExcludedPrefix}) must be provable on a macOS/Linux machine. The
- * default leaves every call site unchanged.
- *
- * Both `Dirent` (from `readdir`) and `Stats` (from `lstat`) satisfy
- * {@link EntryTypeFacts} structurally.
+ * `platform` is a parameter so the Windows exclusion semantics are provable on
+ * a POSIX host. Both `Dirent` and `Stats` satisfy {@link EntryTypeFacts}.
  */
 export function classifyScanEntry(
   fullPath: string,
@@ -138,10 +124,18 @@ export function classifyScanEntry(
   excludePaths: readonly string[],
   platform: NodeJS.Platform = process.platform
 ): ScanEntryKind {
-  if (entry.isSymbolicLink()) return 'symlink'
-  if (isUnderExcludedPrefix(fullPath, excludePaths, platform)) return 'excluded'
-  if (entry.isDirectory()) return 'directory'
-  if (!entry.isFile()) return 'irregular'
+  if (entry.isSymbolicLink()) {
+    return 'symlink'
+  }
+  if (isUnderExcludedPrefix(fullPath, excludePaths, platform)) {
+    return 'excluded'
+  }
+  if (entry.isDirectory()) {
+    return 'directory'
+  }
+  if (!entry.isFile()) {
+    return 'irregular'
+  }
   return SUPPORTED_EXTENSIONS.has(extname(fullPath).toLowerCase()) ? 'file' : 'unsupported'
 }
 
@@ -196,34 +190,78 @@ export interface DirScanResult {
   depthLimited: boolean
 }
 
+/** Directory entries, or the errno that made the directory unreadable. */
+async function readDirEntries(
+  dirPath: string
+): Promise<{ entries: import('node:fs').Dirent<string>[] } | { code: string }> {
+  try {
+    return { entries: await readdir(dirPath, { withFileTypes: true, encoding: 'utf8' }) }
+  } catch (error) {
+    return { code: errorCode(error) ?? 'UNKNOWN' }
+  }
+}
+
+/** How one directory's entries are classified. */
+interface ScanRules {
+  excludePaths: readonly string[]
+  scope: string[] | undefined
+  platform: NodeJS.Platform
+}
+
+/** Where a classified entry goes. */
+interface ScanSinks {
+  files: string[]
+  skippedSymlinks: string[]
+  queue: { dirPath: string; depth: number }[]
+}
+
 /**
- * Bounded BFS scan of a single root, collecting every supported file up to
- * `maxDepth` levels deep, counted from `rootPath` itself. Symlinks are skipped
- * (never followed) and recorded in `skippedSymlinks`; paths under any
- * `excludePaths` prefix are filtered out. A per-directory `readdir` failure is
- * captured into `unreadableDirs` and does not abort the scan (best-effort per
- * directory); a branch pruned at `maxDepth` is captured into `depthLimitedDirs`.
+ * Route one directory's entries: symlinks are recorded and never followed,
+ * in-scope directories are enqueued one level deeper, and in-scope supported
+ * files are collected.
+ */
+function sortEntries(
+  entries: readonly import('node:fs').Dirent<string>[],
+  visit: { dirPath: string; depth: number },
+  rules: ScanRules,
+  sinks: ScanSinks
+): void {
+  for (const entry of entries) {
+    const fullPath = join(visit.dirPath, entry.name)
+    const kind = classifyScanEntry(fullPath, entry, rules.excludePaths, rules.platform)
+    if (kind === 'symlink') {
+      sinks.skippedSymlinks.push(fullPath)
+    } else if (kind === 'directory' && shouldVisitDir(fullPath, rules.scope)) {
+      sinks.queue.push({ dirPath: fullPath, depth: visit.depth + 1 })
+    } else if (kind === 'file' && isInScope(fullPath, rules.scope)) {
+      sinks.files.push(fullPath)
+    }
+  }
+}
+
+export interface BfsCollectOptions {
+  /** Traversal bound; defaults to {@link MAX_SCAN_DEPTH}. */
+  maxDepth?: number
+  /** Absolute prefixes to restrict traversal and collection to. */
+  scope?: string[] | undefined
+  /** Selects case sensitivity of the exclusion comparison; defaults to the host. */
+  platform?: NodeJS.Platform
+}
+
+/**
+ * Bounded BFS scan of a single root, depth counted from `rootPath` itself.
+ * Symlinks are never followed. An unreadable directory is recorded and does
+ * not abort the scan.
  *
- * When `scope` is provided (non-empty), the predicate is pushed into the
- * traversal: a directory is visited only if it is in-scope or an ancestor of
- * some scope prefix, and a file is collected only if it is in-scope. A root that
- * intersects no prefix is skipped without any `readdir`. An absent/empty `scope`
- * leaves traversal and collection byte-for-byte unchanged.
- *
- * `platform` only selects how the exclusion comparison treats case (see
- * {@link classifyScanEntry}); it defaults to the host, so every existing call is
- * unchanged.
- *
- * Does not sort, dedupe, or emit warnings — callers handle those so their
- * existing output contracts are preserved.
+ * Does not sort, dedupe, or emit warnings — each caller owns its own output
+ * contract for those.
  */
 export async function bfsCollectSupportedFiles(
   rootPath: string,
   excludePaths: readonly string[],
-  maxDepth: number = MAX_SCAN_DEPTH,
-  scope?: string[],
-  platform: NodeJS.Platform = process.platform
+  options: BfsCollectOptions = {}
 ): Promise<DirScanResult> {
+  const { maxDepth = MAX_SCAN_DEPTH, scope, platform = process.platform } = options
   const files: string[] = []
   const unreadableDirs: UnreadableDir[] = []
   const depthLimitedDirs: string[] = []
@@ -238,46 +276,33 @@ export async function bfsCollectSupportedFiles(
     : []
 
   while (queue.length > 0) {
-    const { dirPath, depth } = queue.shift()!
-
-    if (depth >= maxDepth) {
+    const visit = queue.shift()
+    if (visit === undefined) {
+      break
+    }
+    if (visit.depth >= maxDepth) {
       // `dirPath` was reached but never read, so it is the first unvisited
       // directory of this branch: it and all its descendants are unobserved.
-      depthLimitedDirs.push(dirPath)
+      depthLimitedDirs.push(visit.dirPath)
       continue
     }
 
-    // TypeScript's `readdir` has overloads keyed on the options shape; pin the
-    // encoding to `'utf8'` and cast so the loop operates on string-encoded
-    // Dirent entries (matches the rest of the codebase).
-    let entries: import('node:fs').Dirent<string>[]
-    try {
-      entries = (await readdir(dirPath, {
-        withFileTypes: true,
-        encoding: 'utf8',
-      })) as import('node:fs').Dirent<string>[]
-    } catch (error) {
-      const code =
-        error && typeof error === 'object' && 'code' in error
-          ? ((error as NodeJS.ErrnoException).code ?? 'UNKNOWN')
-          : 'UNKNOWN'
-      unreadableDirs.push({ dirPath, code })
+    const read = await readDirEntries(visit.dirPath)
+    if ('code' in read) {
+      unreadableDirs.push({ dirPath: visit.dirPath, code: read.code })
       continue
     }
 
-    for (const entry of entries) {
-      const fullPath = join(dirPath, entry.name)
-      const kind = classifyScanEntry(fullPath, entry, excludePaths, platform)
-      if (kind === 'symlink') {
-        skippedSymlinks.push(fullPath)
-      } else if (kind === 'directory') {
-        if (shouldVisitDir(fullPath, scope)) {
-          queue.push({ dirPath: fullPath, depth: depth + 1 })
-        }
-      } else if (kind === 'file' && isInScope(fullPath, scope)) {
-        files.push(fullPath)
+    sortEntries(
+      read.entries,
+      visit,
+      { excludePaths, scope, platform },
+      {
+        files,
+        skippedSymlinks,
+        queue,
       }
-    }
+    )
   }
 
   return {

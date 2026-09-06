@@ -1,21 +1,17 @@
-// Central dispatcher error-mapping tests (Task 04 — Phase 3 commit 2).
+// The single try/catch wrapping the CallTool dispatcher must route every
+// handler error through `toMcpError(error, context)` + `logError`, preserving
+// each handler's message prefix. The handlers themselves carry no error
+// mapping and rethrow with the ORIGINAL identity.
 //
-// Verifies the single try/catch wrapping the CallTool dispatcher routes every
-// handler error through `toMcpError(error, context)` + `logError`, with each
-// handler's client-message prefix policy preserved exactly (Contract-Delta
-// per-handler table). The handlers themselves are gutted of error mapping and
-// rethrow the caught error with its ORIGINAL identity.
-//
-// Test type: unit (spy-based). We inject failures at the adapter boundary
-// (vectorStore / embedder / parser) and invoke the dispatcher closure directly
-// via the SDK's `_requestHandlers` map, which is the boundary that owns the
-// central mapping.
+// The dispatcher closure is invoked directly via the SDK's `_requestHandlers`
+// map, which is the boundary that owns the mapping.
 
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js'
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { testModelCacheDir, withTestDevice } from '../../__tests__/test-device.js'
+import { expectInstanceOf, privateMembers } from '../../__tests__/test-doubles.js'
 import type { Embedder } from '../../embedder/index.js'
 import { EmbeddingError } from '../../embedder/index.js'
 import { BaseDirsConfigError } from '../../utils/base-dirs.js'
@@ -37,11 +33,11 @@ function internals(server: RAGServer): {
   embedder: Embedder
   vectorStore: VectorStore
 } {
-  return server as unknown as {
+  return privateMembers<{
     server: { _requestHandlers: Map<string, RegisteredHandler> }
     embedder: Embedder
     vectorStore: VectorStore
-  }
+  }>(server)
 }
 
 // Invoke the registered CallTool dispatcher closure directly. The SDK stores it
@@ -50,7 +46,9 @@ function internals(server: RAGServer): {
 // central try/catch).
 function dispatch(server: RAGServer, name: string, args: unknown): Promise<DispatchResult> {
   const handler = internals(server).server._requestHandlers.get('tools/call')
-  if (handler === undefined) throw new Error('tools/call handler not registered')
+  if (handler === undefined) {
+    throw new Error('tools/call handler not registered')
+  }
   return handler(
     { method: 'tools/call', params: { name, arguments: args } },
     { signal: new AbortController().signal }
@@ -99,7 +97,7 @@ describe('Central dispatcher error mapping (AC-004/005/006/008)', () => {
       await dispatch(server, 'query_documents', { query: 'hi' })
       throw new Error('expected throw')
     } catch (e) {
-      const err = e as McpError
+      const err = expectInstanceOf(e, McpError)
       expect(err).toBeInstanceOf(McpError)
       expect(err.message).toContain('embedder exploded')
       expect(err.message).not.toContain('Failed to')
@@ -118,7 +116,7 @@ describe('Central dispatcher error mapping (AC-004/005/006/008)', () => {
       await dispatch(server, 'ingest_file', { filePath: testFile })
       throw new Error('expected throw')
     } catch (e) {
-      const err = e as McpError
+      const err = expectInstanceOf(e, McpError)
       expect(err).toBeInstanceOf(McpError)
       expect(err.code).toBe(ErrorCode.InternalError)
       expect(err.message).toContain('Failed to ingest file: disk full')
@@ -140,7 +138,7 @@ describe('Central dispatcher error mapping (AC-004/005/006/008)', () => {
       })
       throw new Error('expected throw')
     } catch (e) {
-      const err = e as McpError
+      const err = expectInstanceOf(e, McpError)
       expect(err).toBeInstanceOf(McpError)
       expect(err.code).toBe(ErrorCode.InternalError)
       expect(err.message).toContain('Failed to ingest data: boom')
@@ -162,7 +160,7 @@ describe('Central dispatcher error mapping (AC-004/005/006/008)', () => {
       await dispatch(server, 'delete_file', { filePath: testFile })
       throw new Error('expected throw')
     } catch (e) {
-      const err = e as McpError
+      const err = expectInstanceOf(e, McpError)
       expect(err).toBeInstanceOf(McpError)
       expect(err.code).toBe(ErrorCode.InternalError)
       expect(err.message).toContain('Failed to delete file: boom')
@@ -180,7 +178,7 @@ describe('Central dispatcher error mapping (AC-004/005/006/008)', () => {
       await dispatch(server, 'ingest_file', { filePath: testFile })
       throw new Error('expected throw')
     } catch (e) {
-      const err = e as McpError
+      const err = expectInstanceOf(e, McpError)
       expect(err.code).toBe(ErrorCode.InternalError)
       expect(err.message).toContain('Invalid RAG_DTYPE: q9')
       expect(err.message).not.toContain('Failed to ingest file')
@@ -202,7 +200,7 @@ describe('Central dispatcher error mapping (AC-004/005/006/008)', () => {
       await dispatch(server, 'read_chunk_neighbors', { filePath: testFile, chunkIndex: 0 })
       throw new Error('expected throw')
     } catch (e) {
-      const err = e as McpError
+      const err = expectInstanceOf(e, McpError)
       expect(err.code).toBe(ErrorCode.InternalError)
       expect(err.message).toContain('lancedb scan failed')
       expect(err.message).not.toContain('Failed to read chunk neighbors')
@@ -221,7 +219,7 @@ describe('Central dispatcher error mapping (AC-004/005/006/008)', () => {
       await dispatch(server, 'read_chunk_neighbors', { filePath: testFile, chunkIndex: 0 })
       throw new Error('expected throw')
     } catch (e) {
-      const err = e as McpError
+      const err = expectInstanceOf(e, McpError)
       expect(err.code).toBe(ErrorCode.InternalError)
       expect(err.message).toContain('Failed to read chunk neighbors: unexpected boom')
     }
@@ -233,7 +231,7 @@ describe('Central dispatcher error mapping (AC-004/005/006/008)', () => {
       await dispatch(server, 'read_chunk_neighbors', { filePath: '/x', chunkIndex: -1 })
       throw new Error('expected throw')
     } catch (e) {
-      const err = e as McpError
+      const err = expectInstanceOf(e, McpError)
       expect(err.code).toBe(ErrorCode.InvalidParams)
       expect(err.message).toContain('chunkIndex must be a non-negative integer')
     }
@@ -244,7 +242,7 @@ describe('Central dispatcher error mapping (AC-004/005/006/008)', () => {
       await dispatch(server, 'delete_file', {})
       throw new Error('expected throw')
     } catch (e) {
-      const err = e as McpError
+      const err = expectInstanceOf(e, McpError)
       expect(err.code).toBe(ErrorCode.InvalidParams)
       expect(err.message).toContain('Either filePath or source must be provided')
     }
@@ -257,7 +255,7 @@ describe('Central dispatcher error mapping (AC-004/005/006/008)', () => {
     const embedder = internals(server).embedder
     vi.spyOn(embedder, 'embed').mockResolvedValue(new Array(384).fill(0))
     vi.spyOn(vectorStore, 'search').mockRejectedValue(
-      new DatabaseError('Failed to search vectors', rootCause)
+      new DatabaseError('Failed to search vectors', { cause: rootCause })
     )
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
 
@@ -265,7 +263,7 @@ describe('Central dispatcher error mapping (AC-004/005/006/008)', () => {
       await dispatch(server, 'query_documents', { query: 'anything' })
       throw new Error('expected throw')
     } catch (e) {
-      const err = e as McpError
+      const err = expectInstanceOf(e, McpError)
       // Client: generic DatabaseError message, NOT the internal cause.
       expect(err.message).toContain('Failed to search vectors')
       expect(err.message).not.toContain('LANCE_INTERNAL_DETAIL')
@@ -390,7 +388,7 @@ describe('Config-gate central mapping + status diagnostic block (AC-007)', () =>
       await dispatch(server, 'list_files', {})
       throw new Error('expected throw')
     } catch (e) {
-      const err = e as McpError
+      const err = expectInstanceOf(e, McpError)
       expect(err).toBeInstanceOf(McpError)
       expect(err.code).toBe(ErrorCode.InvalidParams)
       expect(err.message).toContain('BASE_DIRS must be a JSON array')
@@ -406,14 +404,11 @@ describe('Config-gate central mapping + status diagnostic block (AC-007)', () =>
   })
 })
 
-// ---- SYNC-006/SYNC-007: sync dispatch + the server-instance mutation guard ----
-//
-// The guard lives in the `CallToolRequestSchema` closure, so these tests drive
-// it through the same `_requestHandlers` entry the SDK calls. The embedder is
-// stubbed (external ML I/O) and, for the overlap case, gated on a promise this
-// file resolves, so one mutation is provably still in flight — and parked
-// BEFORE any store mutation — while the probes run. Everything else (dispatch,
-// guard, parser, chunker, store, filesystem) is real.
+// SYNC-006/007: sync dispatch plus the mutation guard, which lives in the
+// `CallToolRequestSchema` closure — so these drive the same `_requestHandlers`
+// entry the SDK calls. For the overlap case the stubbed embedder is gated on a
+// promise this file resolves, so one mutation is provably still in flight and
+// parked BEFORE any store mutation while the probes run.
 describe('External mutation guard at the dispatch boundary (SYNC-007)', () => {
   let server: RAGServer
   const testDbPath = resolve('./tmp/test-lancedb-guard')
@@ -441,8 +436,8 @@ describe('External mutation guard at the dispatch boundary (SYNC-007)', () => {
 
   function openGate(): { pending: Promise<void>; release: () => void } {
     let release!: () => void
-    const pending = new Promise<void>((resolve) => {
-      release = resolve
+    const pending = new Promise<void>((resolveGate) => {
+      release = resolveGate
     })
     return { pending, release }
   }
@@ -450,7 +445,9 @@ describe('External mutation guard at the dispatch boundary (SYNC-007)', () => {
   function stubEmbedder(): void {
     const embedder = internals(server).embedder
     vi.spyOn(embedder, 'embedBatch').mockImplementation(async (texts: string[]) => {
-      if (embedGate !== null) await embedGate.pending
+      if (embedGate !== null) {
+        await embedGate.pending
+      }
       return texts.map((_, index) => unitVector(index + 1))
     })
     vi.spyOn(embedder, 'embed').mockResolvedValue(unitVector(1))
@@ -493,15 +490,15 @@ describe('External mutation guard at the dispatch boundary (SYNC-007)', () => {
       await dispatch(server, 'sync_start', { path: 42 })
       throw new Error('expected throw')
     } catch (e) {
-      expect((e as McpError).message).toContain('path must be a non-empty string')
-      expect((e as McpError).message).not.toContain('Unknown tool')
+      expect(expectInstanceOf(e, McpError).message).toContain('path must be a non-empty string')
+      expect(expectInstanceOf(e, McpError).message).not.toContain('Unknown tool')
     }
 
     try {
       await dispatch(server, 'sync_status', { jobId: NEVER_ISSUED_JOB_ID })
       throw new Error('expected throw')
     } catch (e) {
-      const err = e as McpError
+      const err = expectInstanceOf(e, McpError)
       expect(err).toBeInstanceOf(McpError)
       expect(err.message).toContain('Unknown sync job')
       expect(err.message).not.toContain('Unknown tool')

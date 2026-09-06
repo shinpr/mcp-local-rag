@@ -1,5 +1,4 @@
 // Embedder dtype-wiring unit tests
-// Test Type: Unit Test (mocks the @huggingface/transformers `pipeline` boundary)
 //
 // These tests assert the dtype argument the Embedder hands to the transformers.js
 // `pipeline` call. The model load is external I/O (network/model download), so the
@@ -15,6 +14,7 @@
 
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { testModelCacheDir } from '../test-device.js'
+import { asDouble } from '../test-doubles.js'
 
 const mocks = vi.hoisted(() => {
   return {
@@ -29,7 +29,7 @@ const mocks = vi.hoisted(() => {
 const transformersFactory = () => ({
   pipeline: mocks.pipeline,
   // `env` is mutated by `initialize()` (sets cacheDir); a plain object suffices.
-  env: {} as { cacheDir?: string },
+  env: asDouble<Record<string, string | undefined>>({}),
 })
 
 const MOCKED_PATHS = ['@huggingface/transformers'] as const
@@ -55,7 +55,9 @@ describe('Embedder dtype wiring', () => {
   })
 
   afterAll(() => {
-    for (const p of MOCKED_PATHS) vi.doUnmock(p)
+    for (const p of MOCKED_PATHS) {
+      vi.doUnmock(p)
+    }
     vi.resetModules()
   })
 

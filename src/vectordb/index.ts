@@ -1,6 +1,7 @@
 // VectorStore implementation with LanceDB integration
 
 import { type Connection, connect, Index, type Table } from '@lancedb/lancedb'
+import { toError } from '../utils/errors.js'
 import { MAX_QUERY_LIMIT, MIN_QUERY_LIMIT } from '../utils/limits.js'
 import { normalizeScopePrefix } from '../utils/scope-match.js'
 import { applyFileFilter, applyGrouping, applyKeywordBoost } from './search-filters.js'
@@ -37,20 +38,13 @@ export type {
 // VectorStore Class
 // ============================================
 
-/**
- * Vector storage class using LanceDB
- *
- * Responsibilities:
- * - LanceDB operations (insert, delete, search)
- * - Transaction handling (atomicity of delete→insert)
- * - Metadata management
- */
+/** Vector storage over LanceDB, including the delete-then-insert atomicity. */
 export class VectorStore {
   private db: Connection | null = null
   private table: Table | null = null
   private openingTable: Promise<void> | null = null
   private readonly config: VectorStoreConfig
-  private ftsEnabled = false
+  private ftsEnabled: boolean = false
 
   constructor(config: VectorStoreConfig) {
     this.config = config
@@ -72,25 +66,31 @@ export class VectorStore {
 
       console.error(`VectorStore initialized: ${this.config.dbPath}`)
     } catch (error) {
-      throw new DatabaseError('Failed to initialize VectorStore', error as Error)
+      throw new DatabaseError('Failed to initialize VectorStore', { cause: toError(error) })
     }
   }
 
   /** Discover a table created after this connection was initialized. */
   private async openExistingTable(): Promise<void> {
-    if (this.openingTable) return this.openingTable
-    if (this.table || !this.db) return
+    if (this.openingTable !== null) {
+      return this.openingTable
+    }
+    if (this.table || !this.db) {
+      return
+    }
     const db = this.db
-    this.openingTable = (async () => {
+    this.openingTable = (async (): Promise<void> => {
       try {
-        if (!(await db.tableNames()).includes(this.config.tableName)) return
+        if (!(await db.tableNames()).includes(this.config.tableName)) {
+          return
+        }
         this.table = await db.openTable(this.config.tableName)
         await this.ensureFtsIndex()
         await this.ensureSchemaVersion()
       } catch (error) {
         this.table = null
         this.ftsEnabled = false
-        throw new DatabaseError('Failed to open existing table', error as Error)
+        throw new DatabaseError('Failed to open existing table', { cause: toError(error) })
       }
     })()
     try {
@@ -100,12 +100,7 @@ export class VectorStore {
     }
   }
 
-  /**
-   * Delete all chunks for specified file path
-   *
-   * @param filePath - File path (absolute)
-   * @returns Number of chunks removed (0 when nothing matched)
-   */
+  /** @returns the number of chunks removed; 0 when nothing matched. */
   async deleteChunks(filePath: string): Promise<number> {
     await this.openExistingTable()
     if (!this.table) {
@@ -126,34 +121,21 @@ export class VectorStore {
       console.error(`VectorStore: Deleted ${numDeletedRows} chunks for file "${filePath}"`)
       return numDeletedRows
     } catch (error) {
-      // LanceDB's delete is a no-op (resolves normally) when no rows match the
-      // predicate, so reaching this catch means a genuine failure — a malformed
-      // predicate, or a schema/table-level error. Propagate it instead of
-      // swallowing based on brittle error-message string matching (which broke
-      // silently across LanceDB versions and could hide real delete failures
-      // as data-integrity bugs).
+      // LanceDB's delete resolves normally when nothing matched, so reaching
+      // this catch means a genuine failure. Propagate rather than swallowing by
+      // error-message matching, which broke silently across LanceDB versions.
       console.warn(`VectorStore: Error occurred while deleting file "${filePath}":`, error)
-      throw new DatabaseError(`Failed to delete chunks for file: ${filePath}`, error as Error)
+      throw new DatabaseError(`Failed to delete chunks for file: ${filePath}`, {
+        cause: toError(error),
+      })
     }
   }
 
   /**
-   * Return chunk rows for a single file whose chunkIndex is within the
-   * inclusive [minIdx, maxIdx] range, sorted ascending by chunkIndex.
+   * Chunk rows for one file with chunkIndex in the inclusive [minIdx, maxIdx]
+   * range. The ascending sort is a contract, not incidental storage order.
    *
-   * This is a feature-agnostic primitive: it knows nothing
-   * about before/after/isTarget semantics — those live in the handler.
-   * Ascending sort by chunkIndex is a contract, not incidental storage
-   * order.
-   *
-   * Lazy-table null returns [] (mirrors search, listFiles, deleteChunks).
-   * LanceDB errors are wrapped as DatabaseError with the original error
-   * preserved as cause.
-   *
-   * @param filePath - File path (absolute)
-   * @param minIdx - Minimum chunk index (inclusive)
-   * @param maxIdx - Maximum chunk index (inclusive)
-   * @returns Array of chunk rows sorted ascending by chunkIndex
+   * Feature-agnostic: before/after/isTarget semantics live in the handler.
    */
   async getChunksByRange(filePath: string, minIdx: number, maxIdx: number): Promise<ChunkRow[]> {
     await this.openExistingTable()
@@ -184,20 +166,15 @@ export class VectorStore {
       rows.sort((a, b) => a.chunkIndex - b.chunkIndex)
       return rows
     } catch (error) {
-      throw new DatabaseError('Failed to read chunks by range', error as Error)
+      throw new DatabaseError('Failed to read chunks by range', { cause: toError(error) })
     }
   }
 
   /**
-   * Return every stored chunk for a file as a full {@link VectorChunk},
-   * including the real embedding vector — suitable for re-insertion via
-   * {@link insertChunks}. Used by the ingest handler to back up existing data
-   * before a destructive re-ingest so a failure can be rolled back without
-   * data loss or vector corruption.
-   *
-   * Lazy-table null returns `[]`. LanceDB errors are wrapped as DatabaseError.
-   *
-   * @param filePath - File path (absolute)
+   * Every stored chunk for a file as a full {@link VectorChunk}, embedding
+   * included, so it can be re-inserted verbatim. The ingest handler backs data
+   * up with this before a destructive re-ingest, so a failure rolls back
+   * without corrupting vectors.
    */
   async getChunksByFilePath(filePath: string): Promise<VectorChunk[]> {
     await this.openExistingTable()
@@ -210,14 +187,14 @@ export class VectorStore {
       const raw = await this.table.query().where(`\`filePath\` = '${escapedFilePath}'`).toArray()
       return raw.map((row) => toVectorChunk(row))
     } catch (error) {
-      throw new DatabaseError(`Failed to read chunks for file: ${filePath}`, error as Error)
+      throw new DatabaseError(`Failed to read chunks for file: ${filePath}`, {
+        cause: toError(error),
+      })
     }
   }
 
   /**
    * Batch insert vector chunks
-   *
-   * @param chunks - Array of vector chunks
    */
   async insertChunks(chunks: VectorChunk[]): Promise<void> {
     if (chunks.length === 0) {
@@ -236,15 +213,12 @@ export class VectorStore {
         // nullable string columns need a non-null sample value for schema
         // inference. The read converters normalize each placeholder back to
         // its logical no-value state, matching what migration produces.
-        const records = chunks.map((chunk) => {
-          const record = chunk as unknown as Record<string, unknown>
-          return {
-            ...record,
-            fileTitle: record['fileTitle'] ?? '',
-            contentHash: record['contentHash'] ?? '',
-            visualAttachments: normalizeVisualAttachments(record['visualAttachments']),
-          }
-        })
+        const records = chunks.map((chunk) => ({
+          ...chunk,
+          fileTitle: chunk.fileTitle ?? '',
+          contentHash: chunk.contentHash ?? '',
+          visualAttachments: normalizeVisualAttachments(chunk.visualAttachments),
+        }))
         this.table = await this.db.createTable(this.config.tableName, records)
         console.error(`VectorStore: Created table "${this.config.tableName}"`)
 
@@ -252,19 +226,16 @@ export class VectorStore {
         await this.ensureFtsIndex()
       } else {
         // Add data to existing table
-        const records = chunks.map((chunk) => {
-          const record = chunk as unknown as Record<string, unknown>
-          return {
-            ...record,
-            visualAttachments: normalizeVisualAttachments(record['visualAttachments']),
-          }
-        })
+        const records = chunks.map((chunk) => ({
+          ...chunk,
+          visualAttachments: normalizeVisualAttachments(chunk.visualAttachments),
+        }))
         await this.table.add(records)
       }
 
       console.error(`VectorStore: Inserted ${chunks.length} chunks`)
     } catch (error) {
-      throw new DatabaseError('Failed to insert chunks', error as Error)
+      throw new DatabaseError('Failed to insert chunks', { cause: toError(error) })
     }
   }
 
@@ -345,12 +316,11 @@ export class VectorStore {
   }
 
   /**
-   * Optimize table: compact fragments, update FTS index, and clean up old versions.
-   * LanceDB OSS requires explicit optimize() call to update FTS index.
+   * Compact fragments, update the FTS index, and drop old versions. LanceDB OSS
+   * only updates the FTS index on an explicit call.
    *
-   * Callers are responsible for deciding when to invoke this (e.g., once per
-   * ingest rather than after every insert/delete) to avoid O(n²) overhead
-   * during bulk operations.
+   * The caller decides when — once per ingest rather than per insert, to avoid
+   * O(n^2) during bulk work.
    */
   async optimize(): Promise<void> {
     await this.openExistingTable()
@@ -363,18 +333,45 @@ export class VectorStore {
   }
 
   /**
-   * Execute vector search with quality filtering
-   * Architecture: Semantic search → Filter (maxDistance, grouping) → Keyword boost → File filter (maxFiles)
+   * Semantic search → maxDistance/grouping filter → keyword boost → maxFiles.
    *
-   * This "prefetch then rerank" approach ensures:
-   * - maxDistance and grouping work on meaningful vector distances
-   * - Keyword matching acts as a boost, not a replacement for semantic similarity
-   *
-   * @param queryVector - Query vector (dimension depends on model)
-   * @param options - Optional search options (queryText for keyword boost,
-   *   limit, and scope path-prefix prefilter)
-   * @returns Array of search results (sorted by distance ascending, filtered by quality settings)
+   * Prefetch-then-rerank, so the distance filters see real vector distances and
+   * keyword matching boosts rather than replaces semantic similarity.
    */
+  /**
+   * Rerank vector hits with BM25 scores for the same files. A failure degrades
+   * this request only — FTS stays enabled, so the next query retries hybrid.
+   */
+  private async boostWithKeywords(
+    results: SearchResult[],
+    queryText: string,
+    hybridWeight: number
+  ): Promise<SearchResult[]> {
+    const table = this.table
+    if (!table) {
+      return results
+    }
+    try {
+      // Restrict FTS to the files the vector step already selected. Backticks
+      // are required for a camelCase column name in LanceDB.
+      const uniqueFilePaths = [...new Set(results.map((result) => result.filePath))]
+      const escapedPaths = uniqueFilePaths.map((path) => `'${path.replace(/'/g, "''")}'`)
+      const whereClause = `\`filePath\` IN (${escapedPaths.join(', ')})`
+
+      const ftsResults = await table
+        .search(queryText, 'fts', 'text')
+        .where(whereClause)
+        .select(['filePath', 'chunkIndex', 'text', 'metadata', '_score'])
+        .limit(results.length * 2) // Enough to cover all vector results
+        .toArray()
+
+      return applyKeywordBoost(results, ftsResults, hybridWeight)
+    } catch (ftsError) {
+      console.error('VectorStore: FTS search failed, using vector-only results:', ftsError)
+      return results
+    }
+  }
+
   async search(queryVector: number[], options: SearchOptions = {}): Promise<SearchResult[]> {
     const { queryText, limit = 10, scope } = options
     await this.openExistingTable()
@@ -398,9 +395,8 @@ export class VectorStore {
         .select(['id', 'filePath', 'chunkIndex', 'text', 'metadata', 'fileTitle', '_distance'])
         .limit(candidateLimit)
 
-      // Scope prefilter: restrict to chunks under the given path prefixes
-      // (exact-or-descendant) before ranking. Applied only when scope is
-      // present so scope-absent behavior is byte-for-byte unchanged.
+      // Restrict to chunks under the given prefixes (exact-or-descendant)
+      // before ranking, and only when a scope was given.
       if (scope && scope.length > 0) {
         query = query.where(this.buildScopePredicate(scope))
       }
@@ -421,13 +417,9 @@ export class VectorStore {
         results = applyGrouping(results, this.config.grouping)
       }
 
-      // Step 3: Apply keyword boost if enabled.
-      // results.length > 0 guards the FTS branch: when the (scoped) vector step
-      // returned zero hits, uniqueFilePaths would be empty and the IN clause
-      // would degrade to a malformed `filePath IN ()` that LanceDB rejects.
-      // Skipping is also correct — there is nothing to rerank. The FTS branch
-      // inherits scope through uniqueFilePaths (derived from the scoped hits),
-      // so no separate scope predicate is needed here.
+      // `results.length > 0` guards the FTS branch: with zero vector hits the
+      // IN clause would degrade to a malformed `filePath IN ()`, and there is
+      // nothing to rerank anyway. FTS inherits scope through those hits.
       const hybridWeight = this.config.hybridWeight ?? DEFAULT_HYBRID_WEIGHT
       if (
         this.ftsEnabled &&
@@ -436,30 +428,7 @@ export class VectorStore {
         hybridWeight > 0 &&
         results.length > 0
       ) {
-        try {
-          // Get unique filePaths from vector results to filter FTS search
-          const uniqueFilePaths = [...new Set(results.map((r) => r.filePath))]
-
-          // Build WHERE clause with IN for targeted FTS search
-          // Use backticks for column name (required for camelCase in LanceDB)
-          const escapedPaths = uniqueFilePaths.map((p) => `'${p.replace(/'/g, "''")}'`)
-          const whereClause = `\`filePath\` IN (${escapedPaths.join(', ')})`
-
-          const ftsResults = await this.table
-            .search(queryText, 'fts', 'text')
-            .where(whereClause)
-            .select(['filePath', 'chunkIndex', 'text', 'metadata', '_score'])
-            .limit(results.length * 2) // Enough to cover all vector results
-            .toArray()
-
-          results = applyKeywordBoost(results, ftsResults, hybridWeight)
-        } catch (ftsError) {
-          // Per-request degrade only: fall back to vector-only results for THIS
-          // query without disabling FTS on the instance. A transient FTS error
-          // (e.g. a momentary index issue) must not permanently drop the server
-          // to vector-only until restart — the next query retries hybrid search.
-          console.error('VectorStore: FTS search failed, using vector-only results:', ftsError)
-        }
+        results = await this.boostWithKeywords(results, queryText, hybridWeight)
       }
 
       // Step 4: Apply file filter after keyword boost
@@ -472,7 +441,7 @@ export class VectorStore {
       // Return top results after all filtering and boosting
       return results.slice(0, limit)
     } catch (error) {
-      throw new DatabaseError('Failed to search vectors', error as Error)
+      throw new DatabaseError('Failed to search vectors', { cause: toError(error) })
     }
   }
 
@@ -513,7 +482,9 @@ export class VectorStore {
         .toArray()
       const recordsByIdentity = new Map<string, unknown>()
       for (const record of records) {
-        if (typeof record.id !== 'string') continue
+        if (typeof record.id !== 'string') {
+          continue
+        }
         recordsByIdentity.set(record.id, record.visualAttachments)
       }
 
@@ -529,16 +500,14 @@ export class VectorStore {
       })
       return { rows, omittedCount }
     } catch (error) {
-      throw new DatabaseError('Failed to hydrate visual attachments', error as Error)
+      throw new DatabaseError('Failed to hydrate visual attachments', { cause: toError(error) })
     }
   }
 
   /**
-   * Build a LanceDB `.where()` predicate restricting `filePath` to the
-   * exact-or-descendant set of the given prefixes (OR'd): `filePath = P OR
-   * filePath LIKE 'D%'`, where the separator boundary in D stops `/a/b` from
-   * matching `/a/bc`. Consumed by the vector branch only — the FTS branch
-   * inherits scope via its own `filePath IN (...)` over the scoped hits.
+   * `.where()` predicate restricting `filePath` to the exact-or-descendant set
+   * of the given prefixes. The separator boundary stops `/a/b` from matching
+   * `/a/bc`. Vector branch only — FTS inherits scope via its own `IN (...)`.
    */
   private buildScopePredicate(prefixes: string[]): string {
     return prefixes.map((prefix) => this.buildPrefixPredicate(prefix)).join(' OR ')
@@ -569,16 +538,13 @@ export class VectorStore {
   /**
    * Per-chunk `(filePath, contentHash)` projection used by incremental sync.
    *
-   * One entry per stored row rather than one per file, because a file whose
-   * rows disagree on the hash (or carry none) must be detectable as dirty.
-   * `filePath` is the verbatim stored spelling, since that is what
-   * {@link deleteChunks} matches. An empty-string hash — the value the
-   * create-path seeds for Arrow schema inference — is normalized to `null` so a
-   * hashless row can never read as a real hash, mirroring `toVectorChunk`.
+   * One entry per row rather than per file, so a file whose rows disagree on
+   * the hash is detectable as dirty. `filePath` is the verbatim stored
+   * spelling, since that is what {@link deleteChunks} matches. The empty-string
+   * hash the create path seeds for Arrow inference normalizes to `null`.
    *
-   * Projects only the two convergence columns so a manifest load does not
-   * materialize embedding vectors or attachment payloads. Lazy-table null
-   * returns `[]` (mirrors {@link listFiles}).
+   * Projects only those two columns, so a manifest load does not materialize
+   * embedding vectors or attachment payloads.
    */
   async listChunkHashes(): Promise<
     {
@@ -602,7 +568,9 @@ export class VectorStore {
         const contentHash: unknown = record.contentHash
         // Type-guard parity with listFiles: skip rows missing the expected
         // string column rather than coercing via `as string`.
-        if (typeof filePath !== 'string') continue
+        if (typeof filePath !== 'string') {
+          continue
+        }
         entries.push({
           filePath,
           contentHash:
@@ -611,14 +579,12 @@ export class VectorStore {
       }
       return entries
     } catch (error) {
-      throw new DatabaseError('Failed to list chunk content hashes', error as Error)
+      throw new DatabaseError('Failed to list chunk content hashes', { cause: toError(error) })
     }
   }
 
   /**
    * Get list of ingested files
-   *
-   * @returns Array of file information
    */
   async listFiles(): Promise<{ filePath: string; chunkCount: number; timestamp: string }[]> {
     await this.openExistingTable()
@@ -641,20 +607,17 @@ export class VectorStore {
         const timestamp = record.timestamp
         // Type-guard parity with toSearchResult/toChunkRow: skip rows missing
         // the expected string columns rather than coercing via `as string`.
-        if (typeof filePath !== 'string' || typeof timestamp !== 'string') continue
-
-        if (fileMap.has(filePath)) {
-          const fileInfo = fileMap.get(filePath)
-          if (fileInfo) {
-            fileInfo.chunkCount += 1
-            // Keep most recent timestamp
-            if (timestamp > fileInfo.timestamp) {
-              fileInfo.timestamp = timestamp
-            }
-          }
-        } else {
-          fileMap.set(filePath, { chunkCount: 1, timestamp })
+        if (typeof filePath !== 'string' || typeof timestamp !== 'string') {
+          continue
         }
+        const fileInfo = fileMap.get(filePath)
+        if (fileInfo === undefined) {
+          fileMap.set(filePath, { chunkCount: 1, timestamp })
+          continue
+        }
+        fileInfo.chunkCount += 1
+        // Keep most recent timestamp
+        fileInfo.timestamp = timestamp > fileInfo.timestamp ? timestamp : fileInfo.timestamp
       }
 
       // Convert Map to array of objects
@@ -664,14 +627,12 @@ export class VectorStore {
         timestamp: info.timestamp,
       }))
     } catch (error) {
-      throw new DatabaseError('Failed to list files', error as Error)
+      throw new DatabaseError('Failed to list files', { cause: toError(error) })
     }
   }
 
   /**
    * Get system status
-   *
-   * @returns System status information
    */
   async getStatus(): Promise<{
     documentCount: number
@@ -704,7 +665,9 @@ export class VectorStore {
       const uniqueFilePaths = new Set<string>()
       for (const record of records) {
         const filePath = record.filePath
-        if (typeof filePath === 'string') uniqueFilePaths.add(filePath)
+        if (typeof filePath === 'string') {
+          uniqueFilePaths.add(filePath)
+        }
       }
       const documentCount = uniqueFilePaths.size
 
@@ -726,7 +689,7 @@ export class VectorStore {
             : 'vector-only',
       }
     } catch (error) {
-      throw new DatabaseError('Failed to get status', error as Error)
+      throw new DatabaseError('Failed to get status', { cause: toError(error) })
     }
   }
 
@@ -736,7 +699,7 @@ export class VectorStore {
   async close(): Promise<void> {
     if (this.db) {
       // LanceDB Connections should be closed to release file handles
-      await this.db.close()
+      this.db.close()
       this.db = null
       this.table = null
       this.ftsEnabled = false

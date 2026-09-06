@@ -1,36 +1,26 @@
-// Shared base-dirs module.
-//
-// Provides one internal representation of the effective document roots used
-// by both the CLI (`ingest`, `list`, ...) and the MCP server entry point
-// (`server-main.ts`), plus the pure helpers needed to derive it from raw
-// configuration inputs (env vars, CLI flags).
-//
-// Scope: this file ships only pure helpers and the types so every consumer
-// can adopt the same realpath/prefix-safety semantics without duplicating
-// the trailing-separator pattern.
+// Shared base-dirs module: one internal representation of the effective
+// document roots, used by both the CLI and the MCP server entry point, plus
+// the pure helpers that derive it from env vars and CLI flags.
 
 import { realpath, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { resolve, sep } from 'node:path'
-import { AppError } from './errors.js'
+import { AppError, toError } from './errors.js'
 
 // ============================================
 // Types
 // ============================================
 
 /**
- * Effective document roots, in two index-aligned forms.
+ * Effective document roots, in two index-aligned forms. This is the canonical
+ * statement of the path policy; other sites reference it.
  *
- * Path policy (the canonical statement; other sites just reference it):
- * realpath is used ONLY for the security boundary; everything user-facing uses
- * resolve() (normal) paths.
- * - `baseDirs`: realpath-resolved, deduped, nested-pruned — the containment
- *   boundary passed to `DocumentParser`. Input order preserved (first = legacy
- *   single-root accessor; see {@link legacyBaseDir}).
- * - `rawBaseDirs`: the SAME roots, same order, resolve()-only. The normal path
- *   space `list`/`list_files` scan + display, so paths match the
- *   resolve()-stored DB keys; otherwise a symlinked prefix (e.g. macOS
- *   /tmp → /private/tmp) would make ingested files show as not-ingested.
+ * - `baseDirs`: realpath-resolved — the containment boundary for
+ *   `DocumentParser`, and the ONLY place realpath is used.
+ * - `rawBaseDirs`: the same roots, resolve()-only. Everything user-facing
+ *   scans and displays in this space so paths match the resolve()-stored DB
+ *   keys; otherwise a symlinked prefix (macOS /tmp → /private/tmp) would make
+ *   ingested files look un-ingested.
  */
 export interface BaseDirsConfig {
   baseDirs: string[]
@@ -60,8 +50,8 @@ export type BaseDirsConfigWarning =
  * from other I/O errors (e.g. `ValidationError` from `DocumentParser`).
  */
 export class BaseDirsConfigError extends AppError {
-  constructor(message: string, cause?: Error) {
-    super(message, 'config', 'config', cause)
+  constructor(message: string, options?: { cause?: Error }) {
+    super(message, 'config', 'config', options)
     this.name = 'BaseDirsConfigError'
   }
 }
@@ -80,26 +70,22 @@ export type ParseBaseDirsResult =
 // ============================================
 
 /**
- * Render an absolute path for inclusion in user-visible error/warning
- * messages, substituting the current `$HOME` prefix with `~`. The substitution
- * keeps the message useful for debugging while avoiding leaking the operating
- * username when warnings/errors flow out through MCP responses to clients.
- *
- * `$HOME` resolution is read once at call time, so processes that mutate
- * `HOME` between invocations still see the current value (no caching).
- *
- * Exact-match on the home directory itself (`/Users/me` → `~`) and prefix
- * match with a trailing separator (`/Users/me/work` → `~/work`) are both
- * supported; other paths pass through unchanged.
+ * Substitute `$HOME` with `~` for a user-visible path, so a warning flowing
+ * out through MCP does not leak the OS username. `$HOME` is read at call time,
+ * never cached.
  */
 export function displayPath(path: string): string {
   const home = process.env['HOME'] || homedir()
-  if (home.length === 0) return path
+  if (home.length === 0) {
+    return path
+  }
   const isWin = process.platform === 'win32'
-  const cmp = (s: string) => (isWin ? s.toLowerCase() : s)
+  const cmp = (s: string): string => (isWin ? s.toLowerCase() : s)
   const homeCmp = cmp(home)
   const pathCmp = cmp(path)
-  if (pathCmp === homeCmp) return '~'
+  if (pathCmp === homeCmp) {
+    return '~'
+  }
   if (pathCmp.startsWith(homeCmp + sep) || pathCmp.startsWith(`${homeCmp}/`)) {
     return `~${path.slice(home.length)}`
   }
@@ -111,17 +97,9 @@ export function displayPath(path: string): string {
 // ============================================
 
 /**
- * Parse the `BASE_DIRS` environment variable.
- *
- * Accepts only a JSON array of one or more non-empty, non-whitespace-only
- * strings — e.g. `'["/Users/me/work","/Users/me/specs"]'`. Anything else
- * (delimiter syntax such as `'/a:/b'`, an empty array, an array containing
- * empty strings, non-string elements, JSON scalars, JSON objects, ...)
- * produces a {@link BaseDirsConfigError}.
- *
- * This helper performs only syntactic validation. It does not resolve
- * realpaths or check that the directories exist — that is the job of
- * {@link normalizeRealpath} after the resolver picks a source.
+ * Parse `BASE_DIRS`: only a JSON array of non-empty strings is accepted, so
+ * delimiter syntax like `'/a:/b'` is an error rather than a silent misread.
+ * Syntax only — existence is {@link normalizeRealpath}'s job.
  */
 export function parseBaseDirsEnv(raw: string): ParseBaseDirsResult {
   const trimmed = raw.trim()
@@ -142,7 +120,7 @@ export function parseBaseDirsEnv(raw: string): ParseBaseDirsResult {
       ok: false,
       error: new BaseDirsConfigError(
         `BASE_DIRS must be a JSON array of non-empty path strings. Failed to parse as JSON: ${truncate(raw)}`,
-        error as Error
+        { cause: toError(error) }
       ),
     }
   }
@@ -202,15 +180,10 @@ export function withTrailingSeparator(path: string): string {
 }
 
 /**
- * Resolve a directory to its realpath form and append a trailing separator
- * so the result can be used directly as a prefix in security checks.
+ * Resolve a directory to its realpath and append a trailing separator, so the
+ * result works directly as a prefix in a containment check.
  *
- * realpath here is the security boundary (see {@link BaseDirsConfig} for the
- * path policy); user-facing surfaces use the resolve()-only `rawBaseDirs`.
- *
- * Throws {@link BaseDirsConfigError} when the directory does not exist or
- * is not a directory — root configuration must point at real directories
- * the process is allowed to read.
+ * Throws when the path is not an existing directory: a root must point at one.
  */
 export async function normalizeRealpath(path: string): Promise<string> {
   let resolved: string
@@ -219,7 +192,7 @@ export async function normalizeRealpath(path: string): Promise<string> {
   } catch (error) {
     throw new BaseDirsConfigError(
       `Failed to resolve base directory: ${displayPath(path)}. The directory may not exist or is inaccessible.`,
-      error as Error
+      { cause: toError(error) }
     )
   }
 
@@ -229,7 +202,7 @@ export async function normalizeRealpath(path: string): Promise<string> {
   } catch (error) {
     throw new BaseDirsConfigError(
       `Failed to stat resolved base directory: ${displayPath(resolved)}.`,
-      error as Error
+      { cause: toError(error) }
     )
   }
 
@@ -257,24 +230,16 @@ export interface DedupAndPruneResult {
 }
 
 /**
- * Reduce a list of realpath-normalized roots to the effective set.
+ * Reduce realpath-normalized roots to the effective set.
  *
- * Behavior:
- *  - Exact duplicates (`A === B` after realpath normalization) are silently
- *    deduplicated. This is treated as user convenience rather than a
- *    configuration mistake, so no warning is emitted.
- *  - Nested roots (`B` lives under `A` after realpath normalization) are
- *    pruned: the parent `A` is kept, the child `B` is dropped, and a
- *    `nested-root-pruned` warning describes both paths. This avoids
- *    duplicate `list_files` / CLI scan output without widening the security
- *    boundary beyond the parent root the user already configured.
+ * Exact duplicates are dropped silently — that is convenience, not a mistake.
+ * A nested root is pruned in favour of its parent with a warning, which keeps
+ * scan output free of duplicates without widening the boundary past the parent
+ * the user already configured. Surviving order is preserved so the first
+ * element stays a meaningful legacy `baseDir`.
  *
- * Input order is preserved for the surviving roots so the first element
- * remains a meaningful legacy `baseDir` (see {@link legacyBaseDir}).
- *
- * All inputs MUST already have a trailing separator (see
- * {@link normalizeRealpath}) — that is what makes the `startsWith`-based
- * nested check safe against sibling-prefix paths like `/foo/barista`.
+ * Every input MUST already end with a separator — that is what makes the
+ * `startsWith` check safe against a sibling like `/foo/barista`.
  */
 export function dedupAndPruneRoots(inputs: string[]): DedupAndPruneResult {
   // Pass 1: exact dedup, preserving order.
@@ -289,22 +254,11 @@ export function dedupAndPruneRoots(inputs: string[]): DedupAndPruneResult {
 
   // Pass 2: nested-root pruning.
   //
-  // A root `child` is pruned when some other root `parent` (parent !== child)
-  // is a strict prefix of `child`. Because every input ends with `sep`, the
-  // prefix check correctly distinguishes `/foo/bar/` (parent of `/foo/bar/baz/`)
-  // from `/foo/barista/` (sibling, not a parent).
-  //
-  // When a chain like `[grandparent, parent, child]` is provided, both
-  // `parent` and `child` are pruned and each emits a warning referencing the
-  // closest SURVIVING ancestor (the grandparent). This is the same result the
-  // user would have gotten by passing only the grandparent, and avoids the
-  // confusing case where a warning points at another path that was itself
-  // pruned. Implementation note: this runs in two passes over `deduped`. The
-  // pre-pass computes the `survivors` set (candidates with no ancestor in
-  // `deduped`); the main pass then resolves each candidate's closest ancestor
-  // against `survivors` so the reported parent is always a surviving root.
-  // The two `findParent` scans make this O(n^2) in the number of roots, which
-  // is harmless at realistic root counts.
+  // In a chain like `[grandparent, parent, child]` both descendants are pruned
+  // and each warning names the closest SURVIVING ancestor, so a warning never
+  // points at a path that was itself pruned. Hence two passes: the pre-pass
+  // computes the survivors, the main pass resolves ancestors against them.
+  // O(n^2) in root count, which is harmless at realistic sizes.
   const roots: string[] = []
   const warnings: BaseDirsConfigWarning[] = []
   // Pre-pass: identify every candidate that has any ancestor in `deduped`
@@ -334,16 +288,13 @@ export function dedupAndPruneRoots(inputs: string[]): DedupAndPruneResult {
   return { roots, warnings }
 }
 
-/**
- * Return the closest ancestor of `candidate` in `all` (excluding `candidate`
- * itself), or `undefined` if no ancestor exists. Closest is measured by
- * prefix length — longer prefix wins so we report the most specific
- * surviving parent.
- */
+/** Closest ancestor of `candidate` in `all`, measured by prefix length. */
 function findParent(candidate: string, all: string[]): string | undefined {
   let best: string | undefined
   for (const other of all) {
-    if (other === candidate) continue
+    if (other === candidate) {
+      continue
+    }
     // `other` ends with `sep` (precondition), so this prefix check is
     // sibling-prefix safe.
     if (candidate.startsWith(other)) {
@@ -360,18 +311,11 @@ function findParent(candidate: string, all: string[]): string | undefined {
 // ============================================
 
 /**
- * Input to {@link resolveBaseDirs}. Each axis maps directly to one of the
- * configuration sources defined in the multi-base-dirs plan:
+ * Input to {@link resolveBaseDirs}, in precedence order: `cliRoots` (highest),
+ * `envBaseDirs`, `envBaseDir`, `cwd`.
  *
- *  - `cliRoots` — collected `--base-dir` flag occurrences (highest precedence)
- *  - `envBaseDirs` — raw `BASE_DIRS` env value (JSON array)
- *  - `envBaseDir` — raw `BASE_DIR` env value (single path string)
- *  - `cwd` — `process.cwd()` snapshot (lowest precedence, always required)
- *
- * The resolver is pure with respect to its inputs (no `process.env` reads,
- * no `process.cwd()` calls) so it can be exercised under deterministic tests
- * and reused from both the CLI entry and the MCP server entry without
- * implicitly depending on process state.
+ * The resolver reads no process state, so both entry points can share it and
+ * tests can drive it deterministically.
  */
 export interface ResolveBaseDirsInput {
   cliRoots?: string[] | undefined
@@ -381,52 +325,26 @@ export interface ResolveBaseDirsInput {
 }
 
 /**
- * Result of {@link resolveBaseDirs}. Discriminated by `ok` so callers can
- * branch on configuration validity without try/catch — invalid `BASE_DIRS`
- * is a routine user-facing error path, not an exceptional condition.
+ * Result of {@link resolveBaseDirs}, discriminated by `ok` — invalid
+ * `BASE_DIRS` is a routine user-facing path, not an exception.
  *
- * On success, `warnings` aggregates every warning surfaced during resolution
- * in display order:
- *  1. `base-dirs-overrides-base-dir` (when applicable) — shown first so the
- *     precedence note is visible before per-root pruning notes.
- *  2. `nested-root-pruned` — one warning per pruned child, in pruning order.
+ * `warnings` is in display order: the precedence note first, then one entry
+ * per pruned root.
  */
 export type ResolveBaseDirsResult =
   | { ok: true; config: BaseDirsConfig; warnings: BaseDirsConfigWarning[] }
   | { ok: false; error: BaseDirsConfigError }
 
 /**
- * Resolve effective base directories from CLI / env / cwd inputs.
+ * Resolve effective base directories from CLI / env / cwd.
  *
- * Resolution order (per the multi-base-dirs plan):
- *   1. `cliRoots` (one or more `--base-dir` flags) — when non-empty, replaces
- *      env roots. CLI and env are never merged.
- *   2. `envBaseDirs` (JSON array) — when CLI roots are absent.
- *   3. `envBaseDir` (single path) — when CLI and `BASE_DIRS` are absent.
- *   4. `cwd` — when none of the above are set.
+ * `cliRoots` REPLACES the env roots rather than merging with them; otherwise
+ * precedence falls through `BASE_DIRS`, `BASE_DIR`, `cwd`. The
+ * `BASE_DIRS > BASE_DIR` warning therefore fires only on an env-driven run.
  *
- * Warning rules:
- *  - `BASE_DIRS > BASE_DIR` precedence warning fires only when CLI roots are
- *    absent AND both `BASE_DIRS` and `BASE_DIR` are set. CLI-driven runs do
- *    not produce this warning even if both env vars are also set.
- *  - Nested-root pruning warnings always fire when applicable, regardless
- *    of which source provided the roots.
- *
- * Error rules:
- *  - Invalid `BASE_DIRS` (malformed JSON, non-array, empty array, empty
- *    string element, ...) returns `{ ok: false, error }`. The resolver does
- *    NOT fall back to `BASE_DIR` or `cwd` — callers surface the error per
- *    their UI contract (CLI exit code, MCP tool error, `status` diagnostic).
- *  - A path that fails realpath resolution (does not exist, not a directory,
- *    permission denied) also returns `{ ok: false, error }`. Roots must
- *    point at real directories the process is allowed to read.
- *
- * Post-resolution normalization:
- *  - Every selected path is realpath-normalized and gets a trailing path
- *    separator (see {@link normalizeRealpath}) so it can be used as a prefix
- *    in security checks.
- *  - Exact duplicates are silently deduplicated.
- *  - Nested roots are pruned with a warning (see {@link dedupAndPruneRoots}).
+ * An invalid `BASE_DIRS`, or a root that is not a readable directory, returns
+ * `{ ok: false }`. The resolver never falls back to `BASE_DIR` or `cwd` — each
+ * caller surfaces the error per its own UI contract.
  */
 export async function resolveBaseDirs(input: ResolveBaseDirsInput): Promise<ResolveBaseDirsResult> {
   const selection = selectRoots(input)
@@ -493,11 +411,8 @@ type SelectRootsResult =
   | { ok: false; error: BaseDirsConfigError }
 
 /**
- * Apply the source-precedence rules to pick which input set of roots to use.
- *
- * Kept as a small helper so the realpath normalization in
- * {@link resolveBaseDirs} stays focused on I/O, not precedence logic. This
- * function performs only string-level parsing and selection — no fs access.
+ * Pick which input set of roots wins. String-level only, so the realpath I/O
+ * in {@link resolveBaseDirs} stays separate from the precedence rules.
  */
 function selectRoots(input: ResolveBaseDirsInput): SelectRootsResult {
   // 1. CLI roots — when non-empty, replace env entirely (no precedence
@@ -547,12 +462,8 @@ function selectRoots(input: ResolveBaseDirsInput): SelectRootsResult {
 // ============================================
 
 /**
- * Return the legacy single-root `baseDir` value for a {@link BaseDirsConfig}.
- *
- * Used for backward compatibility with consumers (and response fields) that
- * pre-date the multi-root model. The contract is "first effective root after
- * normalization and nested-root pruning"; callers must build the config via
- * {@link dedupAndPruneRoots} for this to hold.
+ * The legacy single-root `baseDir`: the first effective root after pruning.
+ * Holds only for a config built via {@link dedupAndPruneRoots}.
  */
 export function legacyBaseDir(config: BaseDirsConfig): string {
   const first = config.baseDirs[0]
@@ -566,13 +477,30 @@ export function legacyBaseDir(config: BaseDirsConfig): string {
 // Private helpers
 // ============================================
 
+/** Every shape `describeJsonShape` can report. */
+type JsonShape =
+  | 'null'
+  | 'array'
+  | 'string'
+  | 'number'
+  | 'bigint'
+  | 'boolean'
+  | 'symbol'
+  | 'undefined'
+  | 'object'
+  | 'function'
+
 /**
  * Describe a JSON value's shape for error messages without dumping its full
  * (possibly large) content.
  */
-function describeJsonShape(value: unknown): string {
-  if (value === null) return 'null'
-  if (Array.isArray(value)) return 'array'
+function describeJsonShape(value: unknown): JsonShape {
+  if (value === null) {
+    return 'null'
+  }
+  if (Array.isArray(value)) {
+    return 'array'
+  }
   return typeof value
 }
 
@@ -581,6 +509,8 @@ function describeJsonShape(value: unknown): string {
  * even when the offending value is large.
  */
 function truncate(input: string, max = 100): string {
-  if (input.length <= max) return input
+  if (input.length <= max) {
+    return input
+  }
   return `${input.slice(0, max)}...`
 }

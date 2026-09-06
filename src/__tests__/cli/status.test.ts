@@ -1,5 +1,4 @@
 // CLI Status Tests
-// Test Type: Unit Test
 // Tests runStatus functionality with mocked dependencies
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -33,6 +32,7 @@ const cliCommonFactory = () => ({
 
 const MOCKED_PATHS = ['../../cli/common.js'] as const
 
+import { expectError, expectString } from '../test-doubles.js'
 import { formatCliErrorShim } from './cli-error-shim.js'
 
 let runStatus: typeof import('../../cli/status.js').runStatus
@@ -74,7 +74,9 @@ describe('CLI status', () => {
   })
 
   afterAll(() => {
-    for (const p of MOCKED_PATHS) vi.doUnmock(p)
+    for (const p of MOCKED_PATHS) {
+      vi.doUnmock(p)
+    }
     vi.resetModules()
   })
 
@@ -104,7 +106,7 @@ describe('CLI status', () => {
     const { output, error } = await captureStderr(() => runStatus(['--help']))
 
     expect(error).toBeInstanceOf(Error)
-    expect((error as Error).message).toBe('process.exit(0)')
+    expect(expectError(error).message).toBe('process.exit(0)')
 
     const joined = output.join('\n')
     expect(joined).toContain('Usage: mcp-local-rag')
@@ -116,7 +118,7 @@ describe('CLI status', () => {
     const { output, error } = await captureStderr(() => runStatus(['-h']))
 
     expect(error).toBeInstanceOf(Error)
-    expect((error as Error).message).toBe('process.exit(0)')
+    expect(expectError(error).message).toBe('process.exit(0)')
 
     const joined = output.join('\n')
     expect(joined).toContain('Usage: mcp-local-rag')
@@ -144,7 +146,7 @@ describe('CLI status', () => {
     expect(mocks.initialize).toHaveBeenCalledTimes(1)
     expect(mocks.getStatus).toHaveBeenCalledTimes(1)
 
-    const writtenData = stdoutSpy.mock.calls[0]![0] as string
+    const writtenData = expectString(stdoutSpy.mock.calls[0]?.[0])
     expect(JSON.parse(writtenData)).toEqual(statusResult)
   })
 
@@ -155,7 +157,7 @@ describe('CLI status', () => {
     const { output, error } = await captureStderr(() => runStatus(['--unknown']))
 
     expect(error).toBeInstanceOf(Error)
-    expect((error as Error).message).toBe('process.exit(1)')
+    expect(expectError(error).message).toBe('process.exit(1)')
 
     const joined = output.join('\n')
     expect(joined).toContain('Unknown option: --unknown')
@@ -165,7 +167,7 @@ describe('CLI status', () => {
     const { output, error } = await captureStderr(() => runStatus(['some-arg']))
 
     expect(error).toBeInstanceOf(Error)
-    expect((error as Error).message).toBe('process.exit(1)')
+    expect(expectError(error).message).toBe('process.exit(1)')
 
     const joined = output.join('\n')
     expect(joined).toContain('Unexpected argument')

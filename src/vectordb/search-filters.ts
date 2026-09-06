@@ -10,18 +10,13 @@ import type { GroupingMode, SearchResult } from './types.js'
 const GROUPING_BOUNDARY_STD_MULTIPLIER = 1.5
 
 /**
- * Apply grouping algorithm to filter results by detecting group boundaries.
- *
- * Uses statistical threshold (mean + k*std) to identify significant gaps (group boundaries).
- * - 'similar': Returns only the first group (cuts at first boundary)
- * - 'related': Returns up to 2 groups (cuts at second boundary)
- *
- * @param results - Search results sorted by distance (ascending)
- * @param mode - Grouping mode ('similar' = 1 group, 'related' = 2 groups)
- * @returns Filtered results
+ * Cut the distance-sorted results at gaps wider than `mean + k*std`:
+ * `similar` keeps the first group, `related` up to two.
  */
 export function applyGrouping(results: SearchResult[], mode: GroupingMode): SearchResult[] {
-  if (results.length <= 1) return results
+  if (results.length <= 1) {
+    return results
+  }
 
   // Calculate gaps between consecutive results with their indices
   const gaps: { index: number; gap: number }[] = []
@@ -33,7 +28,9 @@ export function applyGrouping(results: SearchResult[], mode: GroupingMode): Sear
     }
   }
 
-  if (gaps.length === 0) return results
+  if (gaps.length === 0) {
+    return results
+  }
 
   // Calculate statistical threshold to identify significant gaps (group boundaries)
   const gapValues = gaps.map((g) => g.gap)
@@ -46,7 +43,9 @@ export function applyGrouping(results: SearchResult[], mode: GroupingMode): Sear
   const boundaries = gaps.filter((g) => g.gap > threshold).map((g) => g.index)
 
   // If no boundaries found, return all results
-  if (boundaries.length === 0) return results
+  if (boundaries.length === 0) {
+    return results
+  }
 
   // Determine how many groups to include based on mode
   // 'similar': 1 group (cut at first boundary)
@@ -64,17 +63,13 @@ export function applyGrouping(results: SearchResult[], mode: GroupingMode): Sear
 }
 
 /**
- * Apply file-based filter to limit results to chunks from the top N files.
- *
- * Ranks files by their best (lowest distance) chunk score and keeps only
- * chunks belonging to the top `maxFiles` files.
- *
- * @param results - Search results sorted by distance (ascending)
- * @param maxFiles - Maximum number of files to keep
- * @returns Filtered results preserving original order
+ * Rank files by their best (lowest-distance) chunk and keep only the top
+ * `maxFiles` files' chunks.
  */
 export function applyFileFilter(results: SearchResult[], maxFiles: number): SearchResult[] {
-  if (results.length === 0) return results
+  if (results.length === 0) {
+    return results
+  }
 
   // Find the best (lowest) score per file
   const fileScores = new Map<string, number>()
@@ -86,7 +81,9 @@ export function applyFileFilter(results: SearchResult[], maxFiles: number): Sear
   }
 
   // If we have fewer or equal files than maxFiles, return all
-  if (fileScores.size <= maxFiles) return results
+  if (fileScores.size <= maxFiles) {
+    return results
+  }
 
   // Sort files by best score (ascending) and take top N
   const topFiles = new Set(
@@ -101,36 +98,44 @@ export function applyFileFilter(results: SearchResult[], maxFiles: number): Sear
 }
 
 /**
- * Apply keyword boost to rerank vector search results
- * Uses multiplicative formula: final_distance = distance / (1 + keyword_normalized * weight)
- *
- * This proportional boost ensures:
- * - Keyword matches improve ranking without dominating semantic similarity
- * - Documents without keyword matches keep their original vector distance
- * - Higher weight = stronger influence of keyword matching
- *
- * @param vectorResults - Results from vector search (already filtered by maxDistance/grouping)
- * @param ftsResults - Raw FTS results with BM25 scores
- * @param weight - Boost weight (0-1, from hybridWeight config)
+ * Rerank by `distance / (1 + keyword_normalized * weight)`. Multiplicative, so
+ * a keyword match improves ranking without dominating semantic similarity and
+ * a document with no match keeps its original distance.
  */
+/**
+ * BM25 score of one raw FTS row. A `_score` that is not a number scores 0, so
+ * the row keeps its vector distance instead of normalizing to `NaN`. `NaN` and
+ * `Infinity` ARE numbers and pass through unchanged.
+ */
+function readBm25Score(row: FtsRow): number {
+  const score = row?.['_score']
+  return typeof score === 'number' ? score : 0
+}
+
+/** One raw row from a LanceDB full-text search; entries can be missing. */
+export type FtsRow = Record<string, unknown> | null | undefined
+
 export function applyKeywordBoost(
   vectorResults: SearchResult[],
-  ftsResults: Record<string, unknown>[],
+  ftsResults: readonly FtsRow[],
   weight: number
 ): SearchResult[] {
   // Build FTS score map with normalized scores (0-1)
   let maxBm25Score = 0
   for (const result of ftsResults) {
-    if (!result) continue
-    const score = (result['_score'] as number) ?? 0
-    if (score > maxBm25Score) maxBm25Score = score
+    const score = readBm25Score(result)
+    if (score > maxBm25Score) {
+      maxBm25Score = score
+    }
   }
 
   const ftsScoreMap = new Map<string, number>()
   for (const result of ftsResults) {
-    if (!result) continue
+    if (!result) {
+      continue
+    }
     const key = `${result['filePath']}:${result['chunkIndex']}`
-    const rawScore = (result['_score'] as number) ?? 0
+    const rawScore = readBm25Score(result)
     const normalized = maxBm25Score > 0 ? rawScore / maxBm25Score : 0
     ftsScoreMap.set(key, normalized)
   }

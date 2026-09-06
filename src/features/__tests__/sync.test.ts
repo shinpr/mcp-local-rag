@@ -575,7 +575,9 @@ function createExecutor(
       },
       optimize: async () => {
         log.push('optimize')
-        if (overrides.optimize) await overrides.optimize()
+        if (overrides.optimize) {
+          await overrides.optimize()
+        }
       },
     },
   }
@@ -687,7 +689,9 @@ describe('executeSyncPlan — first error stops the run (SYNC-004)', () => {
   it('suppresses later upserts, all prune, and optimize after the first failure', async () => {
     const { executor, log } = createExecutor({
       ingest: async (filePath) => {
-        if (filePath === `${ROOT}/b.md`) throw new Error('embedding failed')
+        if (filePath === `${ROOT}/b.md`) {
+          throw new Error('embedding failed')
+        }
         return 2
       },
     })
@@ -715,7 +719,9 @@ describe('executeSyncPlan — first error stops the run (SYNC-004)', () => {
   it('stops at the first prune failure and skips optimize', async () => {
     const { executor, log } = createExecutor({
       remove: async (filePath) => {
-        if (filePath === `${ROOT}/second.md`) throw new Error('delete failed')
+        if (filePath === `${ROOT}/second.md`) {
+          throw new Error('delete failed')
+        }
         return 1
       },
     })
@@ -748,7 +754,9 @@ describe('executeSyncPlan — first error stops the run (SYNC-004)', () => {
   it('aborts the whole run when deleting a stale stored spelling fails mid-upsert', async () => {
     const { executor, log } = createExecutor({
       remove: async (filePath) => {
-        if (filePath === `${ROOT}/a-2.md`) throw new Error('delete failed')
+        if (filePath === `${ROOT}/a-2.md`) {
+          throw new Error('delete failed')
+        }
         return 1
       },
     })
@@ -798,10 +806,9 @@ interface FakeSetup {
   scans?: Record<string, Partial<SyncScanResult>>
   kinds?: Record<string, SyncPathKind>
   /**
-   * Canonical (realpath'd parent chain) form per requested path. An absent entry
-   * canonicalizes to the path itself, which is what every fixture without a
-   * symlinked ancestor looks like on disk; an explicit `null` is a path whose
-   * parent chain could not be resolved at all.
+   * Canonical form per requested path. An absent entry canonicalizes to itself,
+   * as every fixture without a symlinked ancestor does; an explicit `null` is a
+   * path whose parent chain could not be resolved.
    */
   canonical?: Record<string, string | null>
   hashes?: Record<string, string>
@@ -850,12 +857,16 @@ function createCollaborators(setup: FakeSetup = {}): {
         }
         log.push(`hash:${filePath}`)
         const hash = setup.hashes?.[filePath]
-        if (hash === undefined) throw new Error(`no fixture hash for ${filePath}`)
+        if (hash === undefined) {
+          throw new Error(`no fixture hash for ${filePath}`)
+        }
         return hash
       },
       loadDbManifest: async () => {
         log.push('manifest')
-        if (setup.loadDbManifest) return await setup.loadDbManifest()
+        if (setup.loadDbManifest) {
+          return await setup.loadDbManifest()
+        }
         return setup.dbRows ?? []
       },
       ingestFile: async (filePath) => {
@@ -951,12 +962,10 @@ describe('runSync — request classification and scan roots', () => {
     expect(result.upserted).toBe(0)
   })
 
-  // `resolve()` is lexical, so it cannot see that an intermediate component of
-  // the requested path is a symbolic link: `<root>/link/x.md` passes a key-based
-  // containment check while its real location is outside every configured root.
+  // `resolve()` is lexical, so `<root>/link/x.md` passes a key-based
+  // containment check while its real location is outside every root.
   // Containment is therefore also decided against canonical values, before
-  // anything classifies, scans, hashes, or ingests the path — the empty log is
-  // that proof.
+  // anything reads — the empty log is that proof.
   it('rejects a requested path whose canonical form is outside every configured root', async () => {
     const requestedPath = `${ROOT}/link/secret.md`
     const { collaborators, log } = createCollaborators({
@@ -1037,12 +1046,9 @@ describe('runSync — request classification and scan roots', () => {
     expect(result.error?.filePath).toBe(`${ROOT}/ghost.md`)
   })
 
-  // A requested path reaches the core already classified by the walker's own
-  // collect predicates (`classifyRequestedPath`). Anything but a directory or a
-  // supported regular file must be refused HERE, before `hashFile` reads it:
-  // reading a symlink reaches outside the configured roots, reading a FIFO never
-  // returns, and reading an excluded or unsupported file is work no ingest can
-  // use. The log assertion is the proof that no read was attempted.
+  // Anything but a directory or a supported regular file must be refused
+  // before `hashFile` reads it: reading a symlink reaches outside the roots,
+  // reading a FIFO never returns. The empty log is the proof no read happened.
   it.each([
     {
       label: 'a symbolic link',
@@ -1268,8 +1274,8 @@ describe('runSync — gathering', () => {
 describe('sync executor against a real VectorStore (Early Verification Point)', () => {
   const VECTOR_DIMENSION = 384
 
-  function fakeVector(seed: number): number[] {
-    const raw = Array.from({ length: VECTOR_DIMENSION }, (_, index) => Math.sin(seed + index))
+  function fakeVector(offset: number): number[] {
+    const raw = Array.from({ length: VECTOR_DIMENSION }, (_, index) => Math.sin(offset + index))
     const norm = Math.sqrt(raw.reduce((sum, value) => sum + value * value, 0))
     return raw.map((value) => value / norm)
   }
@@ -1279,13 +1285,17 @@ describe('sync executor against a real VectorStore (Early Verification Point)', 
     body: (store: VectorStore, dbPath: string) => Promise<void>
   ): Promise<void> {
     const dbPath = `./tmp/test-sync-${name}`
-    if (fs.existsSync(dbPath)) fs.rmSync(dbPath, { recursive: true })
+    if (fs.existsSync(dbPath)) {
+      fs.rmSync(dbPath, { recursive: true })
+    }
     try {
       const store = new VectorStore({ dbPath, tableName: 'chunks' })
       await store.initialize()
       await body(store, dbPath)
     } finally {
-      if (fs.existsSync(dbPath)) fs.rmSync(dbPath, { recursive: true })
+      if (fs.existsSync(dbPath)) {
+        fs.rmSync(dbPath, { recursive: true })
+      }
     }
   }
 
@@ -1314,10 +1324,9 @@ describe('sync executor against a real VectorStore (Early Verification Point)', 
   }
 
   /**
-   * `ingestFile` stand-in that reproduces `ingestSingleFile`'s persistence:
-   * build the vector chunks first, then delete the file's own rows and insert.
-   * The parser/chunker/embedder are out of the picture on purpose (external and
-   * slow); the store is real because row survival is the subject.
+   * `ingestFile` stand-in reproducing `ingestSingleFile`'s persistence order:
+   * build vector chunks first, then delete this file's rows and insert. The
+   * store is real, because row survival is the subject.
    */
   function storeIngest(
     store: VectorStore,
@@ -1327,7 +1336,9 @@ describe('sync executor against a real VectorStore (Early Verification Point)', 
   ): (filePath: string) => Promise<number> {
     return async (filePath) => {
       log.push(`ingest:${filePath}`)
-      if (filePath === failOn) throw new Error('induced ingest failure')
+      if (filePath === failOn) {
+        throw new Error('induced ingest failure')
+      }
       const chunks = buildVectorChunks({
         filePath,
         chunks: [
@@ -1484,10 +1495,9 @@ describe('sync executor against a real VectorStore (Early Verification Point)', 
   })
 
   /**
-   * The state a run interrupted between insert and stale-spelling deletion
-   * leaves behind, and the state a double ingest under two Windows spellings
-   * produces: one comparison key with two stored spellings carrying different
-   * hashes. One sync run must collapse it back to a single spelling.
+   * What a run interrupted between insert and stale-spelling deletion leaves,
+   * and what a double ingest under two Windows spellings produces: one key with
+   * two spellings carrying different hashes. One run must collapse it.
    */
   it('(a) converges a key stored under two disagreeing Windows spellings in one run', async () => {
     await withStore('windows-two-spellings', async (store, dbPath) => {
