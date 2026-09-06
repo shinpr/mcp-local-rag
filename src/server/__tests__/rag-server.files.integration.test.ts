@@ -5,6 +5,7 @@ import { mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { testModelCacheDir, withTestDevice } from '../../__tests__/test-device.js'
+import { expectError } from '../../__tests__/test-doubles.js'
 import { RAGServer } from '../index.js'
 
 describe('AC-006: Additional Format Support (Phase 2)', () => {
@@ -65,8 +66,8 @@ describe('AC-006: Additional Format Support (Phase 2)', () => {
       await parser.parseFile(fakeDocxFile)
       expect(false).toBe(true)
     } catch (error) {
-      expect((error as Error).name).toBe('FileOperationError')
-      expect((error as Error).message).toContain('Failed to parse DOCX')
+      expect(expectError(error).name).toBe('FileOperationError')
+      expect(expectError(error).message).toContain('Failed to parse DOCX')
     }
 
     // PDF uses parsePdf directly (not parseFile)
@@ -76,8 +77,8 @@ describe('AC-006: Additional Format Support (Phase 2)', () => {
       await parser.parseFile(fakePdfFile)
       expect(false).toBe(true)
     } catch (error) {
-      expect((error as Error).name).toBe('ValidationError')
-      expect((error as Error).message).toContain('Unsupported file format')
+      expect(expectError(error).name).toBe('ValidationError')
+      expect(expectError(error).message).toContain('Unsupported file format')
     }
   })
 })
@@ -473,7 +474,7 @@ describe('AC-008: list_files multi-root contract', () => {
       // privileges; in that environment the cross-root dedup contract is not
       // observable so we surface the failure rather than silently skipping.
       throw new Error(
-        `symlink creation failed for cross-root dedup test: ${(error as Error).message}`
+        `symlink creation failed for cross-root dedup test: ${expectError(error).message}`
       )
     }
 

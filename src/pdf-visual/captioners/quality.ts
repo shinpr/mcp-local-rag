@@ -38,7 +38,13 @@ import { AutoProcessor, Qwen2_5_VLForConditionalGeneration } from '@huggingface/
 
 import type { Captioner } from '../types.js'
 import { VlmError } from '../types.js'
-import { createModelLoader, decodePngToRawImage, postProcess } from './shared.js'
+import {
+  createModelLoader,
+  decodePngToRawImage,
+  isVlmModel,
+  isVlmProcessor,
+  postProcess,
+} from './shared.js'
 
 const MODEL_NAME = 'onnx-community/Qwen2.5-VL-3B-Instruct-ONNX'
 
@@ -108,19 +114,16 @@ export function createQualityCaptioner(resolvedDevice: string): Captioner {
             content: [{ type: 'image' }, { type: 'text', text: PROMPT }],
           },
         ]
-        // The processor and model are dynamic in type at the boundary;
-        // narrow to a minimal callable / generate-able shape here. Qwen2.5-VL
-        // processor takes a single image (not an array), per the
-        // onnx-community reference example signature `processor(text, image)`.
-        const proc = processor as {
-          apply_chat_template: (m: unknown, o: { add_generation_prompt: boolean }) => string
-          batch_decode: (t: unknown, o: { skip_special_tokens: boolean }) => string[]
-        } & ((prompt: string, image: unknown) => Promise<{ input_ids: { dims: number[] } }>)
-        const mdl = model as {
-          generate: (inputs: unknown) => Promise<{
-            slice: (axis: null, range: [number, number | null]) => unknown
-          }>
+        // The processor and model are untyped at the transformers.js boundary;
+        // check the surface this profile uses. Qwen2.5-VL takes a single image
+        // (not an array), per the onnx-community reference `processor(text, image)`.
+        if (!isVlmProcessor(processor) || !isVlmModel(model)) {
+          throw new VlmError('Loaded captioner does not expose the expected VLM surface', {
+            pageNum,
+          })
         }
+        const proc = processor
+        const mdl = model
 
         const chatPrompt = proc.apply_chat_template(messages, { add_generation_prompt: true })
         const inputs = await proc(chatPrompt, rawImage)
@@ -133,7 +136,12 @@ export function createQualityCaptioner(resolvedDevice: string): Captioner {
         // `outputs.slice(null, [inputLen, null])` strips the prompt tokens.
         // `dims.at(-1)` reads the last dimension defensively — matches the
         // onnx-community reference example.
-        const inputLen = inputs.input_ids.dims.at(-1) as number
+        const inputLen = inputs.input_ids.dims.at(-1)
+        if (inputLen === undefined) {
+          throw new VlmError('Captioner returned an input tensor without a token dimension', {
+            pageNum,
+          })
+        }
         const newTokens = outputs.slice(null, [inputLen, null])
 
         const decoded = proc.batch_decode(newTokens, { skip_special_tokens: true })
@@ -141,7 +149,9 @@ export function createQualityCaptioner(resolvedDevice: string): Captioner {
 
         return postProcess(text)
       } catch (err) {
-        if (err instanceof VlmError) throw err
+        if (err instanceof VlmError) {
+          throw err
+        }
         const cause = err instanceof Error ? err : new Error(String(err))
         throw new VlmError(`Captioning failed for page ${pageNum}`, { cause, pageNum })
       }

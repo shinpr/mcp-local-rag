@@ -32,6 +32,7 @@ import { join, resolve } from 'node:path'
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js'
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { withTestDevice } from '../../__tests__/test-device.js'
+import { expectInstanceOf, parseJson, privateMembers } from '../../__tests__/test-doubles.js'
 import type { Embedder } from '../../embedder/index.js'
 import type { SyncStatusResult } from '../types.js'
 
@@ -129,7 +130,7 @@ async function makeServer(
       maxFileSize,
     })
   )
-  const embedder = (server as unknown as { embedder: Embedder }).embedder
+  const embedder = privateMembers<{ embedder: Embedder }>(server).embedder
   vi.spyOn(embedder, 'embedBatch').mockImplementation(async (texts: string[]) => {
     if (rewriteDuringEmbed !== null) {
       writeFileSync(rewriteDuringEmbed.filePath, rewriteDuringEmbed.content)
@@ -171,10 +172,12 @@ type RegisteredHandler = (
 
 /** Invoke the registered CallTool dispatcher closure — the client-facing boundary. */
 function dispatch(server: ServerInstance, name: string, args: unknown): Promise<DispatchResult> {
-  const handler = (
-    server as unknown as { server: { _requestHandlers: Map<string, RegisteredHandler> } }
+  const handler = privateMembers<{ server: { _requestHandlers: Map<string, RegisteredHandler> } }>(
+    server
   ).server._requestHandlers.get('tools/call')
-  if (handler === undefined) throw new Error('tools/call handler not registered')
+  if (handler === undefined) {
+    throw new Error('tools/call handler not registered')
+  }
   return handler(
     { method: 'tools/call', params: { name, arguments: args } },
     { signal: new AbortController().signal }
@@ -212,9 +215,13 @@ async function awaitSyncOutcome(server: ServerInstance, jobId: string): Promise<
   const deadline = Date.now() + 20_000
   for (;;) {
     const result = await dispatch(server, 'sync_status', { jobId })
-    const snapshot = JSON.parse(firstBlock(result)) as SyncStatusResult
-    if (snapshot.state !== 'running') return snapshot
-    if (Date.now() > deadline) throw new Error(`sync job ${jobId} never left running`)
+    const snapshot = parseJson<SyncStatusResult>(firstBlock(result))
+    if (snapshot.state !== 'running') {
+      return snapshot
+    }
+    if (Date.now() > deadline) {
+      throw new Error(`sync job ${jobId} never left running`)
+    }
     await new Promise((resolveTick) => setImmediate(resolveTick))
   }
 }
@@ -238,7 +245,9 @@ beforeAll(async () => {
 })
 
 afterAll(async () => {
-  for (const path of MOCKED_PATHS) vi.doUnmock(path)
+  for (const path of MOCKED_PATHS) {
+    vi.doUnmock(path)
+  }
   vi.resetModules()
   rmSync(TMP_ROOT, { recursive: true, force: true })
 })
@@ -281,9 +290,9 @@ describe('ingest_file — contentHash is read before the parse', () => {
       rewriteDuringEmbed = { filePath, content: CONTENT_AFTER }
       await dispatch(server, 'ingest_file', { filePath })
 
-      const { jobId } = JSON.parse(firstBlock(await dispatch(server, 'sync_start', {}))) as {
+      const { jobId } = parseJson<{
         jobId: string
-      }
+      }>(firstBlock(await dispatch(server, 'sync_start', {})))
       const outcome = await awaitSyncOutcome(server, jobId)
 
       expect(outcome.state).toBe('succeeded')
@@ -338,7 +347,7 @@ describe('ingest_file — the pre-parse read is guarded', () => {
       // answer InvalidParams, and that is the code a client still gets.
       const error = await dispatch(server, 'ingest_file', { filePath: dirPath }).then(
         () => null,
-        (caught: unknown) => caught as McpError
+        (caught: unknown) => expectInstanceOf(caught, McpError)
       )
 
       expect(error).toBeInstanceOf(McpError)
@@ -365,7 +374,7 @@ describe('ingest_file — the pre-parse read is guarded', () => {
       try {
         const error = await dispatch(server, 'ingest_file', { filePath: fifoPath }).then(
           () => null,
-          (caught: unknown) => caught as McpError
+          (caught: unknown) => expectInstanceOf(caught, McpError)
         )
 
         expect(error).toBeInstanceOf(McpError)
@@ -387,7 +396,7 @@ describe('ingest_file — the pre-parse read is guarded', () => {
     try {
       const error = await dispatch(server, 'ingest_file', { filePath }).then(
         () => null,
-        (caught: unknown) => caught as McpError
+        (caught: unknown) => expectInstanceOf(caught, McpError)
       )
 
       expect(error?.code).toBe(ErrorCode.InvalidParams)
@@ -410,7 +419,7 @@ describe('ingest_file — the pre-parse read is guarded', () => {
     try {
       const error = await dispatch(server, 'ingest_file', { filePath }).then(
         () => null,
-        (caught: unknown) => caught as McpError
+        (caught: unknown) => expectInstanceOf(caught, McpError)
       )
 
       expect(error?.code).toBe(ErrorCode.InvalidParams)

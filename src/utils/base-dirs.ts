@@ -12,7 +12,7 @@
 import { realpath, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { resolve, sep } from 'node:path'
-import { AppError } from './errors.js'
+import { AppError, toError } from './errors.js'
 
 // ============================================
 // Types
@@ -60,8 +60,8 @@ export type BaseDirsConfigWarning =
  * from other I/O errors (e.g. `ValidationError` from `DocumentParser`).
  */
 export class BaseDirsConfigError extends AppError {
-  constructor(message: string, cause?: Error) {
-    super(message, 'config', 'config', cause)
+  constructor(message: string, options?: { cause?: Error }) {
+    super(message, 'config', 'config', options)
     this.name = 'BaseDirsConfigError'
   }
 }
@@ -94,12 +94,16 @@ export type ParseBaseDirsResult =
  */
 export function displayPath(path: string): string {
   const home = process.env['HOME'] || homedir()
-  if (home.length === 0) return path
+  if (home.length === 0) {
+    return path
+  }
   const isWin = process.platform === 'win32'
-  const cmp = (s: string) => (isWin ? s.toLowerCase() : s)
+  const cmp = (s: string): string => (isWin ? s.toLowerCase() : s)
   const homeCmp = cmp(home)
   const pathCmp = cmp(path)
-  if (pathCmp === homeCmp) return '~'
+  if (pathCmp === homeCmp) {
+    return '~'
+  }
   if (pathCmp.startsWith(homeCmp + sep) || pathCmp.startsWith(`${homeCmp}/`)) {
     return `~${path.slice(home.length)}`
   }
@@ -142,7 +146,7 @@ export function parseBaseDirsEnv(raw: string): ParseBaseDirsResult {
       ok: false,
       error: new BaseDirsConfigError(
         `BASE_DIRS must be a JSON array of non-empty path strings. Failed to parse as JSON: ${truncate(raw)}`,
-        error as Error
+        { cause: toError(error) }
       ),
     }
   }
@@ -219,7 +223,7 @@ export async function normalizeRealpath(path: string): Promise<string> {
   } catch (error) {
     throw new BaseDirsConfigError(
       `Failed to resolve base directory: ${displayPath(path)}. The directory may not exist or is inaccessible.`,
-      error as Error
+      { cause: toError(error) }
     )
   }
 
@@ -229,7 +233,7 @@ export async function normalizeRealpath(path: string): Promise<string> {
   } catch (error) {
     throw new BaseDirsConfigError(
       `Failed to stat resolved base directory: ${displayPath(resolved)}.`,
-      error as Error
+      { cause: toError(error) }
     )
   }
 
@@ -343,7 +347,9 @@ export function dedupAndPruneRoots(inputs: string[]): DedupAndPruneResult {
 function findParent(candidate: string, all: string[]): string | undefined {
   let best: string | undefined
   for (const other of all) {
-    if (other === candidate) continue
+    if (other === candidate) {
+      continue
+    }
     // `other` ends with `sep` (precondition), so this prefix check is
     // sibling-prefix safe.
     if (candidate.startsWith(other)) {
@@ -566,13 +572,30 @@ export function legacyBaseDir(config: BaseDirsConfig): string {
 // Private helpers
 // ============================================
 
+/** Every shape `describeJsonShape` can report. */
+type JsonShape =
+  | 'null'
+  | 'array'
+  | 'string'
+  | 'number'
+  | 'bigint'
+  | 'boolean'
+  | 'symbol'
+  | 'undefined'
+  | 'object'
+  | 'function'
+
 /**
  * Describe a JSON value's shape for error messages without dumping its full
  * (possibly large) content.
  */
-function describeJsonShape(value: unknown): string {
-  if (value === null) return 'null'
-  if (Array.isArray(value)) return 'array'
+function describeJsonShape(value: unknown): JsonShape {
+  if (value === null) {
+    return 'null'
+  }
+  if (Array.isArray(value)) {
+    return 'array'
+  }
   return typeof value
 }
 
@@ -581,6 +604,8 @@ function describeJsonShape(value: unknown): string {
  * even when the offending value is large.
  */
 function truncate(input: string, max = 100): string {
-  if (input.length <= max) return input
+  if (input.length <= max) {
+    return input
+  }
   return `${input.slice(0, max)}...`
 }

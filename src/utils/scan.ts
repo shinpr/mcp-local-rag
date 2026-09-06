@@ -22,6 +22,7 @@ import { basename, dirname, extname, join } from 'node:path'
 import { SUPPORTED_EXTENSIONS } from '../parser/index.js'
 import { MAX_SCAN_DEPTH } from './limits.js'
 import { isInScope, isUnderOrEqual, shouldVisitDir } from './scope-match.js'
+import { errorCode } from './type-guards.js'
 
 /**
  * Canonical identity key for the `list`/`list_files` cross-reference: a file's
@@ -138,10 +139,18 @@ export function classifyScanEntry(
   excludePaths: readonly string[],
   platform: NodeJS.Platform = process.platform
 ): ScanEntryKind {
-  if (entry.isSymbolicLink()) return 'symlink'
-  if (isUnderExcludedPrefix(fullPath, excludePaths, platform)) return 'excluded'
-  if (entry.isDirectory()) return 'directory'
-  if (!entry.isFile()) return 'irregular'
+  if (entry.isSymbolicLink()) {
+    return 'symlink'
+  }
+  if (isUnderExcludedPrefix(fullPath, excludePaths, platform)) {
+    return 'excluded'
+  }
+  if (entry.isDirectory()) {
+    return 'directory'
+  }
+  if (!entry.isFile()) {
+    return 'irregular'
+  }
   return SUPPORTED_EXTENSIONS.has(extname(fullPath).toLowerCase()) ? 'file' : 'unsupported'
 }
 
@@ -196,6 +205,64 @@ export interface DirScanResult {
   depthLimited: boolean
 }
 
+/** Directory entries, or the errno that made the directory unreadable. */
+async function readDirEntries(
+  dirPath: string
+): Promise<{ entries: import('node:fs').Dirent<string>[] } | { code: string }> {
+  try {
+    return { entries: await readdir(dirPath, { withFileTypes: true, encoding: 'utf8' }) }
+  } catch (error) {
+    return { code: errorCode(error) ?? 'UNKNOWN' }
+  }
+}
+
+/** How one directory's entries are classified. */
+interface ScanRules {
+  excludePaths: readonly string[]
+  scope: string[] | undefined
+  platform: NodeJS.Platform
+}
+
+/** Where a classified entry goes. */
+interface ScanSinks {
+  files: string[]
+  skippedSymlinks: string[]
+  queue: { dirPath: string; depth: number }[]
+}
+
+/**
+ * Route one directory's entries: symlinks are recorded and never followed,
+ * in-scope directories are enqueued one level deeper, and in-scope supported
+ * files are collected.
+ */
+function sortEntries(
+  entries: readonly import('node:fs').Dirent<string>[],
+  visit: { dirPath: string; depth: number },
+  rules: ScanRules,
+  sinks: ScanSinks
+): void {
+  for (const entry of entries) {
+    const fullPath = join(visit.dirPath, entry.name)
+    const kind = classifyScanEntry(fullPath, entry, rules.excludePaths, rules.platform)
+    if (kind === 'symlink') {
+      sinks.skippedSymlinks.push(fullPath)
+    } else if (kind === 'directory' && shouldVisitDir(fullPath, rules.scope)) {
+      sinks.queue.push({ dirPath: fullPath, depth: visit.depth + 1 })
+    } else if (kind === 'file' && isInScope(fullPath, rules.scope)) {
+      sinks.files.push(fullPath)
+    }
+  }
+}
+
+export interface BfsCollectOptions {
+  /** Traversal bound; defaults to {@link MAX_SCAN_DEPTH}. */
+  maxDepth?: number
+  /** Absolute prefixes to restrict traversal and collection to. */
+  scope?: string[] | undefined
+  /** Selects case sensitivity of the exclusion comparison; defaults to the host. */
+  platform?: NodeJS.Platform
+}
+
 /**
  * Bounded BFS scan of a single root, collecting every supported file up to
  * `maxDepth` levels deep, counted from `rootPath` itself. Symlinks are skipped
@@ -220,10 +287,9 @@ export interface DirScanResult {
 export async function bfsCollectSupportedFiles(
   rootPath: string,
   excludePaths: readonly string[],
-  maxDepth: number = MAX_SCAN_DEPTH,
-  scope?: string[],
-  platform: NodeJS.Platform = process.platform
+  options: BfsCollectOptions = {}
 ): Promise<DirScanResult> {
+  const { maxDepth = MAX_SCAN_DEPTH, scope, platform = process.platform } = options
   const files: string[] = []
   const unreadableDirs: UnreadableDir[] = []
   const depthLimitedDirs: string[] = []
@@ -238,46 +304,33 @@ export async function bfsCollectSupportedFiles(
     : []
 
   while (queue.length > 0) {
-    const { dirPath, depth } = queue.shift()!
-
-    if (depth >= maxDepth) {
+    const visit = queue.shift()
+    if (visit === undefined) {
+      break
+    }
+    if (visit.depth >= maxDepth) {
       // `dirPath` was reached but never read, so it is the first unvisited
       // directory of this branch: it and all its descendants are unobserved.
-      depthLimitedDirs.push(dirPath)
+      depthLimitedDirs.push(visit.dirPath)
       continue
     }
 
-    // TypeScript's `readdir` has overloads keyed on the options shape; pin the
-    // encoding to `'utf8'` and cast so the loop operates on string-encoded
-    // Dirent entries (matches the rest of the codebase).
-    let entries: import('node:fs').Dirent<string>[]
-    try {
-      entries = (await readdir(dirPath, {
-        withFileTypes: true,
-        encoding: 'utf8',
-      })) as import('node:fs').Dirent<string>[]
-    } catch (error) {
-      const code =
-        error && typeof error === 'object' && 'code' in error
-          ? ((error as NodeJS.ErrnoException).code ?? 'UNKNOWN')
-          : 'UNKNOWN'
-      unreadableDirs.push({ dirPath, code })
+    const read = await readDirEntries(visit.dirPath)
+    if ('code' in read) {
+      unreadableDirs.push({ dirPath: visit.dirPath, code: read.code })
       continue
     }
 
-    for (const entry of entries) {
-      const fullPath = join(dirPath, entry.name)
-      const kind = classifyScanEntry(fullPath, entry, excludePaths, platform)
-      if (kind === 'symlink') {
-        skippedSymlinks.push(fullPath)
-      } else if (kind === 'directory') {
-        if (shouldVisitDir(fullPath, scope)) {
-          queue.push({ dirPath: fullPath, depth: depth + 1 })
-        }
-      } else if (kind === 'file' && isInScope(fullPath, scope)) {
-        files.push(fullPath)
+    sortEntries(
+      read.entries,
+      visit,
+      { excludePaths, scope, platform },
+      {
+        files,
+        skippedSymlinks,
+        queue,
       }
-    }
+    )
   }
 
   return {

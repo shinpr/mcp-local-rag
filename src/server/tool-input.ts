@@ -10,9 +10,10 @@
 
 import { isAbsolute } from 'node:path'
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js'
-import { QUALITY_PROFILES, type QualityProfile } from '../pdf-visual/types.js'
+import { QUALITY_PROFILES } from '../pdf-visual/types.js'
 import { MAX_NEIGHBOR_COUNT, MAX_QUERY_LIMIT, MIN_QUERY_LIMIT } from '../utils/limits.js'
-import { CONTENT_FORMATS, type ContentFormat } from '../utils/raw-data-utils.js'
+import { CONTENT_FORMATS } from '../utils/raw-data-utils.js'
+import { isInteger, isMemberOf, isRecord } from '../utils/type-guards.js'
 import type {
   DeleteFileInput,
   IngestDataInput,
@@ -47,10 +48,10 @@ function normalizeScope(scope: unknown): string[] {
 }
 
 function asRecord(raw: unknown, label: string): Record<string, unknown> {
-  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+  if (!isRecord(raw) || Array.isArray(raw)) {
     throw new McpError(ErrorCode.InvalidParams, `${label} arguments must be an object`)
   }
-  return raw as Record<string, unknown>
+  return raw
 }
 
 /**
@@ -132,14 +133,14 @@ export function parseIngestDataInput(raw: unknown): IngestDataInput {
     throw new McpError(ErrorCode.InvalidParams, 'metadata.source must be a non-empty string')
   }
 
-  if (typeof format !== 'string' || !CONTENT_FORMATS.includes(format as ContentFormat)) {
+  if (typeof format !== 'string' || !isMemberOf(CONTENT_FORMATS, format)) {
     throw new McpError(
       ErrorCode.InvalidParams,
       `metadata.format must be one of: ${CONTENT_FORMATS.join(', ')}`
     )
   }
 
-  return { content, metadata: { source, format: format as ContentFormat } }
+  return { content, metadata: { source, format } }
 }
 
 export function parseIngestFileInput(raw: unknown): IngestFileInput {
@@ -150,11 +151,9 @@ export function parseIngestFileInput(raw: unknown): IngestFileInput {
   if (visual !== undefined && typeof visual !== 'boolean') {
     throw new McpError(ErrorCode.InvalidParams, "'visual' must be a boolean if provided")
   }
-  if (
-    visualQuality !== undefined &&
-    visualQuality !== '' &&
-    !QUALITY_PROFILES.includes(visualQuality as QualityProfile)
-  ) {
+  const hasQualityProfile =
+    typeof visualQuality === 'string' && isMemberOf(QUALITY_PROFILES, visualQuality)
+  if (visualQuality !== undefined && visualQuality !== '' && !hasQualityProfile) {
     throw new McpError(
       ErrorCode.InvalidParams,
       "'visualQuality' must be 'fast' or 'quality' if provided"
@@ -164,9 +163,7 @@ export function parseIngestFileInput(raw: unknown): IngestFileInput {
   return {
     filePath,
     ...(visual !== undefined ? { visual } : {}),
-    ...(QUALITY_PROFILES.includes(visualQuality as QualityProfile)
-      ? { visualQuality: visualQuality as QualityProfile }
-      : {}),
+    ...(hasQualityProfile ? { visualQuality } : {}),
   }
 }
 
@@ -178,27 +175,28 @@ export function parseDeleteFileInput(raw: unknown): DeleteFileInput {
   const { filePath, source } = asRecord(raw, 'delete_file')
   const hasFilePath = nonEmptyString(filePath)
   const hasSource = nonEmptyString(source)
-  if (hasFilePath === hasSource) {
-    throw new McpError(
-      ErrorCode.InvalidParams,
-      hasFilePath
-        ? 'Provide either filePath or source, not both'
-        : 'Either filePath or source must be provided'
-    )
+  if (hasFilePath && hasSource) {
+    throw new McpError(ErrorCode.InvalidParams, 'Provide either filePath or source, not both')
   }
-  return hasFilePath ? { filePath } : { source: source as string }
+  if (hasFilePath) {
+    return { filePath }
+  }
+  if (hasSource) {
+    return { source }
+  }
+  throw new McpError(ErrorCode.InvalidParams, 'Either filePath or source must be provided')
 }
 
 export function parseReadChunkNeighborsInput(raw: unknown): ReadChunkNeighborsInput {
   const { filePath, source, chunkIndex, before, after } = asRecord(raw, 'read_chunk_neighbors')
-  if (!Number.isInteger(chunkIndex) || (chunkIndex as number) < 0) {
+  if (!isInteger(chunkIndex) || chunkIndex < 0) {
     throw new McpError(ErrorCode.InvalidParams, 'chunkIndex must be a non-negative integer')
   }
   for (const [label, value] of [
     ['before', before],
     ['after', after],
   ] as const) {
-    if (value !== undefined && (!Number.isInteger(value) || (value as number) < 0)) {
+    if (value !== undefined && (!isInteger(value) || value < 0)) {
       throw new McpError(ErrorCode.InvalidParams, `${label} must be a non-negative integer`)
     }
     if (typeof value === 'number' && value > MAX_NEIGHBOR_COUNT) {
@@ -212,9 +210,9 @@ export function parseReadChunkNeighborsInput(raw: unknown): ReadChunkNeighborsIn
   const ref = parseDeleteFileInput({ filePath, source })
   return {
     ...ref,
-    chunkIndex: chunkIndex as number,
-    ...(before !== undefined ? { before: before as number } : {}),
-    ...(after !== undefined ? { after: after as number } : {}),
+    chunkIndex,
+    ...(isInteger(before) ? { before } : {}),
+    ...(isInteger(after) ? { after } : {}),
   }
 }
 

@@ -271,24 +271,71 @@ export function planSync(input: SyncPlanInput): SyncPlan {
   const isInRequestedScope = (rowKey: string): boolean =>
     requestedFileKey === null ? isKeyUnder(rowKey, scopePrefixes) : rowKey === requestedFileKey
 
-  const diskByKey = new Map<string, SyncDiskFile>()
-  for (const file of input.diskFiles) {
-    const fileKey = keyOf(file.filePath)
-    if (!diskByKey.has(fileKey)) diskByKey.set(fileKey, file)
-  }
+  const diskByKey = groupDiskFilesByKey(input.diskFiles, keyOf)
+  const storedByKey = groupStoredRowsByKey(input.dbRows, keyOf)
+  const { upserts, skipped } = planUpserts(diskByKey, storedByKey)
 
-  const storedByKey = new Map<string, StoredGroup>()
-  for (const row of input.dbRows) {
-    const rowKey = keyOf(row.filePath)
-    let group = storedByKey.get(rowKey)
-    if (!group) {
-      group = { paths: [], hashes: [] }
-      storedByKey.set(rowKey, group)
+  const unobservedPrefixes = [
+    ...input.coverage.unreadableDirs.map((dir) => dir.dirPath),
+    ...input.coverage.depthLimitedDirs,
+    ...input.coverage.skippedSymlinks,
+    ...input.coverage.oversizedFiles,
+  ]
+
+  const prunes: SyncPruneAction[] = []
+  for (const [rowKey, group] of storedByKey) {
+    const survives =
+      diskByKey.has(rowKey) ||
+      !isInRequestedScope(rowKey) ||
+      isKeyUnder(rowKey, unobservedPrefixes) ||
+      isKeyUnder(rowKey, input.excludePaths) ||
+      group.paths.some((path) => isManagedRawDataPath(path, input.dbPath))
+    if (!survives) {
+      prunes.push({ storedPaths: group.paths })
     }
-    if (!group.paths.includes(row.filePath)) group.paths.push(row.filePath)
-    group.hashes.push(row.contentHash ?? null)
   }
 
+  return { upserts, skipped, prunes }
+}
+
+/** First disk spelling wins for each comparison key. */
+function groupDiskFilesByKey(
+  diskFiles: readonly SyncDiskFile[],
+  keyOf: (path: string) => string
+): Map<string, SyncDiskFile> {
+  const diskByKey = new Map<string, SyncDiskFile>()
+  for (const file of diskFiles) {
+    const fileKey = keyOf(file.filePath)
+    if (!diskByKey.has(fileKey)) {
+      diskByKey.set(fileKey, file)
+    }
+  }
+  return diskByKey
+}
+
+/** Collect every stored spelling and hash that shares a comparison key. */
+function groupStoredRowsByKey(
+  dbRows: SyncPlanInput['dbRows'],
+  keyOf: (path: string) => string
+): Map<string, StoredGroup> {
+  const storedByKey = new Map<string, StoredGroup>()
+  for (const row of dbRows) {
+    const rowKey = keyOf(row.filePath)
+    const group = storedByKey.get(rowKey) ?? { paths: [], hashes: [] }
+    if (!group.paths.includes(row.filePath)) {
+      group.paths.push(row.filePath)
+    }
+    group.hashes.push(row.contentHash ?? null)
+    storedByKey.set(rowKey, group)
+  }
+  return storedByKey
+}
+
+/** A disk file is skipped when the index already agrees with it. */
+function planUpserts(
+  diskByKey: Map<string, SyncDiskFile>,
+  storedByKey: Map<string, StoredGroup>
+): { upserts: SyncUpsertAction[]; skipped: number } {
   const upserts: SyncUpsertAction[] = []
   let skipped = 0
   for (const [fileKey, file] of diskByKey) {
@@ -304,25 +351,7 @@ export function planSync(input: SyncPlanInput): SyncPlan {
       staleStoredPaths: (group?.paths ?? []).filter((path) => path !== file.filePath),
     })
   }
-
-  const unobservedPrefixes = [
-    ...input.coverage.unreadableDirs.map((dir) => dir.dirPath),
-    ...input.coverage.depthLimitedDirs,
-    ...input.coverage.skippedSymlinks,
-    ...input.coverage.oversizedFiles,
-  ]
-
-  const prunes: SyncPruneAction[] = []
-  for (const [rowKey, group] of storedByKey) {
-    if (diskByKey.has(rowKey)) continue
-    if (!isInRequestedScope(rowKey)) continue
-    if (isKeyUnder(rowKey, unobservedPrefixes)) continue
-    if (isKeyUnder(rowKey, input.excludePaths)) continue
-    if (group.paths.some((path) => isManagedRawDataPath(path, input.dbPath))) continue
-    prunes.push({ storedPaths: group.paths })
-  }
-
-  return { upserts, skipped, prunes }
+  return { upserts, skipped }
 }
 
 // ============================================
@@ -399,7 +428,9 @@ async function isRequestedPathContained(
       isUnderOrEqual(toSyncPathKey(path, platform), toSyncPathKey(prefix, platform))
     )
 
-  if (!isUnderAny(requestedPath, input.roots)) return false
+  if (!isUnderAny(requestedPath, input.roots)) {
+    return false
+  }
   const canonicalPath = await input.collaborators.canonicalizeRequestedPath(requestedPath)
   return canonicalPath !== null && isUnderAny(canonicalPath, input.canonicalRoots)
 }
@@ -415,64 +446,102 @@ async function isRequestedPathContained(
  * A zero-chunk ingest counts as `empty` and mutates nothing for that file, so
  * its prior rows stay searchable and the next run plans it again.
  */
-export async function executeSyncPlan(
+/** Counters and failure state shared by both execution passes. */
+interface ExecutionState {
+  upserted: number
+  empty: number
+  pruned: number
+  mutated: boolean
+  error: SyncError | null
+  prunedPaths: string[]
+}
+
+/** Ingest every planned file, stopping at the first failure. */
+async function runUpserts(
   plan: SyncPlan,
   executor: SyncExecutor,
-  images = false
-): Promise<SyncExecutionResult> {
-  let upserted = 0
-  let empty = 0
-  let pruned = 0
-  let mutated = false
-  let error: SyncError | null = null
-  const prunedPaths: string[] = []
-
+  images: boolean,
+  state: ExecutionState
+): Promise<void> {
   for (const action of plan.upserts) {
     try {
       const chunkCount = await executor.ingestFile(action.filePath, images)
       if (chunkCount === 0) {
-        empty += 1
+        state.empty += 1
         continue
       }
-      upserted += 1
-      mutated = true
+      state.upserted += 1
+      state.mutated = true
       // After the insert, not before: a zero-chunk result must leave every
       // stored spelling of this key untouched.
       for (const stalePath of action.staleStoredPaths) {
         await executor.deleteExactPath(stalePath)
       }
     } catch (caught) {
-      error = { message: toMessage(caught), filePath: action.filePath }
-      break
+      state.error = { message: toMessage(caught), filePath: action.filePath }
+      return
     }
   }
+}
 
-  if (error === null) {
-    for (const action of plan.prunes) {
-      const [reported] = action.storedPaths
-      try {
-        for (const storedPath of action.storedPaths) {
-          await executor.deleteExactPath(storedPath)
-          mutated = true
-        }
-        pruned += 1
-        if (reported !== undefined) prunedPaths.push(reported)
-      } catch (caught) {
-        error = { message: toMessage(caught), filePath: reported ?? null }
-        break
+/** Delete every planned stale group, stopping at the first failure. */
+async function runPrunes(
+  plan: SyncPlan,
+  executor: SyncExecutor,
+  state: ExecutionState
+): Promise<void> {
+  for (const action of plan.prunes) {
+    const [reported] = action.storedPaths
+    try {
+      for (const storedPath of action.storedPaths) {
+        await executor.deleteExactPath(storedPath)
+        state.mutated = true
       }
+      state.pruned += 1
+      if (reported !== undefined) {
+        state.prunedPaths.push(reported)
+      }
+    } catch (caught) {
+      state.error = { message: toMessage(caught), filePath: reported ?? null }
+      return
     }
   }
+}
 
-  if (error === null && mutated) {
+export async function executeSyncPlan(
+  plan: SyncPlan,
+  executor: SyncExecutor,
+  images = false
+): Promise<SyncExecutionResult> {
+  const state: ExecutionState = {
+    upserted: 0,
+    empty: 0,
+    pruned: 0,
+    mutated: false,
+    error: null,
+    prunedPaths: [],
+  }
+
+  await runUpserts(plan, executor, images, state)
+  if (state.error === null) {
+    await runPrunes(plan, executor, state)
+  }
+  if (state.error === null && state.mutated) {
     try {
       await executor.optimize()
     } catch (caught) {
-      error = { message: toMessage(caught), filePath: null }
+      state.error = { message: toMessage(caught), filePath: null }
     }
   }
 
-  return { upserted, skipped: plan.skipped, empty, pruned, prunedPaths, error }
+  return {
+    upserted: state.upserted,
+    skipped: plan.skipped,
+    empty: state.empty,
+    pruned: state.pruned,
+    prunedPaths: state.prunedPaths,
+    error: state.error,
+  }
 }
 
 // ============================================
@@ -496,6 +565,37 @@ type GatherOutcome =
  * `attributedPath` tracks what a thrown error should be blamed on, so an
  * orchestration failure still names the file, root, or requested path involved.
  */
+/**
+ * Resolve what a sync run addresses and which directories it must walk.
+ *
+ * Containment is checked first, and against canonical values: a path reaching
+ * outside a configured root through a symlinked ancestor is refused before
+ * anything classifies, walks, hashes, or ingests it. Classification then
+ * happens before any read, so a link, an irregular file, an excluded path, or
+ * an unsupported extension is refused rather than read and hashed.
+ */
+async function resolveSyncRequest(
+  input: RunSyncInput
+): Promise<{ request: SyncRequest; scanRoots: readonly string[] }> {
+  const requestedPath = input.requestedPath
+  if (requestedPath === undefined) {
+    return { request: { kind: 'roots' }, scanRoots: input.roots }
+  }
+  if (!(await isRequestedPathContained(requestedPath, input))) {
+    throw new Error(outsideConfiguredRootsMessage(requestedPath))
+  }
+  const kind = await input.collaborators.classifyPath(requestedPath)
+  if (kind !== 'directory' && kind !== 'file') {
+    throw new Error(requestedPathRejection(kind, requestedPath))
+  }
+  // An explicit directory becomes its own depth-zero BFS root; an explicit
+  // file needs no directory walk and no depth evaluation at all.
+  return {
+    request: { kind, path: requestedPath },
+    scanRoots: kind === 'directory' ? [requestedPath] : [],
+  }
+}
+
 async function gatherSyncInputs(input: RunSyncInput): Promise<GatherOutcome> {
   const { collaborators, platform } = input
   const coverage: SyncCoverage = {
@@ -508,33 +608,10 @@ async function gatherSyncInputs(input: RunSyncInput): Promise<GatherOutcome> {
 
   try {
     const requestedPath = input.requestedPath
-    let request: SyncRequest
-    let scanRoots: readonly string[]
-
-    if (requestedPath === undefined) {
-      request = { kind: 'roots' }
-      scanRoots = input.roots
-    } else {
+    if (requestedPath !== undefined) {
       attributedPath = requestedPath
-      // Containment first, and against canonical values: a path that reaches
-      // outside a configured root through a symlinked ancestor must be refused
-      // before anything classifies, walks, hashes, or ingests it.
-      if (!(await isRequestedPathContained(requestedPath, input))) {
-        throw new Error(outsideConfiguredRootsMessage(requestedPath))
-      }
-      // Classification happens before any read, and only a directory or a
-      // supported regular file survives it: a link, an irregular file, an
-      // excluded path, or an unsupported extension is refused here rather than
-      // after its bytes have been read and hashed.
-      const kind = await collaborators.classifyPath(requestedPath)
-      if (kind !== 'directory' && kind !== 'file') {
-        throw new Error(requestedPathRejection(kind, requestedPath))
-      }
-      request = { kind, path: requestedPath }
-      // An explicit directory becomes its own depth-zero BFS root; an explicit
-      // file needs no directory walk and no depth evaluation at all.
-      scanRoots = kind === 'directory' ? [requestedPath] : []
     }
+    const { request, scanRoots } = await resolveSyncRequest(input)
 
     const scannedFiles: string[] = []
     for (const root of scanRoots) {
@@ -554,7 +631,9 @@ async function gatherSyncInputs(input: RunSyncInput): Promise<GatherOutcome> {
     const diskByKey = new Map<string, string>()
     for (const filePath of scannedFiles) {
       const fileKey = toSyncPathKey(filePath, platform)
-      if (!diskByKey.has(fileKey)) diskByKey.set(fileKey, filePath)
+      if (!diskByKey.has(fileKey)) {
+        diskByKey.set(fileKey, filePath)
+      }
     }
 
     const diskFiles: SyncDiskFile[] = []

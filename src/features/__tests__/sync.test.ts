@@ -575,7 +575,9 @@ function createExecutor(
       },
       optimize: async () => {
         log.push('optimize')
-        if (overrides.optimize) await overrides.optimize()
+        if (overrides.optimize) {
+          await overrides.optimize()
+        }
       },
     },
   }
@@ -687,7 +689,9 @@ describe('executeSyncPlan — first error stops the run (SYNC-004)', () => {
   it('suppresses later upserts, all prune, and optimize after the first failure', async () => {
     const { executor, log } = createExecutor({
       ingest: async (filePath) => {
-        if (filePath === `${ROOT}/b.md`) throw new Error('embedding failed')
+        if (filePath === `${ROOT}/b.md`) {
+          throw new Error('embedding failed')
+        }
         return 2
       },
     })
@@ -715,7 +719,9 @@ describe('executeSyncPlan — first error stops the run (SYNC-004)', () => {
   it('stops at the first prune failure and skips optimize', async () => {
     const { executor, log } = createExecutor({
       remove: async (filePath) => {
-        if (filePath === `${ROOT}/second.md`) throw new Error('delete failed')
+        if (filePath === `${ROOT}/second.md`) {
+          throw new Error('delete failed')
+        }
         return 1
       },
     })
@@ -748,7 +754,9 @@ describe('executeSyncPlan — first error stops the run (SYNC-004)', () => {
   it('aborts the whole run when deleting a stale stored spelling fails mid-upsert', async () => {
     const { executor, log } = createExecutor({
       remove: async (filePath) => {
-        if (filePath === `${ROOT}/a-2.md`) throw new Error('delete failed')
+        if (filePath === `${ROOT}/a-2.md`) {
+          throw new Error('delete failed')
+        }
         return 1
       },
     })
@@ -850,12 +858,16 @@ function createCollaborators(setup: FakeSetup = {}): {
         }
         log.push(`hash:${filePath}`)
         const hash = setup.hashes?.[filePath]
-        if (hash === undefined) throw new Error(`no fixture hash for ${filePath}`)
+        if (hash === undefined) {
+          throw new Error(`no fixture hash for ${filePath}`)
+        }
         return hash
       },
       loadDbManifest: async () => {
         log.push('manifest')
-        if (setup.loadDbManifest) return await setup.loadDbManifest()
+        if (setup.loadDbManifest) {
+          return await setup.loadDbManifest()
+        }
         return setup.dbRows ?? []
       },
       ingestFile: async (filePath) => {
@@ -1268,8 +1280,8 @@ describe('runSync — gathering', () => {
 describe('sync executor against a real VectorStore (Early Verification Point)', () => {
   const VECTOR_DIMENSION = 384
 
-  function fakeVector(seed: number): number[] {
-    const raw = Array.from({ length: VECTOR_DIMENSION }, (_, index) => Math.sin(seed + index))
+  function fakeVector(offset: number): number[] {
+    const raw = Array.from({ length: VECTOR_DIMENSION }, (_, index) => Math.sin(offset + index))
     const norm = Math.sqrt(raw.reduce((sum, value) => sum + value * value, 0))
     return raw.map((value) => value / norm)
   }
@@ -1279,13 +1291,17 @@ describe('sync executor against a real VectorStore (Early Verification Point)', 
     body: (store: VectorStore, dbPath: string) => Promise<void>
   ): Promise<void> {
     const dbPath = `./tmp/test-sync-${name}`
-    if (fs.existsSync(dbPath)) fs.rmSync(dbPath, { recursive: true })
+    if (fs.existsSync(dbPath)) {
+      fs.rmSync(dbPath, { recursive: true })
+    }
     try {
       const store = new VectorStore({ dbPath, tableName: 'chunks' })
       await store.initialize()
       await body(store, dbPath)
     } finally {
-      if (fs.existsSync(dbPath)) fs.rmSync(dbPath, { recursive: true })
+      if (fs.existsSync(dbPath)) {
+        fs.rmSync(dbPath, { recursive: true })
+      }
     }
   }
 
@@ -1327,7 +1343,9 @@ describe('sync executor against a real VectorStore (Early Verification Point)', 
   ): (filePath: string) => Promise<number> {
     return async (filePath) => {
       log.push(`ingest:${filePath}`)
-      if (filePath === failOn) throw new Error('induced ingest failure')
+      if (filePath === failOn) {
+        throw new Error('induced ingest failure')
+      }
       const chunks = buildVectorChunks({
         filePath,
         chunks: [

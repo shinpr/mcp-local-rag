@@ -10,6 +10,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { DocumentParser, ValidationError } from '../../parser/index.js'
 import { RAGServer } from '../../server/index.js'
 import { testModelCacheDir, withTestDevice } from '../test-device.js'
+import { asDouble, expectError, privateMembers } from '../test-doubles.js'
 
 // ============================================
 // Test Configuration
@@ -43,11 +44,13 @@ type RegisteredHandler = (
 ) => Promise<{ content: { type: string; text: string }[] }>
 
 async function dispatchTool(server: RAGServer, name: string, args: unknown): Promise<void> {
-  const inner = server as unknown as {
+  const inner = privateMembers<{
     server: { _requestHandlers: Map<string, RegisteredHandler> }
-  }
+  }>(server)
   const handler = inner.server._requestHandlers.get('tools/call')
-  if (handler === undefined) throw new Error('tools/call handler not registered')
+  if (handler === undefined) {
+    throw new Error('tools/call handler not registered')
+  }
   await handler(
     { method: 'tools/call', params: { name, arguments: args } },
     { signal: new AbortController().signal }
@@ -58,10 +61,12 @@ function createNetworkMonitor(): NetworkMonitor {
   const requests: string[] = []
   const originalFetch = global.fetch
 
-  global.fetch = vi.fn(async (url: RequestInfo | URL) => {
-    requests.push(url.toString())
-    return originalFetch(url)
-  }) as typeof fetch
+  global.fetch = asDouble<typeof fetch>(
+    vi.fn(async (url: RequestInfo | URL) => {
+      requests.push(url.toString())
+      return originalFetch(url)
+    })
+  )
 
   return {
     requests,
@@ -208,7 +213,9 @@ This approach provides accurate search results for natural language queries.`
     // not file extension filtering.
     it('Symbolic link pointing outside baseDir rejected with ValidationError about BASE_DIR', async () => {
       // Symlinks require Developer Mode on Windows; skip if unavailable
-      if (process.platform === 'win32') return
+      if (process.platform === 'win32') {
+        return
+      }
       const parser = new DocumentParser({
         baseDir: fixturesDir,
         maxFileSize: 100 * 1024 * 1024,
@@ -377,7 +384,7 @@ The chunker requires sufficient text length to generate meaningful chunks.`
         await dispatchTool(server, 'ingest_file', { filePath: sampleFile })
         expect.fail('Expected error to be thrown')
       } catch (error) {
-        const errorMessage = (error as Error).message
+        const errorMessage = expectError(error).message
 
         // The internal failure surfaces (with the ingest_file prefix applied by
         // the central mapper), but without stack-trace details.
@@ -408,7 +415,7 @@ The chunker requires sufficient text length to generate meaningful chunks.`
         await dispatchTool(server, 'ingest_file', { filePath: sampleFile })
         expect.fail('Expected error to be thrown')
       } catch (error) {
-        const errorMessage = (error as Error).message
+        const errorMessage = expectError(error).message
 
         // The internal failure message still surfaces, but the client message
         // never carries stack-trace details even in development mode (the

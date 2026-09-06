@@ -7,6 +7,7 @@ import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { testModelCacheDir, withTestDevice } from '../../__tests__/test-device.js'
+import { privateMembers } from '../../__tests__/test-doubles.js'
 import type { VectorChunk, VectorStore } from '../../vectordb/index.js'
 import { RAGServer } from '../index.js'
 
@@ -15,7 +16,7 @@ function createTestRagServer(config: ConstructorParameters<typeof RAGServer>[0])
 }
 
 function getVectorStore(server: RAGServer): VectorStore {
-  return (server as unknown as { vectorStore: VectorStore }).vectorStore
+  return privateMembers<{ vectorStore: VectorStore }>(server).vectorStore
 }
 
 describe('read_chunk_neighbors performance', () => {

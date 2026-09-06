@@ -19,7 +19,7 @@ export class VlmError extends AppError {
   public readonly pageNum: number
 
   constructor(message: string, options: { cause?: Error; pageNum: number }) {
-    super(message, 'pdf-visual', 'internal', options.cause)
+    super(message, 'pdf-visual', 'internal', options)
     this.name = 'VlmError'
     this.pageNum = options.pageNum
   }

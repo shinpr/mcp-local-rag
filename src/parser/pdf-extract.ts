@@ -8,7 +8,9 @@
 //     emits `block.type === 'image'` entries for the downstream
 //     visual-candidate detector.
 
-import type { Document as MupdfDocument } from 'mupdf'
+import type { Document as MupdfDocument, Page as MupdfPage } from 'mupdf'
+
+import { isRecord } from '../utils/type-guards.js'
 import {
   type EmbedderInterface,
   type FilteredTextFragment,
@@ -31,6 +33,8 @@ interface StextBbox {
 interface StextJson {
   blocks: Array<{
     type: string
+    /** Present on image blocks; the visual detector reads it to locate rasters. */
+    bbox?: StextBbox
     lines?: Array<{
       text: string
       x: number
@@ -39,6 +43,77 @@ interface StextJson {
       font: { size: number; name?: string; weight?: string }
     }>
   }>
+}
+
+/**
+ * Rebuild mupdf's structured-text JSON as {@link StextJson}. The JSON crosses a
+ * native boundary, so each field the per-page loop reads is checked here once
+ * and malformed blocks or lines are dropped rather than trusted downstream.
+ */
+function toStextJson(parsed: unknown): StextJson {
+  if (!isRecord(parsed) || !Array.isArray(parsed['blocks'])) {
+    return { blocks: [] }
+  }
+  const blocks: StextJson['blocks'] = []
+  for (const rawBlock of parsed['blocks']) {
+    if (!isRecord(rawBlock) || typeof rawBlock['type'] !== 'string') {
+      continue
+    }
+    const bbox = rawBlock['bbox']
+    const base = { type: rawBlock['type'], ...(isStextBbox(bbox) ? { bbox } : {}) }
+    const rawLines = rawBlock['lines']
+    if (!Array.isArray(rawLines)) {
+      blocks.push(base)
+      continue
+    }
+    const lines: NonNullable<StextJson['blocks'][number]['lines']> = []
+    for (const rawLine of rawLines) {
+      const line = toStextLine(rawLine)
+      if (line !== null) {
+        lines.push(line)
+      }
+    }
+    blocks.push({ ...base, lines })
+  }
+  return { blocks }
+}
+
+function toStextLine(
+  rawLine: unknown
+): NonNullable<StextJson['blocks'][number]['lines']>[number] | null {
+  if (!isRecord(rawLine)) {
+    return null
+  }
+  const { text, x, y, bbox, font } = rawLine
+  if (typeof text !== 'string' || typeof x !== 'number' || typeof y !== 'number') {
+    return null
+  }
+  if (!isRecord(font) || typeof font['size'] !== 'number') {
+    return null
+  }
+  const name = font['name']
+  const weight = font['weight']
+  return {
+    text,
+    x,
+    y,
+    ...(isStextBbox(bbox) ? { bbox } : {}),
+    font: {
+      size: font['size'],
+      ...(typeof name === 'string' ? { name } : {}),
+      ...(typeof weight === 'string' ? { weight } : {}),
+    },
+  }
+}
+
+function isStextBbox(value: unknown): value is StextBbox {
+  return (
+    isRecord(value) &&
+    typeof value['x'] === 'number' &&
+    typeof value['y'] === 'number' &&
+    typeof value['w'] === 'number' &&
+    typeof value['h'] === 'number'
+  )
 }
 
 /**
@@ -89,6 +164,76 @@ interface ExtractedPdf {
  * Lifecycle: this helper does NOT call `doc.destroy()` — disposal stays
  * with the caller.
  */
+/** Read one page's structured text, releasing the native handle either way. */
+function readPageStext(page: MupdfPage, stextOptions: string): StextJson {
+  const stext = page.toStructuredText(stextOptions)
+  try {
+    return toStextJson(JSON.parse(stext.asJSON()))
+  } finally {
+    stext.destroy()
+  }
+}
+
+/** Flatten a page's text blocks into the layout items the filters consume. */
+type StextLine = NonNullable<StextJson['blocks'][number]['lines']>[number]
+
+/** One structured-text line as the layout filters consume it. */
+function toLineItem(
+  line: StextLine,
+  pageHeight: number,
+  blockOrdinal: number,
+  lineOrdinal: number
+): PageData['items'][number] {
+  const bbox = line.bbox
+  return {
+    text: line.text.replace(/\t/g, ' '),
+    x: line.x,
+    // Invert Y only for the legacy boundary detector; bbox remains in MuPDF coordinates.
+    y: pageHeight - line.y,
+    fontSize: line.font.size,
+    hasEOL: true,
+    ...(line.font.name !== undefined ? { fontName: line.font.name } : {}),
+    ...(line.font.weight !== undefined ? { fontWeight: line.font.weight } : {}),
+    blockOrdinal,
+    lineOrdinal,
+    bbox: bbox
+      ? [bbox.x, bbox.y, bbox.x + bbox.w, bbox.y + bbox.h]
+      : [line.x, line.y, line.x, line.y],
+  }
+}
+
+function collectLineItems(json: StextJson, pageHeight: number): PageData['items'] {
+  const items: PageData['items'] = []
+  json.blocks.forEach((block, blockOrdinal) => {
+    if (block.type !== 'text' || !block.lines) {
+      return
+    }
+    block.lines.forEach((line, lineOrdinal) => {
+      items.push(toLineItem(line, pageHeight, blockOrdinal, lineOrdinal))
+    })
+  })
+  return items
+}
+
+/** Concatenate page 1's consecutive largest-font lines as a title hint. */
+function largestFontTitleHint(
+  page1Items: PageData['items']
+): { text: string; fontSize: number } | undefined {
+  const maxFontSize = page1Items.reduce((max, item) => Math.max(max, item.fontSize), 0)
+  if (maxFontSize <= 0) {
+    return undefined
+  }
+  const titleLines: string[] = []
+  for (const item of page1Items) {
+    if (item.fontSize === maxFontSize) {
+      titleLines.push(item.text.trim())
+    } else if (titleLines.length > 0) {
+      break
+    }
+  }
+  return titleLines.length > 0 ? { text: titleLines.join(' '), fontSize: maxFontSize } : undefined
+}
+
 export async function extractPdfPages(
   doc: MupdfDocument,
   embedder: EmbedderInterface,
@@ -104,76 +249,24 @@ export async function extractPdfPages(
     try {
       const bounds = page.getBounds() // [x0, y0, x1, y1]
       const pageHeight = bounds[3] - bounds[1]
-      let json: StextJson
-      const stext = page.toStructuredText(stextOptions)
-      try {
-        json = JSON.parse(stext.asJSON()) as StextJson
-      } finally {
-        stext.destroy?.()
-      }
-
-      const items: PageData['items'] = []
-      for (let blockOrdinal = 0; blockOrdinal < json.blocks.length; blockOrdinal++) {
-        const block = json.blocks[blockOrdinal]
-        if (block?.type !== 'text' || !block.lines) continue
-        for (let lineOrdinal = 0; lineOrdinal < block.lines.length; lineOrdinal++) {
-          const line = block.lines[lineOrdinal]
-          if (!line) continue
-          const bbox = line.bbox
-          items.push({
-            text: line.text.replace(/\t/g, ' '),
-            x: line.x,
-            // Invert Y only for the legacy boundary detector; bbox remains in MuPDF coordinates.
-            y: pageHeight - line.y,
-            fontSize: line.font.size,
-            hasEOL: true,
-            ...(line.font.name !== undefined ? { fontName: line.font.name } : {}),
-            ...(line.font.weight !== undefined ? { fontWeight: line.font.weight } : {}),
-            blockOrdinal,
-            lineOrdinal,
-            bbox: bbox
-              ? [bbox.x, bbox.y, bbox.x + bbox.w, bbox.y + bbox.h]
-              : [line.x, line.y, line.x, line.y],
-          })
-        }
-      }
-
-      pageDataList.push({
-        pageNum: i + 1,
-        items,
-        pageHeight,
-      })
+      const json = readPageStext(page, stextOptions)
+      pageDataList.push({ pageNum: i + 1, items: collectLineItems(json, pageHeight), pageHeight })
       stextJsonList.push(json)
     } finally {
-      page.destroy?.()
+      page.destroy()
     }
   }
 
   // Apply sentence-level header/footer filtering while retaining each survivor's layout data.
   const filteredPages = await filterPageBoundaryLayouts(pageDataList, embedder)
 
-  // Extract largest-font lines from page 1 for title hint.
-  // Concatenate all consecutive lines with the largest font size (covers multi-line titles).
-  const page1Items = pageDataList[0]?.items ?? []
-  const maxFontSize = page1Items.reduce((max, item) => Math.max(max, item.fontSize), 0)
-  const titleLines: string[] = []
-  if (maxFontSize > 0) {
-    for (const item of page1Items) {
-      if (item.fontSize === maxFontSize) {
-        titleLines.push(item.text.trim())
-      } else if (titleLines.length > 0) {
-        break
-      }
-    }
-  }
-  const page1FontHint =
-    titleLines.length > 0 ? { text: titleLines.join(' '), fontSize: maxFontSize } : undefined
+  const page1FontHint = largestFontTitleHint(pageDataList[0]?.items ?? [])
 
   const pages: ExtractedPage[] = pageDataList.map((p, idx) => ({
     pageNum: p.pageNum,
     text: filteredPages[idx]?.text ?? '',
     textFragments: filteredPages[idx]?.textFragments ?? [],
-    stextJson: stextJsonList[idx] as StextJson,
+    stextJson: stextJsonList[idx] ?? { blocks: [] },
   }))
 
   return { pages, metadataTitle, page1FontHint }

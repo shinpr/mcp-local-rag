@@ -271,7 +271,9 @@ describe('Raw Data Utilities', () => {
     it('treats matching paths case-insensitively on win32', async () => {
       // Skip on POSIX where the filesystem is case-sensitive — the lexical
       // comparison stays strict there, matching FS semantics.
-      if (process.platform !== 'win32') return
+      if (process.platform !== 'win32') {
+        return
+      }
       const mixed = realFile.toUpperCase()
       await expect(isPathInRawDataDir(mixed, boundaryDbPath)).resolves.toBe(true)
     })

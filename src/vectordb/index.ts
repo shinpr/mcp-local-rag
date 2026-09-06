@@ -1,6 +1,7 @@
 // VectorStore implementation with LanceDB integration
 
 import { type Connection, connect, Index, type Table } from '@lancedb/lancedb'
+import { toError } from '../utils/errors.js'
 import { MAX_QUERY_LIMIT, MIN_QUERY_LIMIT } from '../utils/limits.js'
 import { normalizeScopePrefix } from '../utils/scope-match.js'
 import { applyFileFilter, applyGrouping, applyKeywordBoost } from './search-filters.js'
@@ -50,7 +51,7 @@ export class VectorStore {
   private table: Table | null = null
   private openingTable: Promise<void> | null = null
   private readonly config: VectorStoreConfig
-  private ftsEnabled = false
+  private ftsEnabled: boolean = false
 
   constructor(config: VectorStoreConfig) {
     this.config = config
@@ -72,25 +73,31 @@ export class VectorStore {
 
       console.error(`VectorStore initialized: ${this.config.dbPath}`)
     } catch (error) {
-      throw new DatabaseError('Failed to initialize VectorStore', error as Error)
+      throw new DatabaseError('Failed to initialize VectorStore', { cause: toError(error) })
     }
   }
 
   /** Discover a table created after this connection was initialized. */
   private async openExistingTable(): Promise<void> {
-    if (this.openingTable) return this.openingTable
-    if (this.table || !this.db) return
+    if (this.openingTable !== null) {
+      return this.openingTable
+    }
+    if (this.table || !this.db) {
+      return
+    }
     const db = this.db
-    this.openingTable = (async () => {
+    this.openingTable = (async (): Promise<void> => {
       try {
-        if (!(await db.tableNames()).includes(this.config.tableName)) return
+        if (!(await db.tableNames()).includes(this.config.tableName)) {
+          return
+        }
         this.table = await db.openTable(this.config.tableName)
         await this.ensureFtsIndex()
         await this.ensureSchemaVersion()
       } catch (error) {
         this.table = null
         this.ftsEnabled = false
-        throw new DatabaseError('Failed to open existing table', error as Error)
+        throw new DatabaseError('Failed to open existing table', { cause: toError(error) })
       }
     })()
     try {
@@ -133,7 +140,9 @@ export class VectorStore {
       // silently across LanceDB versions and could hide real delete failures
       // as data-integrity bugs).
       console.warn(`VectorStore: Error occurred while deleting file "${filePath}":`, error)
-      throw new DatabaseError(`Failed to delete chunks for file: ${filePath}`, error as Error)
+      throw new DatabaseError(`Failed to delete chunks for file: ${filePath}`, {
+        cause: toError(error),
+      })
     }
   }
 
@@ -184,7 +193,7 @@ export class VectorStore {
       rows.sort((a, b) => a.chunkIndex - b.chunkIndex)
       return rows
     } catch (error) {
-      throw new DatabaseError('Failed to read chunks by range', error as Error)
+      throw new DatabaseError('Failed to read chunks by range', { cause: toError(error) })
     }
   }
 
@@ -210,7 +219,9 @@ export class VectorStore {
       const raw = await this.table.query().where(`\`filePath\` = '${escapedFilePath}'`).toArray()
       return raw.map((row) => toVectorChunk(row))
     } catch (error) {
-      throw new DatabaseError(`Failed to read chunks for file: ${filePath}`, error as Error)
+      throw new DatabaseError(`Failed to read chunks for file: ${filePath}`, {
+        cause: toError(error),
+      })
     }
   }
 
@@ -236,15 +247,12 @@ export class VectorStore {
         // nullable string columns need a non-null sample value for schema
         // inference. The read converters normalize each placeholder back to
         // its logical no-value state, matching what migration produces.
-        const records = chunks.map((chunk) => {
-          const record = chunk as unknown as Record<string, unknown>
-          return {
-            ...record,
-            fileTitle: record['fileTitle'] ?? '',
-            contentHash: record['contentHash'] ?? '',
-            visualAttachments: normalizeVisualAttachments(record['visualAttachments']),
-          }
-        })
+        const records = chunks.map((chunk) => ({
+          ...chunk,
+          fileTitle: chunk.fileTitle ?? '',
+          contentHash: chunk.contentHash ?? '',
+          visualAttachments: normalizeVisualAttachments(chunk.visualAttachments),
+        }))
         this.table = await this.db.createTable(this.config.tableName, records)
         console.error(`VectorStore: Created table "${this.config.tableName}"`)
 
@@ -252,19 +260,16 @@ export class VectorStore {
         await this.ensureFtsIndex()
       } else {
         // Add data to existing table
-        const records = chunks.map((chunk) => {
-          const record = chunk as unknown as Record<string, unknown>
-          return {
-            ...record,
-            visualAttachments: normalizeVisualAttachments(record['visualAttachments']),
-          }
-        })
+        const records = chunks.map((chunk) => ({
+          ...chunk,
+          visualAttachments: normalizeVisualAttachments(chunk.visualAttachments),
+        }))
         await this.table.add(records)
       }
 
       console.error(`VectorStore: Inserted ${chunks.length} chunks`)
     } catch (error) {
-      throw new DatabaseError('Failed to insert chunks', error as Error)
+      throw new DatabaseError('Failed to insert chunks', { cause: toError(error) })
     }
   }
 
@@ -375,6 +380,42 @@ export class VectorStore {
    *   limit, and scope path-prefix prefilter)
    * @returns Array of search results (sorted by distance ascending, filtered by quality settings)
    */
+  /**
+   * Rerank vector hits with BM25 scores for the same files.
+   *
+   * A failure degrades this request only: the instance keeps FTS enabled so a
+   * transient index error does not drop the server to vector-only until restart.
+   */
+  private async boostWithKeywords(
+    results: SearchResult[],
+    queryText: string,
+    hybridWeight: number
+  ): Promise<SearchResult[]> {
+    const table = this.table
+    if (!table) {
+      return results
+    }
+    try {
+      // Restrict FTS to the files the vector step already selected. Backticks
+      // are required for a camelCase column name in LanceDB.
+      const uniqueFilePaths = [...new Set(results.map((result) => result.filePath))]
+      const escapedPaths = uniqueFilePaths.map((path) => `'${path.replace(/'/g, "''")}'`)
+      const whereClause = `\`filePath\` IN (${escapedPaths.join(', ')})`
+
+      const ftsResults = await table
+        .search(queryText, 'fts', 'text')
+        .where(whereClause)
+        .select(['filePath', 'chunkIndex', 'text', 'metadata', '_score'])
+        .limit(results.length * 2) // Enough to cover all vector results
+        .toArray()
+
+      return applyKeywordBoost(results, ftsResults, hybridWeight)
+    } catch (ftsError) {
+      console.error('VectorStore: FTS search failed, using vector-only results:', ftsError)
+      return results
+    }
+  }
+
   async search(queryVector: number[], options: SearchOptions = {}): Promise<SearchResult[]> {
     const { queryText, limit = 10, scope } = options
     await this.openExistingTable()
@@ -436,30 +477,7 @@ export class VectorStore {
         hybridWeight > 0 &&
         results.length > 0
       ) {
-        try {
-          // Get unique filePaths from vector results to filter FTS search
-          const uniqueFilePaths = [...new Set(results.map((r) => r.filePath))]
-
-          // Build WHERE clause with IN for targeted FTS search
-          // Use backticks for column name (required for camelCase in LanceDB)
-          const escapedPaths = uniqueFilePaths.map((p) => `'${p.replace(/'/g, "''")}'`)
-          const whereClause = `\`filePath\` IN (${escapedPaths.join(', ')})`
-
-          const ftsResults = await this.table
-            .search(queryText, 'fts', 'text')
-            .where(whereClause)
-            .select(['filePath', 'chunkIndex', 'text', 'metadata', '_score'])
-            .limit(results.length * 2) // Enough to cover all vector results
-            .toArray()
-
-          results = applyKeywordBoost(results, ftsResults, hybridWeight)
-        } catch (ftsError) {
-          // Per-request degrade only: fall back to vector-only results for THIS
-          // query without disabling FTS on the instance. A transient FTS error
-          // (e.g. a momentary index issue) must not permanently drop the server
-          // to vector-only until restart — the next query retries hybrid search.
-          console.error('VectorStore: FTS search failed, using vector-only results:', ftsError)
-        }
+        results = await this.boostWithKeywords(results, queryText, hybridWeight)
       }
 
       // Step 4: Apply file filter after keyword boost
@@ -472,7 +490,7 @@ export class VectorStore {
       // Return top results after all filtering and boosting
       return results.slice(0, limit)
     } catch (error) {
-      throw new DatabaseError('Failed to search vectors', error as Error)
+      throw new DatabaseError('Failed to search vectors', { cause: toError(error) })
     }
   }
 
@@ -513,7 +531,9 @@ export class VectorStore {
         .toArray()
       const recordsByIdentity = new Map<string, unknown>()
       for (const record of records) {
-        if (typeof record.id !== 'string') continue
+        if (typeof record.id !== 'string') {
+          continue
+        }
         recordsByIdentity.set(record.id, record.visualAttachments)
       }
 
@@ -529,7 +549,7 @@ export class VectorStore {
       })
       return { rows, omittedCount }
     } catch (error) {
-      throw new DatabaseError('Failed to hydrate visual attachments', error as Error)
+      throw new DatabaseError('Failed to hydrate visual attachments', { cause: toError(error) })
     }
   }
 
@@ -602,7 +622,9 @@ export class VectorStore {
         const contentHash: unknown = record.contentHash
         // Type-guard parity with listFiles: skip rows missing the expected
         // string column rather than coercing via `as string`.
-        if (typeof filePath !== 'string') continue
+        if (typeof filePath !== 'string') {
+          continue
+        }
         entries.push({
           filePath,
           contentHash:
@@ -611,7 +633,7 @@ export class VectorStore {
       }
       return entries
     } catch (error) {
-      throw new DatabaseError('Failed to list chunk content hashes', error as Error)
+      throw new DatabaseError('Failed to list chunk content hashes', { cause: toError(error) })
     }
   }
 
@@ -641,20 +663,17 @@ export class VectorStore {
         const timestamp = record.timestamp
         // Type-guard parity with toSearchResult/toChunkRow: skip rows missing
         // the expected string columns rather than coercing via `as string`.
-        if (typeof filePath !== 'string' || typeof timestamp !== 'string') continue
-
-        if (fileMap.has(filePath)) {
-          const fileInfo = fileMap.get(filePath)
-          if (fileInfo) {
-            fileInfo.chunkCount += 1
-            // Keep most recent timestamp
-            if (timestamp > fileInfo.timestamp) {
-              fileInfo.timestamp = timestamp
-            }
-          }
-        } else {
-          fileMap.set(filePath, { chunkCount: 1, timestamp })
+        if (typeof filePath !== 'string' || typeof timestamp !== 'string') {
+          continue
         }
+        const fileInfo = fileMap.get(filePath)
+        if (fileInfo === undefined) {
+          fileMap.set(filePath, { chunkCount: 1, timestamp })
+          continue
+        }
+        fileInfo.chunkCount += 1
+        // Keep most recent timestamp
+        fileInfo.timestamp = timestamp > fileInfo.timestamp ? timestamp : fileInfo.timestamp
       }
 
       // Convert Map to array of objects
@@ -664,7 +683,7 @@ export class VectorStore {
         timestamp: info.timestamp,
       }))
     } catch (error) {
-      throw new DatabaseError('Failed to list files', error as Error)
+      throw new DatabaseError('Failed to list files', { cause: toError(error) })
     }
   }
 
@@ -704,7 +723,9 @@ export class VectorStore {
       const uniqueFilePaths = new Set<string>()
       for (const record of records) {
         const filePath = record.filePath
-        if (typeof filePath === 'string') uniqueFilePaths.add(filePath)
+        if (typeof filePath === 'string') {
+          uniqueFilePaths.add(filePath)
+        }
       }
       const documentCount = uniqueFilePaths.size
 
@@ -726,7 +747,7 @@ export class VectorStore {
             : 'vector-only',
       }
     } catch (error) {
-      throw new DatabaseError('Failed to get status', error as Error)
+      throw new DatabaseError('Failed to get status', { cause: toError(error) })
     }
   }
 
@@ -736,7 +757,7 @@ export class VectorStore {
   async close(): Promise<void> {
     if (this.db) {
       // LanceDB Connections should be closed to release file handles
-      await this.db.close()
+      this.db.close()
       this.db = null
       this.table = null
       this.ftsEnabled = false

@@ -37,6 +37,7 @@ import { parseHtml } from '../parser/html-parser.js'
 import { DocumentParser, ValidationError } from '../parser/index.js'
 import { extractMarkdownTitle, extractTxtTitle } from '../parser/title-extractor.js'
 import { type BaseDirsConfigError, displayPath } from '../utils/base-dirs.js'
+import { toError } from '../utils/errors.js'
 import { MAX_SCAN_DEPTH } from '../utils/limits.js'
 import {
   checkRawDataArtifacts,
@@ -57,6 +58,7 @@ import {
   classifyRequestedPath,
 } from '../utils/scan.js'
 import { nonAbsolutePrefixes } from '../utils/scope-match.js'
+import { isRecord } from '../utils/type-guards.js'
 import { type VectorChunk, VectorStore } from '../vectordb/index.js'
 import { DatabaseError } from '../vectordb/types.js'
 import {
@@ -130,6 +132,23 @@ const ATTACHMENT_WARNING_ANNOTATIONS = {
 
 type QueryContent = [RagTextContentBlock, ...RagContentBlock[]]
 
+/**
+ * What one ingest source contributed before rows are stored. Raw-data sources
+ * arrive as finished `vectorChunks`; parsed files arrive as a `preparedFile`
+ * whose rows are built later, after the backup read.
+ */
+interface PreparedIngestSource {
+  title: string | null
+  omittedImageCount: number
+  vectorChunks?: VectorChunk[]
+  preparedFile?: PreparedFileIngest
+}
+
+/** Wrap a parser-normalized scalar-or-array input into an array. */
+function toArray(value: string | string[]): string[] {
+  return Array.isArray(value) ? value : [value]
+}
+
 function attachmentOmissionWarning(omittedCount: number): RagTextContentBlock {
   return {
     type: 'text',
@@ -158,8 +177,11 @@ const MUTATION_TOOLS: ReadonlySet<string> = new Set([
   'delete_file',
 ])
 
-const packageVersion = (createRequire(import.meta.url)('../../package.json') as { version: string })
-  .version
+const packageManifest: unknown = createRequire(import.meta.url)('../../package.json')
+const packageVersion =
+  isRecord(packageManifest) && typeof packageManifest['version'] === 'string'
+    ? packageManifest['version']
+    : '0.0.0'
 
 /**
  * Zero-chunk outcome of {@link RAGServer.handleIngestFile}, raised before any
@@ -206,6 +228,12 @@ function coverageWarnings(coverage: SyncCoverage, maxFileSize: number): string[]
 }
 
 /** RAG server compliant with MCP Protocol */
+/** Formats whose embedded images this server can extract. */
+function supportsEmbeddedImages(filePath: string): boolean {
+  const lower = filePath.toLowerCase()
+  return lower.endsWith('.pdf') || lower.endsWith('.docx')
+}
+
 export class RAGServer {
   private readonly server: Server
   private readonly vectorStore: VectorStore
@@ -263,7 +291,7 @@ export class RAGServer {
    * mutation clears it when the request completes; a sync keeps it until its
    * job reaches a terminal state.
    */
-  private mutationInFlight = false
+  private mutationInFlight: boolean = false
 
   constructor(config: RAGServerConfig) {
     this.dbPath = config.dbPath
@@ -417,7 +445,9 @@ export class RAGServer {
         // cannot reacquire it and self-deadlock.
         if (MUTATION_TOOLS.has(toolName)) {
           const overlap = this.acquireMutation()
-          if (overlap !== null) return overlap
+          if (overlap !== null) {
+            return overlap
+          }
         }
         // `sync_start` hands the guard to the job it schedules, which releases
         // it on the terminal transition; every other mutation is request-scoped
@@ -460,7 +490,9 @@ export class RAGServer {
           logError(toolName, error)
           throw toMcpError(error, context)
         } finally {
-          if (releaseWhenRequestEnds) this.releaseMutation()
+          if (releaseWhenRequestEnds) {
+            this.releaseMutation()
+          }
         }
       }
     )
@@ -493,9 +525,7 @@ export class RAGServer {
     const searchResults = await this.vectorStore.search(queryVector, {
       queryText: args.query,
       limit: args.limit ?? 10,
-      ...(args.scope !== undefined
-        ? { scope: Array.isArray(args.scope) ? args.scope : [args.scope] }
-        : {}),
+      ...(args.scope !== undefined ? { scope: toArray(args.scope) } : {}),
     })
 
     // Format results with source restoration for raw-data files
@@ -562,7 +592,9 @@ export class RAGServer {
       }
     }
 
-    if (attachmentWarning) content.push(attachmentWarning)
+    if (attachmentWarning) {
+      content.push(attachmentWarning)
+    }
 
     // Append config warnings on every call because MCP clients may hide
     // stderr and may not retain context across calls.
@@ -583,7 +615,9 @@ export class RAGServer {
   ): Promise<{ content: RagTextContentBlock[] }> {
     const result = await this.ingestFile(parseIngestFileInput(raw), options)
     // Insertion has committed. Maintenance errors must not restore old rows.
-    if (options.skipOptimize !== true) await this.vectorStore.optimize()
+    if (options.skipOptimize !== true) {
+      await this.vectorStore.optimize()
+    }
     return {
       content: this.withWarnings([
         {
@@ -591,6 +625,80 @@ export class RAGServer {
           text: JSON.stringify(result, null, 2),
         },
       ]),
+    }
+  }
+
+  /** What one ingest source contributed, before rows are built and stored. */
+  private async prepareRawDataIngest(filePath: string): Promise<PreparedIngestSource> {
+    // Raw-data files: skip parser validation, read directly.
+    const sourceBytes = await readFile(filePath)
+    const text = sourceBytes.toString('utf-8')
+    const meta = await loadMetaJson(filePath)
+    const title = meta?.title ?? null
+    console.error(`Read raw-data file: ${filePath} (${text.length} characters)`)
+    const { chunks, embeddings } = await buildChunksAndEmbeddings(text, this.chunker, this.embedder)
+    return {
+      title,
+      omittedImageCount: 0,
+      vectorChunks: buildVectorChunks({
+        filePath,
+        chunks,
+        embeddings,
+        fileSize: text.length,
+        fileTitle: title,
+        contentHash: computeContentHash(sourceBytes),
+      }),
+    }
+  }
+
+  private async prepareSourceFileIngest(
+    filePath: string,
+    options: Parameters<typeof prepareFileForIngest>[2]
+  ): Promise<PreparedIngestSource> {
+    // The MCP boundary accepts an arbitrary client path, unlike CLI ingestion
+    // paths that have already passed a regular-file collector. Reject a FIFO
+    // before the shared whole-file hash read can block the mutation slot.
+    await this.parser.validateFilePath(filePath)
+    this.parser.validateFileSize(filePath)
+    if (!(await stat(filePath)).isFile()) {
+      throw new ValidationError(`Ingest source is not a regular file: ${filePath}`)
+    }
+    const preparedFile = await prepareFileForIngest(
+      filePath,
+      { parser: this.parser, chunker: this.chunker, embedder: this.embedder },
+      options
+    )
+    return {
+      title: preparedFile.title,
+      omittedImageCount: preparedFile.omittedImageCount,
+      preparedFile,
+    }
+  }
+
+  /**
+   * Restore the pre-ingest state after a failed insert. A rollback that itself
+   * fails is reported as its own error, because the prior data may now be gone.
+   */
+  private async rollbackIngest(
+    filePath: string,
+    backup: VectorChunk[],
+    insertError: unknown
+  ): Promise<void> {
+    try {
+      // insertChunks can fail during setup after writing rows. Remove that
+      // version before restoring the backup, including failed first ingests.
+      await this.vectorStore.deleteChunks(filePath)
+      if (backup.length > 0) {
+        await this.vectorStore.insertChunks(backup)
+        await this.vectorStore.optimize()
+      }
+      console.error(`Rollback completed: ${backup.length} chunks restored`)
+    } catch (rollbackError) {
+      console.error('Rollback failed:', rollbackError)
+      throw new DatabaseError(
+        `Ingest failed and rollback failed for ${filePath}; existing data may not have been restored. Original insert error: ${toError(insertError).message}`,
+        { cause: toError(insertError) }
+      )
     }
   }
 
@@ -616,67 +724,23 @@ export class RAGServer {
     // Parse file (with header/footer filtering for PDFs)
     // For raw-data files (from ingest_data), read directly without validation
     // since the path is internally generated and content is already processed
-    const isPdf = args.filePath.toLowerCase().endsWith('.pdf')
-    const isDocx = args.filePath.toLowerCase().endsWith('.docx')
-    const images = (isPdf || isDocx) && (options.images ?? this.storeImages)
-    let title: string | null
-    let vectorChunks: VectorChunk[] | undefined
-    let preparedFile: PreparedFileIngest | undefined
-    let omittedImageCount = 0
-    if (isRawData) {
-      // Raw-data files: skip parser validation, read directly.
-      const sourceBytes = await readFile(args.filePath)
-      const text = sourceBytes.toString('utf-8')
-      const meta = await loadMetaJson(args.filePath)
-      title = meta?.title ?? null
-      console.error(`Read raw-data file: ${args.filePath} (${text.length} characters)`)
-      const { chunks, embeddings } = await buildChunksAndEmbeddings(
-        text,
-        this.chunker,
-        this.embedder
-      )
-      vectorChunks = buildVectorChunks({
-        filePath: args.filePath,
-        chunks,
-        embeddings,
-        fileSize: text.length,
-        fileTitle: title,
-        contentHash: computeContentHash(sourceBytes),
-      })
-    } else {
-      // The MCP boundary accepts an arbitrary client path, unlike CLI ingestion
-      // paths that have already passed a regular-file collector. Reject a FIFO
-      // before the shared whole-file hash read can block the mutation slot.
-      await this.parser.validateFilePath(args.filePath)
-      this.parser.validateFileSize(args.filePath)
-      if (!(await stat(args.filePath)).isFile()) {
-        throw new ValidationError(`Ingest source is not a regular file: ${args.filePath}`)
-      }
-      preparedFile = await prepareFileForIngest(
-        args.filePath,
-        this.parser,
-        this.chunker,
-        this.embedder,
-        {
-          images,
+    const prepared = isRawData
+      ? await this.prepareRawDataIngest(args.filePath)
+      : await this.prepareSourceFileIngest(args.filePath, {
+          images: supportsEmbeddedImages(args.filePath) && (options.images ?? this.storeImages),
           ...(visualArg === true
             ? {
-                captioner: {
-                  profile: visualQuality,
-                  cacheDir: this.cacheDir,
-                  device: this.device,
-                },
+                captioner: { profile: visualQuality, cacheDir: this.cacheDir, device: this.device },
               }
             : {}),
-        }
-      )
-      title = preparedFile.title
-      omittedImageCount = preparedFile.omittedImageCount
-    }
+        })
+    const title = prepared.title
+    let vectorChunks = prepared.vectorChunks
+    const preparedFile = prepared.preparedFile
 
-    if (omittedImageCount > 0) {
+    if (prepared.omittedImageCount > 0) {
       console.warn(
-        `Skipped ${omittedImageCount} undecodable or oversized image(s) in ${args.filePath}`
+        `Skipped ${prepared.omittedImageCount} undecodable or oversized image(s) in ${args.filePath}`
       )
     }
 
@@ -706,7 +770,10 @@ export class RAGServer {
     if (preparedFile !== undefined) {
       vectorChunks = buildPreparedFileVectorChunks(preparedFile)
     }
-    const chunksToInsert = vectorChunks as VectorChunk[]
+    if (vectorChunks === undefined) {
+      throw new DatabaseError(`No chunks were prepared for ingest: ${args.filePath}`)
+    }
+    const chunksToInsert = vectorChunks
 
     // Delete existing data
     await this.vectorStore.deleteChunks(args.filePath)
@@ -718,22 +785,7 @@ export class RAGServer {
       console.error(`Inserted ${chunksToInsert.length} chunks for: ${args.filePath}`)
     } catch (insertError) {
       console.error('Ingestion failed, rolling back...', insertError)
-      try {
-        // insertChunks can fail during setup after writing rows. Remove that
-        // version before restoring the backup, including failed first ingests.
-        await this.vectorStore.deleteChunks(args.filePath)
-        if (backup.length > 0) {
-          await this.vectorStore.insertChunks(backup)
-          await this.vectorStore.optimize()
-        }
-        console.error(`Rollback completed: ${backup.length} chunks restored`)
-      } catch (rollbackError) {
-        console.error('Rollback failed:', rollbackError)
-        throw new DatabaseError(
-          `Ingest failed and rollback failed for ${args.filePath}; existing data may not have been restored. Original insert error: ${(insertError as Error).message}`,
-          insertError as Error
-        )
-      }
+      await this.rollbackIngest(args.filePath, backup, insertError)
       throw insertError
     }
 
@@ -803,7 +855,9 @@ export class RAGServer {
         try {
           return { path, content: await readFile(path) }
         } catch (error) {
-          if (!isEnoent(error)) throw error
+          if (!isEnoent(error)) {
+            throw error
+          }
           return { path, content: null }
         }
       })
@@ -828,7 +882,9 @@ export class RAGServer {
             try {
               await unlink(path)
             } catch (error) {
-              if (!isEnoent(error)) throw error
+              if (!isEnoent(error)) {
+                throw error
+              }
             }
           }
         })
@@ -837,7 +893,7 @@ export class RAGServer {
         console.warn(`Failed to rollback raw-data file: ${rawDataPath}`)
         throw new DatabaseError(
           `Ingest failed and raw-data rollback failed for ${rawDataPath}; original artifacts may not have been restored.`,
-          ingestError as Error
+          { cause: toError(ingestError) }
         )
       }
       console.error(`Rolled back raw-data file: ${rawDataPath}`)
@@ -877,12 +933,7 @@ export class RAGServer {
     // type admits `string | string[]`; array-wrap once (mirrors query_documents)
     // so scope threads uniformly into the walker and the sources classifier.
     // Undefined scope leaves both the scan and the sources split unchanged.
-    const scope =
-      input.scope === undefined
-        ? undefined
-        : Array.isArray(input.scope)
-          ? input.scope
-          : [input.scope]
+    const scope = input.scope === undefined ? undefined : toArray(input.scope)
     const ingested = await this.vectorStore.listFiles()
     const listed = await listDocuments({
       roots: this.rawBaseDirs,
@@ -1056,7 +1107,9 @@ export class RAGServer {
         isTarget: row.chunkIndex === args.chunkIndex,
         fileTitle: row.fileTitle ?? null,
       }
-      if (sourceForAll) item.source = sourceForAll
+      if (sourceForAll) {
+        item.source = sourceForAll
+      }
       return item
     })
 
@@ -1107,7 +1160,7 @@ export class RAGServer {
       error: null,
     }
 
-    void this.runSyncJob(jobId, input.path)
+    this.runSyncJob(jobId, input.path)
       .catch((error: unknown) => {
         // Only an unexpected orchestration failure lands here: `runSync` already
         // returns its own controlled error. One error, no rollback, no retry.
@@ -1144,7 +1197,9 @@ export class RAGServer {
 
   /** Patch the current job, ignoring a write aimed at a record already replaced. */
   private updateSyncJob(jobId: string, patch: Partial<SyncStatusResult>): void {
-    if (this.syncJob === null || this.syncJob.jobId !== jobId) return
+    if (this.syncJob === null || this.syncJob.jobId !== jobId) {
+      return
+    }
     this.syncJob = { ...this.syncJob, ...patch }
   }
 
@@ -1174,7 +1229,7 @@ export class RAGServer {
       // none of the coverage arrays, which would hide an unobserved region and
       // make prune unsafe.
       scanDir: async (rootPath: string) =>
-        await bfsCollectSupportedFiles(rootPath, this.excludePaths, MAX_SCAN_DEPTH),
+        await bfsCollectSupportedFiles(rootPath, this.excludePaths, { maxDepth: MAX_SCAN_DEPTH }),
       // Size first, bytes second: `maxFileSize` is otherwise enforced inside the
       // parser, which runs long after the whole file would already be in memory
       // here. Declining (`null`) keeps the rest of the run usable instead of
@@ -1187,7 +1242,9 @@ export class RAGServer {
       // database directly, so this is a recorded limitation rather than a defended
       // boundary — as with the watchdog limitation noted on the mutation guard.
       hashFile: async (filePath: string) => {
-        if ((await stat(filePath)).size > this.maxFileSize) return null
+        if ((await stat(filePath)).size > this.maxFileSize) {
+          return null
+        }
         const contentHash = computeContentHash(await readFile(filePath))
         hashedFiles += 1
         return contentHash
@@ -1258,7 +1315,9 @@ export class RAGServer {
       const result = await this.ingestFile({ filePath }, { images })
       return result.chunkCount
     } catch (error) {
-      if (error instanceof NoChunksError) return 0
+      if (error instanceof NoChunksError) {
+        return 0
+      }
       throw error
     }
   }

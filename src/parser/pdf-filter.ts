@@ -64,15 +64,16 @@ export interface FilteredPageLayout {
  * same native line from the next line; geometry is retained as placement
  * metadata and is not used as a global reading-order comparator.
  */
+/** A fragment positioned in the untrimmed page text, before rebasing. */
+type RawFragment = Omit<FilteredTextFragment, 'text' | 'pageTextStart' | 'pageTextEnd'> & {
+  rawStart: number
+  rawEnd: number
+}
+
 function buildPageLayout(pageNum: number, items: TextItemWithPosition[]): FilteredPageLayout {
   let rawText = ''
   let previousItem: TextItemWithPosition | undefined
-  const rawFragments: Array<
-    Omit<FilteredTextFragment, 'text' | 'pageTextStart' | 'pageTextEnd'> & {
-      rawStart: number
-      rawEnd: number
-    }
-  > = []
+  const rawFragments: RawFragment[] = []
   const fragmentCounts = new Map<string, number>()
 
   const orderedItems = [...items].sort(
@@ -80,7 +81,9 @@ function buildPageLayout(pageNum: number, items: TextItemWithPosition[]): Filter
   )
   for (let itemIndex = 0; itemIndex < orderedItems.length; itemIndex++) {
     const item = orderedItems[itemIndex]
-    if (!item || item.text.trim().length === 0) continue
+    if (!item || item.text.trim().length === 0) {
+      continue
+    }
 
     if (previousItem) {
       rawText += Math.round(previousItem.y) === Math.round(item.y) ? ' ' : '\n'
@@ -106,6 +109,14 @@ function buildPageLayout(pageNum: number, items: TextItemWithPosition[]): Filter
     previousItem = item
   }
 
+  return trimToPageText(rawText, rawFragments)
+}
+
+/**
+ * Trim the page's raw text and rebase every fragment onto it, dropping any
+ * fragment that consisted only of the trimmed whitespace.
+ */
+function trimToPageText(rawText: string, rawFragments: readonly RawFragment[]): FilteredPageLayout {
   const leadingWhitespace = rawText.length - rawText.trimStart().length
   const trailingBoundary = rawText.trimEnd().length
   const text = rawText.slice(leadingWhitespace, trailingBoundary)
@@ -114,7 +125,9 @@ function buildPageLayout(pageNum: number, items: TextItemWithPosition[]): Filter
   for (const fragment of rawFragments) {
     const clippedStart = Math.max(fragment.rawStart, leadingWhitespace)
     const clippedEnd = Math.min(fragment.rawEnd, trailingBoundary)
-    if (clippedStart >= clippedEnd) continue
+    if (clippedStart >= clippedEnd) {
+      continue
+    }
     const pageTextStart = clippedStart - leadingWhitespace
     const pageTextEnd = clippedEnd - leadingWhitespace
     textFragments.push({
@@ -140,7 +153,9 @@ function buildSentenceLayout(
   let text = ''
   const textFragments: FilteredTextFragment[] = []
   for (const sentence of sentences) {
-    if (text) text += ' '
+    if (text) {
+      text += ' '
+    }
     const start = text.length
     text += sentence.text
     const matchingItems = items.filter((item) => Math.round(item.y) === Math.round(sentence.y))
@@ -211,12 +226,16 @@ interface SentenceWithY {
  * @returns Sentences with Y coordinate (merged by Y)
  */
 function splitItemsIntoSentencesWithY(items: TextItemWithPosition[]): SentenceWithY[] {
-  if (items.length === 0) return []
+  if (items.length === 0) {
+    return []
+  }
 
   // Sort items by Y descending, then X ascending (reading order)
   const sortedItems = [...items].sort((a, b) => {
     const yDiff = b.y - a.y
-    if (Math.abs(yDiff) > 1) return yDiff
+    if (Math.abs(yDiff) > 1) {
+      return yDiff
+    }
     return a.x - b.x
   })
 
@@ -253,7 +272,9 @@ function splitItemsIntoSentencesWithY(items: TextItemWithPosition[]): SentenceWi
     // the document body (that text comes from `fullText`). Misses are expected
     // when `splitIntoSentences` normalizes whitespace differently than the
     // reconstructed `fullText`, so logging here would be noise, not signal.
-    if (sentenceStart === -1) continue
+    if (sentenceStart === -1) {
+      continue
+    }
 
     // Find the item that contains this position
     let firstItemY = sortedItems[0]?.y ?? 0
@@ -280,7 +301,9 @@ function splitItemsIntoSentencesWithY(items: TextItemWithPosition[]): SentenceWi
  * @returns Merged sentences (same Y = one sentence)
  */
 function mergeSentencesByY(sentences: SentenceWithY[]): SentenceWithY[] {
-  if (sentences.length === 0) return []
+  if (sentences.length === 0) {
+    return []
+  }
 
   const merged: SentenceWithY[] = []
   let current: SentenceWithY | null = null
@@ -330,7 +353,9 @@ function cosineSimilarity(vec1: number[], vec2: number[]): number {
   }
 
   const denominator = Math.sqrt(norm1) * Math.sqrt(norm2)
-  if (denominator === 0) return 0
+  if (denominator === 0) {
+    return 0
+  }
 
   return dotProduct / denominator
 }
@@ -343,7 +368,9 @@ function cosineSimilarity(vec1: number[], vec2: number[]): number {
  * (e.g., chapter title changes) that would otherwise drag down the average.
  */
 function medianPairwiseSimilarity(embeddings: number[][]): number {
-  if (embeddings.length < 2) return 1.0
+  if (embeddings.length < 2) {
+    return 1.0
+  }
 
   const similarities: number[] = []
 
@@ -357,7 +384,9 @@ function medianPairwiseSimilarity(embeddings: number[][]): number {
     }
   }
 
-  if (similarities.length === 0) return 0
+  if (similarities.length === 0) {
+    return 0
+  }
 
   // Sort and find median
   similarities.sort((a, b) => a - b)
@@ -369,6 +398,14 @@ function medianPairwiseSimilarity(embeddings: number[][]): number {
   }
   // Odd: middle value
   return similarities[mid] ?? 0
+}
+
+/** The sentence at the requested edge of a page's sampled sentences. */
+function sentenceAtEdge<T>(sentences: readonly T[], edge: 'first' | 'last'): T | undefined {
+  if (edge === 'first') {
+    return sentences[0]
+  }
+  return sentences.length > 1 ? sentences.at(-1) : undefined
 }
 
 /**
@@ -434,65 +471,56 @@ export interface BlockAttributeHints {
  * @param config - Configuration options (minPages, samplePages)
  * @returns Block attribute hints with candidate Y positions
  */
-export function detectBlockAttributeCandidates(
-  pages: PageData[],
-  config: Partial<Pick<SentencePatternConfig, 'minPages' | 'samplePages'>> = {}
-): BlockAttributeHints {
-  const cfg = { ...DEFAULT_SENTENCE_PATTERN_CONFIG, ...config }
-
-  const emptyResult: BlockAttributeHints = {
-    medianFontSize: 0,
-    headerCandidateYs: new Set(),
-    footerCandidateYs: new Set(),
-  }
-
-  if (pages.length < cfg.minPages) return emptyResult
-
-  const samplePages = sampleCenterPages(pages, cfg.samplePages)
-
-  // Collect all font sizes
+/** Median font size across the sampled pages; 0 when nothing has a size. */
+function medianFontSizeOf(samplePages: readonly PageData[]): number {
   const fontSizes: number[] = []
   for (const page of samplePages) {
     for (const item of page.items) {
-      if (item.fontSize > 0) fontSizes.push(item.fontSize)
-    }
-  }
-
-  if (fontSizes.length === 0) return emptyResult
-
-  // Calculate median font size
-  fontSizes.sort((a, b) => a - b)
-  const mid = Math.floor(fontSizes.length / 2)
-  const medianFontSize =
-    fontSizes.length % 2 === 0 ? (fontSizes[mid - 1]! + fontSizes[mid]!) / 2 : fontSizes[mid]!
-
-  if (medianFontSize === 0) return { ...emptyResult, medianFontSize }
-
-  // Use actual page height if available, otherwise estimate from max Y
-  const firstPageWithHeight = samplePages.find((p) => p.pageHeight != null)
-  let pageHeight: number
-  if (firstPageWithHeight?.pageHeight) {
-    pageHeight = firstPageWithHeight.pageHeight
-  } else {
-    let maxY = 0
-    for (const page of samplePages) {
-      for (const item of page.items) {
-        if (item.y > maxY) maxY = item.y
+      if (item.fontSize > 0) {
+        fontSizes.push(item.fontSize)
       }
     }
-    pageHeight = maxY
   }
-  if (pageHeight === 0) return { ...emptyResult, medianFontSize }
+  if (fontSizes.length === 0) {
+    return 0
+  }
+  fontSizes.sort((a, b) => a - b)
+  const mid = Math.floor(fontSizes.length / 2)
+  const lower = fontSizes[mid - 1] ?? 0
+  const upper = fontSizes[mid] ?? 0
+  return fontSizes.length % 2 === 0 ? (lower + upper) / 2 : upper
+}
 
-  const fontSizeThreshold = medianFontSize * 0.7
-  const headerCandidateYs = new Set<number>()
-  const footerCandidateYs = new Set<number>()
-
-  // Scan items: small font + extreme Y position = candidate
+/** Actual page height when a sampled page reports one, else the largest Y seen. */
+function pageHeightOf(samplePages: readonly PageData[]): number {
+  const reported = samplePages.find((page) => page.pageHeight != null)?.pageHeight
+  if (reported) {
+    return reported
+  }
+  let maxY = 0
   for (const page of samplePages) {
     for (const item of page.items) {
-      if (item.fontSize >= fontSizeThreshold) continue
+      if (item.y > maxY) {
+        maxY = item.y
+      }
+    }
+  }
+  return maxY
+}
 
+/** Small-font items sitting in the top or bottom 10% of the page. */
+function collectEdgeCandidateYs(
+  samplePages: readonly PageData[],
+  fontSizeThreshold: number,
+  pageHeight: number
+): { headerCandidateYs: Set<number>; footerCandidateYs: Set<number> } {
+  const headerCandidateYs = new Set<number>()
+  const footerCandidateYs = new Set<number>()
+  for (const page of samplePages) {
+    for (const item of page.items) {
+      if (item.fontSize >= fontSizeThreshold) {
+        continue
+      }
       const roundedY = Math.round(item.y)
       // Header: top 10% of page (large Y values, since Y is inverted)
       if (item.y > pageHeight * 0.9) {
@@ -504,8 +532,39 @@ export function detectBlockAttributeCandidates(
       }
     }
   }
+  return { headerCandidateYs, footerCandidateYs }
+}
 
-  return { medianFontSize, headerCandidateYs, footerCandidateYs }
+export function detectBlockAttributeCandidates(
+  pages: PageData[],
+  config: Partial<Pick<SentencePatternConfig, 'minPages' | 'samplePages'>> = {}
+): BlockAttributeHints {
+  const cfg = { ...DEFAULT_SENTENCE_PATTERN_CONFIG, ...config }
+  const emptyResult: BlockAttributeHints = {
+    medianFontSize: 0,
+    headerCandidateYs: new Set(),
+    footerCandidateYs: new Set(),
+  }
+
+  if (pages.length < cfg.minPages) {
+    return emptyResult
+  }
+
+  const samplePages = sampleCenterPages(pages, cfg.samplePages)
+  const medianFontSize = medianFontSizeOf(samplePages)
+  if (medianFontSize === 0) {
+    return emptyResult
+  }
+
+  const pageHeight = pageHeightOf(samplePages)
+  if (pageHeight === 0) {
+    return { ...emptyResult, medianFontSize }
+  }
+
+  return {
+    medianFontSize,
+    ...collectEdgeCandidateYs(samplePages, medianFontSize * 0.7, pageHeight),
+  }
 }
 
 /**
@@ -616,7 +675,8 @@ export async function detectSentencePatterns(
 
   // 1. Sample pages from the CENTER of the document
   const samplePages = sampleCenterPages(pages, cfg.samplePages)
-  const startIndex = pages.indexOf(samplePages[0]!)
+  const firstSamplePage = samplePages[0]
+  const startIndex = firstSamplePage === undefined ? 0 : pages.indexOf(firstSamplePage)
   const endIndex = startIndex + samplePages.length
 
   // 2. Split each page into sentences with Y coordinate (merged by Y)
@@ -629,11 +689,14 @@ export async function detectSentencePatterns(
   const lastSentences: string[] = []
 
   for (const sentences of pageSentences) {
-    if (sentences.length > 0) {
-      firstSentences.push(sentences[0]!.text)
-      if (sentences.length > 1) {
-        lastSentences.push(sentences[sentences.length - 1]!.text)
-      }
+    const first = sentences[0]
+    if (first === undefined) {
+      continue
+    }
+    firstSentences.push(first.text)
+    const last = sentences.length > 1 ? sentences.at(-1) : undefined
+    if (last !== undefined) {
+      lastSentences.push(last.text)
     }
   }
 
@@ -641,7 +704,7 @@ export async function detectSentencePatterns(
   if (firstSentences.length >= cfg.minPages) {
     const firstSentenceYs = pageSentences
       .filter((s) => s.length > 0)
-      .map((s) => Math.round(s[0]!.y))
+      .map((s) => Math.round(s[0]?.y ?? 0))
     const { similarity, detected } = await detectBoundaryPattern({
       label: 'header',
       sentences: firstSentences,
@@ -661,7 +724,7 @@ export async function detectSentencePatterns(
   if (lastSentences.length >= cfg.minPages) {
     const lastSentenceYs = pageSentences
       .filter((s) => s.length > 1)
-      .map((s) => Math.round(s[s.length - 1]!.y))
+      .map((s) => Math.round(s.at(-1)?.y ?? 0))
     const { similarity, detected } = await detectBoundaryPattern({
       label: 'footer',
       sentences: lastSentences,
@@ -740,15 +803,16 @@ export async function filterPageBoundaryLayouts(
     sentence: SentenceWithY | undefined,
     edge: 'first' | 'last'
   ): boolean => {
-    if (!sentence) return false
+    if (!sentence) {
+      return false
+    }
     // Page numbers may vary; other text and rounded position must repeat.
     const key = (value: SentenceWithY): string =>
       `${Math.round(value.y)}:${value.text.replace(/\d+/g, '#').replace(/\s+/g, ' ').trim()}`
     const target = key(sentence)
     return (
       sampledSentences.filter((sentences) => {
-        const candidate =
-          edge === 'first' ? sentences[0] : sentences.length > 1 ? sentences.at(-1) : undefined
+        const candidate = sentenceAtEdge(sentences, edge)
         return candidate !== undefined && key(candidate) === target
       }).length >= 2
     )
@@ -756,10 +820,12 @@ export async function filterPageBoundaryLayouts(
 
   return pages.map((page, pageIndex) => {
     let cleaned = [...(pageSentences[pageIndex] ?? [])]
-    if (patterns.removeFirstSentence && matchesRepeatedBoundary(cleaned[0], 'first'))
+    if (patterns.removeFirstSentence && matchesRepeatedBoundary(cleaned[0], 'first')) {
       cleaned = cleaned.slice(1)
-    if (patterns.removeLastSentence && matchesRepeatedBoundary(cleaned.at(-1), 'last'))
+    }
+    if (patterns.removeLastSentence && matchesRepeatedBoundary(cleaned.at(-1), 'last')) {
       cleaned = cleaned.slice(0, -1)
+    }
     return buildSentenceLayout(page.pageNum, cleaned, page.items)
   })
 }

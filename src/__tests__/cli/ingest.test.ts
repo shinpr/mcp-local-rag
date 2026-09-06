@@ -43,7 +43,7 @@ const mocks = vi.hoisted(() => {
     insertChunks: vi.fn().mockImplementation((chunks: unknown[]) => {
       // Log chunk key fields to stderr for verification
       for (const chunk of chunks) {
-        const c = chunk as Record<string, unknown>
+        const c = expectRecord(chunk)
         console.error(
           `[mock:insertChunks] filePath=${c.filePath} chunkIndex=${c.chunkIndex} text=${c.text} vectorLen=${Array.isArray(c.vector) ? c.vector.length : 'none'}`
         )
@@ -137,6 +137,7 @@ const MOCKED_PATHS = [
 // (e.g., ../../cli/common.js) can win the module-registry race and bind
 // runIngest's closures to that file's factories instead of this file's.
 import { resolve } from 'node:path'
+import { expectError, expectRecord } from '../test-doubles.js'
 import { formatCliErrorShim } from './cli-error-shim.js'
 
 let runIngest: typeof import('../../cli/ingest.js').runIngest
@@ -247,7 +248,9 @@ describe('CLI ingest', () => {
   })
 
   afterAll(() => {
-    for (const p of MOCKED_PATHS) vi.doUnmock(p)
+    for (const p of MOCKED_PATHS) {
+      vi.doUnmock(p)
+    }
     vi.resetModules()
   })
 
@@ -432,7 +435,7 @@ describe('CLI ingest', () => {
     )
 
     expect(error).toBeInstanceOf(Error)
-    expect((error as Error).message).toBe('process.exit(1)')
+    expect(expectError(error).message).toBe('process.exit(1)')
 
     const joined = output.join('\n')
     expect(joined).toContain('not under any configured base directory')
@@ -609,7 +612,7 @@ describe('CLI ingest', () => {
 
     // Assert: exit(1) because no files remain after depth filtering
     expect(error).toBeInstanceOf(Error)
-    expect((error as Error).message).toBe('process.exit(1)')
+    expect(expectError(error).message).toBe('process.exit(1)')
 
     const joined = output.join('\n')
     expect(joined).toContain(
@@ -700,7 +703,7 @@ describe('CLI ingest', () => {
 
     // Assert: exit(1) because no supported files found
     expect(error).toBeInstanceOf(Error)
-    expect((error as Error).message).toBe('process.exit(1)')
+    expect(expectError(error).message).toBe('process.exit(1)')
 
     const joined = output.join('\n')
     expect(joined).toContain('Unsupported file extension: .jpg')
@@ -772,7 +775,7 @@ describe('CLI ingest', () => {
 
     // Assert: exit(1) with "No supported files found"
     expect(error).toBeInstanceOf(Error)
-    expect((error as Error).message).toBe('process.exit(1)')
+    expect(expectError(error).message).toBe('process.exit(1)')
 
     const joined = output.join('\n')
     expect(joined).toContain('No supported files found')
@@ -791,7 +794,7 @@ describe('CLI ingest', () => {
 
     // Assert: exit(1) with error message
     expect(error).toBeInstanceOf(Error)
-    expect((error as Error).message).toBe('process.exit(1)')
+    expect(expectError(error).message).toBe('process.exit(1)')
 
     const joined = output.join('\n')
     expect(joined).toContain('Error: path does not exist')
@@ -837,7 +840,7 @@ describe('CLI ingest', () => {
 
     // Assert: exit(0)
     expect(error).toBeInstanceOf(Error)
-    expect((error as Error).message).toBe('process.exit(0)')
+    expect(expectError(error).message).toBe('process.exit(0)')
 
     // Assert: help text contains ingest-specific information
     const joined = output.join('\n')
@@ -855,7 +858,7 @@ describe('CLI ingest', () => {
 
     // Assert: exit(0)
     expect(error).toBeInstanceOf(Error)
-    expect((error as Error).message).toBe('process.exit(0)')
+    expect(expectError(error).message).toBe('process.exit(0)')
 
     const joined = output.join('\n')
     expect(joined).toContain('Usage: mcp-local-rag')
@@ -1012,7 +1015,7 @@ describe('CLI ingest', () => {
 
     // Assert: exit(1) with unknown option error
     expect(error).toBeInstanceOf(Error)
-    expect((error as Error).message).toBe('process.exit(1)')
+    expect(expectError(error).message).toBe('process.exit(1)')
 
     const joined = output.join('\n')
     expect(joined).toContain('Unknown option: --db-path')
@@ -1215,7 +1218,7 @@ describe('CLI ingest', () => {
 
     // Assert: exit(1) with descriptive error
     expect(error).toBeInstanceOf(Error)
-    expect((error as Error).message).toBe('process.exit(1)')
+    expect(expectError(error).message).toBe('process.exit(1)')
 
     const joined = output.join('\n')
     expect(joined).toContain('Unexpected argument: /path2')
@@ -1231,7 +1234,7 @@ describe('CLI ingest', () => {
 
     // Assert: exit(1)
     expect(error).toBeInstanceOf(Error)
-    expect((error as Error).message).toBe('process.exit(1)')
+    expect(expectError(error).message).toBe('process.exit(1)')
 
     const joined = output.join('\n')
     expect(joined).toContain('Usage: mcp-local-rag ingest')
@@ -1517,7 +1520,7 @@ describe('CLI ingest', () => {
 
       // Assert: CLI propagates exit(1) and config error is visible.
       expect(error).toBeInstanceOf(Error)
-      expect((error as Error).message).toBe('process.exit(1)')
+      expect(expectError(error).message).toBe('process.exit(1)')
       const joined = output.join('\n')
       expect(joined).toContain('BASE_DIRS')
     })

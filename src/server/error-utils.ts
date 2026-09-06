@@ -1,6 +1,7 @@
 import type { Annotations } from '@modelcontextprotocol/sdk/types.js'
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js'
 import { getCauseChain, isAppError } from '../utils/errors.js'
+import { isRecord } from '../utils/type-guards.js'
 
 /**
  * Shape of a single MCP content block used by RAG server handlers. Mirrors
@@ -58,7 +59,9 @@ const CONFIG_ERROR_ANNOTATIONS: Annotations = {
  * across handlers. Every handler must use this helper.
  */
 function buildConfigWarningBlocks(warnings: readonly string[]): RagContentBlock[] {
-  if (warnings.length === 0) return []
+  if (warnings.length === 0) {
+    return []
+  }
   return [
     {
       type: 'text',
@@ -106,13 +109,8 @@ function toError(error: unknown): Error {
   if (error instanceof Error) {
     return error
   }
-  if (
-    error !== null &&
-    typeof error === 'object' &&
-    'message' in error &&
-    typeof (error as { message: unknown }).message === 'string'
-  ) {
-    return new Error((error as { message: string }).message)
+  if (isRecord(error) && typeof error['message'] === 'string') {
+    return new Error(error['message'])
   }
   return new Error(String(error))
 }

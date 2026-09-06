@@ -36,6 +36,7 @@ import { fileURLToPath } from 'node:url'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { RAGServer } from '../../server/index.js'
 import { testModelCacheDir, withTestDevice } from '../test-device.js'
+import { expectError, parseJson } from '../test-doubles.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
@@ -78,10 +79,10 @@ interface ParsedListResult {
 function parseSuccessfulListOutput(run: CliRun): ParsedListResult {
   expect(run.status, `CLI exited with ${run.status}; stderr:\n${run.stderr}`).toBe(0)
   try {
-    return JSON.parse(run.stdout) as ParsedListResult
+    return parseJson<ParsedListResult>(run.stdout)
   } catch (error) {
     throw new Error(
-      `CLI stdout was not valid JSON (${(error as Error).message}).\n` +
+      `CLI stdout was not valid JSON (${expectError(error).message}).\n` +
         `--- stdout ---\n${run.stdout}\n--- stderr ---\n${run.stderr}`
     )
   }

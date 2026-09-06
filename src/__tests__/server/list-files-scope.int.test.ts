@@ -250,7 +250,9 @@ describeAlias('INT-1: handleListFiles(scope) — symlink-alias contract (AC3)', 
   }, 120000)
 
   afterAll(async () => {
-    if (server) await server.close()
+    if (server) {
+      await server.close()
+    }
     vi.doUnmock('../../utils/scan.js')
     vi.resetModules()
     rmSync(base, { recursive: true, force: true })

@@ -64,13 +64,19 @@ const MAX_SENTENCES = 15
  */
 export function isGarbageChunk(text: string): boolean {
   const trimmed = text.trim()
-  if (trimmed.length === 0) return true
+  if (trimmed.length === 0) {
+    return true
+  }
 
   // If contains any alphanumeric, consider valid content
-  if (/[a-zA-Z0-9]/.test(trimmed)) return false
+  if (/[a-zA-Z0-9]/.test(trimmed)) {
+    return false
+  }
 
   // Decoration line patterns only (----, ====, ****, etc.)
-  if (/^[-=_.*#|~`@!%^&*()[\]{}\\/<>:+\s]+$/.test(trimmed)) return true
+  if (/^[-=_.*#|~`@!%^&*()[\]{}\\/<>:+\s]+$/.test(trimmed)) {
+    return true
+  }
 
   // Excessive repetition of single character (>80%)
   const charCounts = new Map<string, number>()
@@ -78,7 +84,9 @@ export function isGarbageChunk(text: string): boolean {
     charCounts.set(char, (charCounts.get(char) ?? 0) + 1)
   }
   const maxCount = Math.max(...charCounts.values())
-  if (maxCount / trimmed.length > 0.8) return true
+  if (maxCount / trimmed.length > 0.8) {
+    return true
+  }
 
   return false
 }
@@ -136,7 +144,9 @@ export class SemanticChunker {
     if (!text || text.trim().length === 0) {
       // Supplied ranges are programmer contracts and must fail fast even when
       // ordinary empty text would otherwise return before sentence splitting.
-      if (atomicRanges.length > 0) splitIntoSentenceUnits(text, atomicRanges)
+      if (atomicRanges.length > 0) {
+        splitIntoSentenceUnits(text, atomicRanges)
+      }
       return []
     }
 
@@ -167,7 +177,9 @@ export class SemanticChunker {
       ) {
         const firstUnit = group[0]
         const lastUnit = group[group.length - 1]
-        if (!firstUnit || !lastUnit) continue
+        if (!firstUnit || !lastUnit) {
+          continue
+        }
         chunks.push({
           text: chunkText,
           index: chunkIndex,
@@ -184,8 +196,33 @@ export class SemanticChunker {
   /**
    * Group sentences into chunks using Max-Min algorithm
    */
+  /**
+   * Whether a sentence continues the group being built.
+   *
+   * A one-sentence group is still in the init phase, where the paper's
+   * `initConst` scales the pairwise similarity. Beyond that the Max-Min rule
+   * decides, subject to the `MAX_SENTENCES` safety limit that force-splits an
+   * over-long chunk regardless of similarity.
+   */
+  private continuesGroup(embedding: number[], groupEmbeddings: number[][]): boolean {
+    if (groupEmbeddings.length === 1) {
+      const firstEmbedding = groupEmbeddings[0]
+      if (!firstEmbedding) {
+        return false
+      }
+      const similarity = this.cosineSimilarity(firstEmbedding, embedding)
+      return this.config.initConst * similarity > this.config.hardThreshold
+    }
+    if (groupEmbeddings.length >= MAX_SENTENCES) {
+      return false
+    }
+    return this.shouldAddToChunk(embedding, groupEmbeddings)
+  }
+
   private groupSentences(sentences: SentenceUnit[], embeddings: number[][]): SentenceUnit[][] {
-    if (sentences.length === 0) return []
+    if (sentences.length === 0) {
+      return []
+    }
     if (sentences.length === 1) {
       const sentence = sentences[0]
       return sentence ? [[sentence]] : []
@@ -199,51 +236,27 @@ export class SemanticChunker {
       const sentence = sentences[i]
       const embedding = embeddings[i]
 
-      if (!sentence || !embedding) continue
+      if (!sentence || !embedding) {
+        continue
+      }
 
       if (currentGroup.length === 0) {
         // Start new group with first sentence
         currentGroup.push(sentence)
         currentGroupEmbeddings.push(embedding)
-      } else if (currentGroup.length === 1) {
-        // Special case for second sentence (init phase)
-        const firstEmbedding = currentGroupEmbeddings[0]
-        if (!firstEmbedding) continue
-
-        const similarity = this.cosineSimilarity(firstEmbedding, embedding)
-
-        if (this.config.initConst * similarity > this.config.hardThreshold) {
-          // Add to current group
-          currentGroup.push(sentence)
-          currentGroupEmbeddings.push(embedding)
-        } else {
-          // Start new group
-          groups.push([...currentGroup])
-          currentGroup = [sentence]
-          currentGroupEmbeddings = [embedding]
-        }
-      } else {
-        // Force split if chunk reaches MAX_SENTENCES (safety limit for performance)
-        if (currentGroup.length >= MAX_SENTENCES) {
-          groups.push([...currentGroup])
-          currentGroup = [sentence]
-          currentGroupEmbeddings = [embedding]
-          continue
-        }
-
-        // Normal case: check if sentence should join current group
-        const shouldAdd = this.shouldAddToChunk(embedding, currentGroupEmbeddings)
-
-        if (shouldAdd) {
-          currentGroup.push(sentence)
-          currentGroupEmbeddings.push(embedding)
-        } else {
-          // Start new group
-          groups.push([...currentGroup])
-          currentGroup = [sentence]
-          currentGroupEmbeddings = [embedding]
-        }
+        continue
       }
+
+      if (this.continuesGroup(embedding, currentGroupEmbeddings)) {
+        currentGroup.push(sentence)
+        currentGroupEmbeddings.push(embedding)
+        continue
+      }
+
+      // Start new group
+      groups.push([...currentGroup])
+      currentGroup = [sentence]
+      currentGroupEmbeddings = [embedding]
     }
 
     // Don't forget the last group
@@ -278,7 +291,9 @@ export class SemanticChunker {
    * for determining chunk coherence (per Max-Min paper's experimental setup).
    */
   private getMinSimilarity(embeddings: number[][]): number {
-    if (embeddings.length < 2) return 1.0
+    if (embeddings.length < 2) {
+      return 1.0
+    }
 
     // Only compare the last WINDOW_SIZE embeddings to reduce O(k²) to O(1)
     const startIdx = Math.max(0, embeddings.length - WINDOW_SIZE)
@@ -289,7 +304,9 @@ export class SemanticChunker {
       for (let j = i + 1; j < windowEmbeddings.length; j++) {
         const embI = windowEmbeddings[i]
         const embJ = windowEmbeddings[j]
-        if (!embI || !embJ) continue
+        if (!embI || !embJ) {
+          continue
+        }
 
         const sim = this.cosineSimilarity(embI, embJ)
         if (sim < minSim) {
@@ -353,7 +370,9 @@ export class SemanticChunker {
     }
 
     const denominator = Math.sqrt(norm1) * Math.sqrt(norm2)
-    if (denominator === 0) return 0
+    if (denominator === 0) {
+      return 0
+    }
 
     return dotProduct / denominator
   }

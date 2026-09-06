@@ -4,6 +4,7 @@
 import { Readability } from '@mozilla/readability'
 import { JSDOM } from 'jsdom'
 import TurndownService from 'turndown'
+import { isRecord } from '../utils/type-guards.js'
 import { extractHtmlTitle } from './title-extractor.js'
 
 // ============================================
@@ -16,6 +17,23 @@ import { extractHtmlTitle } from './title-extractor.js'
 interface ReadabilityResult {
   title: string
   content: string
+}
+
+/** DOM element check that narrows a `Node`, replacing a bare `nodeType` test. */
+function isElement(node: Node): node is Element {
+  return node.nodeType === 1
+}
+
+/** Readability returns `null` when it cannot extract an article. */
+function toReadabilityResult(parsed: unknown): ReadabilityResult | null {
+  if (!isRecord(parsed)) {
+    return null
+  }
+  const { title, content } = parsed
+  if (typeof title !== 'string' || typeof content !== 'string') {
+    return null
+  }
+  return { title, content }
 }
 
 // ============================================
@@ -38,7 +56,10 @@ function createTurndownService(): TurndownService {
   turndownService.addRule('codeBlocks', {
     filter: ['pre'],
     replacement: (_content, node) => {
-      const element = node as Element
+      if (!isElement(node)) {
+        return ''
+      }
+      const element = node
       const codeElement = element.querySelector('code')
       const code = codeElement ? codeElement.textContent : element.textContent
       const language = codeElement?.className?.replace('language-', '') || ''
@@ -91,7 +112,7 @@ export async function parseHtml(
       debug: false,
     })
 
-    const article = reader.parse() as ReadabilityResult | null
+    const article = toReadabilityResult(reader.parse())
 
     // If Readability couldn't extract content, fall back to body text
     if (!article?.content) {

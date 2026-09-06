@@ -19,6 +19,7 @@
 
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { testModelCacheDir } from '../test-device.js'
+import { asDouble } from '../test-doubles.js'
 
 const mocks = vi.hoisted(() => {
   return {
@@ -30,7 +31,7 @@ const mocks = vi.hoisted(() => {
 const transformersFactory = () => ({
   pipeline: mocks.pipeline,
   // `env` is mutated by `initialize()` (sets cacheDir); a plain object suffices.
-  env: {} as { cacheDir?: string },
+  env: asDouble<Record<string, string | undefined>>({}),
   ModelRegistry: {
     get_available_dtypes: mocks.getAvailableDtypes,
   },
@@ -68,7 +69,9 @@ describe('Embedder dtype failure-path enrichment', () => {
   })
 
   afterAll(() => {
-    for (const p of MOCKED_PATHS) vi.doUnmock(p)
+    for (const p of MOCKED_PATHS) {
+      vi.doUnmock(p)
+    }
     vi.resetModules()
   })
 

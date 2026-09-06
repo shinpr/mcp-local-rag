@@ -1,6 +1,12 @@
 import { basename } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { applyFileFilter, applyGrouping, applyKeywordBoost } from '../search-filters.js'
+import { expectDefined } from '../../__tests__/test-doubles.js'
+import {
+  applyFileFilter,
+  applyGrouping,
+  applyKeywordBoost,
+  type FtsRow,
+} from '../search-filters.js'
 import type { SearchResult } from '../types.js'
 
 /**
@@ -104,7 +110,7 @@ describe('applyGrouping', () => {
     ]
     const filtered = applyGrouping(results, 'related')
     expect(filtered).toHaveLength(8)
-    expect(filtered[filtered.length - 1]!.score).toBe(1.02)
+    expect(expectDefined(filtered[filtered.length - 1]).score).toBe(1.02)
   })
 })
 
@@ -175,8 +181,8 @@ describe('applyKeywordBoost', () => {
   it('should leave scores unchanged when no FTS results', () => {
     const results = [mockResult('/a.txt', 0, 0.5), mockResult('/b.txt', 0, 0.8)]
     const boosted = applyKeywordBoost(results, [], 0.6)
-    expect(boosted[0]!.score).toBeCloseTo(0.5)
-    expect(boosted[1]!.score).toBeCloseTo(0.8)
+    expect(expectDefined(boosted[0]).score).toBeCloseTo(0.5)
+    expect(expectDefined(boosted[1]).score).toBeCloseTo(0.8)
   })
 
   it('should reduce score for keyword-matching chunks', () => {
@@ -185,9 +191,9 @@ describe('applyKeywordBoost', () => {
     const boosted = applyKeywordBoost(results, ftsResults, 0.6)
     // /a.txt:0 normalized = 10/10 = 1.0, boosted = 0.5 / (1 + 1.0 * 0.6) = 0.5/1.6 ≈ 0.3125
     // /b.txt:0 no match, stays 0.8
-    expect(boosted[0]!.filePath).toBe('/a.txt')
-    expect(boosted[0]!.score).toBeCloseTo(0.3125)
-    expect(boosted[1]!.score).toBeCloseTo(0.8)
+    expect(expectDefined(boosted[0]).filePath).toBe('/a.txt')
+    expect(expectDefined(boosted[0]).score).toBeCloseTo(0.3125)
+    expect(expectDefined(boosted[1]).score).toBeCloseTo(0.8)
   })
 
   it('should normalize FTS scores relative to max BM25 score', () => {
@@ -199,8 +205,8 @@ describe('applyKeywordBoost', () => {
     const boosted = applyKeywordBoost(results, ftsResults, 1.0)
     // /a.txt:0 normalized = 10/10 = 1.0, boosted = 0.6 / (1 + 1.0) = 0.3
     // /b.txt:0 normalized = 5/10 = 0.5, boosted = 0.6 / (1 + 0.5) = 0.4
-    expect(boosted[0]!.score).toBeCloseTo(0.3)
-    expect(boosted[1]!.score).toBeCloseTo(0.4)
+    expect(expectDefined(boosted[0]).score).toBeCloseTo(0.3)
+    expect(expectDefined(boosted[1]).score).toBeCloseTo(0.4)
   })
 
   it('should not boost when weight=0', () => {
@@ -208,29 +214,28 @@ describe('applyKeywordBoost', () => {
     const ftsResults = [{ filePath: '/a.txt', chunkIndex: 0, _score: 10.0 }]
     const boosted = applyKeywordBoost(results, ftsResults, 0)
     // weight=0: boosted = score / (1 + normalized * 0) = score / 1 = score
-    expect(boosted[0]!.score).toBeCloseTo(0.5)
-    expect(boosted[1]!.score).toBeCloseTo(0.8)
+    expect(expectDefined(boosted[0]).score).toBeCloseTo(0.5)
+    expect(expectDefined(boosted[1]).score).toBeCloseTo(0.8)
   })
 
   it('should skip null/undefined FTS entries without throwing and still return vector results', () => {
     const results = [mockResult('/a.txt', 0, 0.5), mockResult('/b.txt', 0, 0.8)]
     // FTS results array with a null and an undefined hole interspersed with a
-    // real match. The `if (!result) continue` guards in applyKeywordBoost must
-    // skip these defensively (LanceDB raw rows are loosely typed) rather than
-    // dereferencing them.
-    const ftsResults = [
+    // real match. `FtsRow` admits both, and applyKeywordBoost must skip them
+    // rather than dereferencing them.
+    const ftsResults: FtsRow[] = [
       { filePath: '/a.txt', chunkIndex: 0, _score: 10.0 },
       null,
       undefined,
-    ] as unknown as Record<string, unknown>[]
+    ]
 
     const boosted = applyKeywordBoost(results, ftsResults, 0.6)
 
     // Both vector results are still returned; the matching one is boosted.
     expect(boosted).toHaveLength(2)
-    expect(boosted[0]!.filePath).toBe('/a.txt')
-    expect(boosted[0]!.score).toBeCloseTo(0.3125)
-    expect(boosted[1]!.score).toBeCloseTo(0.8)
+    expect(expectDefined(boosted[0]).filePath).toBe('/a.txt')
+    expect(expectDefined(boosted[0]).score).toBeCloseTo(0.3125)
+    expect(expectDefined(boosted[1]).score).toBeCloseTo(0.8)
   })
 
   it('should re-sort results by boosted score', () => {
@@ -240,9 +245,9 @@ describe('applyKeywordBoost', () => {
     const boosted = applyKeywordBoost(results, ftsResults, 1.0)
     // /a.txt: 0.5 / (1 + 1.0) = 0.25
     // /b.txt: 0.3 (no boost)
-    expect(boosted[0]!.filePath).toBe('/a.txt')
-    expect(boosted[0]!.score).toBeCloseTo(0.25)
-    expect(boosted[1]!.filePath).toBe('/b.txt')
-    expect(boosted[1]!.score).toBeCloseTo(0.3)
+    expect(expectDefined(boosted[0]).filePath).toBe('/a.txt')
+    expect(expectDefined(boosted[0]).score).toBeCloseTo(0.25)
+    expect(expectDefined(boosted[1]).filePath).toBe('/b.txt')
+    expect(expectDefined(boosted[1]).score).toBeCloseTo(0.3)
   })
 })

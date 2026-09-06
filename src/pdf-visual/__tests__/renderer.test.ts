@@ -18,6 +18,7 @@
 
 import * as mupdf from 'mupdf'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { expectDefined, expectInstanceOf } from '../../__tests__/test-doubles.js'
 import { renderImageRendition, renderPdfPage, VlmError } from '../renderer.js'
 
 // PNG magic bytes per RFC 2083 §3.1.
@@ -71,7 +72,7 @@ describe('renderPdfPage', () => {
     const cropRect: [number, number, number, number] = [10, 10, 60, 60]
 
     // Act
-    const png = await renderPdfPage(doc as mupdf.Document, 1, cropRect)
+    const png = await renderPdfPage(expectDefined(doc), 1, cropRect)
 
     // Assert: crop rendering still returns valid PNG bytes.
     expect(png).toBeInstanceOf(Uint8Array)
@@ -89,16 +90,16 @@ describe('renderPdfPage', () => {
     // Act + Assert
     let captured: unknown
     try {
-      await renderPdfPage(doc as mupdf.Document, requestedPage, [0, 0, 10, 10])
+      await renderPdfPage(expectDefined(doc), requestedPage, [0, 0, 10, 10])
     } catch (err) {
       captured = err
     }
 
     expect(captured).toBeInstanceOf(VlmError)
-    expect((captured as VlmError).pageNum).toBe(requestedPage)
-    expect((captured as VlmError).name).toBe('VlmError')
-    expect((captured as VlmError).message).toBe('Failed to render PDF page')
-    expect((captured as VlmError).cause).toBeDefined()
+    expect(expectInstanceOf(captured, VlmError).pageNum).toBe(requestedPage)
+    expect(expectInstanceOf(captured, VlmError).name).toBe('VlmError')
+    expect(expectInstanceOf(captured, VlmError).message).toBe('Failed to render PDF page')
+    expect(expectInstanceOf(captured, VlmError).cause).toBeDefined()
   })
 
   it('bounds caption crop dimensions for oversized PDF pages', async () => {

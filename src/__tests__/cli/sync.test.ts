@@ -20,6 +20,13 @@ import { lstatSync, mkdirSync, rmSync, symlinkSync } from 'node:fs'
 import { chmod, mkdir, rm, symlink, writeFile } from 'node:fs/promises'
 import { join, resolve, sep } from 'node:path'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { isRecord } from '../../utils/type-guards.js'
+import { expectDefined, expectError, parseJson } from '../test-doubles.js'
+
+/** Fresh accumulator for the walker's verbatim argument lists. */
+function emptyScanArgs(): unknown[][] {
+  return []
+}
 
 // ============================================
 // Mock setup (scoped doMock — see header)
@@ -37,7 +44,7 @@ const calls = vi.hoisted(() => ({
   close: 0,
   dispose: 0,
   /** One entry per `bfsCollectSupportedFiles` call: its verbatim argument list. */
-  scanArgs: [] as unknown[][],
+  scanArgs: emptyScanArgs(),
 }))
 
 function unitVector(seed: number): number[] {
@@ -271,17 +278,18 @@ async function runCli(fixture: Fixture, args: string[]): Promise<RunOutcome> {
   try {
     await runSync(args, { dbPath: fixture.dbPath, cacheDir: fixture.cacheDir })
   } catch (error) {
-    exitError = error as Error
+    exitError = expectError(error)
   } finally {
     errorSpy.mockRestore()
     stdoutSpy.mockRestore()
   }
-  return { stdout, stderr, exitCode: process.exitCode as number | undefined, exitError }
+  const exitCode = typeof process.exitCode === 'number' ? process.exitCode : undefined
+  return { stdout, stderr, exitCode, exitError }
 }
 
 /** Counters the command reports on stdout after a successful run. */
 function reportedCounters(outcome: RunOutcome): unknown {
-  return JSON.parse(outcome.stdout) as unknown
+  return parseJson<unknown>(outcome.stdout)
 }
 
 const describeSymlinkedRoot = directorySymlinkSupported() ? describe : describe.skip
@@ -325,7 +333,9 @@ describe('CLI sync', () => {
     } else {
       process.env['BASE_DIRS'] = savedBaseDirs
     }
-    for (const path of MOCKED_PATHS) vi.doUnmock(path)
+    for (const path of MOCKED_PATHS) {
+      vi.doUnmock(path)
+    }
     vi.resetModules()
   })
 
@@ -380,16 +390,16 @@ describe('CLI sync', () => {
     )
     const envOnlyContent = `environment-only root ${'e'.repeat(200)}`
     const envOnlyPath = await writeFixtureFile(
-      join(fixture.roots[2]!, 'environment-only.md'),
+      join(expectDefined(fixture.roots[2]), 'environment-only.md'),
       envOnlyContent
     )
     await seedRows(fixture, envOnlyPath, sha256(envOnlyContent), 1)
 
     const outcome = await runCli(fixture, [
       '--base-dir',
-      fixture.roots[0]!,
+      expectDefined(fixture.roots[0]),
       '--base-dir',
-      fixture.roots[1]!,
+      expectDefined(fixture.roots[1]),
     ])
 
     expect(outcome.exitCode).toBeUndefined()
@@ -410,7 +420,7 @@ describe('CLI sync', () => {
     'accepts --base-dir %s the optional path',
     async (position) => {
       const fixture = await makeFixture(`cli-root-${position}-path`, 2)
-      const selectedRoot = fixture.roots[1]!
+      const selectedRoot = expectDefined(fixture.roots[1])
       const targetPath = await writeFixtureFile(
         join(selectedRoot, 'target.md'),
         `target with root ${position} the path ${'t'.repeat(200)}`
@@ -470,7 +480,10 @@ describe('CLI sync', () => {
 
   it('rejects --visual with a non-zero exit and mutates nothing', async () => {
     const fixture = await makeFixture('visual-rejected')
-    const filePath = await writeFixtureFile(join(fixture.roots[0]!, 'a.md'), 'a'.repeat(200))
+    const filePath = await writeFixtureFile(
+      join(expectDefined(fixture.roots[0]), 'a.md'),
+      'a'.repeat(200)
+    )
     await seedRows(fixture, filePath, 'stale-hash')
 
     const outcome = await runCli(fixture, ['--visual'])
@@ -490,12 +503,19 @@ describe('CLI sync', () => {
 
   it('exits non-zero without mutating when the path is outside every configured root', async () => {
     const fixture = await makeFixture('outside-root')
-    const insidePath = await writeFixtureFile(join(fixture.roots[0]!, 'a.md'), 'a'.repeat(200))
+    const insidePath = await writeFixtureFile(
+      join(expectDefined(fixture.roots[0]), 'a.md'),
+      'a'.repeat(200)
+    )
     await seedRows(fixture, insidePath, 'stale-hash')
     const outsidePath = join(TMP_ROOT, 'outside-root', 'elsewhere')
     await mkdir(outsidePath, { recursive: true })
 
-    const outcome = await runCli(fixture, ['--base-dir', fixture.roots[0]!, outsidePath])
+    const outcome = await runCli(fixture, [
+      '--base-dir',
+      expectDefined(fixture.roots[0]),
+      outsidePath,
+    ])
 
     expect(outcome.exitCode).toBe(1)
     expect(outcome.stdout).toBe('')
@@ -519,7 +539,7 @@ describe('CLI sync', () => {
 
   it('reports skips only and builds no embedder and no optimize for a byte-identical tree', async () => {
     const fixture = await makeFixture('noop')
-    const rootDir = fixture.roots[0]!
+    const rootDir = expectDefined(fixture.roots[0])
     const topContent = `top file content ${'x'.repeat(200)}`
     const nestedContent = `nested file content ${'y'.repeat(200)}`
     const topPath = await writeFixtureFile(join(rootDir, 'top.md'), topContent)
@@ -545,7 +565,7 @@ describe('CLI sync', () => {
 
   it('adds, replaces, prunes, and counts an empty file in one run', async () => {
     const fixture = await makeFixture('mixed')
-    const rootDir = fixture.roots[0]!
+    const rootDir = expectDefined(fixture.roots[0])
     const addedContent = `added document ${'a'.repeat(200)}`
     const changedContent = `changed document ${'b'.repeat(200)}`
     const unchangedContent = `unchanged document ${'c'.repeat(200)}`
@@ -603,14 +623,14 @@ describe('CLI sync', () => {
   it('scans every configured root with depth counted from that root when the path is omitted', async () => {
     const fixture = await makeFixture('omitted', 2)
     const firstPath = await writeFixtureFile(
-      join(fixture.roots[0]!, 'first.md'),
+      join(expectDefined(fixture.roots[0]), 'first.md'),
       `first root document ${'a'.repeat(200)}`
     )
     const secondPath = await writeFixtureFile(
-      join(fixture.roots[1]!, 'nested', 'second.md'),
+      join(expectDefined(fixture.roots[1]), 'nested', 'second.md'),
       `second root document ${'b'.repeat(200)}`
     )
-    const deepDir = deepChainDir(fixture.roots[0]!, MAX_SCAN_DEPTH)
+    const deepDir = deepChainDir(expectDefined(fixture.roots[0]), MAX_SCAN_DEPTH)
     const deepPath = await writeFixtureFile(
       join(deepDir, 'deep.md'),
       `too deep for a root-relative scan ${'c'.repeat(200)}`
@@ -620,19 +640,19 @@ describe('CLI sync', () => {
 
     expect(outcome.exitCode).toBeUndefined()
     expect(reportedCounters(outcome)).toEqual({ upserted: 2, skipped: 0, empty: 0, pruned: 0 })
-    // Both configured roots were scanned, each as its own BFS root, and each with
-    // exactly three arguments. The omitted-path route is the one that must never
-    // forward a `scope`: its prune scope is the whole index, so an unobserved
-    // region hidden from the coverage facts would be maximally dangerous.
+    // Both configured roots were scanned, each as its own BFS root, and each
+    // with no `scope`. The omitted-path route is the one that must never forward
+    // a `scope`: its prune scope is the whole index, so an unobserved region
+    // hidden from the coverage facts would be maximally dangerous.
     // Configured roots carry the resolver's trailing separator (`BaseDirsConfig`).
     expect(calls.scanArgs).toEqual(
       fixture.roots.map((root) => [
         `${root}${sep}`,
         [`${resolve(fixture.dbPath)}${sep}`, `${resolve(fixture.cacheDir)}${sep}`],
-        MAX_SCAN_DEPTH,
+        { maxDepth: MAX_SCAN_DEPTH },
       ])
     )
-    expect(calls.scanArgs.every((args) => args.length === 3)).toBe(true)
+    expect(calls.scanArgs.every((args) => !isRecord(args[2]) || !('scope' in args[2]))).toBe(true)
     const storedPaths = [
       ...new Set((await storedManifest(fixture)).map((row) => row.filePath)),
     ].sort()
@@ -644,7 +664,7 @@ describe('CLI sync', () => {
 
   it('makes an explicit directory the depth-zero BFS root and forwards no scope to the walker', async () => {
     const fixture = await makeFixture('explicit-directory')
-    const rootDir = fixture.roots[0]!
+    const rootDir = expectDefined(fixture.roots[0])
     const requestedDir = join(rootDir, 'd1', 'd2')
     const deepDir = deepChainDir(rootDir, MAX_SCAN_DEPTH)
     const deepPath = await writeFixtureFile(
@@ -658,22 +678,21 @@ describe('CLI sync', () => {
     expect(reportedCounters(outcome)).toEqual({ upserted: 1, skipped: 0, empty: 0, pruned: 0 })
     const storedPaths = [...new Set((await storedManifest(fixture)).map((row) => row.filePath))]
     expect(storedPaths).toEqual([deepPath])
-    // Exactly three arguments: a `scope` filter would hide unobserved regions
-    // from the coverage facts and make prune unsafe.
+    // No `scope`: a scope filter would hide unobserved regions from the coverage
+    // facts and make prune unsafe.
     expect(calls.scanArgs).toHaveLength(1)
-    const scanCall = calls.scanArgs[0]!
+    const scanCall = expectDefined(calls.scanArgs[0])
     expect(scanCall).toEqual([
       requestedDir,
       [`${resolve(fixture.dbPath)}${sep}`, `${resolve(fixture.cacheDir)}${sep}`],
-      MAX_SCAN_DEPTH,
+      { maxDepth: MAX_SCAN_DEPTH },
     ])
-    expect(scanCall).toHaveLength(3)
-    expect(scanCall[3]).toBeUndefined()
+    expect(scanCall[2]).not.toHaveProperty('scope')
   })
 
   it('handles an explicit file directly, with no directory scan and no sibling changes', async () => {
     const fixture = await makeFixture('explicit-file')
-    const rootDir = fixture.roots[0]!
+    const rootDir = expectDefined(fixture.roots[0])
     const targetContent = `requested document ${'a'.repeat(200)}`
     const siblingContent = `sibling document ${'b'.repeat(200)}`
     const targetPath = await writeFixtureFile(join(rootDir, 'target.md'), targetContent)
@@ -711,7 +730,7 @@ describe('CLI sync', () => {
     'refuses an explicitly requested symbolic link without reading its target',
     async () => {
       const fixture = await makeFixture('requested-symlink')
-      const rootDir = fixture.roots[0]!
+      const rootDir = expectDefined(fixture.roots[0])
       // A perfectly readable, perfectly ingestible .md — outside every root.
       const outsideTarget = await writeFixtureFile(
         join(TMP_ROOT, 'requested-symlink', 'outside', 'secret.md'),
@@ -743,7 +762,7 @@ describe('CLI sync', () => {
   it('refuses an explicitly requested file whose extension is unsupported', async () => {
     const fixture = await makeFixture('requested-unsupported')
     const binaryPath = await writeFixtureFile(
-      join(fixture.roots[0]!, 'archive.bin'),
+      join(expectDefined(fixture.roots[0]), 'archive.bin'),
       `not a document ${'b'.repeat(200)}`
     )
 
@@ -789,7 +808,7 @@ describe('CLI sync', () => {
     'refuses an explicitly requested FIFO instead of blocking on its bytes',
     async () => {
       const fixture = await makeFixture('requested-fifo')
-      const fifoPath = join(fixture.roots[0]!, 'pipe.md')
+      const fifoPath = join(expectDefined(fixture.roots[0]), 'pipe.md')
       execFileSync('mkfifo', [fifoPath])
 
       // Reading this path never returns, so finishing at all is the assertion:
@@ -811,7 +830,7 @@ describe('CLI sync', () => {
 
   it('skips an oversized file with a warning, keeps its rows, and reconciles the rest', async () => {
     const fixture = await makeFixture('oversized')
-    const rootDir = fixture.roots[0]!
+    const rootDir = expectDefined(fixture.roots[0])
     const savedMaxFileSize = process.env['MAX_FILE_SIZE']
     // Small enough that the oversized fixture stays cheap, large enough for the
     // other documents to remain ingestible.
@@ -869,7 +888,7 @@ describe('CLI sync', () => {
     process.env['MAX_FILE_SIZE'] = '1024'
     try {
       const oversizedPath = await writeFixtureFile(
-        join(fixture.roots[0]!, 'huge.md'),
+        join(expectDefined(fixture.roots[0]), 'huge.md'),
         'h'.repeat(5000)
       )
       await seedRows(fixture, oversizedPath, 'hash-from-a-run-with-a-larger-limit')
@@ -905,7 +924,7 @@ describe('CLI sync', () => {
 
   it('stops at the first failure with one stderr error, no prune, and earlier upserts retained', async () => {
     const fixture = await makeFixture('first-error')
-    const rootDir = fixture.roots[0]!
+    const rootDir = expectDefined(fixture.roots[0])
     // BFS reads the root's own entries before descending, so `first.md` is
     // always ingested before the failing `deep/fails.md`.
     const firstContent = `first document ${'a'.repeat(200)}`
@@ -1137,7 +1156,7 @@ describe('CLI sync', () => {
   // stays.
   it('keeps the specific message for an in-root path that does not exist', async () => {
     const fixture = await makeFixture('requested-missing')
-    const missingPath = join(fixture.roots[0]!, 'ghost.md')
+    const missingPath = join(expectDefined(fixture.roots[0]), 'ghost.md')
 
     const outcome = await runCli(fixture, [missingPath])
 
@@ -1154,7 +1173,7 @@ describe('CLI sync', () => {
 
   it('closes the store and disposes the embedder after a failing run', async () => {
     const fixture = await makeFixture('cleanup')
-    const rootDir = fixture.roots[0]!
+    const rootDir = expectDefined(fixture.roots[0])
     await writeFixtureFile(join(rootDir, 'fails.md'), `${FAIL_MARKER} content ${'b'.repeat(200)}`)
 
     const outcome = await runCli(fixture, [])

@@ -24,6 +24,12 @@
 
 import { resolve } from 'node:path'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { expectRecord } from '../test-doubles.js'
+
+/** A layout bounding box, as `[x0, y0, x1, y1]`. */
+function bbox(x0: number, y0: number, x1: number, y1: number): [number, number, number, number] {
+  return [x0, y0, x1, y1]
+}
 
 // ============================================
 // Mock Setup (vi.hoisted for isolate: false)
@@ -32,13 +38,20 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 // Captioner spy state — shared across the pdf-visual real-shaped mock and the
 // per-test arrange phase. The hoisted block is required because the mock
 // factories run before any `import` statement (isolate: false + vitest hoisting).
-const captionerSpy = vi.hoisted(() => ({
-  calls: [] as { pageNum: number }[],
-  // Single pageNum that should throw (set to 2 for AC-004). Null = no per-page throw.
-  throwOn: null as number | null,
-  // When true, every captioner.caption() call throws (AC-005).
+interface CaptionerSpy {
+  calls: { pageNum: number }[]
+  /** Single pageNum that should throw (set to 2 for AC-004). Null = no per-page throw. */
+  throwOn: number | null
+  /** When true, every captioner.caption() call throws (AC-005). */
+  throwAll: boolean
+  /** Pages flagged as visual candidates by the detector mock. Default: page 2. */
+  candidatePages: Set<number>
+}
+
+const captionerSpy = vi.hoisted<CaptionerSpy>(() => ({
+  calls: [],
+  throwOn: null,
   throwAll: false,
-  // Pages flagged as visual candidates by the detector mock. Default: page 2.
   candidatePages: new Set<number>([2]),
 }))
 
@@ -136,6 +149,16 @@ const cliCommonFactory = () => ({
 
 // Real-shaped region orchestrator. Captions remain isolated per region and
 // are inserted into the ordered document by `src/ingest/visual.ts`.
+/** Shape the stubbed `processVisualRegions` returns to the ingest pipeline. */
+type ProcessedRegion = {
+  pageNum: number
+  detectionIndex: number
+  bbox: [number, number, number, number]
+  evidence: 'raster'
+  caption: string | null
+  rendition?: { bytes: Uint8Array; mimeType: string }
+}
+
 const pdfVisualFactory = () => ({
   detectVisualRegions: (pages: { pageNum: number; stextJson: unknown }[]) =>
     pages
@@ -156,7 +179,7 @@ const pdfVisualFactory = () => ({
     _doc: unknown,
     options: { includeImages?: boolean }
   ) => {
-    const processed = []
+    const processed: ProcessedRegion[] = []
     for (const region of regions) {
       captionerSpy.calls.push({ pageNum: region.pageNum })
       if (captionerSpy.throwAll || captionerSpy.throwOn === region.pageNum) {
@@ -261,12 +284,12 @@ function captureRun(fn: () => Promise<void>): Promise<{
   // Default-shape insertChunks that records every chunk for later assertion.
   mocks.insertChunks.mockImplementation((chunks: unknown[]) => {
     for (const c of chunks) {
-      const row = c as Record<string, unknown>
+      const row = expectRecord(c)
       inserted.push({
         filePath: String(row['filePath']),
         chunkIndex: Number(row['chunkIndex']),
         text: String(row['text']),
-        vector: Array.isArray(row['vector']) ? (row['vector'] as number[]) : [],
+        vector: Array.isArray(row['vector']) ? row['vector'].map(Number) : [],
         fileTitle: typeof row['fileTitle'] === 'string' ? row['fileTitle'] : null,
         visualAttachments:
           typeof row['visualAttachments'] === 'string' ? row['visualAttachments'] : null,
@@ -305,7 +328,7 @@ function buildThreePageParseResult() {
         blockOrdinal: 0,
         lineOrdinal: 0,
         fragmentOrdinal: 0,
-        bbox: [0, 0, 100, 10] as [number, number, number, number],
+        bbox: bbox(0, 0, 100, 10),
         text,
         pageTextStart: 0,
         pageTextEnd: text.length,
@@ -375,7 +398,9 @@ describe('VLM PDF Enrichment - Visual Mode', () => {
   })
 
   afterAll(() => {
-    for (const p of MOCKED_PATHS) vi.doUnmock(p)
+    for (const p of MOCKED_PATHS) {
+      vi.doUnmock(p)
+    }
     vi.resetModules()
   })
 
@@ -411,8 +436,10 @@ describe('VLM PDF Enrichment - Visual Mode', () => {
     process.exitCode = undefined
   })
 
+  const NO_FLAGS: string[] = []
+
   it.each([
-    { flags: [] as string[], captioned: false, storedImages: false },
+    { flags: NO_FLAGS, captioned: false, storedImages: false },
     { flags: ['--visual'], captioned: true, storedImages: false },
     { flags: ['--images'], captioned: false, storedImages: true },
     { flags: ['--visual', '--images'], captioned: true, storedImages: true },
@@ -453,7 +480,9 @@ describe('VLM PDF Enrichment - Visual Mode', () => {
   // @complexity: medium
   it.each([false, true])('releases the captioner when chunking fails=%s', async (fail) => {
     mocks.stat.mockResolvedValue(mockFileStat())
-    if (fail) mocks.chunkText.mockRejectedValueOnce(new Error('Chunking failed'))
+    if (fail) {
+      mocks.chunkText.mockRejectedValueOnce(new Error('Chunking failed'))
+    }
     await captureRun(() => runIngest(['--visual', resolve('/tmp/test/lifecycle.pdf')]))
     expect(mocks.dispose).toHaveBeenCalledTimes(1)
     expect(mocks.destroy).toHaveBeenCalledTimes(1)

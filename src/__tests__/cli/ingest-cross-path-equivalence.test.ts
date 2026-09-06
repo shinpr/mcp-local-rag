@@ -13,6 +13,7 @@ import { RAGServer } from '../../server/index.js'
 import { type VectorChunk, VectorStore } from '../../vectordb/index.js'
 import { buildDocxFixture, headingXml, tableXml } from '../docx-fixture.js'
 import { withTestDevice } from '../test-device.js'
+import { expectDefined, privateMembers } from '../test-doubles.js'
 
 // ============================================
 // Test Configuration
@@ -77,7 +78,7 @@ function stripVolatile(chunk: VectorChunk): Omit<VectorChunk, 'id' | 'timestamp'
  * Mirrors the pattern in `rag-server.read-neighbors.integration.test.ts`.
  */
 function getServerVectorStore(server: RAGServer): VectorStore {
-  return (server as unknown as { vectorStore: VectorStore }).vectorStore
+  return privateMembers<{ vectorStore: VectorStore }>(server).vectorStore
 }
 
 // ============================================
@@ -186,14 +187,19 @@ describe('VLM PDF Enrichment - Phase 0 Equivalence (AC-008)', () => {
     await server.handleIngestFile({ filePath: fixtureFilePath })
 
     // Act: CLI path
-    await ingestSingleFile(fixtureFilePath, cliParser, cliChunker, cliEmbedder, cliVectorStore)
+    await ingestSingleFile(fixtureFilePath, {
+      parser: cliParser,
+      chunker: cliChunker,
+      embedder: cliEmbedder,
+      vectorStore: cliVectorStore,
+    })
 
     // Assert: each caller invoked insertChunks exactly once
     expect(serverInsertCalls).toHaveLength(1)
     expect(cliInsertCalls).toHaveLength(1)
 
-    const serverChunks = serverInsertCalls[0]!
-    const cliChunks = cliInsertCalls[0]!
+    const serverChunks = expectDefined(serverInsertCalls[0])
+    const cliChunks = expectDefined(cliInsertCalls[0])
 
     // Sanity: at least one chunk produced (fixture content is substantial)
     expect(serverChunks.length).toBeGreaterThan(0)
@@ -202,13 +208,15 @@ describe('VLM PDF Enrichment - Phase 0 Equivalence (AC-008)', () => {
     // Load-bearing fields must match across the two callers, positionally.
     // id and timestamp are intentionally excluded (random UUID + per-call ISO).
     for (let i = 0; i < serverChunks.length; i++) {
-      expect(stripVolatile(cliChunks[i]!)).toEqual(stripVolatile(serverChunks[i]!))
+      expect(stripVolatile(expectDefined(cliChunks[i]))).toEqual(
+        stripVolatile(expectDefined(serverChunks[i]))
+      )
     }
 
     // Literal expected shape on the first chunk to anchor the contract:
     // chunkIndex starts at 0, filePath matches the fixture, metadata is
     // populated from the file name + raw text length + extension.
-    const first = serverChunks[0]!
+    const first = expectDefined(serverChunks[0])
     expect(first.filePath).toBe(fixtureFilePath)
     expect(first.chunkIndex).toBe(0)
     expect(typeof first.text).toBe('string')
@@ -233,12 +241,17 @@ describe('VLM PDF Enrichment - Phase 0 Equivalence (AC-008)', () => {
     chunkerSpy.mockClear()
 
     await server.handleIngestFile({ filePath: docxFixtureFilePath })
-    await ingestSingleFile(docxFixtureFilePath, cliParser, cliChunker, cliEmbedder, cliVectorStore)
+    await ingestSingleFile(docxFixtureFilePath, {
+      parser: cliParser,
+      chunker: cliChunker,
+      embedder: cliEmbedder,
+      vectorStore: cliVectorStore,
+    })
 
     expect(serverInsertCalls).toHaveLength(1)
     expect(cliInsertCalls).toHaveLength(1)
-    const serverChunks = serverInsertCalls[0]!
-    const cliChunks = cliInsertCalls[0]!
+    const serverChunks = expectDefined(serverInsertCalls[0])
+    const cliChunks = expectDefined(cliInsertCalls[0])
     expect(cliChunks.map(stripVolatile)).toEqual(serverChunks.map(stripVolatile))
 
     const rowChunk = serverChunks.find((chunk) =>

@@ -152,8 +152,12 @@ describe('classifyRequestedPath', () => {
     await writeFile(unsupportedFile, 'not a document')
     await writeFile(managedFile, 'captured content')
     await writeFile(outsideTarget, 'a secret outside every root')
-    if (symlinkSupported()) symlinkSync(outsideTarget, linkPath, 'file')
-    if (fifoSupported()) execFileSync('mkfifo', [fifoPath])
+    if (symlinkSupported()) {
+      symlinkSync(outsideTarget, linkPath, 'file')
+    }
+    if (fifoSupported()) {
+      execFileSync('mkfifo', [fifoPath])
+    }
   })
 
   afterAll(async () => {
@@ -229,13 +233,10 @@ describe('exclude-prefix comparison, case differences', () => {
 
   const walkedFiles = async (platform: NodeJS.Platform): Promise<string[]> =>
     (
-      await bfsCollectSupportedFiles(
-        caseDir,
-        [differentlyCasedDbPrefix],
-        MAX_SCAN_DEPTH,
-        undefined,
-        platform
-      )
+      await bfsCollectSupportedFiles(caseDir, [differentlyCasedDbPrefix], {
+        maxDepth: MAX_SCAN_DEPTH,
+        platform,
+      })
     ).files.sort()
 
   it('excludes a path that differs from its prefix only in case under win32', async () => {
@@ -265,13 +266,10 @@ describe('exclude-prefix comparison, case differences', () => {
   itWithSymlinks('does not descend into the excluded directory during a walk', async () => {
     symlinkSync(documentFile, join(dbDir, 'alias.md'), 'file')
 
-    const result = await bfsCollectSupportedFiles(
-      caseDir,
-      [`${dbDir}${sep}`],
-      MAX_SCAN_DEPTH,
-      undefined,
-      'linux'
-    )
+    const result = await bfsCollectSupportedFiles(caseDir, [`${dbDir}${sep}`], {
+      maxDepth: MAX_SCAN_DEPTH,
+      platform: 'linux',
+    })
 
     expect(result.files).toEqual([documentFile])
     expect(result.skippedSymlinks).toEqual([])

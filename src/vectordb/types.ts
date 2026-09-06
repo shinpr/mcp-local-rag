@@ -2,6 +2,7 @@
 
 import { AppError } from '../utils/errors.js'
 import { MAX_VISUAL_RENDITION_BYTES } from '../utils/limits.js'
+import { isInteger, isRecord } from '../utils/type-guards.js'
 
 // ============================================
 // Constants
@@ -184,13 +185,19 @@ export interface LanceDBRawResult {
 /**
  * Type guard for DocumentMetadata
  */
+/** True for a value whose numeric `length` lets `Array.from` read it as numbers. */
+function isArrayLikeOfNumbers(value: unknown): value is ArrayLike<number> {
+  return isRecord(value) && typeof value['length'] === 'number'
+}
+
 function isDocumentMetadata(value: unknown): value is DocumentMetadata {
-  if (typeof value !== 'object' || value === null) return false
-  const obj = value as Record<string, unknown>
+  if (!isRecord(value)) {
+    return false
+  }
   return (
-    typeof obj['fileName'] === 'string' &&
-    typeof obj['fileSize'] === 'number' &&
-    typeof obj['fileType'] === 'string'
+    typeof value['fileName'] === 'string' &&
+    typeof value['fileSize'] === 'number' &&
+    typeof value['fileType'] === 'string'
   )
 }
 
@@ -198,14 +205,15 @@ function isDocumentMetadata(value: unknown): value is DocumentMetadata {
  * Type guard for LanceDB raw search result
  */
 export function isLanceDBRawResult(value: unknown): value is LanceDBRawResult {
-  if (typeof value !== 'object' || value === null) return false
-  const obj = value as Record<string, unknown>
+  if (!isRecord(value)) {
+    return false
+  }
   return (
-    typeof obj['id'] === 'string' &&
-    typeof obj['filePath'] === 'string' &&
-    typeof obj['chunkIndex'] === 'number' &&
-    typeof obj['text'] === 'string' &&
-    isDocumentMetadata(obj['metadata'])
+    typeof value['id'] === 'string' &&
+    typeof value['filePath'] === 'string' &&
+    typeof value['chunkIndex'] === 'number' &&
+    typeof value['text'] === 'string' &&
+    isDocumentMetadata(value['metadata'])
   )
 }
 
@@ -243,10 +251,9 @@ export function toSearchResult(raw: unknown): SearchResult {
  * embedding is normalized to `number[]` (LanceDB returns a typed array).
  */
 export function toVectorChunk(raw: unknown): VectorChunk {
-  if (typeof raw !== 'object' || raw === null) {
+  if (!isRecord(raw)) {
     throw new DatabaseError('Invalid chunk row shape from LanceDB')
   }
-  const obj = raw as Record<string, unknown>
   const {
     id,
     filePath,
@@ -258,7 +265,7 @@ export function toVectorChunk(raw: unknown): VectorChunk {
     contentHash,
     visualAttachments,
     timestamp,
-  } = obj
+  } = raw
   if (
     typeof id !== 'string' ||
     typeof filePath !== 'string' ||
@@ -271,7 +278,7 @@ export function toVectorChunk(raw: unknown): VectorChunk {
   if (!isDocumentMetadata(metadata)) {
     throw new DatabaseError('Invalid chunk row shape from LanceDB (metadata)')
   }
-  if (vector == null || typeof (vector as { length?: unknown }).length !== 'number') {
+  if (!isArrayLikeOfNumbers(vector)) {
     throw new DatabaseError('Invalid chunk row shape from LanceDB (vector)')
   }
   return {
@@ -279,7 +286,7 @@ export function toVectorChunk(raw: unknown): VectorChunk {
     filePath,
     chunkIndex,
     text,
-    vector: Array.from(vector as ArrayLike<number>),
+    vector: Array.from(vector),
     metadata,
     fileTitle: typeof fileTitle === 'string' && fileTitle.length > 0 ? fileTitle : null,
     // Omit the key rather than store '' or undefined: the create path seeds ''
@@ -313,18 +320,23 @@ function decodeStrictBase64(value: unknown): Uint8Array | null {
 }
 
 function isVisualAttachment(value: unknown): value is VisualAttachment {
-  if (typeof value !== 'object' || value === null) return false
-  const attachment = value as Partial<VisualAttachment>
+  if (!isRecord(value)) {
+    return false
+  }
+  const imageIndex = value['imageIndex']
+  const mimeType = value['mimeType']
   if (
-    !Number.isInteger(attachment.imageIndex) ||
-    (attachment.imageIndex as number) < 0 ||
-    (attachment.mimeType !== 'image/png' && attachment.mimeType !== 'image/jpeg')
+    !isInteger(imageIndex) ||
+    imageIndex < 0 ||
+    (mimeType !== 'image/png' && mimeType !== 'image/jpeg')
   ) {
     return false
   }
-  const bytes = decodeStrictBase64(attachment.data)
-  if (!bytes || bytes.byteLength > MAX_VISUAL_RENDITION_BYTES) return false
-  return attachment.mimeType === 'image/png'
+  const bytes = decodeStrictBase64(value['data'])
+  if (!bytes || bytes.byteLength > MAX_VISUAL_RENDITION_BYTES) {
+    return false
+  }
+  return mimeType === 'image/png'
     ? bytes.length >= 8 &&
         bytes[0] === 0x89 &&
         bytes[1] === 0x50 &&
@@ -345,14 +357,18 @@ export function parseHydratedVisualAttachments(value: unknown): {
   if (value === null || value === undefined || value === '' || value === '[]') {
     return { attachments: [], omittedCount: 0 }
   }
-  if (typeof value !== 'string') return { attachments: [], omittedCount: 1 }
+  if (typeof value !== 'string') {
+    return { attachments: [], omittedCount: 1 }
+  }
   let parsed: unknown
   try {
     parsed = JSON.parse(value)
   } catch {
     return { attachments: [], omittedCount: 1 }
   }
-  if (!Array.isArray(parsed)) return { attachments: [], omittedCount: 1 }
+  if (!Array.isArray(parsed)) {
+    return { attachments: [], omittedCount: 1 }
+  }
 
   const attachments: VisualAttachment[] = []
   let omittedCount = 0
@@ -384,26 +400,17 @@ export function parseHydratedVisualAttachments(value: unknown): {
  * @throws DatabaseError if the raw row is missing required fields
  */
 export function toChunkRow(raw: unknown): ChunkRow {
-  if (typeof raw !== 'object' || raw === null) {
+  if (!isRecord(raw)) {
     throw new DatabaseError('Invalid chunk row shape from LanceDB')
   }
-  const obj = raw as Record<string, unknown>
-  if (
-    typeof obj['filePath'] !== 'string' ||
-    typeof obj['chunkIndex'] !== 'number' ||
-    typeof obj['text'] !== 'string'
-  ) {
+  const { filePath, chunkIndex, text } = raw
+  if (typeof filePath !== 'string' || typeof chunkIndex !== 'number' || typeof text !== 'string') {
     throw new DatabaseError('Invalid chunk row shape from LanceDB')
   }
-  const rawFileTitle = obj['fileTitle']
+  const rawFileTitle = raw['fileTitle']
   const fileTitle =
     typeof rawFileTitle === 'string' && rawFileTitle.length > 0 ? rawFileTitle : null
-  return {
-    filePath: obj['filePath'],
-    chunkIndex: obj['chunkIndex'],
-    text: obj['text'],
-    fileTitle,
-  }
+  return { filePath, chunkIndex, text, fileTitle }
 }
 
 // ============================================
@@ -414,8 +421,8 @@ export function toChunkRow(raw: unknown): ChunkRow {
  * Database error
  */
 export class DatabaseError extends AppError {
-  constructor(message: string, cause?: Error) {
-    super(message, 'vectordb', 'internal', cause)
+  constructor(message: string, options?: { cause?: Error }) {
+    super(message, 'vectordb', 'internal', options)
     this.name = 'DatabaseError'
   }
 }

@@ -86,7 +86,7 @@ function parseArgs(args: string[]): SyncArgs {
 
   let index = 0
   while (index < args.length) {
-    const arg = args[index]!
+    const arg = args[index] ?? ''
     switch (arg) {
       case '-h':
       case '--help':
@@ -122,7 +122,9 @@ function parseArgs(args: string[]): SyncArgs {
   }
 
   const parsed: SyncArgs = { help, baseDirs, images }
-  if (path !== undefined) parsed.path = path
+  if (path !== undefined) {
+    parsed.path = path
+  }
   return parsed
 }
 
@@ -216,7 +218,7 @@ export async function runSync(args: string[], globalOptions: GlobalOptions = {})
     // of the coverage arrays, which would hide an unobserved region and make
     // prune unsafe.
     scanDir: async (rootPath: string) =>
-      await bfsCollectSupportedFiles(rootPath, excludePaths, MAX_SCAN_DEPTH),
+      await bfsCollectSupportedFiles(rootPath, excludePaths, { maxDepth: MAX_SCAN_DEPTH }),
     // Size first, bytes second: `MAX_FILE_SIZE` is otherwise enforced inside the
     // parser, which runs long after the whole file would already be in memory
     // here. Declining (`null`) keeps the rest of the run usable instead of
@@ -229,7 +231,9 @@ export async function runSync(args: string[], globalOptions: GlobalOptions = {})
     // so this is a recorded limitation rather than a defended boundary — as with
     // the watchdog limitation noted on `requestedPathRejection`.
     hashFile: async (filePath: string) => {
-      if ((await stat(filePath)).size > config.maxFileSize) return null
+      if ((await stat(filePath)).size > config.maxFileSize) {
+        return null
+      }
       return computeContentHash(await readFile(filePath))
     },
     loadDbManifest: async () => await vectorStore.listChunkHashes(),
@@ -242,13 +246,12 @@ export async function runSync(args: string[], globalOptions: GlobalOptions = {})
         : { visual: false, images: false }
       const chunkCount = await ingestSingleFile(
         filePath,
-        parser,
-        chunker,
-        ensureEmbedder(),
-        vectorStore,
+        { parser, chunker, embedder: ensureEmbedder(), vectorStore },
         ingestOptions
       )
-      if (chunkCount > 0) console.error(`upserted ${filePath} (${chunkCount} chunks)`)
+      if (chunkCount > 0) {
+        console.error(`upserted ${filePath} (${chunkCount} chunks)`)
+      }
       return chunkCount
     },
     deleteExactPath: async (filePath: string) => await vectorStore.deleteChunks(filePath),

@@ -21,7 +21,9 @@ const GROUPING_BOUNDARY_STD_MULTIPLIER = 1.5
  * @returns Filtered results
  */
 export function applyGrouping(results: SearchResult[], mode: GroupingMode): SearchResult[] {
-  if (results.length <= 1) return results
+  if (results.length <= 1) {
+    return results
+  }
 
   // Calculate gaps between consecutive results with their indices
   const gaps: { index: number; gap: number }[] = []
@@ -33,7 +35,9 @@ export function applyGrouping(results: SearchResult[], mode: GroupingMode): Sear
     }
   }
 
-  if (gaps.length === 0) return results
+  if (gaps.length === 0) {
+    return results
+  }
 
   // Calculate statistical threshold to identify significant gaps (group boundaries)
   const gapValues = gaps.map((g) => g.gap)
@@ -46,7 +50,9 @@ export function applyGrouping(results: SearchResult[], mode: GroupingMode): Sear
   const boundaries = gaps.filter((g) => g.gap > threshold).map((g) => g.index)
 
   // If no boundaries found, return all results
-  if (boundaries.length === 0) return results
+  if (boundaries.length === 0) {
+    return results
+  }
 
   // Determine how many groups to include based on mode
   // 'similar': 1 group (cut at first boundary)
@@ -74,7 +80,9 @@ export function applyGrouping(results: SearchResult[], mode: GroupingMode): Sear
  * @returns Filtered results preserving original order
  */
 export function applyFileFilter(results: SearchResult[], maxFiles: number): SearchResult[] {
-  if (results.length === 0) return results
+  if (results.length === 0) {
+    return results
+  }
 
   // Find the best (lowest) score per file
   const fileScores = new Map<string, number>()
@@ -86,7 +94,9 @@ export function applyFileFilter(results: SearchResult[], maxFiles: number): Sear
   }
 
   // If we have fewer or equal files than maxFiles, return all
-  if (fileScores.size <= maxFiles) return results
+  if (fileScores.size <= maxFiles) {
+    return results
+  }
 
   // Sort files by best score (ascending) and take top N
   const topFiles = new Set(
@@ -113,24 +123,42 @@ export function applyFileFilter(results: SearchResult[], maxFiles: number): Sear
  * @param ftsResults - Raw FTS results with BM25 scores
  * @param weight - Boost weight (0-1, from hybridWeight config)
  */
+/**
+ * BM25 score of one raw FTS row. LanceDB supplies rows loosely: an entry can be
+ * absent and `_score` is untyped, and neither contributes to the ranking.
+ */
+function readBm25Score(row: FtsRow): number {
+  const score = row?.['_score']
+  return typeof score === 'number' ? score : 0
+}
+
+/**
+ * One raw row from a LanceDB full-text search. Holes are observed in practice,
+ * so the element type admits them rather than making the guards below dead.
+ */
+export type FtsRow = Record<string, unknown> | null | undefined
+
 export function applyKeywordBoost(
   vectorResults: SearchResult[],
-  ftsResults: Record<string, unknown>[],
+  ftsResults: readonly FtsRow[],
   weight: number
 ): SearchResult[] {
   // Build FTS score map with normalized scores (0-1)
   let maxBm25Score = 0
   for (const result of ftsResults) {
-    if (!result) continue
-    const score = (result['_score'] as number) ?? 0
-    if (score > maxBm25Score) maxBm25Score = score
+    const score = readBm25Score(result)
+    if (score > maxBm25Score) {
+      maxBm25Score = score
+    }
   }
 
   const ftsScoreMap = new Map<string, number>()
   for (const result of ftsResults) {
-    if (!result) continue
+    if (!result) {
+      continue
+    }
     const key = `${result['filePath']}:${result['chunkIndex']}`
-    const rawScore = (result['_score'] as number) ?? 0
+    const rawScore = readBm25Score(result)
     const normalized = maxBm25Score > 0 ? rawScore / maxBm25Score : 0
     ftsScoreMap.set(key, normalized)
   }

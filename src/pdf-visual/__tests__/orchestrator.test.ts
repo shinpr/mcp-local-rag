@@ -1,6 +1,6 @@
 import type { Document as MupdfDocument } from 'mupdf'
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
-
+import { asDouble } from '../../__tests__/test-doubles.js'
 import type { Captioner, DetectedVisualRegion } from '../types.js'
 
 const mocks = vi.hoisted(() => ({
@@ -39,7 +39,7 @@ const regions: DetectedVisualRegion[] = [
   { pageNum: 1, detectionIndex: 0, bbox: [10, 20, 110, 120], evidence: 'vector' },
   { pageNum: 1, detectionIndex: 1, bbox: [200, 220, 400, 420], evidence: 'raster' },
 ]
-const doc = {} as MupdfDocument
+const doc = asDouble<MupdfDocument>({})
 
 describe('processVisualRegions', () => {
   it('isolates caption failures between regions', async () => {

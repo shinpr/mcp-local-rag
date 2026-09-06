@@ -41,8 +41,10 @@ export async function scanBaseDir(
   const { files, unreadableDirs, depthLimited } = await bfsCollectSupportedFiles(
     baseDir,
     excludePaths,
-    MAX_SCAN_DEPTH,
-    scope
+    {
+      maxDepth: MAX_SCAN_DEPTH,
+      scope,
+    }
   )
 
   const warnings: string[] = []

@@ -11,6 +11,13 @@ import {
   prepareVisualPdfChunks,
 } from './visual.js'
 
+/** Collaborators one file ingest run needs, injected as a unit. */
+export interface FileIngestCollaborators {
+  parser: DocumentParser
+  chunker: SemanticChunker
+  embedder: EmbedderInterface
+}
+
 export interface PrepareFileForIngestOptions {
   images: boolean
   captioner?: CaptionerConfig
@@ -52,11 +59,10 @@ async function readPreParseContentHash(filePath: string, parser: DocumentParser)
  */
 export async function prepareFileForIngest(
   filePath: string,
-  parser: DocumentParser,
-  chunker: SemanticChunker,
-  embedder: EmbedderInterface,
+  collaborators: FileIngestCollaborators,
   options: PrepareFileForIngestOptions
 ): Promise<PreparedFileIngest> {
+  const { parser, chunker, embedder } = collaborators
   const contentHash = await readPreParseContentHash(filePath, parser)
   const isPdf = filePath.toLowerCase().endsWith('.pdf')
 
@@ -72,7 +78,7 @@ export async function prepareFileForIngest(
       images: options.images,
       ...(options.captioner === undefined ? {} : { captioner: options.captioner }),
     }
-    const result = await prepareVisualPdfChunks(filePath, parser, chunker, embedder, visualOptions)
+    const result = await prepareVisualPdfChunks(filePath, collaborators, visualOptions)
     text = result.text
     title = result.title
     chunks = result.chunks

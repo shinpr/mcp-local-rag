@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-
+import { asDouble } from '../../__tests__/test-doubles.js'
 import type { SemanticChunker } from '../../chunker/index.js'
 import type { EmbedderInterface } from '../../chunker/semantic-chunker.js'
 import { buildChunksFromParseResult } from '../compute.js'
@@ -29,7 +29,7 @@ describe('buildChunksFromParseResult', () => {
         title: 'Document',
         imageAnchors: [{ offset: 12, imageIndex: 0, mimeType: 'image/png', bytes: png }],
       },
-      { chunkText } as unknown as SemanticChunker,
+      asDouble<SemanticChunker>({ chunkText }),
       { embedBatch } satisfies EmbedderInterface
     )
 

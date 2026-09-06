@@ -55,6 +55,7 @@ const cliCommonFactory = () => ({
 const MOCKED_PATHS = ['node:fs/promises', '../../cli/common.js'] as const
 
 import { resolve } from 'node:path'
+import { expectError } from '../test-doubles.js'
 import { formatCliErrorShim } from './cli-error-shim.js'
 
 let parseArgs: typeof import('../../cli/list.js').parseArgs
@@ -129,7 +130,9 @@ describe('CLI list', () => {
   })
 
   afterAll(() => {
-    for (const p of MOCKED_PATHS) vi.doUnmock(p)
+    for (const p of MOCKED_PATHS) {
+      vi.doUnmock(p)
+    }
     vi.resetModules()
   })
 
@@ -168,7 +171,7 @@ describe('CLI list', () => {
     const { stderr, error } = await captureOutput(() => runList(['--help']))
 
     expect(error).toBeInstanceOf(Error)
-    expect((error as Error).message).toBe('process.exit(0)')
+    expect(expectError(error).message).toBe('process.exit(0)')
 
     const joined = stderr.join('\n')
     expect(joined).toContain('Usage: mcp-local-rag')
@@ -181,7 +184,7 @@ describe('CLI list', () => {
     const { stderr, error } = await captureOutput(() => runList(['-h']))
 
     expect(error).toBeInstanceOf(Error)
-    expect((error as Error).message).toBe('process.exit(0)')
+    expect(expectError(error).message).toBe('process.exit(0)')
 
     const joined = stderr.join('\n')
     expect(joined).toContain('Usage: mcp-local-rag')
@@ -257,7 +260,7 @@ describe('CLI list', () => {
     const { stderr, error } = await captureOutput(() => runList(['--unknown']))
 
     expect(error).toBeInstanceOf(Error)
-    expect((error as Error).message).toBe('process.exit(1)')
+    expect(expectError(error).message).toBe('process.exit(1)')
 
     const joined = stderr.join('\n')
     expect(joined).toContain('Unknown option: --unknown')
@@ -267,7 +270,7 @@ describe('CLI list', () => {
     const { stderr, error } = await captureOutput(() => runList(['some-arg']))
 
     expect(error).toBeInstanceOf(Error)
-    expect((error as Error).message).toBe('process.exit(1)')
+    expect(expectError(error).message).toBe('process.exit(1)')
 
     const joined = stderr.join('\n')
     expect(joined).toContain('Unexpected argument')
@@ -408,8 +411,12 @@ describe('CLI list', () => {
     // readdir is called once per root; mock matches the requested path so
     // the per-root file lists do not bleed across roots.
     mocks.readdir.mockImplementation(async (path: string) => {
-      if (path === rootA) return [mockDirent('a.md', rootA)]
-      if (path === rootB) return [mockDirent('b.md', rootB)]
+      if (path === rootA) {
+        return [mockDirent('a.md', rootA)]
+      }
+      if (path === rootB) {
+        return [mockDirent('b.md', rootB)]
+      }
       return []
     })
     mocks.listFiles.mockResolvedValue([])
@@ -522,11 +529,14 @@ describe('CLI list', () => {
     })
     mocks.readdir.mockImplementation(async (path: string) => {
       if (path === rootA) {
-        const err = new Error('EACCES: permission denied, scandir') as NodeJS.ErrnoException
-        err.code = 'EACCES'
+        const err = Object.assign(new Error('EACCES: permission denied, scandir'), {
+          code: 'EACCES',
+        })
         throw err
       }
-      if (path === rootB) return [mockDirent('survives.md', rootB)]
+      if (path === rootB) {
+        return [mockDirent('survives.md', rootB)]
+      }
       return []
     })
     mocks.listFiles.mockResolvedValue([])
@@ -746,8 +756,12 @@ describe('CLI list', () => {
         warnings: [],
       })
       mocks.readdir.mockImplementation(async (path: string) => {
-        if (path === envRootA) return [mockDirent('a.md', envRootA)]
-        if (path === envRootB) return [mockDirent('b.md', envRootB)]
+        if (path === envRootA) {
+          return [mockDirent('a.md', envRootA)]
+        }
+        if (path === envRootB) {
+          return [mockDirent('b.md', envRootB)]
+        }
         return []
       })
       mocks.listFiles.mockResolvedValue([])
@@ -816,7 +830,7 @@ describe('CLI list', () => {
 
       // Assert: CLI propagates exit(1) and the config error is visible.
       expect(error).toBeInstanceOf(Error)
-      expect((error as Error).message).toBe('process.exit(1)')
+      expect(expectError(error).message).toBe('process.exit(1)')
       const joined = stderr.join('\n')
       expect(joined).toContain('BASE_DIRS')
       expect(joined).toContain('JSON')

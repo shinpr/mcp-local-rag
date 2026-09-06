@@ -50,7 +50,9 @@ export async function listDocuments(input: {
 
     for (const scannedPath of scanned.files) {
       const key = await realpathForMatch(scannedPath)
-      if (seenKeys.has(key)) continue
+      if (seenKeys.has(key)) {
+        continue
+      }
       seenKeys.add(key)
 
       const entry = ingestedByKey.get(key)

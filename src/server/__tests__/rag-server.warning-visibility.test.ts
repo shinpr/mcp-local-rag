@@ -16,6 +16,7 @@ import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { testModelCacheDir, withTestDevice } from '../../__tests__/test-device.js'
+import { expectDefined, expectRecord, privateMembers } from '../../__tests__/test-doubles.js'
 import type { Embedder } from '../../embedder/index.js'
 import { BaseDirsConfigError } from '../../utils/base-dirs.js'
 import { generateRawDataPath } from '../../utils/raw-data-utils.js'
@@ -34,11 +35,19 @@ const NESTED_PRUNED_WARNING =
  */
 type ContentBlock = { type: string; text: string; annotations?: unknown }
 
+/** One block of an MCP tool result, before the text-block narrowing below. */
+type ResultBlock = { type: string; text?: string | undefined; annotations?: unknown }
+
 function findWarningBlock(
-  content: ReadonlyArray<ContentBlock>,
+  content: ReadonlyArray<ResultBlock>,
   needle: string
 ): ContentBlock | undefined {
-  return content.find((b) => b.type === 'text' && b.text.includes(needle))
+  for (const block of content) {
+    if (block.type === 'text' && typeof block.text === 'string' && block.text.includes(needle)) {
+      return { ...block, text: block.text }
+    }
+  }
+  return undefined
 }
 
 // =============================================================================
@@ -168,7 +177,7 @@ describe('P3-T3: status callable with configError and exposes diagnostic', () =>
     expect(result.content[0]?.type).toBe('text')
     // configError diagnostic must be visible in content (not only stderr).
     const errorBlock = findWarningBlock(
-      result.content as ContentBlock[],
+      result.content,
       'BASE_DIRS must be a JSON array of non-empty path strings'
     )
     expect(errorBlock).toBeDefined()
@@ -288,14 +297,14 @@ describe('P3-T3: warnings appear in every tool response when warnings exist', ()
   // status: warning content block must include the precedence warning.
   it('status response includes warning content block', async () => {
     const result = await server.handleStatus()
-    const block = findWarningBlock(result.content as ContentBlock[], PRECEDENCE_WARNING)
+    const block = findWarningBlock(result.content, PRECEDENCE_WARNING)
     expect(block).toBeDefined()
   })
 
   // list_files: nested-root pruning warning is exposed here too.
   it('list_files response includes nested-root pruning warning', async () => {
     const result = await server.handleListFiles()
-    const block = findWarningBlock(result.content as ContentBlock[], NESTED_PRUNED_WARNING)
+    const block = findWarningBlock(result.content, NESTED_PRUNED_WARNING)
     expect(block).toBeDefined()
   })
 
@@ -304,8 +313,8 @@ describe('P3-T3: warnings appear in every tool response when warnings exist', ()
   it('query_documents includes warnings on every call (not only the first)', async () => {
     const first = await server.handleQueryDocuments({ query: 'sample', limit: 1 })
     const second = await server.handleQueryDocuments({ query: 'sample', limit: 1 })
-    const firstBlock = findWarningBlock(first.content as ContentBlock[], PRECEDENCE_WARNING)
-    const secondBlock = findWarningBlock(second.content as ContentBlock[], PRECEDENCE_WARNING)
+    const firstBlock = findWarningBlock(first.content, PRECEDENCE_WARNING)
+    const secondBlock = findWarningBlock(second.content, PRECEDENCE_WARNING)
     expect(firstBlock).toBeDefined()
     expect(secondBlock).toBeDefined()
   })
@@ -313,7 +322,7 @@ describe('P3-T3: warnings appear in every tool response when warnings exist', ()
   // ingest_file: warning block accompanies the ingest result.
   it('ingest_file response includes warning content block', async () => {
     const result = await server.handleIngestFile({ filePath: sampleFile })
-    const block = findWarningBlock(result.content as ContentBlock[], PRECEDENCE_WARNING)
+    const block = findWarningBlock(result.content, PRECEDENCE_WARNING)
     expect(block).toBeDefined()
   })
 
@@ -324,7 +333,7 @@ describe('P3-T3: warnings appear in every tool response when warnings exist', ()
         'A short markdown document used solely to confirm warning visibility on ingest_data.',
       metadata: { source: 'clipboard://2026-05-23/warning-visibility', format: 'markdown' },
     })
-    const block = findWarningBlock(result.content as ContentBlock[], PRECEDENCE_WARNING)
+    const block = findWarningBlock(result.content, PRECEDENCE_WARNING)
     expect(block).toBeDefined()
   })
 
@@ -333,7 +342,7 @@ describe('P3-T3: warnings appear in every tool response when warnings exist', ()
     // Ingest a file first so chunkIndex 0 exists.
     await server.handleIngestFile({ filePath: sampleFile })
     const result = await server.handleReadChunkNeighbors({ filePath: sampleFile, chunkIndex: 0 })
-    const block = findWarningBlock(result.content as ContentBlock[], PRECEDENCE_WARNING)
+    const block = findWarningBlock(result.content, PRECEDENCE_WARNING)
     expect(block).toBeDefined()
   })
 
@@ -342,20 +351,18 @@ describe('P3-T3: warnings appear in every tool response when warnings exist', ()
     // Ensure something exists to delete (idempotent for delete semantics).
     await server.handleIngestFile({ filePath: sampleFile })
     const result = await server.handleDeleteFile({ filePath: sampleFile })
-    const block = findWarningBlock(result.content as ContentBlock[], PRECEDENCE_WARNING)
+    const block = findWarningBlock(result.content, PRECEDENCE_WARNING)
     expect(block).toBeDefined()
   })
 
   // Annotations remain on the warning block (assistant/user audience, priority 0.3).
   it('warning content blocks carry MCP annotations', async () => {
     const result = await server.handleStatus()
-    const block = findWarningBlock(result.content as ContentBlock[], PRECEDENCE_WARNING)
+    const block = findWarningBlock(result.content, PRECEDENCE_WARNING)
     expect(block).toBeDefined()
-    const annotations = (block as { annotations?: { audience?: string[]; priority?: number } })
-      .annotations
-    expect(annotations).toBeDefined()
-    expect(annotations?.audience).toEqual(['user', 'assistant'])
-    expect(annotations?.priority).toBe(0.3)
+    const annotations = expectRecord(expectDefined(block).annotations)
+    expect(annotations['audience']).toEqual(['user', 'assistant'])
+    expect(annotations['priority']).toBe(0.3)
   })
 })
 
@@ -458,7 +465,7 @@ describe('query_documents attachment warning isolation', () => {
   let server: RAGServer
 
   function internals(value: RAGServer): { embedder: Embedder; vectorStore: VectorStore } {
-    return value as unknown as { embedder: Embedder; vectorStore: VectorStore }
+    return privateMembers<{ embedder: Embedder; vectorStore: VectorStore }>(value)
   }
 
   beforeAll(() => {

@@ -50,46 +50,47 @@ interface DeleteArgs {
  * Accepts a positional <file-path>, --source <url>, and -h/--help.
  * Unknown flags or conflicting args cause exit(1).
  */
+/** Report a usage error with the help text and stop. */
+function usageError(message: string): never {
+  console.error(message)
+  console.error(HELP_TEXT)
+  process.exit(1)
+}
+
 function parseArgs(args: string[]): DeleteArgs {
-  let help = false
-  let source: string | undefined
-  let filePath: string | undefined
+  const result: DeleteArgs = { help: false }
 
   let i = 0
   while (i < args.length) {
-    const arg = args[i]!
+    const arg = args[i] ?? ''
 
     if (arg === '-h' || arg === '--help') {
-      help = true
-      i++
-    } else if (arg === '--source') {
-      const value = args[++i]
-      if (value === undefined || value.startsWith('-')) {
-        console.error('Missing value for --source')
-        console.error(HELP_TEXT)
-        process.exit(1)
-      }
-      source = value
-      i++
-    } else if (arg.startsWith('-')) {
-      console.error(`Unknown option: ${arg}`)
-      console.error(HELP_TEXT)
-      process.exit(1)
-    } else {
-      if (filePath !== undefined) {
-        console.error(`Unexpected argument: ${arg}`)
-        console.error(HELP_TEXT)
-        process.exit(1)
-      }
-      // Positional argument: file-path
-      filePath = arg
-      i++
+      result.help = true
+      i += 1
+      continue
     }
+
+    if (arg === '--source') {
+      const value = args[i + 1]
+      if (value === undefined || value.startsWith('-')) {
+        usageError('Missing value for --source')
+      }
+      result.source = value
+      i += 2
+      continue
+    }
+
+    if (arg.startsWith('-')) {
+      usageError(`Unknown option: ${arg}`)
+    }
+    if (result.filePath !== undefined) {
+      usageError(`Unexpected argument: ${arg}`)
+    }
+    // Positional argument: file-path
+    result.filePath = arg
+    i += 1
   }
 
-  const result: DeleteArgs = { help }
-  if (source !== undefined) result.source = source
-  if (filePath !== undefined) result.filePath = filePath
   return result
 }
 
@@ -102,6 +103,47 @@ function parseArgs(args: string[]): DeleteArgs {
  * @param args - Arguments after "delete"
  * @param globalOptions - Global options parsed before the subcommand
  */
+/**
+ * Resolve the document to delete from either input form, or `null` when the
+ * path was rejected (the reason is already reported).
+ */
+function resolveTargetPath(parsed: DeleteArgs, dbPath: string): string | null {
+  if (parsed.source) {
+    return generateRawDataPath(dbPath, parsed.source)
+  }
+  // DB key is the resolve()'d ingest path, so look up by resolve() (never
+  // realpath) — realpath stays in validatePath/validateFilePath.
+  const targetPath = resolve(parsed.filePath ?? '')
+  const pathError = validatePath(targetPath, '<file-path>')
+  if (pathError) {
+    console.error(pathError)
+    return null
+  }
+  return targetPath
+}
+
+/** Unlink one raw-data file, treating an already-absent file as success. */
+async function unlinkIfPresent(path: string): Promise<void> {
+  try {
+    await unlink(path)
+  } catch (error: unknown) {
+    if (!isEnoent(error)) {
+      throw error
+    }
+  }
+}
+
+/** Remove a managed raw-data document and its sidecar, reporting what existed. */
+async function removeRawDataArtifacts(
+  targetPath: string
+): Promise<{ rawDataExisted: boolean; metaExisted: boolean }> {
+  // Pre-unlink existence (shared with the MCP server delete path).
+  const artifacts = await checkRawDataArtifacts(targetPath)
+  await unlinkIfPresent(targetPath)
+  await unlinkIfPresent(generateMetaJsonPath(targetPath))
+  return artifacts
+}
+
 export async function runDelete(args: string[], globalOptions: GlobalOptions = {}): Promise<void> {
   // Parse CLI options
   const parsed = parseArgs(args)
@@ -132,24 +174,10 @@ export async function runDelete(args: string[], globalOptions: GlobalOptions = {
   try {
     await vectorStore.initialize()
 
-    // Determine target file path
-    let targetPath: string
-
-    if (parsed.source) {
-      // Generate raw-data path from source URL
-      targetPath = generateRawDataPath(globalConfig.dbPath, parsed.source)
-    } else {
-      // DB key is the resolve()'d ingest path, so look up by resolve() (never
-      // realpath) — realpath stays in validatePath/validateFilePath.
-      targetPath = resolve(parsed.filePath!)
-
-      // Validate path (reject sensitive system directories)
-      const pathError = validatePath(targetPath, '<file-path>')
-      if (pathError) {
-        console.error(pathError)
-        process.exitCode = 1
-        return
-      }
+    const targetPath = resolveTargetPath(parsed, globalConfig.dbPath)
+    if (targetPath === null) {
+      process.exitCode = 1
+      return
     }
 
     // Delete chunks from VectorStore
@@ -159,41 +187,16 @@ export async function runDelete(args: string[], globalOptions: GlobalOptions = {
     // are already gone.
     await vectorStore.optimize()
 
-    let rawDataExisted = false
-    let metaExisted = false
-
-    // Clean up physical raw-data files if applicable.
-    if (isPathInRawDataDirLexical(targetPath, globalConfig.dbPath)) {
-      // Pre-unlink existence (shared with the MCP server delete path).
-      const artifacts = await checkRawDataArtifacts(targetPath)
-      rawDataExisted = artifacts.rawDataExisted
-      metaExisted = artifacts.metaExisted
-
-      try {
-        await unlink(targetPath)
-      } catch (error: unknown) {
-        // Ignore ENOENT (file already deleted / never existed)
-        if (!isEnoent(error)) {
-          throw error
-        }
-      }
-
-      try {
-        await unlink(generateMetaJsonPath(targetPath))
-      } catch (error: unknown) {
-        // Ignore ENOENT
-        if (!isEnoent(error)) {
-          throw error
-        }
-      }
-    }
+    const removedFiles = isPathInRawDataDirLexical(targetPath, globalConfig.dbPath)
+      ? await removeRawDataArtifacts(targetPath)
+      : { rawDataExisted: false, metaExisted: false }
 
     // Output result JSON to stdout
     const result = {
       filePath: targetPath,
       deleted: true,
       removedChunks,
-      existed: removedChunks > 0 || rawDataExisted || metaExisted,
+      existed: removedChunks > 0 || removedFiles.rawDataExisted || removedFiles.metaExisted,
       timestamp: new Date().toISOString(),
     }
     process.stdout.write(JSON.stringify(result))

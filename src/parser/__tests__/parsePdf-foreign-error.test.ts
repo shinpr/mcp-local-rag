@@ -22,6 +22,7 @@
 import { mkdir, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { expectInstanceOf } from '../../__tests__/test-doubles.js'
 import type { EmbedderInterface } from '../pdf-filter.js'
 
 // ============================================
@@ -103,7 +104,9 @@ describe('parser PDF foreign-error reclassification (AC-002 / AC-003)', () => {
   })
 
   afterAll(() => {
-    for (const p of MOCKED_PATHS) vi.doUnmock(p)
+    for (const p of MOCKED_PATHS) {
+      vi.doUnmock(p)
+    }
     vi.resetModules()
   })
 
@@ -130,7 +133,9 @@ describe('parser PDF foreign-error reclassification (AC-002 / AC-003)', () => {
             ],
           })
         ),
+        destroy: vi.fn(),
       }),
+      destroy: vi.fn(),
     }
     const mockDoc = {
       countPages: vi.fn().mockReturnValue(1),
@@ -194,9 +199,7 @@ describe('parser PDF foreign-error reclassification (AC-002 / AC-003)', () => {
     expect(thrown).toBe(foreign)
     expect(thrown).toBeInstanceOf(EmbeddingError)
     expect(thrown).not.toBeInstanceOf(FileOperationError)
-    expect((thrown as InstanceType<typeof EmbeddingError>).message).toBe(
-      'Embedding failed for dtype int8'
-    )
+    expect(expectInstanceOf(thrown, EmbeddingError).message).toBe('Embedding failed for dtype int8')
   })
 
   it('parsePdf still wraps a genuine non-AppError IO/mupdf failure as FileOperationError with cause', async () => {
@@ -213,10 +216,10 @@ describe('parser PDF foreign-error reclassification (AC-002 / AC-003)', () => {
     }
 
     expect(thrown).toBeInstanceOf(FileOperationError)
-    expect((thrown as InstanceType<typeof FileOperationError>).message).toBe(
+    expect(expectInstanceOf(thrown, FileOperationError).message).toBe(
       `Failed to parse PDF: ${filePath}`
     )
-    expect((thrown as InstanceType<typeof FileOperationError>).cause).toBe(genuine)
+    expect(expectInstanceOf(thrown, FileOperationError).cause).toBe(genuine)
   })
 
   it('parsePdf still disposes doc on the foreign-error rethrow path (finally runs)', async () => {
@@ -264,10 +267,10 @@ describe('parser PDF foreign-error reclassification (AC-002 / AC-003)', () => {
     }
 
     expect(thrown).toBeInstanceOf(FileOperationError)
-    expect((thrown as InstanceType<typeof FileOperationError>).message).toBe(
+    expect(expectInstanceOf(thrown, FileOperationError).message).toBe(
       `Failed to parse PDF pages: ${filePath}`
     )
-    expect((thrown as InstanceType<typeof FileOperationError>).cause).toBe(genuine)
+    expect(expectInstanceOf(thrown, FileOperationError).cause).toBe(genuine)
   })
 
   it('parsePdfPages disposes doc exactly once before rethrowing a foreign EmbeddingError', async () => {

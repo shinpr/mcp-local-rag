@@ -3,6 +3,7 @@ import { resolve } from 'node:path'
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { parseHydratedVisualAttachments, type VisualAttachment } from '../../vectordb/types.js'
 import { buildPdfWithImageBytes } from '../pdf-image-fixture.js'
+import { parseJson } from '../test-doubles.js'
 
 type RunIngest = typeof import('../../cli/ingest.js').runIngest
 type VectorStoreCtor = typeof import('../../vectordb/index.js').VectorStore
@@ -80,7 +81,7 @@ describe('CLI ingest image persistence', () => {
       const enabledRows = await readRows()
       expect(enabledRows.length).toBeGreaterThan(0)
       const attachmentRows = enabledRows
-        .map((row) => JSON.parse(row.visualAttachments ?? '[]') as VisualAttachment[])
+        .map((row) => parseJson<VisualAttachment[]>(row.visualAttachments ?? '[]'))
         .filter((attachments) => attachments.length > 0)
       expect(attachmentRows.length).toBeGreaterThan(0)
       for (const attachments of attachmentRows) {

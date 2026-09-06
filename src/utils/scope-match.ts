@@ -13,7 +13,13 @@ import { isAbsolute, sep as PATH_SEP } from 'node:path'
 // A slash identifies slash-style paths even when a legal filename segment
 // contains a backslash. Pure backslash-style paths retain Windows support.
 function deriveSeparator(prefix: string): string {
-  return prefix.includes('/') ? '/' : prefix.includes('\\') ? '\\' : PATH_SEP
+  if (prefix.includes('/')) {
+    return '/'
+  }
+  if (prefix.includes('\\')) {
+    return '\\'
+  }
+  return PATH_SEP
 }
 
 // Strip trailing separators so `/a/b`, `/a/b/`, `/a/b//` normalize alike. A
@@ -85,7 +91,9 @@ export function nonAbsolutePrefixes(scope: string[]): string[] {
  * empty `scope` visits every directory (traversal unchanged).
  */
 export function shouldVisitDir(dir: string, scope?: string[]): boolean {
-  if (!scope || scope.length === 0) return true
+  if (!scope || scope.length === 0) {
+    return true
+  }
   return matchesAnyScope(dir, scope) || scope.some((prefix) => isUnderOrEqual(prefix, dir))
 }
 

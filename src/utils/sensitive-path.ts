@@ -72,30 +72,30 @@ const SENSITIVE_HOME_PREFIXES = ['.ssh', '.gnupg']
  * paths like `/etcetera`. Both the `~/.ssh` and the expanded form are
  * rejected so the policy holds when `$HOME` is unset.
  */
+/** True when `pathCmp` is `prefixCmp` itself or sits underneath it. */
+function isAtOrUnder(pathCmp: string, prefixCmp: string): boolean {
+  return pathCmp === prefixCmp || pathCmp.startsWith(`${prefixCmp}/`)
+}
+
+/** True when `value` names one of the sensitive home subdirectories. */
+function matchesSensitiveHomeDir(value: string, valueCmp: string, home: string): boolean {
+  return SENSITIVE_HOME_PREFIXES.some((dir) => {
+    if (home.length > 0 && isAtOrUnder(valueCmp, toComparable(`${home}/${dir}`))) {
+      return true
+    }
+    // Unexpanded `~/...` form — caught even when `home` is empty.
+    return value === `~/${dir}` || value.startsWith(`~/${dir}/`)
+  })
+}
+
 export function checkSensitivePath(value: string, flagName: string): string | undefined {
   const home = process.env['HOME'] || homedir()
   const expanded = value.startsWith('~/') ? `${home}/${value.slice(2)}` : value
   const valueCmp = toComparable(expanded)
 
-  for (const prefix of SENSITIVE_PATH_PREFIXES) {
-    const prefixCmp = toComparable(prefix)
-    if (valueCmp === prefixCmp || valueCmp.startsWith(`${prefixCmp}/`)) {
-      return `Refusing to use sensitive system path for ${flagName}: ${value}`
-    }
-  }
+  const isSensitive =
+    SENSITIVE_PATH_PREFIXES.some((prefix) => isAtOrUnder(valueCmp, toComparable(prefix))) ||
+    matchesSensitiveHomeDir(value, valueCmp, home)
 
-  for (const dir of SENSITIVE_HOME_PREFIXES) {
-    if (home.length > 0) {
-      const homePathCmp = toComparable(`${home}/${dir}`)
-      if (valueCmp === homePathCmp || valueCmp.startsWith(`${homePathCmp}/`)) {
-        return `Refusing to use sensitive system path for ${flagName}: ${value}`
-      }
-    }
-    // Unexpanded `~/...` form — caught even when `home` is empty.
-    if (value === `~/${dir}` || value.startsWith(`~/${dir}/`)) {
-      return `Refusing to use sensitive system path for ${flagName}: ${value}`
-    }
-  }
-
-  return undefined
+  return isSensitive ? `Refusing to use sensitive system path for ${flagName}: ${value}` : undefined
 }

@@ -36,6 +36,7 @@ import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { testModelCacheDir, withTestDevice } from '../../__tests__/test-device.js'
+import { expectInstanceOf, privateMembers } from '../../__tests__/test-doubles.js'
 
 // ============================================
 // Mocks (hoisted so the doMock factories can reference them)
@@ -84,11 +85,13 @@ function dispatch(
   name: string,
   args: unknown
 ): Promise<DispatchResult> {
-  const internals = server as unknown as {
+  const internals = privateMembers<{
     server: { _requestHandlers: Map<string, RegisteredHandler> }
-  }
+  }>(server)
   const handler = internals.server._requestHandlers.get('tools/call')
-  if (handler === undefined) throw new Error('tools/call handler not registered')
+  if (handler === undefined) {
+    throw new Error('tools/call handler not registered')
+  }
   return handler(
     { method: 'tools/call', params: { name, arguments: args } },
     { signal: new AbortController().signal }
@@ -143,7 +146,9 @@ describe('AC-009: dtype×PDF protocol regression (mock-based, no real model/Hub/
             ],
           })
         ),
+        destroy: vi.fn(),
       }),
+      destroy: vi.fn(),
     }
     mockOpenDocument.mockReturnValue({
       countPages: vi.fn().mockReturnValue(1),
@@ -174,7 +179,9 @@ describe('AC-009: dtype×PDF protocol regression (mock-based, no real model/Hub/
 
   afterAll(async () => {
     await server.close()
-    for (const p of MOCKED_PATHS) vi.doUnmock(p)
+    for (const p of MOCKED_PATHS) {
+      vi.doUnmock(p)
+    }
     vi.resetModules()
     rmSync(testDbPath, { recursive: true, force: true })
     rmSync(testDataDir, { recursive: true, force: true })
@@ -193,7 +200,7 @@ describe('AC-009: dtype×PDF protocol regression (mock-based, no real model/Hub/
     }
 
     expect(thrown).toBeInstanceOf(McpError)
-    const err = thrown as InstanceType<typeof McpError>
+    const err = expectInstanceOf(thrown, McpError)
     // Code is InternalError (EmbeddingError kind 'internal').
     expect(err.code).toBe(ErrorCode.InternalError)
     // The client message carries the REAL enriched dtype text.
@@ -220,6 +227,6 @@ describe('AC-009: dtype×PDF protocol regression (mock-based, no real model/Hub/
     }
 
     expect(thrown).toBeInstanceOf(EmbeddingError)
-    expect((thrown as InstanceType<typeof EmbeddingError>).message).toBe(expectedEnriched)
+    expect(expectInstanceOf(thrown, EmbeddingError).message).toBe(expectedEnriched)
   })
 })

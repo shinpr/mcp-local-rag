@@ -46,6 +46,8 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import * as mupdf from 'mupdf'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { isRecord } from '../../utils/type-guards.js'
+import { parseJson } from '../test-doubles.js'
 
 // ============================================
 // CI Gate
@@ -81,7 +83,9 @@ const E2E_TIMEOUT_MS = 10 * 60 * 1000
 function buildChildEnv(overrides: Record<string, string>): Record<string, string> {
   const env: Record<string, string> = {}
   for (const [key, value] of Object.entries(process.env)) {
-    if (value !== undefined) env[key] = value
+    if (value !== undefined) {
+      env[key] = value
+    }
   }
   for (const [key, value] of Object.entries(overrides)) {
     env[key] = value
@@ -99,7 +103,9 @@ function buildPng(width: number, height: number): Uint8Array {
     const table = new Array<number>(256)
     for (let n = 0; n < 256; n++) {
       let c = n
-      for (let k = 0; k < 8; k++) c = (c & 1) !== 0 ? 0xedb88320 ^ (c >>> 1) : c >>> 1
+      for (let k = 0; k < 8; k++) {
+        c = (c & 1) !== 0 ? 0xedb88320 ^ (c >>> 1) : c >>> 1
+      }
       table[n] = c >>> 0
     }
     let crc = 0xffffffff
@@ -218,13 +224,15 @@ function buildFixturePdfBytes(): Uint8Array {
 
 /** Resolve text content from a `tools/call` response shape. */
 function extractTextContent(result: unknown): string {
-  if (result && typeof result === 'object' && 'content' in result) {
-    const content = (result as { content: unknown }).content
+  if (isRecord(result)) {
+    const content = result['content']
     if (Array.isArray(content) && content.length > 0) {
-      const first = content[0]
-      if (first && typeof first === 'object' && 'text' in first) {
-        const text = (first as { text: unknown }).text
-        if (typeof text === 'string') return text
+      const first: unknown = content[0]
+      if (isRecord(first)) {
+        const text = first['text']
+        if (typeof text === 'string') {
+          return text
+        }
       }
     }
   }
@@ -319,10 +327,10 @@ describe.skipIf(!E2E_ENABLED)('VLM PDF Enrichment - service-integration-e2e (RUN
         })
 
         // Assert — response shape: { chunkCount: number, filePath: string }
-        const responseJson = JSON.parse(extractTextContent(callResult)) as {
+        const responseJson = parseJson<{
           chunkCount: number
           filePath: string
-        }
+        }>(extractTextContent(callResult))
         expect(responseJson.chunkCount).toBeGreaterThan(0)
         expect(responseJson.filePath).toBe(fixturePdf)
 
@@ -334,10 +342,11 @@ describe.skipIf(!E2E_ENABLED)('VLM PDF Enrichment - service-integration-e2e (RUN
         const table = await db.openTable(LANCEDB_TABLE_NAME)
         // chunkCount > 0 was asserted above, so we cap the read at a small
         // number to keep the assertion cheap.
-        const rows = (await table.query().limit(1000).toArray()) as Array<{ text: string }>
-        const hasVisualChunk = rows.some(
-          (row) => typeof row.text === 'string' && row.text.includes(VISUAL_CONTENT_MARKER)
-        )
+        const rows: unknown[] = await table.query().limit(1000).toArray()
+        const hasVisualChunk = rows.some((row: unknown) => {
+          const text = isRecord(row) ? row['text'] : undefined
+          return typeof text === 'string' && text.includes(VISUAL_CONTENT_MARKER)
+        })
         expect(hasVisualChunk).toBe(true)
       } finally {
         // Clean teardown of the spawned child via the transport

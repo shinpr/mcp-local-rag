@@ -20,6 +20,7 @@ import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { runList } from '../../cli/list.js'
+import type { GlobalOptions } from '../../cli/options.js'
 
 const NON_ABSOLUTE_WARNING = /Warning \[scope\]: "([^"]+)" is not an absolute path/
 
@@ -27,7 +28,9 @@ function warnedPrefixes(stderr: string[]): string[] {
   const prefixes: string[] = []
   for (const line of stderr) {
     const match = NON_ABSOLUTE_WARNING.exec(line)
-    if (match?.[1] !== undefined) prefixes.push(match[1])
+    if (match?.[1] !== undefined) {
+      prefixes.push(match[1])
+    }
   }
   return prefixes
 }
@@ -37,7 +40,14 @@ function warnedPrefixes(stderr: string[]): string[] {
  * to throw so a non-zero exit surfaces as a caught error rather than killing the
  * test runner.
  */
-function captureRunList(args: string[], globalOptions: Record<string, unknown>) {
+/** Everything one captured `runList` invocation produced. */
+interface CapturedRun {
+  stdout: string[]
+  stderr: string[]
+  error: unknown
+}
+
+function captureRunList(args: string[], globalOptions: GlobalOptions) {
   const stdout: string[] = []
   const stderr: string[] = []
   const stdoutSpy = vi
@@ -52,9 +62,9 @@ function captureRunList(args: string[], globalOptions: Record<string, unknown>) 
   const exitSpy = vi.spyOn(process, 'exit').mockImplementation((code) => {
     throw new Error(`process.exit(${code})`)
   })
-  return (runList as (a: string[], g?: unknown) => Promise<void>)(args, globalOptions)
-    .then(() => ({ stdout, stderr, error: undefined as unknown }))
-    .catch((error: unknown) => ({ stdout, stderr, error }))
+  return runList(args, globalOptions)
+    .then((): CapturedRun => ({ stdout, stderr, error: undefined }))
+    .catch((error: unknown): CapturedRun => ({ stdout, stderr, error }))
     .finally(() => {
       stdoutSpy.mockRestore()
       stderrSpy.mockRestore()

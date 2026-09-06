@@ -20,6 +20,13 @@ export interface CaptionerConfig {
   device?: string | undefined
 }
 
+/** Collaborators one visual PDF ingest run needs, injected as a unit. */
+export interface VisualIngestCollaborators {
+  parser: VisualPdfParser
+  chunker: SemanticChunker
+  embedder: EmbedderInterface
+}
+
 export interface PrepareVisualPdfChunksOptions {
   images: boolean
   captioner?: CaptionerConfig
@@ -69,7 +76,9 @@ function findInsertionIndex(
   fragments: readonly FilteredTextFragment[],
   region: DetectedVisualRegion
 ): number {
-  if (fragments.length === 0) return 0
+  if (fragments.length === 0) {
+    return 0
+  }
   let candidates = fragments
     .map((fragment, index) => ({ fragment, index }))
     .filter(({ fragment }) => horizontalOverlap(fragment.bbox, region.bbox))
@@ -93,7 +102,9 @@ function findInsertionIndex(
 }
 
 function fallbackFragments(page: OrderedVisualPage): readonly FilteredTextFragment[] {
-  if (page.textFragments.length > 0 || page.text.length === 0) return page.textFragments
+  if (page.textFragments.length > 0 || page.text.length === 0) {
+    return page.textFragments
+  }
   return [
     {
       pageNum: page.pageNum,
@@ -108,6 +119,154 @@ function fallbackFragments(page: OrderedVisualPage): readonly FilteredTextFragme
   ]
 }
 
+/** One region with the fragment slot it should be inserted before. */
+interface PositionedRegion {
+  region: ProcessedVisualRegion
+  insertionIndex: number
+}
+
+/** Regions on one page, ordered by insertion slot then detection order. */
+function positionRegions(
+  page: OrderedVisualPage,
+  pageFragments: readonly FilteredTextFragment[],
+  processedRegions: readonly ProcessedVisualRegion[]
+): PositionedRegion[] {
+  return processedRegions
+    .filter((region) => region.pageNum === page.pageNum)
+    .map((region) => ({ region, insertionIndex: findInsertionIndex(pageFragments, region) }))
+    .sort(
+      (left, right) =>
+        left.insertionIndex - right.insertionIndex ||
+        left.region.detectionIndex - right.region.detectionIndex
+    )
+}
+
+/**
+ * Group regions by the character offset in the page text they are inserted at,
+ * so regions landing in the same gap are emitted together.
+ */
+function groupByInsertionOffset(
+  page: OrderedVisualPage,
+  pageFragments: readonly FilteredTextFragment[],
+  positioned: readonly PositionedRegion[]
+): Map<number, ProcessedVisualRegion[]> {
+  const groups = new Map<number, ProcessedVisualRegion[]>()
+  for (const item of positioned) {
+    const preceding = pageFragments[item.insertionIndex - 1]
+    const following = pageFragments[item.insertionIndex]
+    const offset = Math.max(
+      0,
+      Math.min(page.text.length, preceding?.pageTextEnd ?? following?.pageTextStart ?? 0)
+    )
+    const group = groups.get(offset) ?? []
+    group.push(item.region)
+    groups.set(offset, group)
+  }
+  return groups
+}
+
+/** Page text with captions spliced in, plus where each region landed. */
+interface RenderedPage {
+  pageText: string
+  captionRanges: Map<ProcessedVisualRegion, AtomicTextRange>
+  anchorOffsets: Map<ProcessedVisualRegion, number>
+}
+
+/** Newlines needed so `adjacent` is separated by a blank line. */
+function blankLinePadding(adjacent: string): string {
+  const present = adjacent.match(/^\n*/)?.[0].length ?? 0
+  return '\n'.repeat(Math.max(0, 2 - present))
+}
+
+/**
+ * Append one insertion group's captions to `pageText`, recording each region's
+ * caption range and anchor offset. Uncaptioned regions only get an anchor.
+ */
+function appendGroupCaptions(
+  pageText: string,
+  group: readonly ProcessedVisualRegion[],
+  context: {
+    page: OrderedVisualPage
+    pageVisualIndices: Map<ProcessedVisualRegion, number>
+    captionRanges: Map<ProcessedVisualRegion, AtomicTextRange>
+    anchorOffsets: Map<ProcessedVisualRegion, number>
+  }
+): string {
+  const { page, pageVisualIndices, ...into } = context
+  let text = pageText
+  let captionIndex = 0
+  for (const region of group) {
+    if (region.caption === null) {
+      into.anchorOffsets.set(region, text.length)
+      continue
+    }
+    if (captionIndex > 0) {
+      text += '\n\n'
+    }
+    const start = text.length
+    text += `[Visual content on page ${page.pageNum}, visual ${pageVisualIndices.get(region)}: ${region.caption}]`
+    into.captionRanges.set(region, { start, end: text.length })
+    into.anchorOffsets.set(region, start)
+    captionIndex += 1
+  }
+  return text
+}
+
+function renderPageWithCaptions(
+  page: OrderedVisualPage,
+  insertionGroups: Map<number, ProcessedVisualRegion[]>,
+  pageVisualIndices: Map<ProcessedVisualRegion, number>
+): RenderedPage {
+  let pageText = ''
+  let pageCursor = 0
+  const captionRanges = new Map<ProcessedVisualRegion, AtomicTextRange>()
+  const anchorOffsets = new Map<ProcessedVisualRegion, number>()
+
+  for (const [offset, group] of [...insertionGroups].sort((left, right) => left[0] - right[0])) {
+    pageText += page.text.slice(pageCursor, offset)
+    const hasCaption = group.some((region) => region.caption !== null)
+    if (hasCaption && pageText.length > 0) {
+      pageText += blankLinePadding(pageText.match(/\n*$/)?.[0] ?? '')
+    }
+    pageText = appendGroupCaptions(pageText, group, {
+      page,
+      pageVisualIndices,
+      captionRanges,
+      anchorOffsets,
+    })
+    if (hasCaption && offset < page.text.length) {
+      pageText += blankLinePadding(page.text.slice(offset))
+    }
+    pageCursor = offset
+  }
+  pageText += page.text.slice(pageCursor)
+
+  return { pageText, captionRanges, anchorOffsets }
+}
+
+/** Rebase one page-relative region onto the whole-document text. */
+function toOrderedRegion(
+  region: ProcessedVisualRegion,
+  rendered: RenderedPage,
+  pageStart: number,
+  visualIndex: number
+): OrderedVisualRegion {
+  const relative = rendered.captionRanges.get(region)
+  const captionRange = relative
+    ? { start: pageStart + relative.start, end: pageStart + relative.end }
+    : undefined
+  const anchorOffset = rendered.anchorOffsets.get(region)
+  if (anchorOffset === undefined) {
+    throw new Error('Visual region has no anchor offset')
+  }
+  return {
+    ...region,
+    visualIndex,
+    anchorOffset: pageStart + anchorOffset,
+    ...(captionRange ? { captionRange } : {}),
+  }
+}
+
 export function buildOrderedVisualDocument(
   pages: readonly OrderedVisualPage[],
   processedRegions: readonly ProcessedVisualRegion[]
@@ -120,96 +279,23 @@ export function buildOrderedVisualDocument(
 
   for (const page of pages) {
     const pageFragments = fallbackFragments(page)
-    const positioned = processedRegions
-      .filter((region) => region.pageNum === page.pageNum)
-      .map((region) => ({
-        region,
-        insertionIndex: findInsertionIndex(pageFragments, region),
-      }))
-      .sort(
-        (left, right) =>
-          left.insertionIndex - right.insertionIndex ||
-          left.region.detectionIndex - right.region.detectionIndex
-      )
+    const positioned = positionRegions(page, pageFragments, processedRegions)
     const pageVisualIndices = new Map(
       positioned.map((item, index) => [item.region, visualIndex + index] as const)
     )
+    const insertionGroups = groupByInsertionOffset(page, pageFragments, positioned)
+    const rendered = renderPageWithCaptions(page, insertionGroups, pageVisualIndices)
 
-    const insertionOffsets = new Map<ProcessedVisualRegion, number>()
-    for (const item of positioned) {
-      const preceding = pageFragments[item.insertionIndex - 1]
-      const following = pageFragments[item.insertionIndex]
-      insertionOffsets.set(
-        item.region,
-        Math.max(
-          0,
-          Math.min(page.text.length, preceding?.pageTextEnd ?? following?.pageTextStart ?? 0)
-        )
-      )
-    }
-
-    const insertionGroups = new Map<number, ProcessedVisualRegion[]>()
-    for (const item of positioned) {
-      const offset = insertionOffsets.get(item.region) ?? 0
-      const group = insertionGroups.get(offset) ?? []
-      group.push(item.region)
-      insertionGroups.set(offset, group)
-    }
-
-    let pageText = ''
-    let pageCursor = 0
-    const captionRanges = new Map<ProcessedVisualRegion, AtomicTextRange>()
-    const anchorOffsets = new Map<ProcessedVisualRegion, number>()
-    for (const [offset, group] of [...insertionGroups].sort((left, right) => left[0] - right[0])) {
-      pageText += page.text.slice(pageCursor, offset)
-      const hasCaption = group.some((region) => region.caption !== null)
-      if (hasCaption) {
-        const trailingNewlines = pageText.match(/\n*$/)?.[0].length ?? 0
-        pageText += pageText.length > 0 ? '\n'.repeat(Math.max(0, 2 - trailingNewlines)) : ''
-      }
-      let captionIndex = 0
-      for (const region of group) {
-        if (region.caption === null) {
-          anchorOffsets.set(region, pageText.length)
-          continue
-        }
-        if (captionIndex > 0) pageText += '\n\n'
-        const start = pageText.length
-        pageText += `[Visual content on page ${page.pageNum}, visual ${pageVisualIndices.get(region)}: ${region.caption}]`
-        captionRanges.set(region, { start, end: pageText.length })
-        anchorOffsets.set(region, start)
-        captionIndex += 1
-      }
-      if (hasCaption && offset < page.text.length) {
-        const leadingNewlines = page.text.slice(offset).match(/^\n*/)?.[0].length ?? 0
-        pageText += '\n'.repeat(Math.max(0, 2 - leadingNewlines))
-      }
-      pageCursor = offset
-    }
-    pageText += page.text.slice(pageCursor)
-
-    const pageSeparator = text.length > 0 && pageText.length > 0 ? '\n\n' : ''
+    const pageSeparator = text.length > 0 && rendered.pageText.length > 0 ? '\n\n' : ''
     const pageStart = text.length + pageSeparator.length
-    text += pageSeparator + pageText
+    text += pageSeparator + rendered.pageText
 
     for (const positionedRegion of positioned) {
-      const currentVisualIndex = visualIndex++
-      const relativeCaptionRange = captionRanges.get(positionedRegion.region)
-      const captionRange = relativeCaptionRange
-        ? {
-            start: pageStart + relativeCaptionRange.start,
-            end: pageStart + relativeCaptionRange.end,
-          }
-        : undefined
-      if (captionRange) atomicRanges.push(captionRange)
-      const anchorOffset = anchorOffsets.get(positionedRegion.region)
-      if (anchorOffset === undefined) throw new Error('Visual region has no anchor offset')
-      regions.push({
-        ...positionedRegion.region,
-        visualIndex: currentVisualIndex,
-        anchorOffset: pageStart + anchorOffset,
-        ...(captionRange ? { captionRange } : {}),
-      })
+      const record = toOrderedRegion(positionedRegion.region, rendered, pageStart, visualIndex++)
+      if (record.captionRange) {
+        atomicRanges.push(record.captionRange)
+      }
+      regions.push(record)
       consumedRegions.add(positionedRegion.region)
     }
   }
@@ -227,7 +313,9 @@ function assignVisualAttachments(
   attachments: readonly VisualAttachment[]
 ): Map<number, VisualAttachment[]> {
   const attachmentsByChunkIndex = new Map<number, VisualAttachment[]>()
-  if (chunks.length === 0) return attachmentsByChunkIndex
+  if (chunks.length === 0) {
+    return attachmentsByChunkIndex
+  }
   const regionByVisualIndex = new Map(
     document.regions.map((region) => [region.visualIndex, region] as const)
   )
@@ -241,11 +329,14 @@ function assignVisualAttachments(
     }
     seenVisualIndices.add(attachment.imageIndex)
     const region = regionByVisualIndex.get(attachment.imageIndex)
-    if (!region)
+    if (!region) {
       throw new Error(`Visual attachment has no ordered region: ${attachment.imageIndex}`)
+    }
 
     const owner = findNearestChunk(chunks, region.anchorOffset)
-    if (!owner) throw new Error(`Visual ${attachment.imageIndex} has no owning chunk`)
+    if (!owner) {
+      throw new Error(`Visual ${attachment.imageIndex} has no owning chunk`)
+    }
     const current = attachmentsByChunkIndex.get(owner.index) ?? []
     current.push(attachment)
     attachmentsByChunkIndex.set(owner.index, current)
@@ -266,7 +357,7 @@ async function processImageOnlyRegions(
   for (const region of regions) {
     try {
       const image = await renderer.renderPdfRendition(
-        doc as Parameters<typeof renderer.renderPdfRendition>[0],
+        doc,
         region.pageNum,
         region.bbox,
         region.evidence
@@ -280,45 +371,70 @@ async function processImageOnlyRegions(
   return { processed, omittedImageCount }
 }
 
+/**
+ * Detect visual regions and turn them into processed ones. With a captioner
+ * configured the VLM barrel is loaded and every region is captioned; without
+ * one only the lighter detector is loaded and regions carry images alone.
+ */
+async function detectAndProcessRegions(
+  pages: Awaited<ReturnType<VisualPdfParser['parsePdfPages']>>['pages'],
+  doc: Awaited<ReturnType<VisualPdfParser['parsePdfPages']>>['doc'],
+  captionerConfig: CaptionerConfig | undefined,
+  includeImages: boolean
+): Promise<{ processed: ProcessedVisualRegion[]; omittedImageCount: number }> {
+  const pageRefs = pages.map((page) => ({ pageNum: page.pageNum, stextJson: page.stextJson }))
+  if (captionerConfig === undefined) {
+    const detector = await import('../pdf-visual/detector.js')
+    return processImageOnlyRegions(detector.detectVisualRegions(pageRefs, doc), doc)
+  }
+  const pdfVisual = await import('../pdf-visual/index.js')
+  const regions = pdfVisual.detectVisualRegions(pageRefs, doc)
+  const captioner = pdfVisual.createCaptioner(captionerConfig)
+  try {
+    const processed = await pdfVisual.processVisualRegions(regions, doc, {
+      captioner,
+      includeImages,
+    })
+    return { processed, omittedImageCount: 0 }
+  } finally {
+    await captioner.dispose()
+  }
+}
+
+/** Encode every rendered region; one that cannot be encoded is omitted, not fatal. */
+function collectAttachments(regions: readonly OrderedVisualRegion[]): {
+  attachments: VisualAttachment[]
+  omittedImageCount: number
+} {
+  const attachments: VisualAttachment[] = []
+  let omittedImageCount = 0
+  for (const region of regions) {
+    if (!region.rendition) {
+      continue
+    }
+    try {
+      attachments.push(createVisualAttachment(region.visualIndex, region.rendition))
+    } catch {
+      omittedImageCount += 1
+    }
+  }
+  return { attachments, omittedImageCount }
+}
+
 export async function prepareVisualPdfChunks(
   filePath: string,
-  parser: VisualPdfParser,
-  chunker: SemanticChunker,
-  embedder: EmbedderInterface,
+  collaborators: VisualIngestCollaborators,
   options: PrepareVisualPdfChunksOptions
 ): Promise<PrepareVisualPdfChunksResult> {
+  const { parser, chunker, embedder } = collaborators
   const captionerConfig = options.captioner
   const { doc, title, pages } = await parser.parsePdfPages(filePath, embedder)
   try {
-    let processed: ProcessedVisualRegion[]
     let omittedImageCount = 0
 
-    if (captionerConfig !== undefined) {
-      const pdfVisual = await import('../pdf-visual/index.js')
-      const regions = pdfVisual.detectVisualRegions(
-        pages.map((page) => ({ pageNum: page.pageNum, stextJson: page.stextJson })),
-        doc as Parameters<typeof pdfVisual.detectVisualRegions>[1]
-      )
-      const captioner = pdfVisual.createCaptioner(captionerConfig)
-      try {
-        processed = await pdfVisual.processVisualRegions(
-          regions,
-          doc as Parameters<typeof pdfVisual.processVisualRegions>[1],
-          { captioner, includeImages: options.images }
-        )
-      } finally {
-        await captioner.dispose()
-      }
-    } else {
-      const detector = await import('../pdf-visual/detector.js')
-      const regions = detector.detectVisualRegions(
-        pages.map((page) => ({ pageNum: page.pageNum, stextJson: page.stextJson })),
-        doc as Parameters<typeof detector.detectVisualRegions>[1]
-      )
-      const imageOnly = await processImageOnlyRegions(regions, doc)
-      processed = imageOnly.processed
-      omittedImageCount += imageOnly.omittedImageCount
-    }
+    const detected = await detectAndProcessRegions(pages, doc, captionerConfig, options.images)
+    const processed = detected.processed
+    omittedImageCount += detected.omittedImageCount
 
     const ordered = buildOrderedVisualDocument(pages, processed)
     const { chunks, embeddings } = await buildChunksAndEmbeddings(
@@ -327,19 +443,11 @@ export async function prepareVisualPdfChunks(
       embedder,
       ordered.atomicRanges
     )
-    const attachments: VisualAttachment[] = []
-    if (options.images) {
-      for (const orderedRegion of ordered.regions) {
-        if (!orderedRegion.rendition) continue
-        try {
-          attachments.push(
-            createVisualAttachment(orderedRegion.visualIndex, orderedRegion.rendition)
-          )
-        } catch {
-          omittedImageCount += 1
-        }
-      }
-    }
+    const collected = options.images
+      ? collectAttachments(ordered.regions)
+      : { attachments: [], omittedImageCount: 0 }
+    const attachments = collected.attachments
+    omittedImageCount += collected.omittedImageCount
     const visualAttachments = assignVisualAttachments(ordered, chunks, attachments)
     return {
       chunks,

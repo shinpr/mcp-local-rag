@@ -59,7 +59,9 @@ export function classifyIngestedSources(
   return ingestedKeyed
     .filter(({ key }) => !matchedKeys.has(key))
     .filter(({ entry }) => {
-      if (!scopePrefixes) return true
+      if (!scopePrefixes) {
+        return true
+      }
       // Raw-data sources are exempt from scope; real-file entries respect it.
       return (
         isManagedRawDataPath(entry.filePath, dbPath) ||
@@ -69,7 +71,9 @@ export function classifyIngestedSources(
     .map(({ entry }) => {
       if (isManagedRawDataPath(entry.filePath, dbPath)) {
         const source = extractSourceFromPath(entry.filePath)
-        if (source) return { source, chunkCount: entry.chunkCount, timestamp: entry.timestamp }
+        if (source) {
+          return { source, chunkCount: entry.chunkCount, timestamp: entry.timestamp }
+        }
       }
       return { filePath: entry.filePath, chunkCount: entry.chunkCount, timestamp: entry.timestamp }
     })

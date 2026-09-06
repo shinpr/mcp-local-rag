@@ -104,30 +104,47 @@ export interface CliBaseDirsResolution {
  * decide its own rendering (JSON-output subcommands like `list` may need
  * to keep stderr clean even when warnings are present).
  */
+/** Report the first sensitive root among `roots` and stop. */
+function exitOnSensitiveRoot(
+  roots: readonly string[],
+  check: (root: string, flag: string) => string | null | undefined,
+  flag: string
+): void {
+  for (const root of roots) {
+    const sensitive = check(root, flag)
+    if (sensitive) {
+      console.error(sensitive)
+      process.exit(1)
+    }
+  }
+}
+
+/**
+ * Screen the raw env-supplied roots before the resolver realpath-normalizes
+ * them, so a literal `BASE_DIR=/etc` is rejected with the env var as the
+ * attribution surface. Malformed `BASE_DIRS` surfaces later via resolveBaseDirs.
+ */
+function exitOnSensitiveEnvRoots(): void {
+  const baseDirs = process.env['BASE_DIRS']
+  if (baseDirs !== undefined && baseDirs.length > 0) {
+    const parsed = parseBaseDirsEnv(baseDirs)
+    if (parsed.ok) {
+      exitOnSensitiveRoot(parsed.value, checkSensitivePath, 'BASE_DIRS')
+    }
+    return
+  }
+  const baseDir = process.env['BASE_DIR']
+  if (baseDir !== undefined && baseDir.trim().length > 0) {
+    exitOnSensitiveRoot([baseDir], checkSensitivePath, 'BASE_DIR')
+  }
+}
+
 export async function resolveCliBaseDirsOrExit(cliRoots: string[]): Promise<CliBaseDirsResolution> {
   // Screen the raw env-supplied paths before the resolver realpath-
   // normalizes them, so a literal `BASE_DIR=/etc` is rejected with the
   // env var as the attribution surface.
   if (cliRoots.length === 0) {
-    if (process.env['BASE_DIRS'] !== undefined && process.env['BASE_DIRS'].length > 0) {
-      const parsed = parseBaseDirsEnv(process.env['BASE_DIRS'])
-      if (parsed.ok) {
-        for (const raw of parsed.value) {
-          const sensitive = checkSensitivePath(raw, 'BASE_DIRS')
-          if (sensitive) {
-            console.error(sensitive)
-            process.exit(1)
-          }
-        }
-      }
-      // Malformed BASE_DIRS surfaces below via resolveBaseDirs.
-    } else if (process.env['BASE_DIR'] !== undefined && process.env['BASE_DIR'].trim().length > 0) {
-      const sensitive = checkSensitivePath(process.env['BASE_DIR'], 'BASE_DIR')
-      if (sensitive) {
-        console.error(sensitive)
-        process.exit(1)
-      }
-    }
+    exitOnSensitiveEnvRoots()
   }
 
   const result = await resolveBaseDirs({
@@ -148,13 +165,7 @@ export async function resolveCliBaseDirsOrExit(cliRoots: string[]): Promise<CliB
   // roots that pre-validation in the subcommand may have missed (e.g.
   // realpath-resolved targets of symlinks). Reported under `--base-dir`
   // because that is the flag the user most directly controls.
-  for (const root of result.config.baseDirs) {
-    const sensitive = validatePath(root, '--base-dir')
-    if (sensitive) {
-      console.error(sensitive)
-      process.exit(1)
-    }
-  }
+  exitOnSensitiveRoot(result.config.baseDirs, validatePath, '--base-dir')
 
   return { config: result.config, warnings: result.warnings }
 }

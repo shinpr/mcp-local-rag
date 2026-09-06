@@ -19,6 +19,17 @@ import type { ImageRendition } from '../pdf-visual/types.js'
 import { MAX_VISUAL_RENDITION_BYTES } from '../utils/limits.js'
 import type { VectorChunk, VisualAttachment } from '../vectordb/index.js'
 
+/** Distance from `offset` to a chunk's source span; 0 when it falls inside. */
+function distanceToSpan(offset: number, chunk: TextChunk): number {
+  if (offset < chunk.sourceStart) {
+    return chunk.sourceStart - offset
+  }
+  if (offset > chunk.sourceEnd) {
+    return offset - chunk.sourceEnd
+  }
+  return 0
+}
+
 /**
  * Result of the shared chunk + embed computation.
  *
@@ -43,12 +54,7 @@ export function findNearestChunk(
   let owner: TextChunk | undefined
   let bestDistance = Number.POSITIVE_INFINITY
   for (const chunk of chunks) {
-    const distance =
-      sourceOffset < chunk.sourceStart
-        ? chunk.sourceStart - sourceOffset
-        : sourceOffset > chunk.sourceEnd
-          ? sourceOffset - chunk.sourceEnd
-          : 0
+    const distance = distanceToSpan(sourceOffset, chunk)
     if (!owner) {
       owner = chunk
       bestDistance = distance
@@ -148,7 +154,9 @@ export async function buildChunksFromParseResult(
     (left, right) => left.imageIndex - right.imageIndex
   )) {
     const owner = findNearestChunk(computed.chunks, anchor.offset)
-    if (!owner) throw new Error(`Image ${anchor.imageIndex} has no owning chunk`)
+    if (!owner) {
+      throw new Error(`Image ${anchor.imageIndex} has no owning chunk`)
+    }
 
     try {
       const rendition = renderImageRendition(anchor.bytes, anchor.mimeType)

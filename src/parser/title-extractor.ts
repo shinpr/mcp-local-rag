@@ -182,7 +182,9 @@ export function extractDocxTitle(
 
   for (const heading of document.querySelectorAll('h1')) {
     const title = (heading.textContent ?? '').replace(/\s+/g, ' ').trim()
-    if (title) return { title, source: 'content' }
+    if (title) {
+      return { title, source: 'content' }
+    }
   }
 
   // Fall back to file name

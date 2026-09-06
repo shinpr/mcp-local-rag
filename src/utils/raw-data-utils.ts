@@ -4,6 +4,8 @@
 import { access, mkdir, readFile, realpath, writeFile } from 'node:fs/promises'
 import { basename, dirname, join, posix, resolve, sep } from 'node:path'
 
+import { errorCode, isMemberOf, isRecord } from './type-guards.js'
+
 // ============================================
 // Base64URL Encoding/Decoding
 // ============================================
@@ -175,7 +177,9 @@ export function isPathInRawDataDirLexical(filePath: string, dbPath: string): boo
  * Fail-closed on `realpath` errors.
  */
 export async function isPathInRawDataDir(filePath: string, dbPath: string): Promise<boolean> {
-  if (!isPathInRawDataDirLexical(filePath, dbPath)) return false
+  if (!isPathInRawDataDirLexical(filePath, dbPath)) {
+    return false
+  }
   try {
     const realTarget = caseNormalize(await realpath(resolve(filePath)))
     const realRaw = caseNormalize(await realpath(resolve(getRawDataDir(dbPath))))
@@ -226,6 +230,26 @@ export interface RawDataMeta {
 }
 
 /**
+ * Read one persisted sidecar. The file is plain JSON on disk, so a malformed or
+ * hand-edited value is a real possibility and each field is checked rather than
+ * assumed.
+ */
+function toRawDataMeta(parsed: unknown): RawDataMeta {
+  if (!isRecord(parsed)) {
+    throw new Error('Malformed raw-data metadata: expected an object')
+  }
+  const { title, source, format } = parsed
+  if (
+    typeof source !== 'string' ||
+    typeof format !== 'string' ||
+    !isMemberOf(CONTENT_FORMATS, format)
+  ) {
+    throw new Error('Malformed raw-data metadata: missing source or format')
+  }
+  return { title: typeof title === 'string' ? title : null, source, format }
+}
+
+/**
  * Generate the .meta.json sidecar path for a given .md file path
  * Replaces the trailing `.md` extension with `.meta.json`
  *
@@ -259,7 +283,7 @@ export async function loadMetaJson(mdPath: string): Promise<RawDataMeta | null> 
   const metaPath = generateMetaJsonPath(mdPath)
   try {
     const content = await readFile(metaPath, 'utf-8')
-    return JSON.parse(content) as RawDataMeta
+    return toRawDataMeta(JSON.parse(content))
   } catch (error: unknown) {
     if (isEnoent(error)) {
       return null
@@ -272,9 +296,7 @@ export async function loadMetaJson(mdPath: string): Promise<RawDataMeta | null> 
  * True when a filesystem error means the target path does not exist.
  */
 export function isEnoent(error: unknown): boolean {
-  return (
-    error instanceof Error && 'code' in error && (error as NodeJS.ErrnoException).code === 'ENOENT'
-  )
+  return errorCode(error) === 'ENOENT'
 }
 
 // ============================================

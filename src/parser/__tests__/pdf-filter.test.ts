@@ -11,6 +11,11 @@ import {
   type PageData,
 } from '../pdf-filter.js'
 
+/** A layout bounding box, as `[x0, y0, x1, y1]`. */
+function bbox(x0: number, y0: number, x1: number, y1: number): [number, number, number, number] {
+  return [x0, y0, x1, y1]
+}
+
 describe('pdf-filter', () => {
   describe('joinFilteredPages', () => {
     it('should join pages with double newline', () => {
@@ -804,7 +809,7 @@ describe('pdf-filter', () => {
             hasEOL: true,
             blockOrdinal: 0,
             lineOrdinal: 0,
-            bbox: [0, 0, 100, 20] as [number, number, number, number],
+            bbox: bbox(0, 0, 100, 20),
           },
           {
             text: `Body ${pageIndex + 1}.`,
@@ -814,7 +819,7 @@ describe('pdf-filter', () => {
             hasEOL: true,
             blockOrdinal: 1,
             lineOrdinal: 0,
-            bbox: [0, 40, 100, 60] as [number, number, number, number],
+            bbox: bbox(0, 40, 100, 60),
           },
         ],
       }))
@@ -846,13 +851,25 @@ describe('pdf-filter', () => {
   })
 })
 
+/** Page 0 and page 3 carry unique text; every other page repeats the header/footer. */
+function uniqueOrRepeated(index: number, cover: string, section: string, repeated: string): string {
+  if (index === 0) {
+    return cover
+  }
+  return index === 3 ? section : repeated
+}
+
 it('preserves unmatched and relocated boundaries, including an outlier inside the sample', async () => {
   const pages: PageData[] = Array.from({ length: 7 }, (_, i) => ({
     pageNum: i + 1,
     items: [
       {
-        text:
-          i === 0 ? 'Unique cover title.' : i === 3 ? 'Unique section title.' : 'Repeated header.',
+        text: uniqueOrRepeated(
+          i,
+          'Unique cover title.',
+          'Unique section title.',
+          'Repeated header.'
+        ),
         x: 0,
         y: i === 6 ? 600 : 800,
         fontSize: 12,
@@ -860,12 +877,12 @@ it('preserves unmatched and relocated boundaries, including an outlier inside th
       },
       { text: `Body ${i}.`, x: 0, y: 400, fontSize: 12, hasEOL: true },
       {
-        text:
-          i === 0
-            ? 'Unique cover ending.'
-            : i === 3
-              ? 'Unique section ending.'
-              : 'Repeated footer.',
+        text: uniqueOrRepeated(
+          i,
+          'Unique cover ending.',
+          'Unique section ending.',
+          'Repeated footer.'
+        ),
         x: 0,
         y: i === 6 ? 100 : 20,
         fontSize: 12,

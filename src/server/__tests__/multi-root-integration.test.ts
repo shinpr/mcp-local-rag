@@ -32,6 +32,7 @@ import { mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { testModelCacheDir, withTestDevice } from '../../__tests__/test-device.js'
+import { expectError } from '../../__tests__/test-doubles.js'
 import { resolveServerConfig } from '../../server-main.js'
 import { BaseDirsConfigError, displayPath, resolveBaseDirs } from '../../utils/base-dirs.js'
 import { MAX_SCAN_DEPTH } from '../../utils/limits.js'
@@ -44,9 +45,17 @@ import { scanBaseDir } from '../list-scanner.js'
 
 type ContentBlock = { type: string; text: string; annotations?: unknown }
 
+/** One block of an MCP tool result, before the text-block narrowing below. */
+type ResultBlock = { type: string; text?: string | undefined; annotations?: unknown }
+
 /** Find the first content block whose text contains `needle`. */
-function findBlock(content: ReadonlyArray<ContentBlock>, needle: string): ContentBlock | undefined {
-  return content.find((b) => b.type === 'text' && b.text.includes(needle))
+function findBlock(content: ReadonlyArray<ResultBlock>, needle: string): ContentBlock | undefined {
+  for (const block of content) {
+    if (block.type === 'text' && typeof block.text === 'string' && block.text.includes(needle)) {
+      return { ...block, text: block.text }
+    }
+  }
+  return undefined
 }
 
 /**
@@ -84,7 +93,9 @@ async function buildServerFromResolver(opts: {
   if (result.ok) {
     baseDirs = result.config.baseDirs
     rawBaseDirs = result.config.rawBaseDirs
-    for (const w of result.warnings) warnings.push(w.message)
+    for (const w of result.warnings) {
+      warnings.push(w.message)
+    }
   } else {
     // Degraded mode mirror of server-main.ts (post-Finding-#4): pass an empty
     // `baseDirs` so any handler bypassing `assertConfigOk` fails closed at the
@@ -296,7 +307,7 @@ describe('AC-009: ingest_data behavior unchanged in multi-root mode (warnings ad
     expect(parsed.filePath).toContain('raw-data')
 
     // Warning block is additive.
-    const warningBlock = findBlock(result.content as ContentBlock[], PRECEDENCE_WARNING)
+    const warningBlock = findBlock(result.content, PRECEDENCE_WARNING)
     expect(warningBlock).toBeDefined()
   }, 60000)
 
@@ -394,10 +405,7 @@ describe('AC-003/AC-013: real resolveBaseDirs warnings surface in MCP responses'
 
       // Warning content block visible on status response.
       const status = await server.handleStatus()
-      const warnBlock = findBlock(
-        status.content as ContentBlock[],
-        'BASE_DIRS is set; BASE_DIR is ignored'
-      )
+      const warnBlock = findBlock(status.content, 'BASE_DIRS is set; BASE_DIR is ignored')
       expect(warnBlock).toBeDefined()
     } finally {
       await server.close()
@@ -430,7 +438,7 @@ describe('AC-003/AC-013: real resolveBaseDirs warnings surface in MCP responses'
       expect(parsed.baseDirs[0].startsWith(realpathSync(rootA))).toBe(true)
 
       // Warning content block visible on list_files response.
-      const warnBlock = findBlock(listed.content as ContentBlock[], 'Nested base directory pruned')
+      const warnBlock = findBlock(listed.content, 'Nested base directory pruned')
       expect(warnBlock).toBeDefined()
     } finally {
       await server.close()
@@ -503,7 +511,9 @@ describe('post-launch finding #10: list_files per-root error tolerance', () => {
     // at the syscall layer (Linux/macOS only; Windows skips this test).
     // We rely on the bounded BFS new in Finding #10 to capture the error
     // as a per-root warning and keep scanning rootB.
-    if (process.platform === 'win32') return
+    if (process.platform === 'win32') {
+      return
+    }
 
     const { chmodSync } = await import('node:fs')
     chmodSync(rootA, 0o000)
@@ -527,10 +537,7 @@ describe('post-launch finding #10: list_files per-root error tolerance', () => {
       // Warning content block names the failing root via `displayPath`
       // (HOME prefix is collapsed to `~` to avoid leaking the OS username
       // through MCP responses; see Finding #10 sanitization).
-      const warningBlock = findBlock(
-        result.content as ContentBlock[],
-        `cannot read directory: ${displayPath(rootA)}`
-      )
+      const warningBlock = findBlock(result.content, `cannot read directory: ${displayPath(rootA)}`)
       expect(warningBlock).toBeDefined()
       // The raw OS error message must not leak into the warning text.
       expect(warningBlock?.text ?? '').not.toContain('permission denied')
@@ -688,7 +695,7 @@ describe('post-launch findings #3 + #4: server-main wiring rejects sensitive roo
     await server.initialize()
     try {
       const status = await server.handleStatus()
-      const diagnostic = findBlock(status.content as ContentBlock[], 'Configuration error:')
+      const diagnostic = findBlock(status.content, 'Configuration error:')
       expect(diagnostic).toBeDefined()
       expect(diagnostic?.text).toMatch(/sensitive system path/)
     } finally {
@@ -754,11 +761,11 @@ describe('AC-010: invalid BASE_DIRS end-to-end (real resolveBaseDirs)', () => {
         .then(() => null)
         .catch((e) => e)
       expect(listError).toBeInstanceOf(BaseDirsConfigError)
-      expect((listError as Error).message).toMatch(/BASE_DIRS/)
+      expect(expectError(listError).message).toMatch(/BASE_DIRS/)
 
       // status remains callable and surfaces the configError as a diagnostic block.
       const status = await server.handleStatus()
-      const diagnostic = findBlock(status.content as ContentBlock[], 'Configuration error:')
+      const diagnostic = findBlock(status.content, 'Configuration error:')
       expect(diagnostic).toBeDefined()
       expect(diagnostic?.text).toMatch(/BASE_DIRS/)
     } finally {

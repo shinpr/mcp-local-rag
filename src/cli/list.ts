@@ -20,6 +20,14 @@ import {
 // Helpers
 // ============================================
 
+/** Lexicographic order, independent of locale. */
+function compareStrings(a: string, b: string): number {
+  if (a < b) {
+    return -1
+  }
+  return a > b ? 1 : 0
+}
+
 /**
  * Result of scanning a single root: the supported file paths found plus a
  * non-fatal warning when applicable (depth limit hit, readdir error, ...).
@@ -42,13 +50,12 @@ async function scanRoot(
   excludePaths: string[],
   scope?: string[]
 ): Promise<ScanRootResult> {
-  // `scope` threads into the walker as the 4th positional arg (after `maxDepth`);
-  // pass `undefined` for `maxDepth` to keep the default bound.
   const { files, unreadableDirs, depthLimited } = await bfsCollectSupportedFiles(
     root,
     excludePaths,
-    undefined,
-    scope
+    {
+      scope,
+    }
   )
 
   const warnings: string[] = []
@@ -162,7 +169,7 @@ export function parseArgs(args: string[]): ParsedArgs {
 
   let i = 0
   while (i < args.length) {
-    const arg = args[i]!
+    const arg = args[i] ?? ''
     switch (arg) {
       case '-h':
       case '--help':
@@ -307,7 +314,7 @@ export async function runList(args: string[], globalOptions: GlobalOptions = {})
     }
 
     const files: FileEntry[] = listed.files
-    files.sort((a, b) => (a.filePath < b.filePath ? -1 : a.filePath > b.filePath ? 1 : 0))
+    files.sort((a, b) => compareStrings(a.filePath, b.filePath))
     const sources: SourceEntry[] = listed.sources
 
     const result: ListResult = {

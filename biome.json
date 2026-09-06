@@ -12,14 +12,43 @@
     "enabled": true,
     "rules": {
       "recommended": true,
+      "complexity": {
+        "useLiteralKeys": "off",
+        "noVoid": "error",
+        "useMaxParams": { "level": "error", "options": { "max": 4 } },
+        "noExcessiveCognitiveComplexity": {
+          "level": "error",
+          "options": { "maxAllowedComplexity": 15 }
+        }
+      },
       "style": {
-        "noNonNullAssertion": "off"
+        "noNonNullAssertion": "error",
+        "useBlockStatements": "error",
+        "noNestedTernary": "error",
+        "useThrowOnlyError": "error"
       },
       "suspicious": {
-        "noExplicitAny": "warn"
+        "noExplicitAny": "error",
+        "noUnnecessaryConditions": "error",
+        "noShadow": "error",
+        "noEvolvingTypes": "error",
+        "noImplicitAnyLet": "error",
+        "noTsIgnore": "error",
+        "useErrorMessage": "error"
       },
-      "complexity": {
-        "useLiteralKeys": "off"
+      "correctness": {
+        "noUndeclaredDependencies": "error"
+      },
+      "nursery": {
+        "noFloatingPromises": "error",
+        "noMisusedPromises": "error",
+        "useAwaitThenable": "error",
+        "useExplicitReturnType": "error",
+        "useExhaustiveSwitchCases": "error",
+        "noUnsafeTypeAssertion": "error",
+        "noBaseToString": "error",
+        "noMisleadingReturnType": "error",
+        "noExcessiveNestedCallbacks": "error"
       }
     }
   },
@@ -28,8 +57,8 @@
       "includes": ["**/__tests__/**/*.ts", "**/*.test.ts", "**/*.spec.ts"],
       "linter": {
         "rules": {
-          "suspicious": {
-            "noExplicitAny": "off"
+          "nursery": {
+            "useExplicitReturnType": "off"
           }
         }
       }

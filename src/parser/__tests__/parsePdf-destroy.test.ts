@@ -14,6 +14,7 @@
 import { mkdir, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { expectInstanceOf } from '../../__tests__/test-doubles.js'
 import type { EmbedderInterface } from '../pdf-filter.js'
 
 // ============================================
@@ -90,7 +91,9 @@ describe('parsePdf destroy lifecycle (AC-013)', () => {
   })
 
   afterAll(() => {
-    for (const p of MOCKED_PATHS) vi.doUnmock(p)
+    for (const p of MOCKED_PATHS) {
+      vi.doUnmock(p)
+    }
     vi.resetModules()
   })
 
@@ -246,7 +249,7 @@ describe('parsePdf destroy lifecycle (AC-013)', () => {
     // The error is wrapped in FileOperationError per parsePdf's catch block;
     // assert the wrapped error preserves the original via `cause`.
     expect(thrown).toBeInstanceOf(FileOperationError)
-    expect((thrown as InstanceType<typeof FileOperationError>).cause).toBe(pageLoadError)
+    expect(expectInstanceOf(thrown, FileOperationError).cause).toBe(pageLoadError)
     // AC-013 witness: destroy still called exactly once even when the per-page
     // loop threw. This is the test that would fail if T2.3's `finally` block
     // were removed.
@@ -340,7 +343,7 @@ describe('parsePdf destroy lifecycle (AC-013)', () => {
     }
 
     expect(thrown).toBeInstanceOf(FileOperationError)
-    expect((thrown as InstanceType<typeof FileOperationError>).cause).toBe(pageLoadError)
+    expect(expectInstanceOf(thrown, FileOperationError).cause).toBe(pageLoadError)
     expect(destroyFn).toHaveBeenCalledTimes(1)
   })
 })

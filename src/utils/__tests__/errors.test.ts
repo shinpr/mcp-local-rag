@@ -57,8 +57,8 @@ describe('AppError discriminants', () => {
 
   it('should preserve the cause as the original error object', () => {
     const original = new Error('root')
-    expect(new EmbeddingError('x', original).cause).toBe(original)
-    expect(new DatabaseError('x', original).cause).toBe(original)
+    expect(new EmbeddingError('x', { cause: original }).cause).toBe(original)
+    expect(new DatabaseError('x', { cause: original }).cause).toBe(original)
     expect(new VlmError('x', { cause: original, pageNum: 3 }).cause).toBe(original)
   })
 })
@@ -66,8 +66,8 @@ describe('AppError discriminants', () => {
 describe('getCauseChain', () => {
   it('should return the ordered chain [outer, cause, cause.cause, ...]', () => {
     const root = new Error('root')
-    const middle = new DatabaseError('middle', root)
-    const outer = new EmbeddingError('outer', middle)
+    const middle = new DatabaseError('middle', { cause: root })
+    const outer = new EmbeddingError('outer', { cause: middle })
 
     const chain = getCauseChain(outer)
 

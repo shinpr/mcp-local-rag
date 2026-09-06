@@ -1,10 +1,22 @@
 // Lazy initialization tests for Embedder
 // TDD Red phase: These tests should fail initially
 
+import type { MockInstance } from 'vitest'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { getTestDevice, testModelCacheDir } from '../../__tests__/test-device.js'
+import { privateMembers } from '../../__tests__/test-doubles.js'
 import type { EmbedderConfig } from '../index.js'
 import { Embedder } from '../index.js'
+
+/**
+ * Spy on the private `initialize`. There is no public init-count surface, and
+ * mocking @huggingface/transformers instead would risk cross-file mock leakage
+ * (transformers is imported widely and vitest runs with `isolate: false`) and
+ * lose real-model coverage. The cast is confined to this one helper.
+ */
+function spyOnInitialize(embedder: Embedder): MockInstance {
+  return vi.spyOn(privateMembers<{ initialize: () => Promise<void> }>(embedder), 'initialize')
+}
 
 describe('Embedder - Lazy Initialization', () => {
   let testConfig: EmbedderConfig
@@ -60,7 +72,7 @@ describe('Embedder - Lazy Initialization', () => {
     // (transformers is imported widely and vitest runs with isolate:false) and
     // would lose real-model coverage. So the private spy is the deliberate,
     // lower-risk choice here.
-    const initializeSpy = vi.spyOn(embedder as any, 'initialize')
+    const initializeSpy = spyOnInitialize(embedder)
 
     // Make 5 concurrent embed() calls
     const promises = Array.from({ length: 5 }, (_, i) => embedder.embed(`concurrent test ${i}`))
@@ -126,7 +138,7 @@ describe('Embedder - Lazy Initialization', () => {
     // mock leakage (transformers is imported widely and vitest runs with
     // isolate:false) and would lose real-model coverage. So the private spy is
     // the deliberate, lower-risk choice here.
-    const initializeSpy = vi.spyOn(embedder as any, 'initialize')
+    const initializeSpy = spyOnInitialize(embedder)
 
     // Second and third calls should not trigger initialization
     await embedder.embed('second call')

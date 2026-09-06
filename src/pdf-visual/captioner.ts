@@ -62,7 +62,7 @@ export function createCaptioner(config: CaptionerConfig): Captioner {
       // branch is unreachable today; the throw is defensive for future
       // ProfileType additions that forget to extend this switch.
       const _exhaustive: never = config.profile
-      throw new Error(`Unknown QualityProfile: ${_exhaustive as string}`)
+      throw new Error(`Unknown QualityProfile: ${String(_exhaustive)}`)
     }
   }
 }

@@ -19,6 +19,7 @@ import { resolve } from 'node:path'
 import { ErrorCode } from '@modelcontextprotocol/sdk/types.js'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { testModelCacheDir, withTestDevice } from '../../__tests__/test-device.js'
+import { asDouble, parseJson, privateMembers } from '../../__tests__/test-doubles.js'
 import { isManagedRawDataPath } from '../../utils/raw-data-utils.js'
 import type { VectorStore } from '../../vectordb/index.js'
 import { RAGServer } from '../index.js'
@@ -30,7 +31,7 @@ import type { ReadChunkNeighborsInput, ReadChunkNeighborsResultItem } from '../t
  * per task scope boundary we do not introduce cross-file test utilities.
  */
 function getVectorStore(server: RAGServer): VectorStore {
-  return (server as unknown as { vectorStore: VectorStore }).vectorStore
+  return privateMembers<{ vectorStore: VectorStore }>(server).vectorStore
 }
 
 function createTestRagServer(config: ConstructorParameters<typeof RAGServer>[0]): RAGServer {
@@ -47,7 +48,7 @@ function parseItems(response: {
   if (typeof text !== 'string') {
     throw new Error('Response content[0].text is missing')
   }
-  return JSON.parse(text) as ReadChunkNeighborsResultItem[]
+  return parseJson<ReadChunkNeighborsResultItem[]>(text)
 }
 
 describe('read_chunk_neighbors integration', () => {
@@ -228,13 +229,17 @@ describe('read_chunk_neighbors integration', () => {
         query: 'ZZQWERTY12345',
         limit: 5,
       })
-      const hits = JSON.parse(queryRes.content[0].text) as Array<{
-        filePath: string
-        chunkIndex: number
-      }>
+      const hits = parseJson<
+        Array<{
+          filePath: string
+          chunkIndex: number
+        }>
+      >(queryRes.content[0].text)
       expect(hits.length).toBeGreaterThan(0)
       const firstHit = hits[0]
-      if (!firstHit) throw new Error('Expected at least one query hit')
+      if (!firstHit) {
+        throw new Error('Expected at least one query hit')
+      }
       const hitFilePath = firstHit.filePath
 
       // Install spy AFTER the query step so query path doesn't contribute
@@ -430,7 +435,9 @@ describe('read_chunk_neighbors integration', () => {
       for (let i = 1; i < items.length; i++) {
         const prev = items[i - 1]
         const curr = items[i]
-        if (!prev || !curr) throw new Error('Unexpected undefined item in ascending check')
+        if (!prev || !curr) {
+          throw new Error('Unexpected undefined item in ascending check')
+        }
         expect(curr.chunkIndex).toBeGreaterThan(prev.chunkIndex)
       }
     })
@@ -694,7 +701,9 @@ describe('read_chunk_neighbors integration', () => {
       for (let i = 1; i < items.length; i++) {
         const prev = items[i - 1]
         const curr = items[i]
-        if (!prev || !curr) throw new Error('Unexpected undefined item in ascending check')
+        if (!prev || !curr) {
+          throw new Error('Unexpected undefined item in ascending check')
+        }
         expect(curr.chunkIndex).toBeGreaterThan(prev.chunkIndex)
       }
       // All returned chunkIndex values are within the actual document range
@@ -814,9 +823,11 @@ describe('read_chunk_neighbors integration', () => {
 
     it('rejects missing chunkIndex with McpError InvalidParams', async () => {
       await expect(
-        ragServer.handleReadChunkNeighbors({
-          filePath: ingestedFilePath,
-        } as unknown as ReadChunkNeighborsInput)
+        ragServer.handleReadChunkNeighbors(
+          asDouble<ReadChunkNeighborsInput>({
+            filePath: ingestedFilePath,
+          })
+        )
       ).rejects.toMatchObject({ code: ErrorCode.InvalidParams })
     })
 

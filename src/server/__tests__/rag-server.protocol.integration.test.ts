@@ -14,6 +14,7 @@ import {
 } from '@modelcontextprotocol/sdk/types.js'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { testModelCacheDir, withTestDevice } from '../../__tests__/test-device.js'
+import { parseJson, privateMembers } from '../../__tests__/test-doubles.js'
 import type { Embedder } from '../../embedder/index.js'
 import type { VectorChunk, VectorStore } from '../../vectordb/index.js'
 import { DatabaseError } from '../../vectordb/types.js'
@@ -94,7 +95,7 @@ function inlineServerInternals(server: RAGServer): {
   embedder: Embedder
   vectorStore: VectorStore
 } {
-  return server as unknown as { embedder: Embedder; vectorStore: VectorStore }
+  return privateMembers<{ embedder: Embedder; vectorStore: VectorStore }>(server)
 }
 
 function inlineChunk(index: number, vector: number[], withAttachments: boolean): VectorChunk {
@@ -242,7 +243,7 @@ describe('AC-008 / AC-009 / AC-011: inline images over the MCP SDK protocol', ()
     expect(firstJson).not.toContain('imageRef')
     expect(firstJson).not.toContain('visualAttachments')
     expect(firstJson).not.toContain('imageSearch')
-    for (const result of JSON.parse(firstJson) as Array<Record<string, unknown>>) {
+    for (const result of parseJson<Array<Record<string, unknown>>>(firstJson)) {
       expect(Object.keys(result)).toEqual(['filePath', 'chunkIndex', 'text', 'score', 'fileTitle'])
     }
 
@@ -285,7 +286,9 @@ describe('AC-008 / AC-009 / AC-011: inline images over the MCP SDK protocol', ()
       })
     )
     expect(content[7]).not.toEqual(
-      expect.objectContaining({ text: expect.stringContaining('sensitive-base64-payload!') })
+      expect.objectContaining({
+        text: expect.stringContaining('sensitive-base64-payload!'),
+      })
     )
     expect(content[8]).toEqual(
       expect.objectContaining({
@@ -521,7 +524,7 @@ describe('SYNC-006 / SYNC-007: sync tools over the MCP SDK protocol', () => {
       })
     )
 
-    const embedder = (ragServer as unknown as { embedder: Embedder }).embedder
+    const embedder = privateMembers<{ embedder: Embedder }>(ragServer).embedder
     vi.spyOn(embedder, 'embedBatch').mockImplementation(async (texts: string[]) => {
       if (activeGate !== null && texts.some((text) => text.includes(GATE_MARKER))) {
         activeGate.markEntered()
@@ -563,7 +566,7 @@ describe('SYNC-006 / SYNC-007: sync tools over the MCP SDK protocol', () => {
   async function startSync(args: Record<string, unknown> = {}): Promise<string> {
     const result = await client.callTool({ name: 'sync_start', arguments: args })
     expect(toolResult(result).isError).toBeUndefined()
-    const { jobId } = JSON.parse(firstText(result)) as { jobId: string }
+    const { jobId } = parseJson<{ jobId: string }>(firstText(result))
     expect(jobId.length).toBeGreaterThan(0)
     return jobId
   }
@@ -571,7 +574,7 @@ describe('SYNC-006 / SYNC-007: sync tools over the MCP SDK protocol', () => {
   async function syncStatus(jobId: string): Promise<SyncStatusResult> {
     const result = await client.callTool({ name: 'sync_status', arguments: { jobId } })
     expect(toolResult(result).isError).toBeUndefined()
-    return JSON.parse(firstText(result)) as SyncStatusResult
+    return parseJson<SyncStatusResult>(firstText(result))
   }
 
   /**
@@ -588,7 +591,9 @@ describe('SYNC-006 / SYNC-007: sync tools over the MCP SDK protocol', () => {
       if (snapshot.total !== null) {
         expect(snapshot.completed).toBeLessThanOrEqual(snapshot.total)
       }
-      if (snapshot.state !== 'running') return snapshot
+      if (snapshot.state !== 'running') {
+        return snapshot
+      }
       await tick()
     }
     throw new Error(`sync job ${jobId} never reached a terminal state`)
@@ -685,7 +690,7 @@ describe('SYNC-006 / SYNC-007: sync tools over the MCP SDK protocol', () => {
 
       const listed = await client.callTool({ name: 'list_files', arguments: {} })
       expect(toolResult(listed).isError).toBeUndefined()
-      const { files } = JSON.parse(firstText(listed)) as { files: { filePath: string }[] }
+      const { files } = parseJson<{ files: { filePath: string }[] }>(firstText(listed))
       expect(files.map((file) => file.filePath).sort()).toEqual(
         [MCP_PLAIN_FILE, MCP_NESTED_FILE, MCP_GATED_FILE].sort()
       )

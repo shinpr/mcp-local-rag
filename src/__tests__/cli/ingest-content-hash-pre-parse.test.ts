@@ -32,6 +32,7 @@ import type { Embedder } from '../../embedder/index.js'
 import type { SyncCollaborators } from '../../features/sync.js'
 import type { DocumentParser } from '../../parser/index.js'
 import type { VectorChunk, VectorStore } from '../../vectordb/index.js'
+import { asDouble } from '../test-doubles.js'
 
 // ============================================
 // Mock setup (scoped doMock — see header)
@@ -92,35 +93,38 @@ const HASH_AFTER = 'd81c99f614d793cb111431a2852d16593929a924e751b2e3034d57d6ed5c
  * `DocumentParser` instead of this stub.
  */
 function racingParser(): DocumentParser {
-  return {
+  return asDouble<DocumentParser>({
     validateFilePath: vi.fn().mockResolvedValue(undefined),
     validateFileSize: vi.fn(),
     parseFile: async (filePath: string) => {
       writeFileSync(filePath, CONTENT_AFTER)
       return { content: CONTENT_BEFORE, title: 'Report' }
     },
-  } as unknown as DocumentParser
+  })
 }
 
 const singleChunkChunker = (): SemanticChunker =>
-  ({
-    chunkText: async () => [{ index: 0, text: 'one chunk of the pre-modification text' }],
-  }) as unknown as SemanticChunker
+  asDouble<SemanticChunker>({
+    chunkText: async () => {
+      const text = 'one chunk of the pre-modification text'
+      return [{ index: 0, text, sourceStart: 0, sourceEnd: text.length }]
+    },
+  })
 
 const fixedEmbedder = (): Embedder =>
-  ({
+  asDouble<Embedder>({
     embedBatch: async () => [[0.1, 0.2, 0.3]],
-  }) as unknown as Embedder
+  })
 
 /** Captures what persistence received, which is where `contentHash` is observable. */
 function capturingStore(): { store: VectorStore; inserted: VectorChunk[] } {
   const inserted: VectorChunk[] = []
-  const store = {
+  const store = asDouble<VectorStore>({
     deleteChunks: async () => 0,
     insertChunks: async (chunks: VectorChunk[]) => {
       inserted.push(...chunks)
     },
-  } as unknown as VectorStore
+  })
   return { store, inserted }
 }
 
@@ -130,10 +134,12 @@ async function ingestWithMidFlightModification(): Promise<VectorChunk[]> {
   const { store, inserted } = capturingStore()
   await ingestSingleFile(
     REPORT_PATH,
-    racingParser(),
-    singleChunkChunker(),
-    fixedEmbedder(),
-    store,
+    {
+      parser: racingParser(),
+      chunker: singleChunkChunker(),
+      embedder: fixedEmbedder(),
+      vectorStore: store,
+    },
     { visual: false }
   )
   return inserted
@@ -159,7 +165,9 @@ beforeAll(async () => {
 })
 
 afterAll(() => {
-  for (const path of MOCKED_PATHS) vi.doUnmock(path)
+  for (const path of MOCKED_PATHS) {
+    vi.doUnmock(path)
+  }
   vi.resetModules()
   rmSync(TMP_ROOT, { recursive: true, force: true })
 })
@@ -247,9 +255,16 @@ describe('ingestSingleFile — the pre-parse read is validated first', () => {
     const { store, inserted } = capturingStore()
 
     await expect(
-      ingestSingleFile(REPORT_PATH, realParser(8), singleChunkChunker(), fixedEmbedder(), store, {
-        visual: false,
-      })
+      ingestSingleFile(
+        REPORT_PATH,
+        {
+          parser: realParser(8),
+          chunker: singleChunkChunker(),
+          embedder: fixedEmbedder(),
+          vectorStore: store,
+        },
+        { visual: false }
+      )
     ).rejects.toThrow(/File size exceeds limit/)
 
     // The bound the old post-parse read position relied on: the whole file must
@@ -268,10 +283,12 @@ describe('ingestSingleFile — the pre-parse read is validated first', () => {
     await expect(
       ingestSingleFile(
         outsidePath,
-        realParser(1024 * 1024),
-        singleChunkChunker(),
-        fixedEmbedder(),
-        store,
+        {
+          parser: realParser(1024 * 1024),
+          chunker: singleChunkChunker(),
+          embedder: fixedEmbedder(),
+          vectorStore: store,
+        },
         { visual: false }
       )
     ).rejects.toThrow(/within a configured base directory/)

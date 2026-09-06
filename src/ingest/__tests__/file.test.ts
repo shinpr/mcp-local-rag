@@ -2,7 +2,7 @@ import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
-
+import { asDouble } from '../../__tests__/test-doubles.js'
 import type { SemanticChunker } from '../../chunker/index.js'
 import type { EmbedderInterface } from '../../chunker/semantic-chunker.js'
 import type { DocumentParser } from '../../parser/index.js'
@@ -12,15 +12,15 @@ const tmpDir = resolve('./tmp/test-prepare-file-for-ingest')
 const fixturePath = resolve(tmpDir, 'document.md')
 
 function parserReturning(content: string, title: string | null): DocumentParser {
-  return {
+  return asDouble<DocumentParser>({
     validateFilePath: vi.fn().mockResolvedValue(undefined),
     validateFileSize: vi.fn(),
     parseFile: vi.fn().mockResolvedValue({ content, title: title ?? '' }),
-  } as unknown as DocumentParser
+  })
 }
 
 function chunkerReturning(texts: readonly string[]): SemanticChunker {
-  return {
+  return asDouble<SemanticChunker>({
     chunkText: vi.fn().mockResolvedValue(
       texts.map((text, index) => ({
         text,
@@ -29,7 +29,7 @@ function chunkerReturning(texts: readonly string[]): SemanticChunker {
         sourceEnd: index * 10 + text.length,
       }))
     ),
-  } as unknown as SemanticChunker
+  })
 }
 
 function embedderReturning(vectors: number[][]): EmbedderInterface {
@@ -51,12 +51,14 @@ describe('prepareFileForIngest', () => {
 
     const result = await prepareFileForIngest(
       fixturePath,
-      parser,
-      chunkerReturning(['First chunk', 'Second chunk']),
-      embedderReturning([
-        [1, 0],
-        [0, 1],
-      ]),
+      {
+        parser,
+        chunker: chunkerReturning(['First chunk', 'Second chunk']),
+        embedder: embedderReturning([
+          [1, 0],
+          [0, 1],
+        ]),
+      },
       { images: false }
     )
     const vectorChunks = buildPreparedFileVectorChunks(result)
@@ -104,9 +106,11 @@ describe('prepareFileForIngest', () => {
 
     const result = await prepareFileForIngest(
       fixturePath,
-      parser,
-      chunkerReturning(['Original chunk']),
-      embedderReturning([[0.5, 0.5]]),
+      {
+        parser,
+        chunker: chunkerReturning(['Original chunk']),
+        embedder: embedderReturning([[0.5, 0.5]]),
+      },
       { images: false }
     )
 
@@ -120,9 +124,11 @@ describe('prepareFileForIngest', () => {
 
     const result = await prepareFileForIngest(
       fixturePath,
-      parserReturning('Short.', null),
-      chunkerReturning([]),
-      embedderReturning([]),
+      {
+        parser: parserReturning('Short.', null),
+        chunker: chunkerReturning([]),
+        embedder: embedderReturning([]),
+      },
       { images: false }
     )
 

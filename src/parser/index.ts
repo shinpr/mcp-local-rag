@@ -8,7 +8,8 @@ import mammoth from 'mammoth'
 import type { Document as MupdfDocument } from 'mupdf'
 import { type AtomicTextRange, SemanticChunker } from '../chunker/index.js'
 import { withTrailingSeparator } from '../utils/base-dirs.js'
-import { AppError, isAppError } from '../utils/errors.js'
+import { AppError, isAppError, toError } from '../utils/errors.js'
+import { errorCode } from '../utils/type-guards.js'
 import { convertDocxDocumentToText, extractDocxCoreTitle } from './docx-parser.js'
 import { extractPdfPages } from './pdf-extract.js'
 import type { EmbedderInterface, FilteredTextFragment } from './pdf-filter.js'
@@ -56,13 +57,19 @@ export interface ParseFileOptions {
   images?: boolean
 }
 
+/** Title candidates a PDF carries before its text is chunked. */
+interface PdfTitleHints {
+  metadataTitle: string | undefined
+  page1FontHint: { text: string; fontSize: number } | undefined
+}
+
 async function resolvePdfTitle(
   filePath: string,
   pages: readonly { text: string }[],
-  metadataTitle: string | undefined,
-  page1FontHint: { text: string; fontSize: number } | undefined,
+  hints: PdfTitleHints,
   embedder: EmbedderInterface
 ): Promise<string> {
+  const { metadataTitle, page1FontHint } = hints
   const fileName = basename(filePath)
   let firstPageChunkText: string | undefined
   try {
@@ -72,7 +79,9 @@ async function resolvePdfTitle(
       firstPageChunkText = page1Chunks[0]?.text
     }
   } catch (titleError) {
-    if (isAppError(titleError)) throw titleError
+    if (isAppError(titleError)) {
+      throw titleError
+    }
     console.error(`Title extraction failed, falling back to filename: ${titleError}`)
   }
   return extractPdfTitle(metadataTitle, firstPageChunkText, fileName, page1FontHint).title
@@ -113,8 +122,8 @@ export type ParserConfig =
  * Validation error (equivalent to 400)
  */
 export class ValidationError extends AppError {
-  constructor(message: string, cause?: Error) {
-    super(message, 'parser', 'validation', cause)
+  constructor(message: string, options?: { cause?: Error }) {
+    super(message, 'parser', 'validation', options)
     this.name = 'ValidationError'
   }
 }
@@ -123,8 +132,8 @@ export class ValidationError extends AppError {
  * File operation error (equivalent to 500)
  */
 export class FileOperationError extends AppError {
-  constructor(message: string, cause?: Error) {
-    super(message, 'parser', 'io', cause)
+  constructor(message: string, options?: { cause?: Error }) {
+    super(message, 'parser', 'io', options)
     this.name = 'FileOperationError'
   }
 }
@@ -245,7 +254,7 @@ export class DocumentParser {
       if (isSymlink) {
         throw new ValidationError(
           `Cannot resolve file path: ${filePath}. The file may not exist or is a broken symlink.`,
-          error as Error
+          { cause: toError(error) }
         )
       }
 
@@ -288,10 +297,12 @@ export class DocumentParser {
         throw error
       }
       // Missing file is an input error, not an I/O fault.
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      if (errorCode(error) === 'ENOENT') {
         throw new ValidationError(`File not found: ${filePath}`)
       }
-      throw new FileOperationError(`Failed to check file size: ${filePath}`, error as Error)
+      throw new FileOperationError(`Failed to check file size: ${filePath}`, {
+        cause: toError(error),
+      })
     }
   }
 
@@ -349,7 +360,7 @@ export class DocumentParser {
     try {
       const buffer = await readFile(filePath)
       const mupdf = await import('mupdf')
-      doc = mupdf.Document.openDocument(buffer, 'application/pdf') as MupdfDocument
+      doc = mupdf.Document.openDocument(buffer, 'application/pdf')
 
       const { pages, metadataTitle, page1FontHint } = await extractPdfPages(
         doc,
@@ -361,7 +372,12 @@ export class DocumentParser {
         .filter((t) => t.length > 0)
         .join('\n\n')
 
-      const title = await resolvePdfTitle(filePath, pages, metadataTitle, page1FontHint, embedder)
+      const title = await resolvePdfTitle(
+        filePath,
+        pages,
+        { metadataTitle, page1FontHint },
+        embedder
+      )
 
       console.error(`Parsed PDF: ${filePath} (${text.length} characters, ${pages.length} pages)`)
 
@@ -376,7 +392,7 @@ export class DocumentParser {
       if (isAppError(error)) {
         throw error
       }
-      throw new FileOperationError(`Failed to parse PDF: ${filePath}`, error as Error)
+      throw new FileOperationError(`Failed to parse PDF: ${filePath}`, { cause: toError(error) })
     } finally {
       // Release the native WASM handle exactly once per invocation, on both
       // success and error paths.
@@ -442,7 +458,7 @@ export class DocumentParser {
     try {
       const buffer = await readFile(filePath)
       const mupdf = await import('mupdf')
-      doc = mupdf.Document.openDocument(buffer, 'application/pdf') as MupdfDocument
+      doc = mupdf.Document.openDocument(buffer, 'application/pdf')
       const extracted = await extractPdfPages(doc, embedder, 'preserve-whitespace,preserve-images')
 
       const { pages: helperPages, metadataTitle, page1FontHint } = extracted
@@ -455,8 +471,7 @@ export class DocumentParser {
       const title = await resolvePdfTitle(
         filePath,
         helperPages,
-        metadataTitle,
-        page1FontHint,
+        { metadataTitle, page1FontHint },
         embedder
       )
 
@@ -477,7 +492,9 @@ export class DocumentParser {
       if (isAppError(error)) {
         throw error
       }
-      throw new FileOperationError(`Failed to parse PDF pages: ${filePath}`, error as Error)
+      throw new FileOperationError(`Failed to parse PDF pages: ${filePath}`, {
+        cause: toError(error),
+      })
     }
   }
 
@@ -546,7 +563,7 @@ export class DocumentParser {
         ...(imageAnchors.length === 0 ? {} : { imageAnchors }),
       }
     } catch (error) {
-      throw new FileOperationError(`Failed to parse DOCX: ${filePath}`, error as Error)
+      throw new FileOperationError(`Failed to parse DOCX: ${filePath}`, { cause: toError(error) })
     }
   }
 
@@ -565,7 +582,7 @@ export class DocumentParser {
       console.error(`Parsed TXT: ${filePath} (${text.length} characters)`)
       return { content: text, title: titleResult.title }
     } catch (error) {
-      throw new FileOperationError(`Failed to parse TXT: ${filePath}`, error as Error)
+      throw new FileOperationError(`Failed to parse TXT: ${filePath}`, { cause: toError(error) })
     }
   }
 
@@ -584,7 +601,7 @@ export class DocumentParser {
       console.error(`Parsed MD: ${filePath} (${text.length} characters)`)
       return { content: text, title: titleResult.title }
     } catch (error) {
-      throw new FileOperationError(`Failed to parse MD: ${filePath}`, error as Error)
+      throw new FileOperationError(`Failed to parse MD: ${filePath}`, { cause: toError(error) })
     }
   }
 }

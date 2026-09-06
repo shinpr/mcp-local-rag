@@ -176,7 +176,7 @@ export function parseGlobalOptions(args: string[]): ParsedGlobalResult {
 
   // Parse global flags until we hit a non-flag (subcommand) or end of args
   while (i < args.length) {
-    const arg = args[i]!
+    const arg = args[i] ?? ''
     switch (arg) {
       case '-h':
       case '--help':
@@ -266,7 +266,9 @@ export function resolveGlobalConfig(options: GlobalOptions): ResolvedGlobalConfi
  * allowlist is maintained here. Whitespace-only is treated as unset.
  */
 export function resolveDevice(value: string | undefined): string {
-  if (!value || value.trim() === '') return 'cpu'
+  if (!value || value.trim() === '') {
+    return 'cpu'
+  }
   return value.trim()
 }
 
@@ -280,6 +282,8 @@ export function resolveDevice(value: string | undefined): string {
  * into a default here.
  */
 export function resolveDtype(value: string | undefined): string | undefined {
-  if (!value || value.trim() === '') return undefined
+  if (!value || value.trim() === '') {
+    return undefined
+  }
   return value.trim()
 }

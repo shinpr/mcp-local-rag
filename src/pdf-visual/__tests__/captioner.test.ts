@@ -30,6 +30,7 @@
 // module).
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { expectError, expectInstanceOf, expectRecord } from '../../__tests__/test-doubles.js'
 
 // ============================================
 // Mocks (vi.hoisted — required for `@huggingface/transformers`)
@@ -53,17 +54,23 @@ const mocks = vi.hoisted(() => {
   }
 
   const mockProcessorFromPretrained = vi.fn(async (_modelName: string, _options: unknown) => {
-    if (state.fromPretrainedThrows) throw state.fromPretrainedThrows
+    if (state.fromPretrainedThrows) {
+      throw state.fromPretrainedThrows
+    }
     return mockProcessorInstance
   })
 
   const mockModelFromPretrained = vi.fn(async (_modelName: string, _options: unknown) => {
-    if (state.fromPretrainedThrows) throw state.fromPretrainedThrows
+    if (state.fromPretrainedThrows) {
+      throw state.fromPretrainedThrows
+    }
     return mockModelInstance
   })
 
   const mockGenerate = vi.fn(async (_inputs: unknown) => {
-    if (state.generateThrows) throw state.generateThrows
+    if (state.generateThrows) {
+      throw state.generateThrows
+    }
     // Mock tensor that supports `.slice(null, [start, end])`.
     return {
       slice: (_axis: null, _range: [number, number]) => ({ _isSlicedTokens: true }),
@@ -95,11 +102,13 @@ const mocks = vi.hoisted(() => {
   const mockModelInstance = { dispose: mockDispose, generate: mockGenerate }
 
   const mockFromBlob = vi.fn((_blob: Blob) => {
-    if (state.fromBlobThrows) throw state.fromBlobThrows
+    if (state.fromBlobThrows) {
+      throw state.fromBlobThrows
+    }
     return { width: 100, height: 100, channels: 3, data: new Uint8ClampedArray(0) }
   })
 
-  const env = { cacheDir: '' as string }
+  const env: { cacheDir: string } = { cacheDir: '' }
 
   return {
     state,
@@ -157,7 +166,9 @@ describe('createCaptioner — fast profile dispatch (CaptionerConfig flow)', () 
   })
 
   afterAll(() => {
-    for (const p of MOCKED_PATHS) vi.doUnmock(p)
+    for (const p of MOCKED_PATHS) {
+      vi.doUnmock(p)
+    }
     vi.resetModules()
   })
 
@@ -185,9 +196,14 @@ describe('createCaptioner — fast profile dispatch (CaptionerConfig flow)', () 
         cacheDir: './tmp/models',
         device: 'cpu',
       })
-      if (fail) mocks.state.generateThrows = new Error('Generation failed')
-      if (fail) await expect(captioner.caption(new Uint8Array([1]), 1)).rejects.toThrow()
-      else await captioner.caption(new Uint8Array([1]), 1)
+      if (fail) {
+        mocks.state.generateThrows = new Error('Generation failed')
+      }
+      if (fail) {
+        await expect(captioner.caption(new Uint8Array([1]), 1)).rejects.toThrow()
+      } else {
+        await captioner.caption(new Uint8Array([1]), 1)
+      }
       await captioner.dispose()
       await captioner.dispose()
       expect(mocks.mockDispose).toHaveBeenCalledTimes(1)
@@ -299,14 +315,10 @@ describe('createCaptioner — fast profile dispatch (CaptionerConfig flow)', () 
     // Assert: the captioner pins decoding options that affect retrieval
     // quality. Pinning them in a test makes accidental changes loud.
     expect(mocks.mockGenerate).toHaveBeenCalledTimes(1)
-    const arg = mocks.mockGenerate.mock.calls[0]?.[0] as {
-      max_new_tokens?: number
-      repetition_penalty?: number
-      no_repeat_ngram_size?: number
-    }
-    expect(arg?.max_new_tokens).toBe(128)
-    expect(arg?.repetition_penalty).toBe(1.15)
-    expect(arg?.no_repeat_ngram_size).toBe(3)
+    const arg = expectRecord(mocks.mockGenerate.mock.calls[0]?.[0])
+    expect(arg['max_new_tokens']).toBe(128)
+    expect(arg['repetition_penalty']).toBe(1.15)
+    expect(arg['no_repeat_ngram_size']).toBe(3)
   })
 
   // ----- Failure: model load -----
@@ -327,13 +339,13 @@ describe('createCaptioner — fast profile dispatch (CaptionerConfig flow)', () 
 
     // Per-page wrap: VlmError with pageNum + user-facing message.
     expect(captured).toBeInstanceOf(VlmError)
-    expect((captured as InstanceType<typeof VlmError>).pageNum).toBe(1)
-    expect((captured as InstanceType<typeof VlmError>).message).toBe('Captioning failed for page 1')
+    expect(expectInstanceOf(captured, VlmError).pageNum).toBe(1)
+    expect(expectInstanceOf(captured, VlmError).message).toBe('Captioning failed for page 1')
 
     // The immediate cause is the wrapper produced by ensureLoaded(); its
     // message names the resolved modelName and device so operators can
     // identify the source.
-    const cause = (captured as InstanceType<typeof VlmError>).cause as Error
+    const cause = expectError(expectInstanceOf(captured, VlmError).cause)
     expect(cause).toBeInstanceOf(Error)
     expect(cause.message).toContain('Captioner load failed')
     expect(cause.message).toContain(`modelName=${FAST_MODEL_ID}`)
@@ -342,7 +354,7 @@ describe('createCaptioner — fast profile dispatch (CaptionerConfig flow)', () 
 
     // The original `from_pretrained` error is preserved via the Error.cause
     // chain so debugging is not lossy.
-    expect((cause as Error & { cause?: unknown }).cause).toBe(originalErr)
+    expect(expectRecord(cause)['cause']).toBe(originalErr)
   })
 
   // ----- F1: load-failure caching -----
@@ -384,8 +396,8 @@ describe('createCaptioner — fast profile dispatch (CaptionerConfig flow)', () 
     // load-aware wrapper.
     for (const captured of thrownErrors) {
       expect(captured).toBeInstanceOf(VlmError)
-      const cause = (captured as InstanceType<typeof VlmError>).cause as Error & { cause?: unknown }
-      expect(cause.cause).toBe(originalErr)
+      const cause = expectError(expectInstanceOf(captured, VlmError).cause)
+      expect(expectRecord(cause)['cause']).toBe(originalErr)
     }
   })
 
@@ -406,9 +418,9 @@ describe('createCaptioner — fast profile dispatch (CaptionerConfig flow)', () 
     }
 
     expect(captured).toBeInstanceOf(VlmError)
-    expect((captured as InstanceType<typeof VlmError>).pageNum).toBe(7)
-    expect((captured as InstanceType<typeof VlmError>).message).toBe('Captioning failed for page 7')
-    expect((captured as InstanceType<typeof VlmError>).cause).toBe(originalErr)
+    expect(expectInstanceOf(captured, VlmError).pageNum).toBe(7)
+    expect(expectInstanceOf(captured, VlmError).message).toBe('Captioning failed for page 7')
+    expect(expectInstanceOf(captured, VlmError).cause).toBe(originalErr)
   })
 
   // ----- Failure: image decode -----
@@ -428,8 +440,8 @@ describe('createCaptioner — fast profile dispatch (CaptionerConfig flow)', () 
     }
 
     expect(captured).toBeInstanceOf(VlmError)
-    expect((captured as InstanceType<typeof VlmError>).pageNum).toBe(3)
-    expect((captured as InstanceType<typeof VlmError>).message).toBe('Captioning failed for page 3')
-    expect((captured as InstanceType<typeof VlmError>).cause).toBe(originalErr)
+    expect(expectInstanceOf(captured, VlmError).pageNum).toBe(3)
+    expect(expectInstanceOf(captured, VlmError).message).toBe('Captioning failed for page 3')
+    expect(expectInstanceOf(captured, VlmError).cause).toBe(originalErr)
   })
 })

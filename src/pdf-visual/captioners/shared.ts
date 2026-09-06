@@ -13,30 +13,70 @@
 
 import { type DeviceType, RawImage } from '@huggingface/transformers'
 
+import { isObjectLike } from '../../utils/type-guards.js'
+
 /**
  * ONNX quantization variant shared by both captioner profiles. Pinned to the
  * smallest viable variant; production has no user-facing knob.
  */
-const VLM_DTYPE = 'q4'
+const VLM_DTYPE = 'q4' as const
 
 /** Lazy-load lifecycle state for a captioner's processor + model. */
 type CaptionerLoadState = { kind: 'pending' } | { kind: 'ok' } | { kind: 'failed'; cause: Error }
 
 /**
  * Build the `from_pretrained` option objects (processor + model) with the
- * pinned dtype and resolved device. transformers.js declares `dtype` as a
- * literal union; cast through `unknown` to widen-to-string-then-back.
+ * pinned dtype and resolved device.
+ *
+ * `RAG_DEVICE` is passed through with no allowlist (see `resolveDevice`) so a
+ * device transformers.js adds later works without a code change, while the
+ * library types the parameter as a closed literal union. That gap is the one
+ * thing here the type system cannot state, so it is suppressed at the single
+ * line that crosses it.
  */
 export function buildModelLoadOptions(resolvedDevice: string): {
   dtypeOpt: { dtype: 'q4' }
   modelOpt: { dtype: 'q4'; device: DeviceType }
 } {
-  const dtypeOpt = { dtype: VLM_DTYPE } as unknown as { dtype: 'q4' }
-  const modelOpt = { dtype: VLM_DTYPE, device: resolvedDevice } as unknown as {
-    dtype: 'q4'
-    device: DeviceType
+  const dtypeOpt = { dtype: VLM_DTYPE }
+  const modelOpt = {
+    dtype: VLM_DTYPE,
+    // biome-ignore lint/nursery/noUnsafeTypeAssertion: RAG_DEVICE is a deliberate un-allowlisted passthrough to a closed literal union
+    device: resolvedDevice as DeviceType,
   }
   return { dtypeOpt, modelOpt }
+}
+
+/**
+ * The VLM processor as both captioner profiles call it: a callable that
+ * tokenizes prompt + image, plus the two template/decode helpers.
+ * transformers.js supplies no type for this surface, so it is checked once at
+ * the boundary instead of asserted at each use.
+ */
+export type VlmProcessor = {
+  apply_chat_template: (messages: unknown, options: { add_generation_prompt: boolean }) => string
+  batch_decode: (tokens: unknown, options: { skip_special_tokens: boolean }) => string[]
+} & ((prompt: string, images: unknown) => Promise<{ input_ids: { dims: number[] } }>)
+
+/** The VLM itself, reduced to the generate call both profiles make. */
+export interface VlmModel {
+  generate: (inputs: unknown) => Promise<{
+    slice: (axis: null, range: [number, number | null]) => unknown
+  }>
+}
+
+export function isVlmProcessor(value: unknown): value is VlmProcessor {
+  return (
+    typeof value === 'function' &&
+    'apply_chat_template' in value &&
+    typeof value.apply_chat_template === 'function' &&
+    'batch_decode' in value &&
+    typeof value.batch_decode === 'function'
+  )
+}
+
+export function isVlmModel(value: unknown): value is VlmModel {
+  return isObjectLike(value) && typeof value['generate'] === 'function'
 }
 
 /** The processor + model pair produced by a profile's load callback. */
@@ -63,19 +103,24 @@ export function createModelLoader(
 
   return {
     async dispose(): Promise<void> {
-      const model = loaded?.model
+      const model: unknown = loaded?.model
       loaded = null
-      if (model) {
+      const dispose = isObjectLike(model) ? model['dispose'] : undefined
+      if (typeof dispose === 'function') {
         try {
-          await (model as { dispose(): Promise<unknown> }).dispose()
+          await dispose.call(model)
         } catch (error) {
           console.error('Error disposing captioner model:', error)
         }
       }
     },
     async ensureLoaded(): Promise<LoadedModel> {
-      if (state.kind === 'ok' && loaded) return loaded
-      if (state.kind === 'failed') throw state.cause
+      if (state.kind === 'ok' && loaded) {
+        return loaded
+      }
+      if (state.kind === 'failed') {
+        throw state.cause
+      }
       try {
         loaded = await load(buildModelLoadOptions(resolvedDevice))
         state = { kind: 'ok' }
@@ -94,13 +139,14 @@ export function createModelLoader(
 }
 
 /**
- * Decode PNG bytes to a `RawImage`. `Blob` accepts `Uint8Array` directly (the
- * renderer returns `Uint8Array` from `Pixmap.asPNG()`), but the `BlobPart`
- * type omits `Uint8Array<ArrayBufferLike>` due to SharedArrayBuffer subtyping;
- * cast through `unknown`. Profiles needing a fixed input size resize the result.
+ * Decode PNG bytes to a `RawImage`. `BlobPart` omits `Uint8Array<ArrayBufferLike>`
+ * (SharedArrayBuffer subtyping), so the bytes are copied into a view that is
+ * definitely backed by a plain `ArrayBuffer`. Profiles needing a fixed input
+ * size resize the result.
  */
 export async function decodePngToRawImage(pngBytes: Uint8Array): Promise<RawImage> {
-  const blob = new Blob([pngBytes as unknown as ArrayBuffer], { type: 'image/png' })
+  const bytes = new Uint8Array(pngBytes)
+  const blob = new Blob([bytes], { type: 'image/png' })
   return RawImage.fromBlob(blob)
 }
 
@@ -119,8 +165,12 @@ function stripControlChars(input: string): string {
       out += input[i]
       continue
     }
-    if (code <= 0x1f) continue
-    if (code >= 0x7f && code <= 0x9f) continue
+    if (code <= 0x1f) {
+      continue
+    }
+    if (code >= 0x7f && code <= 0x9f) {
+      continue
+    }
     out += input[i]
   }
   return out
@@ -132,7 +182,11 @@ function stripControlChars(input: string): string {
  */
 export function postProcess(decoded: string): string | null {
   const stripped = stripControlChars(decoded).trim()
-  if (stripped.length === 0) return null
-  if (stripped.length > MAX_CAPTION_LENGTH) return `${stripped.slice(0, MAX_CAPTION_LENGTH)}…`
+  if (stripped.length === 0) {
+    return null
+  }
+  if (stripped.length > MAX_CAPTION_LENGTH) {
+    return `${stripped.slice(0, MAX_CAPTION_LENGTH)}…`
+  }
   return stripped
 }
