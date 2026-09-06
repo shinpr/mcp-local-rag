@@ -116,11 +116,7 @@ export function parseStoreImages(value: string | undefined): ParseResult<boolean
 /** Resolved server config type, named so helpers can share it. */
 type ServerConfig = ConstructorParameters<typeof RAGServer>[0]
 
-/**
- * Sensitive-path check on the RAW user-supplied roots, before the resolver
- * realpath-normalizes them (on macOS `/etc` -> `/private/etc`, which a
- * post-realpath-only check would miss).
- */
+/** Checked before realpath, which would turn `/etc` into `/private/etc`. */
 function collectRawSensitiveErrors(env: NodeJS.ProcessEnv): string[] {
   const errors: string[] = []
   const baseDirs = env['BASE_DIRS']
@@ -243,13 +239,8 @@ function applyOptionalSettings(config: ServerConfig, env: NodeJS.ProcessEnv): st
 }
 
 /**
- * Resolve the full RAGServer configuration from environment variables.
- *
- * Pure (no process.exit, no transport): `env` and `cwd` are passed in so the
- * entry-point wiring can be exercised directly in tests instead of via a copy.
- * Single source of truth for BASE_DIRS / BASE_DIR / cwd precedence, the
- * sensitive-path policy on both raw and realpath-normalized roots, and the
- * never-fall-back-to-cwd-on-error rule.
+ * Single source of truth for BASE_DIRS / BASE_DIR / cwd precedence. A resolver
+ * error never falls back to cwd.
  */
 export async function resolveServerConfig(
   env: NodeJS.ProcessEnv,
@@ -292,11 +283,7 @@ export async function resolveServerConfig(
   return config
 }
 
-/**
- * Start the RAG MCP Server
- * Configuration is read from environment variables only (no CLI flags).
- * This ensures the bare `mcp-local-rag` launch is suitable for MCP clients.
- */
+/** Env-only configuration, so a bare `mcp-local-rag` launch suits MCP clients. */
 export async function startServer(): Promise<void> {
   try {
     const config = await resolveServerConfig(process.env, process.cwd())

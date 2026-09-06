@@ -1,41 +1,13 @@
-// VLM PDF Enrichment - Service-Integration E2E Test (CI-gated)
-// Design Doc: docs/design/vlm-pdf-enrichment-design.md
-// Covers (cross-process / cross-service correctness):
-//   - End-to-end stdio JSON-RPC wiring of the MCP server's `ingest_file` tool
-//     with `visual: true`
-//   - Real LanceDB persistence of visual-enriched chunks against a temp BASE_DIR
-//   - Real VLM model load through the captioner code path (model is assumed
-//     pre-cached — see header note below)
-// Lane: service-integration-e2e
-// Budget Used: 1/2 service-integration-e2e (reserved slot)
+// VLM PDF enrichment, end to end over stdio JSON-RPC against the published
+// binary, with real LanceDB and a real VLM load.
 //
-// IMPORTANT (pre-condition for RUN_E2E=1):
-//   This test assumes `CACHE_DIR` already contains the chosen `dtype` variant
-//   of the production default VLM (`HuggingFaceTB/SmolVLM-256M-Instruct` at
-//   `q4`). The first-time download is a separate one-time setup step outside
-//   the test run. Running without a pre-cached model will either time out or
-//   attempt a network download; the suite is intentionally CI-gated so the
-//   default `pnpm test` never triggers this.
+// PRE-CONDITION for RUN_E2E=1: `CACHE_DIR` must already hold the `q4` variant
+// of `HuggingFaceTB/SmolVLM-256M-Instruct`. Without it this either times out
+// or starts a download, which is why the suite is CI-gated at file-evaluation
+// time and no workflow sets RUN_E2E=1.
 //
-// Test Type: End-to-end against a running local stack (mcp-local-rag binary
-//            spawned via stdio + real LanceDB + real production-default VLM).
-//            No HTTP service exists in this product — the "service" here is
-//            the MCP server itself, exercised through real JSON-RPC over stdio.
-//
-// Implementation Timing: FINAL phase only. Skipped unless `RUN_E2E=1`. The
-// CI gate is checked at file-evaluation time so the suite is completely
-// absent in default runs.
-//
-// vi.hoisted note: NOT used in this file. This E2E spawns a real child
-// process and uses real LanceDB + real @huggingface/transformers — no module
-// mocks. The isolate: false vitest config (vitest.config.mjs:16-18) still
-// applies but is not load-bearing here because there are no vi.mock calls.
-//
-// CI gate:
-//   describe.skipIf(process.env['RUN_E2E'] !== '1')(...)
-// also lives in package.json as a dedicated `test:e2e` script so the
-// default `pnpm test` never pulls the VLM model. No workflow sets RUN_E2E=1
-// either, so this runs nowhere automatically — on purpose (see ci.yml).
+// No module mocks here — a real child process, real LanceDB, real
+// transformers — so the `isolate: false` config is not load-bearing.
 
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
@@ -151,17 +123,11 @@ function buildPng(width: number, height: number): Uint8Array {
 }
 
 /**
- * Build a single-page PDF that satisfies BOTH test cases:
- *   - Substantial body text (well above the chunker's `minChunkLength=50`
- *     filter, with multiple sentences so the semantic chunker emits ≥1 chunk
- *     in the text-only fallback path).
- *   - An embedded raster image so `detectVisualRegions` finds the page region
- *     a visual candidate (DD §pdf-visual/detector.ts — binary rule on
- *     `block.type === 'image'`), exercising the captioner code path.
+ * Single-page PDF that satisfies both cases: body text well above the
+ * chunker's `minChunkLength`, so the text-only fallback still emits a chunk,
+ * and an embedded raster so `detectVisualRegions` marks the page a candidate.
  *
- * Pattern + content-stream operators mirror `tmp/probe/probe-stext-blocks.mjs`.
- * Text strings contain only ASCII letters, digits, spaces, periods and commas
- * — no PDF-literal escape characters required.
+ * ASCII only, so no PDF-literal escaping is needed.
  */
 function buildFixturePdfBytes(): Uint8Array {
   const pdfDoc = new mupdf.PDFDocument()
@@ -262,12 +228,9 @@ describe.skipIf(!E2E_ENABLED)('VLM PDF Enrichment - service-integration-e2e (RUN
     rmSync(testDbPath, { recursive: true, force: true })
     mkdirSync(testBaseDir, { recursive: true })
     mkdirSync(testDbPath, { recursive: true })
-    // Synthesize the fixture in-memory and write it to BASE_DIR. This makes
-    // the suite portable across clean checkouts — no dependency on the
-    // gitignored `tmp/probe/probe-results/figure.pdf` produced by the Phase-1
-    // probe. The fixture is figure-bearing AND text-rich so it satisfies both
-    // the primary case (visual marker present) and the fallback case
-    // (text-only chunks above `minChunkLength=50`).
+    // Synthesized in-memory so the suite is portable across clean checkouts.
+    // Figure-bearing AND text-rich, so it satisfies both the visual-marker case
+    // and the text-only fallback.
     writeFileSync(fixturePdf, buildFixturePdfBytes())
   }, E2E_TIMEOUT_MS)
 
@@ -280,24 +243,9 @@ describe.skipIf(!E2E_ENABLED)('VLM PDF Enrichment - service-integration-e2e (RUN
     }
   })
 
-  // User Journey (CLI-flavored multi-step, service-internal correctness):
-  //   1. Spawn `node dist/index.js` (the published binary entry) with
-  //      BASE_DIR, DB_PATH, CACHE_DIR pointing at temp dirs and stdio piped
-  //      so the test can drive JSON-RPC.
-  //   2. MCP initialize handshake (handled by `client.connect`).
-  //   3. Call tools/call for `ingest_file` with { filePath, visual: true }.
-  //   4. Read back the response — assert chunkCount > 0.
-  //   5. Open the real LanceDB at `testDbPath` and assert at least one row
-  //      contains the substring `[Visual content on page `.
-  //   6. `client.close()` cleanly terminates the child via the transport.
-  //
-  // ROI: 51 (BV:8 × Freq:5 + Legal:0 + Defect:9) — reserved slot for
-  //      cross-process + real-DB correctness; the in-process AC-002 test
-  //      cannot prove the published binary wires the visual path end-to-end.
-  // @category: service-integration-e2e
-  // @lane: service-integration-e2e
-  // @dependency: full-system (mcp-local-rag binary via stdio, real LanceDB, real production-default VLM)
-  // @complexity: high
+  // Drives the published binary (`node dist/index.js`) over real JSON-RPC on
+  // stdio, then reads the real LanceDB directly. The in-process AC-002 test
+  // cannot prove the binary wires the visual path end to end.
   it(
     'User Journey: spawn mcp-local-rag via stdio, call ingest_file with visual: true, real LanceDB persists [Visual content on page ...] chunk',
     async () => {

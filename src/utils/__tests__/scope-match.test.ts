@@ -1,5 +1,4 @@
 // Scope-match helper unit tests
-// Test Type: Unit Test
 
 import { isAbsolute } from 'node:path'
 import { describe, expect, it } from 'vitest'

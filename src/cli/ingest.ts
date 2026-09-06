@@ -50,21 +50,13 @@ interface IngestSummary {
 }
 
 interface IngestCliOptions {
-  /**
-   * Collected `--base-dir` values in CLI order. Repeatable: each flag
-   * occurrence appends one entry. An empty array means the flag was not
-   * provided (resolver then falls through to env / cwd).
-   */
+  /** Repeatable, in CLI order. Empty means unset — the resolver uses env / cwd. */
   baseDirs?: string[] | undefined
   maxFileSize?: number | undefined
   chunkMinLength?: number | undefined
   visual?: boolean | undefined
   images?: boolean | undefined
-  /**
-   * Visual-quality profile selector. Only meaningful when `visual` is true;
-   * silently ignored otherwise (mirrors the existing `--visual` precedent
-   * of silently coercing for non-PDF files). Defaults to `'fast'`.
-   */
+  /** Silently ignored unless `visual` is true. Defaults to `'fast'`. */
   visualQuality?: QualityProfile | undefined
 }
 
@@ -112,11 +104,7 @@ Global options (must appear before "ingest"):
 // Arg Parsing
 // ============================================
 
-/**
- * Parse ingest-specific CLI arguments into options and a positional path.
- * Flags: --base-dir, --max-file-size, -h/--help
- * Unknown flags (including global flags passed after subcommand) cause an error.
- */
+/** A global flag passed after the subcommand is an error, not a pass-through. */
 /** Read a flag whose value must be a bare non-negative integer. */
 function requireCountFlag(args: string[], flagIndex: number, flag: string): number {
   const raw = requireFlagValue(args, flagIndex, flag)
@@ -212,19 +200,10 @@ export function parseArgs(args: string[]): ParsedArgs {
 // ============================================
 
 /**
- * Resolve ingest config by merging global config with ingest-specific options.
+ * Merge global config with ingest-specific options (CLI > env > defaults).
  *
- * Base directories are resolved via the shared CLI resolver
- * ({@link resolveCliBaseDirsOrExit}) which applies the documented precedence
- * (CLI roots > `BASE_DIRS` > `BASE_DIR` > `cwd`), realpath-normalizes every
- * effective root, dedupes exact duplicates, and prunes nested roots. CLI
- * roots are pre-validated against the sensitive-path policy here so the
- * user sees `--base-dir`-attributed errors before the resolver touches the
- * filesystem.
- *
- * Other ingest-specific values (maxFileSize, chunkMinLength) follow the
- * existing CLI > env > defaults order and are validated against the same
- * ranges as before.
+ * CLI roots are pre-validated against the sensitive-path policy here, so the
+ * user gets `--base-dir`-attributed errors before the resolver touches disk.
  */
 export async function resolveConfig(
   globalConfig: ResolvedGlobalConfig,
@@ -308,17 +287,10 @@ export type IngestSingleFileOptions =
     }
 
 /**
- * Ingest a single file: hash, parse, chunk, embed, delete old chunks, insert new
- * chunks. Returns the number of chunks inserted.
+ * Ingest one file, returning the number of chunks inserted.
  *
- * When `options.visual === true` AND the file is a `.pdf`, routes through the
- * visual-enrichment path: `parsePdfPages` + VLM captioning (`pdf-visual`
- * orchestrator) + joined-text chunking. `pdf-visual` is loaded via dynamic
- * `await import('../pdf-visual/index.js')` so the default (non-visual) path
- * never pulls the VLM module into the bundle.
- *
- * Non-visual, non-PDF, and `visual: true` + non-PDF paths all use the default
- * text-only branch and never load `pdf-visual`.
+ * `visual: true` on a `.pdf` routes through VLM captioning. `pdf-visual` is
+ * loaded by dynamic import, so no other path pulls the VLM module in.
  */
 /** Collaborators one CLI ingest run needs, injected as a unit. */
 export interface SingleFileIngestCollaborators {
@@ -374,16 +346,10 @@ export async function ingestSingleFile(
 // Main Entry Point
 // ============================================
 
+/** Run the ingest CLI subcommand. */
 /**
- * Run the ingest CLI subcommand.
- * @param args - Arguments after "ingest" (e.g., option flags and file/directory path)
- * @param globalOptions - Global options parsed before the subcommand
- */
-/**
- * Forward visual + VLM env-resolved options into the per-file ingestor. The two
- * variants are built explicitly so the VLM fields only travel with the
- * visual-true branch (the cacheDir is pre-validated by `resolveGlobalConfig` so
- * the captioner does not re-read `process.env['CACHE_DIR']` raw).
+ * The two variants are built explicitly so VLM fields only travel with the
+ * visual-true branch, carrying the cacheDir `resolveGlobalConfig` validated.
  */
 function buildIngestOptions(
   options: IngestCliOptions,

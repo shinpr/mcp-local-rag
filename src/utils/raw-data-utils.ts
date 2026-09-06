@@ -4,21 +4,13 @@
 import { access, mkdir, readFile, realpath, writeFile } from 'node:fs/promises'
 import { basename, dirname, join, posix, resolve, sep } from 'node:path'
 
-import { errorCode, isMemberOf, isRecord } from './type-guards.js'
+import { errorCode, isRecord } from './type-guards.js'
 
 // ============================================
 // Base64URL Encoding/Decoding
 // ============================================
 
-/**
- * Encode string to URL-safe base64 (base64url)
- * - Replaces + with -
- * - Replaces / with _
- * - Removes padding (=)
- *
- * @param str - String to encode
- * @returns URL-safe base64 encoded string
- */
+/** Encode to URL-safe base64, so a source can be used as a filename. */
 export function encodeBase64Url(str: string): string {
   return Buffer.from(str, 'utf-8')
     .toString('base64')
@@ -27,12 +19,7 @@ export function encodeBase64Url(str: string): string {
     .replace(/=+$/, '')
 }
 
-/**
- * Decode URL-safe base64 (base64url) to string
- *
- * @param base64url - URL-safe base64 encoded string
- * @returns Decoded string
- */
+/** Decode URL-safe base64 (base64url). */
 export function decodeBase64Url(base64url: string): string {
   // Convert base64url to standard base64
   let base64 = base64url.replace(/-/g, '+').replace(/_/g, '/')
@@ -50,11 +37,8 @@ export function decodeBase64Url(base64url: string): string {
 // ============================================
 
 /**
- * Normalize source URL by removing query string and fragment
- * Only normalizes HTTP(S) URLs. Other sources (e.g., "clipboard://...") are returned as-is
- *
- * @param source - Source identifier (URL or custom ID)
- * @returns Normalized source
+ * Drop the query string and fragment from an HTTP(S) source, so the same page
+ * maps to one path. A non-URL source (`clipboard://...`) passes through.
  */
 export function normalizeSource(source: string): string {
   try {
@@ -85,25 +69,12 @@ const RAW_DATA_EXTENSION = 'md'
 // Path Generation
 // ============================================
 
-/**
- * Get raw-data directory path
- *
- * @param dbPath - LanceDB database path
- * @returns Raw-data directory path
- */
+/** Raw-data directory for a given LanceDB path. */
 export function getRawDataDir(dbPath: string): string {
   return join(dbPath, 'raw-data')
 }
 
-/**
- * Generate raw-data file path from source and format
- * Path format: {dbPath}/raw-data/{base64url(normalizedSource)}.{ext}
- *
- * @param dbPath - LanceDB database path
- * @param source - Source identifier (URL or custom ID)
- * @param format - Content format
- * @returns Generated file path
- */
+/** `{dbPath}/raw-data/{base64url(normalizedSource)}.{ext}` */
 export function generateRawDataPath(dbPath: string, source: string): string {
   const normalizedSource = normalizeSource(source)
   const encoded = encodeBase64Url(normalizedSource)
@@ -115,16 +86,7 @@ export function generateRawDataPath(dbPath: string, source: string): string {
 // File Operations
 // ============================================
 
-/**
- * Save content to raw-data directory
- * Creates directory if it doesn't exist
- *
- * @param dbPath - LanceDB database path
- * @param source - Source identifier (URL or custom ID)
- * @param content - Content to save
- * @param format - Content format
- * @returns Saved file path
- */
+/** Save content under raw-data, creating the directory if needed. */
 export async function saveRawData(
   dbPath: string,
   source: string,
@@ -189,13 +151,7 @@ export async function isPathInRawDataDir(filePath: string, dbPath: string): Prom
   }
 }
 
-/**
- * Extract original source from raw-data file path
- * Returns null if not a raw-data path
- *
- * @param filePath - Raw-data file path
- * @returns Original source or null
- */
+/** Original source of a raw-data path, or `null` when it is not one. */
 export function extractSourceFromPath(filePath: string): string | null {
   const normalized = filePath.replace(/\\/g, '/')
   const rawDataMarker = '/raw-data/'
@@ -223,6 +179,7 @@ export function extractSourceFromPath(filePath: string): string | null {
 /**
  * Metadata stored alongside each raw-data .md file as a .meta.json sidecar
  */
+/** What {@link saveMetaJson} writes. */
 export interface RawDataMeta {
   title: string | null
   source: string
@@ -230,60 +187,41 @@ export interface RawDataMeta {
 }
 
 /**
+ * What re-ingest reads back. Only `title` is consumed, so a sidecar missing
+ * `source` or `format` still yields a usable title rather than failing an
+ * otherwise valid ingest.
+ */
+export interface RawDataMetaRead {
+  title: string | null
+}
+
+/**
  * Read one persisted sidecar. The file is plain JSON on disk, so a malformed or
  * hand-edited value is a real possibility and each field is checked rather than
  * assumed.
  */
-function toRawDataMeta(parsed: unknown): RawDataMeta {
-  if (!isRecord(parsed)) {
-    throw new Error('Malformed raw-data metadata: expected an object')
-  }
-  const { title, source, format } = parsed
-  if (
-    typeof source !== 'string' ||
-    typeof format !== 'string' ||
-    !isMemberOf(CONTENT_FORMATS, format)
-  ) {
-    throw new Error('Malformed raw-data metadata: missing source or format')
-  }
-  return { title: typeof title === 'string' ? title : null, source, format }
+function toRawDataMetaRead(parsed: unknown): RawDataMetaRead {
+  const title = isRecord(parsed) ? parsed['title'] : undefined
+  return { title: typeof title === 'string' ? title : null }
 }
 
-/**
- * Generate the .meta.json sidecar path for a given .md file path
- * Replaces the trailing `.md` extension with `.meta.json`
- *
- * @param mdPath - Path to the .md raw-data file
- * @returns Path to the corresponding .meta.json file
- */
+/** Replaces the trailing `.md` with `.meta.json`. */
 export function generateMetaJsonPath(mdPath: string): string {
   return mdPath.replace(/\.md$/, '.meta.json')
 }
 
-/**
- * Save metadata as a JSON sidecar file alongside a raw-data .md file
- *
- * @param mdPath - Path to the .md raw-data file
- * @param meta - Metadata to persist
- */
+/** Save metadata as a JSON sidecar beside a raw-data .md file. */
 export async function saveMetaJson(mdPath: string, meta: RawDataMeta): Promise<void> {
   const metaPath = generateMetaJsonPath(mdPath)
   await writeFile(metaPath, JSON.stringify(meta, null, 2), 'utf-8')
 }
 
-/**
- * Load metadata from a .meta.json sidecar file
- * Returns null when the sidecar file does not exist (ENOENT).
- * All other read errors are re-thrown (fail-fast).
- *
- * @param mdPath - Path to the .md raw-data file
- * @returns Parsed metadata or null if file does not exist
- */
-export async function loadMetaJson(mdPath: string): Promise<RawDataMeta | null> {
+/** `null` when the sidecar does not exist; any other read error is re-thrown. */
+export async function loadMetaJson(mdPath: string): Promise<RawDataMetaRead | null> {
   const metaPath = generateMetaJsonPath(mdPath)
   try {
     const content = await readFile(metaPath, 'utf-8')
-    return toRawDataMeta(JSON.parse(content))
+    return toRawDataMetaRead(JSON.parse(content))
   } catch (error: unknown) {
     if (isEnoent(error)) {
       return null
@@ -325,11 +263,9 @@ export interface RawDataArtifactExistence {
 }
 
 /**
- * Report which raw-data artifacts exist for a target path. Single source for
- * the delete `existed` signal so the MCP server and CLI delete paths cannot
- * drift. Call BEFORE unlinking — it reports pre-unlink state.
- *
- * @param targetPath - Raw-data .md file path
+ * Report which raw-data artifacts exist. Single source for the delete
+ * `existed` signal, so the MCP and CLI paths cannot drift. Call BEFORE
+ * unlinking — it reports pre-unlink state.
  */
 export async function checkRawDataArtifacts(targetPath: string): Promise<RawDataArtifactExistence> {
   const rawDataExisted = await pathExists(targetPath)

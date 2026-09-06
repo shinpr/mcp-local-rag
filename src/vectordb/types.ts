@@ -50,10 +50,8 @@ export interface VectorStoreConfig {
 }
 
 /**
- * Per-call options for {@link VectorStore.search}.
- * Grouped into an object (instead of positional params) so the caller can pass
- * any subset and so adding options (like `scope`) is not a breaking signature
- * change.
+ * Per-call options for {@link VectorStore.search}, an object so a new option
+ * is not a breaking signature change.
  */
 export interface SearchOptions {
   /** Optional query text for keyword boost (BM25) */
@@ -147,10 +145,8 @@ export interface AttachmentHydrationResult {
 }
 
 /**
- * Row returned by VectorStore.getChunksByRange.
- * Distinct from SearchResult: no score (not a ranked result) and no metadata
- * (not needed for index-adjacent retrieval). Consumed by
- * handleReadChunkNeighbors and runReadNeighbors.
+ * Row from {@link VectorStore.getChunksByRange}. Distinct from `SearchResult`:
+ * no score (not ranked) and no metadata (not needed here).
  */
 export interface ChunkRow {
   /** File path (absolute) */
@@ -225,13 +221,10 @@ export function toSearchResult(raw: unknown): SearchResult {
   if (!isLanceDBRawResult(raw)) {
     throw new DatabaseError('Invalid search result format from LanceDB')
   }
-  // Score source: vector search rows carry `_distance` (dot distance, the
-  // normal path). `_score` is a defensive fallback for any FTS-shaped row that
-  // reaches here (the live FTS path consumes `_score` directly in
-  // applyKeywordBoost, not via this mapper). The final `?? 0` is an
-  // effectively-unreachable guard: vectorSearch always returns `_distance`. It
-  // is kept defensive rather than throwing, since a missing score is not worth
-  // failing a whole search over.
+  // Vector rows carry `_distance`; `_score` is a defensive fallback for an
+  // FTS-shaped row reaching here (the live FTS path reads `_score` directly in
+  // applyKeywordBoost). The `?? 0` is unreachable in practice, and kept rather
+  // than throwing — a missing score is not worth failing a whole search over.
   return {
     id: raw.id,
     filePath: raw.filePath,
@@ -244,11 +237,10 @@ export function toSearchResult(raw: unknown): SearchResult {
 }
 
 /**
- * Map a raw LanceDB row to a full {@link VectorChunk}, including the stored
- * embedding vector and metadata. Used for backup/restore (ingest rollback),
- * where the row must round-trip back through `insertChunks` intact — unlike
- * {@link toChunkRow} / {@link toSearchResult}, which drop the vector. The
- * embedding is normalized to `number[]` (LanceDB returns a typed array).
+ * Map a raw LanceDB row to a full {@link VectorChunk}, embedding included, so
+ * it round-trips back through `insertChunks` — unlike {@link toChunkRow} and
+ * {@link toSearchResult}, which drop the vector. LanceDB returns a typed array,
+ * normalized here to `number[]`.
  */
 export function toVectorChunk(raw: unknown): VectorChunk {
   if (!isRecord(raw)) {
@@ -388,16 +380,11 @@ export function parseHydratedVisualAttachments(value: unknown): {
 }
 
 /**
- * Convert LanceDB raw row to ChunkRow with type validation.
- * Mirrors toSearchResult but returns the minimal range-read shape: no score
- * (not ranked) and no metadata (not needed for index-adjacent retrieval).
+ * The minimal range-read shape: no score (not ranked) and no metadata (not
+ * needed for index-adjacent retrieval), so the shape check is narrower than
+ * {@link isLanceDBRawResult}. An empty or missing `fileTitle` reads as `null`.
  *
- * Uses a narrower shape check than isLanceDBRawResult: only
- * filePath/chunkIndex/text are required because getChunksByRange
- * does not project metadata. The empty-string-or-missing fileTitle
- * is normalized to null per §Field Propagation Map.
- *
- * @throws DatabaseError if the raw row is missing required fields
+ * @throws DatabaseError when a required field is missing.
  */
 export function toChunkRow(raw: unknown): ChunkRow {
   if (!isRecord(raw)) {

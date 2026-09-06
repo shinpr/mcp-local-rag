@@ -1,18 +1,9 @@
-// read_chunk_neighbors Integration Test - Design Doc: read-chunk-neighbors-design.md
-// Generated: 2026-04-16 | Budget Used: 7/3 integration (Design Doc explicitly prescribes
-// AC-005/006/007/011/013/019 + single-call sufficiency + P95; budget overrun reported)
-// PRD reference: docs/prd/read-chunk-neighbors-prd.md (AC-001..AC-020)
+// read_chunk_neighbors integration tests.
 //
-// Test framework: vitest (pool: forks, maxWorkers: 1, isolate: false)
-// Mock boundary decisions (Design Doc §Test Boundaries):
-//   @real-dependency: RAGServer, VectorStore, LanceDB, DocumentParser, raw-data-utils
-//   Mocked: none in this file (except the single-call-sufficiency spy on vectorStore.getChunksByRange)
-//
-// Follow existing pattern from rag-server.delete.integration.test.ts:
-//   - describe block per AC (or AC group) with its own tmp dbPath + baseDir
-//   - beforeAll: create dirs, construct RAGServer, initialize, seed fixtures
-//   - afterAll: rmSync tmp dirs recursively
-//   - Use handleIngestFile / handleIngestData to seed real chunks
+// Nothing is mocked except the single-call-sufficiency spy on
+// `vectorStore.getChunksByRange`; RAGServer, VectorStore, LanceDB and
+// DocumentParser are all real.
+// PRD: docs/prd/read-chunk-neighbors-prd.md
 
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
@@ -52,50 +43,7 @@ function parseItems(response: {
 }
 
 describe('read_chunk_neighbors integration', () => {
-  // =============================================================================
-  // Test 1: Default window returns 5 sorted chunks with core fields and isTarget
-  // =============================================================================
-  // AC: AC-001 "Given an ingested document at filePath, when a client calls
-  //     read_chunk_neighbors({ filePath, chunkIndex: N }) with the defaults
-  //     (before=2, after=2), then the response contains all existing chunks from
-  //     index N-2 to N+2 in the same document, sorted by chunkIndex ascending."
-  // AC: AC-002 "Each item contains exactly the core required fields: chunkIndex,
-  //     text, filePath."
-  // AC: AC-008 "Default before=2, after=2."
-  // AC: AC-018 "Response array is always sorted by chunkIndex ascending."
-  // AC: AC-019 "Each item includes isTarget (boolean); exactly one item in a
-  //     non-empty response has isTarget: true; that item's chunkIndex equals the
-  //     requested chunkIndex."
-  // ROI: 109 (BV:10 x Freq:10 + Legal:0 + Defect:9)
-  // Behavior: Ingest document with >=5 chunks -> call handleReadChunkNeighbors
-  //   with filePath + chunkIndex in mid-document -> response is ordered 5-item
-  //   window with correct fields and exactly one isTarget:true at the requested
-  //   chunkIndex.
-  // @category: core-functionality
-  // @dependency: RAGServer, VectorStore, LanceDB, DocumentParser
-  // @complexity: medium
-  //
-  // Setup:
-  //   - Ingest a text file large enough to produce at least 7 chunks
-  //     (use '. '.repeat(N) pattern from rag-server.delete.integration.test.ts
-  //      or a file sized against CHUNK_MIN_LENGTH to guarantee >= 7 chunks).
-  //   - Record the filePath and pick a mid-document chunkIndex (e.g., 3).
-  //
-  // Verification items:
-  //   - Response shape: { content: [{ type: 'text', text: <json> }] }
-  //   - Parsed JSON is an array of length 5
-  //   - chunkIndex values equal [N-2, N-1, N, N+1, N+2] in that exact order
-  //     (ascending sort guarantee; AC-018)
-  //   - Every item has keys: chunkIndex (number), text (non-empty string),
-  //     filePath (matches ingested path), isTarget (boolean), fileTitle
-  //     (string or null)
-  //   - Exactly one item has isTarget === true (AC-019)
-  //   - The isTarget:true item's chunkIndex equals the requested chunkIndex
-  //   - No item carries a 'score' field (Design Doc §Data Representation Decision)
-  //   - No item carries a 'metadata' field
-  //
-  // Pass criteria:
-  //   - All verification items above hold.
+  // AC-001/002/008/018/019: the default window, its field set, and isTarget.
   describe('Test 1: Default window returns 5 sorted chunks with core fields and isTarget', () => {
     let ragServer: RAGServer
     const testDbPath = resolve('./tmp/test-lancedb-read-neighbors-t1')
@@ -157,40 +105,9 @@ describe('read_chunk_neighbors integration', () => {
     })
   })
 
-  // =============================================================================
-  // Test 2: Single-call sufficiency (PRD Quantitative Metric 3)
-  // =============================================================================
-  // AC: Metric 3 "In an end-to-end agent scenario (query_documents hit ->
-  //     read_chunk_neighbors), the agent produces the expected surrounding
-  //     context in exactly one follow-up tool call with no retries, measured by
-  //     at least one integration test that asserts call count = 1."
-  // ROI: 78 (BV:9 x Freq:8 + Legal:0 + Defect:6)
-  // Behavior: Simulate agent workflow: query_documents returns a hit -> use
-  //   that hit's filePath+chunkIndex -> call read_chunk_neighbors once ->
-  //   vectorStore.getChunksByRange is invoked exactly once for the neighbor call.
-  // @category: core-functionality
-  // @dependency: RAGServer, VectorStore, LanceDB (real), vi.spyOn on getChunksByRange
-  // @complexity: medium
-  //
-  // Setup:
-  //   - Ingest a document containing a distinctive query term so
-  //     handleQueryDocuments returns a deterministic hit.
-  //   - Install vi.spyOn(vectorStore, 'getChunksByRange') AFTER the query step
-  //     so the query path itself does not contribute to the call count.
-  //     Alternative: reset the spy with spy.mockClear() between the two steps.
-  //
-  // Verification items:
-  //   - handleQueryDocuments returns at least one hit; extract filePath and
-  //     chunkIndex from results[0]
-  //   - After handleReadChunkNeighbors is called with those values,
-  //     getChunksByRange spy call count === 1 (not 0, not 2+)
-  //   - The single call's arguments match (ingestedFilePath, chunkIndex-2,
-  //     chunkIndex+2) — confirming default window + correct filePath plumbing
-  //   - Response resolves (no exception thrown)
-  //
-  // Pass criteria:
-  //   - Spy call count equals 1 on the neighbor call.
-  //   - Arguments match the expected minIdx/maxIdx range.
+  // PRD Metric 3: an agent reaches the surrounding context in exactly one
+  // follow-up call. The spy is installed after the query step so the query's
+  // own storage reads do not count.
   describe('Test 2: Single-call sufficiency (PRD Quantitative Metric 3)', () => {
     let ragServer: RAGServer
     const testDbPath = resolve('./tmp/test-lancedb-read-neighbors-t2')
@@ -263,35 +180,7 @@ describe('read_chunk_neighbors integration', () => {
     })
   })
 
-  // =============================================================================
-  // Test 3: Near-start target returns clamped window (AC-005)
-  // =============================================================================
-  // AC: AC-005 "Given a target chunkIndex near the start or end of the document
-  //     (e.g., chunkIndex: 0 with before=2), when the tool runs, then the
-  //     response includes only the chunks that exist (e.g., indices 0, 1, 2)
-  //     with no error and no placeholder entries for missing indices."
-  // ROI: 71 (BV:9 x Freq:7 + Legal:0 + Defect:8)
-  // Behavior: Request neighbors centered on chunkIndex=0 with default before=2 ->
-  //   no error; response contains only indices [0, 1, 2]; no negative-index
-  //   placeholder rows.
-  // @category: edge-case
-  // @dependency: RAGServer, VectorStore, LanceDB
-  // @complexity: low
-  //
-  // Setup:
-  //   - Ingest a document producing at least 4 chunks (so chunks 0,1,2 all exist).
-  //   - Call handleReadChunkNeighbors with chunkIndex=0 (defaults on before/after).
-  //
-  // Verification items:
-  //   - Operation resolves without throwing
-  //   - Response is an array of length 3
-  //   - chunkIndex values are exactly [0, 1, 2] in order
-  //   - The item with chunkIndex === 0 has isTarget: true
-  //   - The other two items have isTarget: false
-  //   - No item has a negative chunkIndex
-  //
-  // Pass criteria:
-  //   - All verification items above hold; response is the clamped window.
+  // AC-005: a target near the start clamps the window instead of erroring.
   describe('Test 3: Near-start target returns clamped window (AC-005)', () => {
     let ragServer: RAGServer
     const testDbPath = resolve('./tmp/test-lancedb-read-neighbors-t3')
@@ -341,47 +230,8 @@ describe('read_chunk_neighbors integration', () => {
     })
   })
 
-  // =============================================================================
-  // Test 4: Missing target and fully out-of-range behavior (AC-006)
-  // =============================================================================
-  // AC: AC-006 "When the target chunkIndex itself does not exist, the tool
-  //     returns only the surrounding chunks (within [N-before, N+after]) that
-  //     do exist; if none of the requested range exists, it returns an empty
-  //     array. No error is raised."
-  // AC (cross-reference): AC-019 "when the target chunkIndex itself does not
-  //     exist in the document, all returned items have isTarget: false."
-  // ROI: 63 (BV:9 x Freq:6 + Legal:0 + Defect:9)
-  // Behavior: Two sub-scenarios in a single test:
-  //   (a) Target chunkIndex is just past the last valid index (e.g., doc has
-  //       chunks 0..5, request chunkIndex=6): surrounding indices 4,5 remain.
-  //   (b) Target chunkIndex is far past the document (e.g., chunkIndex=999):
-  //       response is an empty array, no error.
-  // @category: edge-case
-  // @dependency: RAGServer, VectorStore, LanceDB
-  // @complexity: medium
-  //
-  // Setup:
-  //   - Ingest a document yielding exactly N known chunks (e.g., N=6 -> last
-  //     valid chunkIndex = 5). The exact chunk count is not asserted here
-  //     (chunker is deterministic enough via fixed input text) — the test
-  //     reads the count via handleListFiles or a prior getChunksByRange call
-  //     if needed.
-  //
-  // Verification items (sub-scenario a):
-  //   - Request chunkIndex=(N) with default before=2 after=2
-  //   - Operation resolves without throwing
-  //   - Response is a non-empty array
-  //   - All returned items have isTarget: false (target itself absent)
-  //   - All returned chunkIndex values are <= N-1 (no item beyond doc end)
-  //   - chunkIndex values are strictly ascending
-  //
-  // Verification items (sub-scenario b):
-  //   - Request chunkIndex=999 (far outside) with default before=2 after=2
-  //   - Operation resolves without throwing
-  //   - Response is an empty array ([])
-  //
-  // Pass criteria:
-  //   - Both sub-scenarios hold as specified.
+  // AC-006/019: a target that does not exist returns whatever of the range
+  // does, with no isTarget, and an empty array when none of it exists.
   describe('Test 4: Missing target and fully out-of-range behavior (AC-006)', () => {
     let ragServer: RAGServer
     const testDbPath = resolve('./tmp/test-lancedb-read-neighbors-t4')
@@ -452,39 +302,8 @@ describe('read_chunk_neighbors integration', () => {
     })
   })
 
-  // =============================================================================
-  // Test 5: source input resolves to same document as filePath (AC-003)
-  // =============================================================================
-  // AC: AC-003 "Given the caller passes source (the identifier used in
-  //     ingest_data) instead of filePath, when the tool runs, then it resolves
-  //     the internal storage key via the same raw-data-utils helpers used by
-  //     delete_file and returns neighbors for that document."
-  // ROI: 47 (BV:8 x Freq:5 + Legal:0 + Defect:7)
-  // Behavior: Ingest raw data via handleIngestData(content, metadata.source=X)
-  //   -> call handleReadChunkNeighbors({ source: X, chunkIndex: N }) -> response
-  //   items belong to the same underlying document (same internal filePath).
-  // @category: integration
-  // @dependency: RAGServer, VectorStore, LanceDB, raw-data-utils
-  // @complexity: medium
-  //
-  // Setup:
-  //   - Call handleIngestData with distinctive content and metadata:
-  //     { source: 'https://example.com/read-neighbors-test', format: 'html' or 'markdown' }.
-  //   - Capture ingest result; confirm chunkCount >= 3 so chunkIndex=1 yields a
-  //     full window.
-  //   - Call handleReadChunkNeighbors({ source: 'https://example.com/...', chunkIndex: 1 }).
-  //
-  // Verification items:
-  //   - Operation resolves without throwing
-  //   - Response is a non-empty array
-  //   - All returned items share the same filePath value
-  //   - The shared filePath is under the raw-data storage directory
-  //     (looksLikeRawDataPath(filePath) === true)
-  //   - Exactly one item has isTarget: true with chunkIndex === 1
-  //
-  // Pass criteria:
-  //   - Source-based resolution yields a valid neighbor window from the same
-  //     raw-data document.
+  // AC-003: `source` resolves through the same raw-data helpers delete_file
+  // uses, reaching the same document as `filePath` would.
   describe('Test 5: source input resolves to same document as filePath (AC-003)', () => {
     let ragServer: RAGServer
     const testDbPath = resolve('./tmp/test-lancedb-read-neighbors-t5')
@@ -537,41 +356,8 @@ describe('read_chunk_neighbors integration', () => {
     })
   })
 
-  // =============================================================================
-  // Test 6: Raw-data row includes source field (AC-020)
-  // =============================================================================
-  // AC: AC-020 "Given a document ingested via ingest_data, when
-  //     read_chunk_neighbors returns its chunks, each item includes a source
-  //     field whose value equals the ingestion source URL/identifier."
-  // ROI: 35 (BV:7 x Freq:4 + Legal:0 + Defect:7)
-  // Behavior: Reuse the raw-data document from Test 5 (or seed a new one) ->
-  //   verify every returned item carries source === the ingestion identifier.
-  // @category: core-functionality
-  // @dependency: RAGServer, VectorStore, LanceDB, raw-data-utils
-  // @complexity: low
-  //
-  // Setup:
-  //   - Ingest content via handleIngestData with metadata.source = KNOWN_SOURCE.
-  //   - Call handleReadChunkNeighbors with either { source: KNOWN_SOURCE,
-  //     chunkIndex: 0 } or { filePath: <rawDataPath>, chunkIndex: 0 }.
-  //     Both paths must surface the source field (Design Doc §Field
-  //     Propagation Map: source is derived from targetPath via
-  //     extractSourceFromPath, not from the input key).
-  //
-  // Verification items:
-  //   - Response is a non-empty array
-  //   - Every item has a 'source' property of type string
-  //   - Every item's source === KNOWN_SOURCE (exact match)
-  //
-  // Cross-check negative:
-  //   - For a handleIngestFile-seeded document (non-raw-data), call
-  //     handleReadChunkNeighbors and confirm items do NOT carry a 'source' key
-  //     (or source is undefined). This guards against source being incorrectly
-  //     populated for file-backed documents.
-  //
-  // Pass criteria:
-  //   - source present and correct on raw-data items; absent on file-backed
-  //     items.
+  // AC-020: raw-data rows carry `source`, derived from the resolved path
+  // rather than the input key — so file-backed rows must not carry it.
   describe('Test 6: Raw-data row includes source field (AC-020)', () => {
     let ragServer: RAGServer
     const testDbPath = resolve('./tmp/test-lancedb-read-neighbors-t6')
@@ -639,16 +425,7 @@ describe('read_chunk_neighbors integration', () => {
     })
   })
 
-  // =============================================================================
-  // Test 8 (extension): AC-007 over-large window clamped to document boundaries
-  // =============================================================================
-  // AC: AC-007 "When before/after request a window larger than the document,
-  //     the tool returns only the chunks that exist with no error."
-  // Behavior: Seed a small document (~5 chunks). Call handleReadChunkNeighbors
-  //   with before=100, after=100 centered at chunkIndex=2. Assert the response
-  //   contains only existing chunks (length <= 5), no error, ascending order.
-  // @category: edge-case
-  // @dependency: RAGServer, VectorStore, LanceDB
+  // AC-007: a window larger than the document clamps to what exists.
   describe('Test 8: Over-large window clamped (AC-007 extension)', () => {
     let ragServer: RAGServer
     const testDbPath = resolve('./tmp/test-lancedb-read-neighbors-t8')
@@ -714,15 +491,7 @@ describe('read_chunk_neighbors integration', () => {
     })
   })
 
-  // =============================================================================
-  // Test 9 (extension): AC-009 negative / non-integer before/after at MCP boundary
-  // =============================================================================
-  // AC: AC-009 "When before or after is negative or non-integer, the tool
-  //     returns a validation error (McpError InvalidParams) without accessing
-  //     storage."
-  // Behavior: Call handleReadChunkNeighbors with before: -1 and after: 2.5 in
-  //   separate invocations. Assert both reject with McpError whose code is
-  //   ErrorCode.InvalidParams.
+  // AC-009: a negative or non-integer before/after is rejected before storage.
   describe('Test 9: Negative / non-integer before/after at MCP boundary (AC-009 extension)', () => {
     let ragServer: RAGServer
     const testDbPath = resolve('./tmp/test-lancedb-read-neighbors-t9')
@@ -783,15 +552,8 @@ describe('read_chunk_neighbors integration', () => {
     })
   })
 
-  // =============================================================================
-  // Test 10 (extension): AC-010 missing / negative chunkIndex at MCP boundary
-  // =============================================================================
-  // AC: AC-010 "When chunkIndex is missing, negative, or non-integer, the tool
-  //     returns a validation error (McpError InvalidParams) without accessing
-  //     storage."
-  // Behavior: Call handleReadChunkNeighbors without chunkIndex (cast through
-  //   unknown), and with chunkIndex: -1. Assert both reject with McpError
-  //   whose code is ErrorCode.InvalidParams.
+  // AC-010: a missing, negative or non-integer chunkIndex is rejected before
+  // storage.
   describe('Test 10: Missing / negative chunkIndex at MCP boundary (AC-010 extension)', () => {
     let ragServer: RAGServer
     const testDbPath = resolve('./tmp/test-lancedb-read-neighbors-t10')
@@ -841,33 +603,10 @@ describe('read_chunk_neighbors integration', () => {
     })
   })
 
-  // =============================================================================
-  // Test 11: Empty-string filePath/source resolution (regression)
-  // =============================================================================
-  // Context: An empty string ('' or whitespace-only) for filePath/source must be
-  //   treated as "not provided" both by the XOR validation and by the subsequent
-  //   targetPath resolution. Otherwise `source: ''` together with a valid
-  //   filePath passes validation but resolves against an empty-source raw-data
-  //   path and returns no chunks. This test pins the consistent behavior:
-  //   provided-ness is decided the same way everywhere (non-empty string), and
-  //   the empty value is ignored for resolution too.
-  // Behavior:
-  //   (a) source: '' + valid filePath + valid chunkIndex -> resolves via
-  //       filePath, returns the document's window (non-empty, one isTarget).
-  //   (b) filePath: '' + valid source -> resolves via source (raw-data doc).
-  //   (c) both filePath and source non-empty -> McpError InvalidParams.
-  //   (d) both filePath: '' and source: '' -> McpError InvalidParams.
-  // @category: input-validation
-  // @dependency: RAGServer, VectorStore, LanceDB, DocumentParser, raw-data-utils
-  // @complexity: low
-  //
-  // Pass criteria:
-  //   - (a) returns a non-empty array; exactly one item has isTarget === true at
-  //     the requested chunkIndex; every item's filePath equals the ingested
-  //     filePath (i.e. resolution did NOT take the empty-source branch).
-  //   - (b) returns a non-empty array under the raw-data storage path.
-  //   - (c) and (d) reject with McpError whose code is ErrorCode.InvalidParams,
-  //     without touching storage.
+  // Regression: an empty string must read as "not provided" in BOTH the XOR
+  // validation and the path resolution. Otherwise `source: ''` alongside a
+  // valid filePath passes validation, then resolves against an empty-source
+  // raw-data path and finds nothing.
   describe('Test 11: Empty-string filePath/source resolution (regression)', () => {
     let ragServer: RAGServer
     const testDbPath = resolve('./tmp/test-lancedb-read-neighbors-t11')

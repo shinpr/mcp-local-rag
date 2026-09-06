@@ -226,9 +226,6 @@ const segmenter = new Intl.Segmenter('und', { granularity: 'sentence' })
  * These edge cases are acceptable for semantic chunking as:
  * 1. Short fragments will be grouped with adjacent sentences by similarity
  * 2. Fragments below minChunkLength are filtered out
- *
- * @param text - The text to split into sentences
- * @returns Array of sentences
  */
 export function splitIntoSentences(text: string): string[] {
   if (!text || text.trim().length === 0) {

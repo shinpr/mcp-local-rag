@@ -1,34 +1,18 @@
-// INT-2: Walker-layer traversal-scope pushdown tests (Phase 1 Task 3).
+// Proves the `scope` predicate is pushed INTO the BFS walk rather than applied
+// as a post-scan filter, for BOTH walkers — `scanBaseDir` and
+// `bfsCollectSupportedFiles` are separate code paths.
 //
-// Proves the `scope` predicate is pushed INTO the BFS walk (not applied as a
-// post-scan filter) for BOTH walkers, which are separate BFS code paths both
-// changed in Task 02:
-//   - `scanBaseDir`            (src/server/list-scanner.ts)  → { files (sorted), warnings }
-//   - `bfsCollectSupportedFiles` (src/utils/scan.ts)         → { files (discovery order), unreadableDirs, depthLimited }
+// Mocking (shared-registry safe: doMock/doUnmock plus dynamic import, per
+// project-context):
+//   - `readdir` is wrapped to RECORD every queried directory into `visited[]`
+//     and optionally throw EACCES for a deny-path, otherwise delegating to the
+//     real one. The absence of a recorded directory is what proves pushdown.
+//   - `join` is switched to backslash-join only for the synthetic Windows case,
+//     since a real `\`-path tree cannot exist on a POSIX host.
 //
-// @category: integration
-// @lane: integration
-// @dependency: scope-match + walkers + real-FS fixture (mkdtemp) + readdir/join mocks
-// @complexity: high (dual walker, real-FS + synthetic separator fixtures, EACCES pushdown probe)
-// ROI: 88
-//
-// Mocking strategy (shared-registry safe per project-context: isolate:false,
-// pool forks, maxWorkers 1 → mocked module paths use doMock/doUnmock and the
-// walkers are dynamically imported after doMock):
-//   - `node:fs/promises` readdir is replaced by a wrapper that RECORDS every
-//     queried directory into `visited[]` and (optionally) throws EACCES for a
-//     designated deny-path, otherwise DELEGATES to the real readdir. This is the
-//     deterministic, cross-platform pushdown probe; the fixture FS is otherwise
-//     real (a real mkdtemp tree).
-//   - `node:path` join is a wrapper delegating to the real join by default, and
-//     switched to backslash-join ONLY for the synthetic Windows-separator case
-//     (a real `\`-path tree cannot be created on a POSIX host).
-//
-// Scope boundary: NO `realpathForMatch` assertions here — the walkers never call
-// it (that pushdown proof is Phase 2/3). A chmod-based real-FS unreadable
-// sentinel is auxiliary-only (chmod unreliable on Windows CI); the deterministic
-// EACCES-mock probe below fully discharges the walker-layer proof, so it is not
-// duplicated here.
+// No `realpathForMatch` assertions: the walkers never call it. The chmod-based
+// real-FS unreadable sentinel is auxiliary only, since chmod is unreliable on
+// Windows CI — the EACCES mock discharges the proof.
 
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -305,7 +289,6 @@ describe.each([0, 1])('walker[%i]', (walkerIndex) => {
   const walker = () => WALKERS[walkerIndex]
 
   // AC: AC3 — in-scope files returned, out-of-scope excluded.
-  // Behavior: scope=[/base/a/b] → walk under a/b only → files = {in-b.md, deep.md}.
   it('includes in-scope files and excludes everything outside the scope prefix', async () => {
     const result = await walker().run(base, [dirAB])
     const files = result.files
@@ -316,7 +299,6 @@ describe.each([0, 1])('walker[%i]', (walkerIndex) => {
   })
 
   // AC: AC5 — boundary-safe: /a/b must not match the name-prefix sibling /a/bc.
-  // Behavior: scope=[/base/a/b] → /a/bc pruned → boundary.md absent, a/bc never readdir'd.
   it('does not match the name-prefix sibling directory (/a/b vs /a/bc)', async () => {
     const result = await walker().run(base, [dirAB])
     expect(result.files).not.toContain(fBoundary)
@@ -324,7 +306,6 @@ describe.each([0, 1])('walker[%i]', (walkerIndex) => {
   })
 
   // AC: AC5 — an exact file-path scope matches exactly that file.
-  // Behavior: scope=[/base/bar.md] → base read (ancestor), sibling dirs pruned → files = {bar.md}.
   it('matches an exact file-path scope', async () => {
     const result = await walker().run(base, [fBar])
     expect(result.files).toEqual([fBar])
@@ -333,7 +314,6 @@ describe.each([0, 1])('walker[%i]', (walkerIndex) => {
   })
 
   // AC: AC3/AC5 — a deep scope is reachable via ancestor descent (no false pruning).
-  // Behavior: scope=[/base/a/b/c] → descend base→a→a/b→a/b/c → files = {deep.md}, in-b.md excluded.
   it('reaches a deep scope by descending its ancestor chain without false pruning', async () => {
     const result = await walker().run(base, [dirABC])
     const files = result.files
@@ -346,7 +326,6 @@ describe.each([0, 1])('walker[%i]', (walkerIndex) => {
 
   // AC: AC4a — a root intersecting no prefix is skipped entirely (zero readdir);
   // scope outside the base dir yields an empty result rather than an error.
-  // Behavior: scope=[/tmp/.../outside] on root=/base → root gate false → 0 readdir, files = [].
   it('skips a non-intersecting root entirely (zero readdir, empty result)', async () => {
     const result = await walker().run(base, [outsideBase])
     expect(result.files).toEqual([])
@@ -354,7 +333,6 @@ describe.each([0, 1])('walker[%i]', (walkerIndex) => {
   })
 
   // AC: AC7 — scope absent is byte-for-byte the full traversal (regression guard).
-  // Behavior: scope undefined and scope [] both walk every dir and collect every supported file.
   it('leaves traversal and collection unchanged when scope is absent (undefined and [])', async () => {
     const undefinedRun = await walker().run(base, undefined)
     const undefinedFiles = undefinedRun.files
@@ -375,7 +353,6 @@ describe.each([0, 1])('walker[%i]', (walkerIndex) => {
   // AC: AC11 (Reference Contract, structure-order) — scope changes membership
   // only, never order. The scoped file list equals the unscoped file list
   // filtered to the surviving members, preserving relative order.
-  // Behavior: scope=[/base/a/b] → scoped files == unscoped files ∩ in-scope, same order.
   it('preserves file order under scope (membership-only change)', async () => {
     const unscoped = (await walker().run(base, undefined)).files
     visited.length = 0
@@ -393,7 +370,6 @@ describe.each([0, 1])('walker[%i]', (walkerIndex) => {
   // visited under scope (no recorded call, no warning). The companion sentinel
   // assertion proves the probe CAN fire when the path is not pruned, so the
   // non-visitation is real pushdown, not a dead probe.
-  // Behavior: deny=/base/x; scope=[/base/a/b] → x never readdir'd, no warning; unscoped → x readdir'd + warns.
   it('never descends into a scope-outside subtree (readdir EACCES probe is never called)', async () => {
     mocks.readdir.mockImplementation(realDelegate(new Set([dirX])))
     const scopedResult = await walker().run(base, [dirAB])
@@ -413,7 +389,6 @@ describe.each([0, 1])('walker[%i]', (walkerIndex) => {
   })
 
   // AC: AC10 — an in-scope unreadable directory still warns exactly as today.
-  // Behavior: deny=/base/a/b (in scope); scope=[/base/a/b] → a/b visited, readdir throws → warning surfaced.
   it('still warns when an in-scope directory is unreadable', async () => {
     mocks.readdir.mockImplementation(realDelegate(new Set([dirAB])))
     const result = await walker().run(base, [dirAB])
@@ -422,7 +397,6 @@ describe.each([0, 1])('walker[%i]', (walkerIndex) => {
   })
 
   // AC: AC10 — an ancestor directory descended to reach a deep scope still warns.
-  // Behavior: deny=/base/a (ancestor of scope); scope=[/base/a/b/c] → a visited, readdir throws → warning surfaced.
   it('still warns when an ancestor directory on the descent path is unreadable', async () => {
     mocks.readdir.mockImplementation(realDelegate(new Set([dirA])))
     const result = await walker().run(base, [dirABC])
@@ -433,7 +407,6 @@ describe.each([0, 1])('walker[%i]', (walkerIndex) => {
   // AC: AC8 — cross-platform separator: a `\`-style prefix prunes correctly on a
   // synthetic Windows-style tree (host-OS independent; proves the walker
   // delegates separator handling to scope-match, not a hardcoded `/`).
-  // Behavior: scope=[C:\base\a\b] over a backslash tree → in-b.md collected, C:\base\a\bc pruned.
   it('prunes correctly with a backslash-style separator', async () => {
     const winBase = 'C:\\base'
     const dirMap = new Map<string, Array<[string, EntryType]>>([
@@ -456,13 +429,11 @@ describe.each([0, 1])('walker[%i]', (walkerIndex) => {
   })
 })
 
-// ============================================================================
-// Path-granular scan coverage facts (`bfsCollectSupportedFiles` only).
+// Path-granular coverage facts (`bfsCollectSupportedFiles` only).
 //
-// Sync converts these paths into comparison-key prefixes that protect exactly
-// the unobserved regions from prune, so each fact must name the first unvisited
-// directory (or the skipped entry) rather than a boolean or a parent path.
-// ============================================================================
+// Sync turns these paths into prefixes that protect exactly the unobserved
+// regions from prune, so each fact must name the first unvisited directory —
+// not a boolean, and not a parent path.
 describe('bfsCollectSupportedFiles coverage facts', () => {
   it('reports the first unvisited directory in depthLimitedDirs and omits fully visited siblings', async () => {
     // maxDepth 3: base(0) a(1) x(1) a/b(2) a/bc(2) x/y(2) are read; a/b/c(3) is

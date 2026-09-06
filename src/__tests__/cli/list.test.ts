@@ -1,5 +1,4 @@
 // CLI List Tests
-// Test Type: Unit Test
 // Tests runList functionality with mocked dependencies
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'

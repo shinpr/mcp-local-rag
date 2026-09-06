@@ -145,9 +145,6 @@ function parseArgs(args: string[]): ReadNeighborsArgs {
  * Run the read-neighbors CLI subcommand.
  * Reads chunks adjacent to a target chunkIndex within a single document.
  * Does NOT perform any search; this is an index-adjacent retrieval utility.
- *
- * @param args - Arguments after "read-neighbors"
- * @param globalOptions - Global options parsed before the subcommand
  */
 /** The neighbor window a validated request asks for. */
 interface NeighborRequest {

@@ -1,21 +1,13 @@
-// Shared bounded directory scan for supported document files.
+// Shared bounded directory scan for supported document files: the single
+// walker behind CLI `ingest`, CLI `list`, and the MCP `list_files` scan.
 //
-// The single bounded directory walker behind the CLI `ingest` walker, the CLI
-// `list` walker, and the MCP server's `list_files` scan: bounded depth, symlink
-// skipping, exclude-path filtering, and supported-extension matching.
+// The collect predicates live in `classifyScanEntry` so a path a caller names
+// explicitly (`classifyRequestedPath`) is judged by the same rules as one the
+// walk discovers — sync accepts both, and only one used to be filtered.
 //
-// The four collect predicates live in `classifyScanEntry` so a path a caller
-// names explicitly (`classifyRequestedPath`) is judged by the same rules as a
-// path the walk discovers — sync accepts both, and only one of them used to be
-// filtered.
-//
-// Presentation (warning wording, when/where warnings are surfaced) and
-// post-processing (sort/dedup) stay with each caller — this helper returns
-// structured coverage facts (`unreadableDirs`, `depthLimitedDirs`,
-// `skippedSymlinks`, and the derived `depthLimited`) so callers preserve their
-// own, intentionally-different, user-facing messages. The path-granular facts
-// let a caller tell an unobserved region apart from an observed one instead of
-// treating any gap as a whole-scan failure.
+// Warning wording and sort/dedupe stay with each caller. This helper returns
+// path-granular coverage facts instead, so a caller can tell an unobserved
+// region apart from a whole-scan failure.
 
 import { lstat, readdir, realpath } from 'node:fs/promises'
 import { basename, dirname, extname, join } from 'node:path'
@@ -116,22 +108,15 @@ function isUnderExcludedPrefix(
 }
 
 /**
- * The collect predicates of {@link bfsCollectSupportedFiles} as one decision, so
- * a discovered directory entry and an explicitly requested path
- * ({@link classifyRequestedPath}) are judged by exactly the same rules instead of
- * by two implementations that can drift.
+ * The collect predicates of {@link bfsCollectSupportedFiles} as one decision,
+ * so a discovered entry and an explicitly requested path are judged by the same
+ * rules rather than by two implementations that drift.
  *
- * Evaluation order is part of the contract and matches the walk: a symbolic link
- * is reported as a link even under an excluded prefix, and a directory is
- * accepted without any extension test.
+ * Evaluation order is part of the contract: a symbolic link is reported as a
+ * link even under an excluded prefix, and a directory needs no extension test.
  *
- * `platform` is a parameter rather than a direct `process.platform` read — the
- * same reason `toSyncPathKey` takes one: the Windows exclusion semantics
- * ({@link isUnderExcludedPrefix}) must be provable on a macOS/Linux machine. The
- * default leaves every call site unchanged.
- *
- * Both `Dirent` (from `readdir`) and `Stats` (from `lstat`) satisfy
- * {@link EntryTypeFacts} structurally.
+ * `platform` is a parameter so the Windows exclusion semantics are provable on
+ * a POSIX host. Both `Dirent` and `Stats` satisfy {@link EntryTypeFacts}.
  */
 export function classifyScanEntry(
   fullPath: string,
@@ -264,25 +249,12 @@ export interface BfsCollectOptions {
 }
 
 /**
- * Bounded BFS scan of a single root, collecting every supported file up to
- * `maxDepth` levels deep, counted from `rootPath` itself. Symlinks are skipped
- * (never followed) and recorded in `skippedSymlinks`; paths under any
- * `excludePaths` prefix are filtered out. A per-directory `readdir` failure is
- * captured into `unreadableDirs` and does not abort the scan (best-effort per
- * directory); a branch pruned at `maxDepth` is captured into `depthLimitedDirs`.
+ * Bounded BFS scan of a single root, depth counted from `rootPath` itself.
+ * Symlinks are never followed. An unreadable directory is recorded and does
+ * not abort the scan.
  *
- * When `scope` is provided (non-empty), the predicate is pushed into the
- * traversal: a directory is visited only if it is in-scope or an ancestor of
- * some scope prefix, and a file is collected only if it is in-scope. A root that
- * intersects no prefix is skipped without any `readdir`. An absent/empty `scope`
- * leaves traversal and collection byte-for-byte unchanged.
- *
- * `platform` only selects how the exclusion comparison treats case (see
- * {@link classifyScanEntry}); it defaults to the host, so every existing call is
- * unchanged.
- *
- * Does not sort, dedupe, or emit warnings — callers handle those so their
- * existing output contracts are preserved.
+ * Does not sort, dedupe, or emit warnings — each caller owns its own output
+ * contract for those.
  */
 export async function bfsCollectSupportedFiles(
   rootPath: string,

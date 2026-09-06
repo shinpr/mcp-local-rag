@@ -1,5 +1,4 @@
 // Embedder dtype-wiring unit tests
-// Test Type: Unit Test (mocks the @huggingface/transformers `pipeline` boundary)
 //
 // These tests assert the dtype argument the Embedder hands to the transformers.js
 // `pipeline` call. The model load is external I/O (network/model download), so the

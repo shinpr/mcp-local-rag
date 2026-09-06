@@ -29,10 +29,8 @@ function compareStrings(a: string, b: string): number {
 }
 
 /**
- * Result of scanning a single root: the supported file paths found plus a
- * non-fatal warning when applicable (depth limit hit, readdir error, ...).
- * Per-root errors do not abort the entire `list` call: one unreadable root
- * must not hide files under the other roots.
+ * One root's scan result. A per-root error does not abort the whole `list`
+ * call: one unreadable root must not hide files under the others.
  */
 interface ScanRootResult {
   files: string[]
@@ -40,10 +38,8 @@ interface ScanRootResult {
 }
 
 /**
- * Bounded BFS scan of a single root, up to `MAX_SCAN_DEPTH` levels deep.
- * Delegates the traversal to {@link bfsCollectSupportedFiles} and renders the
- * `list`-specific warnings: per-directory read failures and the depth-limit
- * warning, both annotated with `displayPath`.
+ * Delegates traversal to {@link bfsCollectSupportedFiles} and renders the
+ * `list`-specific warnings, annotated with `displayPath`.
  */
 async function scanRoot(
   root: string,
@@ -83,10 +79,9 @@ interface ListCliOptions {
    */
   baseDirs?: string[] | undefined
   /**
-   * Collected `--scope` path prefixes in CLI order. Repeatable: multiple flags
-   * union. Each value is trimmed and validated non-empty at parse time.
-   * `undefined` means no scope (list every file); trailing-separator
-   * equivalence is applied downstream by `scope-match.ts`.
+   * Repeatable `--scope` prefixes in CLI order; multiple flags union.
+   * `undefined` means no scope. Trailing-separator equivalence is
+   * `scope-match.ts`'s job.
    */
   scope?: string[] | undefined
 }
@@ -117,16 +112,9 @@ interface SourceEntry {
 }
 
 /**
- * CLI `list` JSON output.
- *
- * Multi-root shape (post-Finding-#5 alignment with the MCP `list_files`
- * response):
- *  - `baseDirs`: every effective root (normal resolve() form, nested-pruned).
- *  - `baseDir`: legacy first-effective-root, preserved so single-root
- *    clients continue to work unchanged.
- *  - `files[].baseDir`: per-file producing root.
- *  - `sources`: raw-data and orphaned DB entries; never annotated with a
- *    producing root (matches the MCP contract).
+ * CLI `list` JSON output, matching the MCP `list_files` response shape:
+ * `baseDir` remains the first effective root for single-root clients, each file
+ * names its producing root, and `sources` never carries one.
  */
 interface ListResult {
   baseDirs: string[]
@@ -157,12 +145,7 @@ Global options (must appear before "list"):
 // Arg Parsing
 // ============================================
 
-/**
- * Parse list-specific CLI arguments.
- * Flags: --base-dir, -h/--help
- * No positional arguments accepted.
- * Unknown flags cause exit(1).
- */
+/** No positional arguments; an unknown flag exits 1. */
 export function parseArgs(args: string[]): ParsedArgs {
   const options: ListCliOptions = {}
   let help = false
@@ -225,8 +208,6 @@ export function parseArgs(args: string[]): ParsedArgs {
 
 /**
  * Run the list CLI subcommand.
- * @param args - Arguments after "list"
- * @param globalOptions - Global options parsed before the subcommand
  */
 export async function runList(args: string[], globalOptions: GlobalOptions = {}): Promise<void> {
   // Parse CLI options
@@ -253,12 +234,8 @@ export async function runList(args: string[], globalOptions: GlobalOptions = {})
     }
   }
 
-  // Resolve effective base directories via the shared CLI resolver
-  // (CLI > BASE_DIRS > BASE_DIR > cwd). Resolver errors (invalid BASE_DIRS,
-  // missing directory, ...) exit non-zero with a clear stderr message and
-  // do NOT fall back. Resolver warnings (`base-dirs-overrides-base-dir`,
-  // `nested-root-pruned`) are routed to stderr so the JSON-only stdout
-  // contract is preserved.
+  // Resolver errors exit non-zero and do NOT fall back. Warnings go to stderr,
+  // so the JSON-only stdout contract survives.
   const { config: baseDirsConfig, warnings: baseDirsWarnings } =
     await resolveCliBaseDirsOrExit(cliBaseDirs)
   for (const warning of baseDirsWarnings) {

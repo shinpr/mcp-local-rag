@@ -1,5 +1,4 @@
 // Embedder unit tests
-// Test Type: Integration Test (uses the real @huggingface/transformers pipeline)
 // Covers the wrapped-error paths and empty-input short-circuits that the
 // maintainer flagged as untested.
 

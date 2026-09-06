@@ -1,7 +1,4 @@
 // RAG MCP Server Security Test - Design Doc: rag-mcp-server-design.md (v1.1)
-// Generated: 2025-10-31
-// Test Type: Security Test (Minimal Essential Tests)
-// Implementation Timing: After core implementations complete
 // Note: Reduced from 43 to 10 tests based on YAGNI principle and avoiding redundancy
 
 import { mkdir, rm, symlink, writeFile } from 'node:fs/promises'

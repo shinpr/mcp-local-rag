@@ -10,15 +10,8 @@ import type { GroupingMode, SearchResult } from './types.js'
 const GROUPING_BOUNDARY_STD_MULTIPLIER = 1.5
 
 /**
- * Apply grouping algorithm to filter results by detecting group boundaries.
- *
- * Uses statistical threshold (mean + k*std) to identify significant gaps (group boundaries).
- * - 'similar': Returns only the first group (cuts at first boundary)
- * - 'related': Returns up to 2 groups (cuts at second boundary)
- *
- * @param results - Search results sorted by distance (ascending)
- * @param mode - Grouping mode ('similar' = 1 group, 'related' = 2 groups)
- * @returns Filtered results
+ * Cut the distance-sorted results at gaps wider than `mean + k*std`:
+ * `similar` keeps the first group, `related` up to two.
  */
 export function applyGrouping(results: SearchResult[], mode: GroupingMode): SearchResult[] {
   if (results.length <= 1) {
@@ -70,14 +63,8 @@ export function applyGrouping(results: SearchResult[], mode: GroupingMode): Sear
 }
 
 /**
- * Apply file-based filter to limit results to chunks from the top N files.
- *
- * Ranks files by their best (lowest distance) chunk score and keeps only
- * chunks belonging to the top `maxFiles` files.
- *
- * @param results - Search results sorted by distance (ascending)
- * @param maxFiles - Maximum number of files to keep
- * @returns Filtered results preserving original order
+ * Rank files by their best (lowest-distance) chunk and keep only the top
+ * `maxFiles` files' chunks.
  */
 export function applyFileFilter(results: SearchResult[], maxFiles: number): SearchResult[] {
   if (results.length === 0) {
@@ -111,38 +98,21 @@ export function applyFileFilter(results: SearchResult[], maxFiles: number): Sear
 }
 
 /**
- * Apply keyword boost to rerank vector search results
- * Uses multiplicative formula: final_distance = distance / (1 + keyword_normalized * weight)
- *
- * This proportional boost ensures:
- * - Keyword matches improve ranking without dominating semantic similarity
- * - Documents without keyword matches keep their original vector distance
- * - Higher weight = stronger influence of keyword matching
- *
- * @param vectorResults - Results from vector search (already filtered by maxDistance/grouping)
- * @param ftsResults - Raw FTS results with BM25 scores
- * @param weight - Boost weight (0-1, from hybridWeight config)
+ * Rerank by `distance / (1 + keyword_normalized * weight)`. Multiplicative, so
+ * a keyword match improves ranking without dominating semantic similarity and
+ * a document with no match keeps its original distance.
  */
 /**
- * BM25 score of one raw FTS row.
- *
- * A row without a numeric `_score` scores 0 rather than propagating a `NaN`
- * through the normalization below. This is stricter than the previous
- * `(row['_score'] as number) ?? 0`, which passed a non-numeric value straight
- * into the arithmetic.
+ * BM25 score of one raw FTS row. A `_score` that is not a number scores 0, so
+ * the row keeps its vector distance instead of normalizing to `NaN`. `NaN` and
+ * `Infinity` ARE numbers and pass through unchanged.
  */
 function readBm25Score(row: FtsRow): number {
   const score = row?.['_score']
   return typeof score === 'number' ? score : 0
 }
 
-/**
- * One raw row from a LanceDB full-text search.
- *
- * The element type admits a missing entry because the code has always guarded
- * for one and `search-filters.test.ts` pins that behavior; the previous
- * non-nullable annotation contradicted both.
- */
+/** One raw row from a LanceDB full-text search; entries can be missing. */
 export type FtsRow = Record<string, unknown> | null | undefined
 
 export function applyKeywordBoost(

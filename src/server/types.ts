@@ -36,34 +36,24 @@ interface RAGServerConfigBase {
   /** Store bounded PDF regions and Mammoth-produced DOCX images. */
   storeImages?: boolean
   /**
-   * Normal-path (resolve()) roots, index-aligned with the realpath'd `baseDirs`
-   * security boundary; used for user-facing `list_files` scan/display so paths
-   * match the resolve()-stored DB keys. From `BaseDirsConfig.rawBaseDirs` (see
-   * it for the path policy). Optional: legacy `{ baseDir }` callers fall back to
-   * `baseDirs`.
+   * Normal-path roots, index-aligned with the realpath'd `baseDirs` boundary,
+   * used for user-facing scan and display so paths match the stored DB keys.
+   * Legacy `{ baseDir }` callers fall back to `baseDirs`.
    */
   rawBaseDirs?: readonly string[]
   /** Configuration validation warnings to surface to users via MCP annotations */
   configWarnings?: string[]
   /**
-   * Structured base-dirs resolution error. When present, the server is in
-   * degraded mode: `status` remains callable so the user can diagnose the
-   * problem via MCP, while root-dependent tools surface the error before
-   * doing DB or filesystem work. See `resolveBaseDirs` for the error
-   * semantics.
+   * When present the server is in degraded mode: `status` stays callable for
+   * diagnosis, while root-dependent tools surface this first.
    */
   configError?: BaseDirsConfigError
 }
 
 /**
- * RAGServer configuration.
- *
- * Accepts either a single `baseDir` (legacy shape — preserved so existing
- * direct callers and tests that pass `{ baseDir }` continue to work) or
- * `baseDirs` (multi-root shape produced by `resolveBaseDirs`). Exactly one
- * of the two MUST be supplied. The constructor normalizes both into a single
- * `baseDirs: string[]` internally and derives the legacy `baseDir` accessor
- * as `baseDirs[0]`.
+ * RAGServer configuration. Exactly one of `baseDir` (legacy) or `baseDirs`
+ * must be supplied; the constructor normalizes both to `baseDirs` and derives
+ * the legacy accessor as `baseDirs[0]`.
  */
 export type RAGServerConfig =
   | (RAGServerConfigBase & {
@@ -104,11 +94,9 @@ export interface IngestFileInput {
   /** File path */
   filePath: string
   /**
-   * When true and `filePath` is a PDF, the visual enrichment path runs
-   * (VLM captioning of figure-heavy pages). For non-PDF files this flag is
-   * silently coerced to the default text-only path. The runtime check at the
-   * handler boundary stays in place because MCP arguments arrive as `unknown`
-   * from the SDK.
+   * When true and `filePath` is a PDF, VLM captioning runs. Silently coerced to
+   * text-only for non-PDFs. The handler still checks at runtime, because MCP
+   * arguments arrive as `unknown`.
    */
   visual?: boolean
   /**
@@ -178,13 +166,9 @@ export interface IngestResult {
 }
 
 /**
- * list_files tool output — entry for a file found under one of the effective
- * base directories.
- *
- * `baseDir` identifies the producing root (one of `ListFilesResult.baseDirs`).
- * Always present, including in single-root configurations — the field is
- * additive over the legacy shape, so existing clients that ignore it continue
- * to work.
+ * One file found under an effective base directory. `baseDir` is always
+ * present, including single-root configs — additive over the legacy shape, so
+ * clients that ignore it keep working.
  */
 export type FileEntry =
   | {
@@ -205,19 +189,12 @@ export type SourceEntry =
   | { filePath: string; chunkCount: number; timestamp: string }
 
 /**
- * list_files tool output.
+ * list_files output.
  *
- * Multi-root contract:
- * - `baseDirs`: all effective roots (normal resolve() form, nested-root pruned).
- * - `baseDir`: the first effective root (`baseDirs[0]`). Preserved as a
- *   legacy field so clients written against the single-root shape continue to
- *   work.
- * - `files`: union across roots, each annotated with its producing `baseDir`.
- *   Exact duplicate paths across roots are de-duplicated (first occurrence
- *   wins, preserving root iteration order).
- * - `sources`: raw-data entries (from `ingest_data`) and orphaned DB entries
- *   whose files no longer exist on disk. Sources are not produced by any
- *   root, so they carry no `baseDir` annotation.
+ * `baseDir` remains as `baseDirs[0]` for clients written against the
+ * single-root shape. Duplicate paths across roots collapse to the first
+ * occurrence in root order. `sources` holds raw-data and orphaned DB entries,
+ * which no root produced and so carry no `baseDir`.
  */
 export interface ListFilesResult {
   baseDir: string
@@ -258,11 +235,9 @@ export type ReadChunkNeighborsInput = DeleteFileInput & {
 }
 
 /**
- * read_chunk_neighbors tool output item.
- * Core fields are {filePath, chunkIndex, text}. `isTarget` is true only for
- * the requested target when it exists, and `source` is present only on
- * raw-data rows.
- * fileTitle mirrors QueryResult for drop-in consistency with query_documents results.
+ * read_chunk_neighbors output item. `isTarget` is true only for the requested
+ * target when it exists; `source` appears only on raw-data rows. `fileTitle`
+ * mirrors `QueryResult` so results are drop-in with query_documents.
  */
 export interface ReadChunkNeighborsResultItem {
   /** File path */
@@ -319,13 +294,12 @@ export interface SyncSummary {
 }
 
 /**
- * sync_status tool output — the whole pollable record for one job.
+ * sync_status output — the whole pollable record for one job.
  *
- * `total` stays `null` until scanning has counted the supported files on disk,
- * and `completed` (`upserted + skipped + empty`) never exceeds a non-null
- * `total`. `error` is `null` unless the job failed; a failed job carries one
- * controlled message that names the file for a per-file failure. A job succeeds
- * only when `error` is `null`.
+ * `total` stays `null` until the scan has counted the disk files, and
+ * `completed` never exceeds a non-null `total`. A job succeeds only when
+ * `error` is `null`; a failure carries one message, naming the file when
+ * the failure was per-file.
  */
 export interface SyncStatusResult {
   jobId: string

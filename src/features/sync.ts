@@ -1,28 +1,21 @@
-// Dispatch-agnostic incremental-sync planning and execution.
-//
-// The single core shared by the `sync` CLI subcommand and the MCP `sync_start`
-// tool. Every collaborator is declared here as a local structural interface, so
-// this module imports nothing from `vectordb/`, `parser/`, `chunker/`,
-// `embedder/`, or `ingest/` — not even for types. Persistence, output
-// formatting, exit codes, and logging belong to the adapters.
+// Dispatch-agnostic incremental-sync planning and execution: the single core
+// shared by the `sync` CLI subcommand and the MCP `sync_start` tool. Every
+// collaborator is a local structural interface, so this module imports nothing
+// from the domain layers, not even for types.
 //
 // Path identity: reconciliation compares generated keys
-// (`toSyncPathKey(path, platform)`), and every containment question is answered
-// by the unchanged `isUnderOrEqual` from `scope-match.ts`. This module defines
-// no exact-or-descendant, separator-boundary, or trailing-separator logic of its
-// own. Deletion, by contrast, always uses the verbatim stored `filePath`
-// spellings, because those are what the storage predicate matches.
+// (`toSyncPathKey(path, platform)`) and answers containment with the unchanged
+// `isUnderOrEqual`. Deletion instead uses the verbatim stored `filePath`,
+// because that is what the storage predicate matches.
 //
-// Two spellings, one matcher: `toSyncPathKey` stays purely lexical (a key must be
-// derivable for a file that is no longer on disk) and is what keys, prune
-// identity, and display use, while the requested path's CONTAINMENT is decided
-// against canonicalized values — see `isRequestedPathContained`. This is the same
-// split `DocumentParser` already uses: canonicalize to decide the boundary, store
-// the `resolve()` spelling. Do not collapse it by making key generation follow
-// symbolic links.
+// Two spellings, one matcher: `toSyncPathKey` stays purely lexical (a key must
+// be derivable for a file no longer on disk), while the requested path's
+// CONTAINMENT is decided against canonicalized values — see
+// `isRequestedPathContained`. Do not collapse the two by making key generation
+// follow symbolic links.
 //
-// `platform` is an explicit input rather than a host-platform read, so the
-// Windows key semantics are provable from a POSIX host.
+// `platform` is an explicit input, so Windows key semantics are provable from a
+// POSIX host.
 
 import { isManagedRawDataPath } from '../utils/raw-data-utils.js'
 import type { ScanEntryKind } from '../utils/scan.js'
@@ -246,14 +239,11 @@ function isConverged(stored: StoredGroup, diskHash: string): boolean {
 }
 
 /**
- * Decide the skip, upsert, and prune actions for one sync run. Pure: all
- * filesystem and database facts arrive pre-fetched.
+ * Decide the skip, upsert, and prune actions for one sync run.
  *
- * A prune action is emitted only when all four conditions hold for the key: it
- * is inside the requested scope, absent from the disk manifest, outside the
- * configured excluded and managed paths, and outside every unobserved prefix —
- * unreadable, depth-limited, symlinked, or too large to have been read.
- * Dropping any one of them protects the rows.
+ * A key is pruned only when every one of four conditions holds: inside the
+ * requested scope, absent from disk, outside the excluded and managed paths,
+ * and outside every unobserved prefix. Dropping any one protects the rows.
  */
 export function planSync(input: SyncPlanInput): SyncPlan {
   const keyOf = (path: string): string => toSyncPathKey(path, input.platform)
@@ -559,20 +549,13 @@ type GatherOutcome =
   | { ok: false; coverage: SyncCoverage; error: SyncError }
 
 /**
- * Steps 1-3: validate and classify the requested path, scan the roots it
- * implies, hash the supported disk files, and load the database manifest.
- *
  * `attributedPath` tracks what a thrown error should be blamed on, so an
  * orchestration failure still names the file, root, or requested path involved.
  */
 /**
  * Resolve what a sync run addresses and which directories it must walk.
- *
- * Containment is checked first, and against canonical values: a path reaching
- * outside a configured root through a symlinked ancestor is refused before
- * anything classifies, walks, hashes, or ingests it. Classification then
- * happens before any read, so a link, an irregular file, an excluded path, or
- * an unsupported extension is refused rather than read and hashed.
+ * Containment is checked against canonical values, and classification happens
+ * before any read, so nothing unsupported is hashed or ingested.
  */
 async function resolveSyncRequest(
   input: RunSyncInput
@@ -664,12 +647,9 @@ async function gatherSyncInputs(input: RunSyncInput): Promise<GatherOutcome> {
 }
 
 /**
- * Run one full sync: gather, plan, execute.
- *
- * Returned counters and coverage facts are plain data; the caller decides how to
- * print them and what exit status or job state they imply. A run with nothing to
- * do calls neither `ingestFile` nor `optimize`, so a true no-op never pays for
- * loading the embedding model or compacting the table.
+ * Run one full sync. Counters and coverage facts are plain data — the caller
+ * owns printing and exit status. A run with nothing to do calls neither
+ * `ingestFile` nor `optimize`, so a true no-op never loads the model.
  */
 export async function runSync(input: RunSyncInput): Promise<SyncResult> {
   const gathered = await gatherSyncInputs(input)

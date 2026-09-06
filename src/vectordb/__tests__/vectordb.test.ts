@@ -67,11 +67,8 @@ describe('VectorStore', () => {
   }
 
   /**
-   * Run `fn` against a freshly initialized VectorStore backed by a unique,
-   * isolated temp DB path. The path is removed before construction and again
-   * in a finally block, so each test gets a clean DB and leaves nothing behind
-   * regardless of pass/fail. Removes the per-test
-   * `dbPath + existsSync/rmSync + try/finally` boilerplate.
+   * Run `fn` against a fresh VectorStore on an isolated temp DB path, removed
+   * before and after so a failing test leaves nothing behind.
    */
   /** How many results came from the named fixture group. */
   function countFromGroup(results: readonly SearchResult[], group: string): number {
@@ -471,14 +468,8 @@ describe('VectorStore', () => {
 
   describe('Search mode behavior', () => {
     /**
-     * Test data design:
-     * - doc1: Contains keyword "UniqueKeyword", but vector is far from query
-     * - doc2: No keyword match, but vector is close to query
-     *
-     * Expected behavior:
-     * - hybridWeight=0 (vector-only): doc2 ranks first (vector similarity)
-     * - hybridWeight=1 (FTS-only): doc1 ranks first (keyword match)
-     * - hybridWeight=0.6 (hybrid): doc1 ranks first (keyword match prioritized)
+     * doc1 matches the keyword but is far from the query vector; doc2 is the
+     * reverse. So doc2 wins at hybridWeight=0 and doc1 wins at 0.6 and 1.
      */
 
     it('should use vector similarity order when hybridWeight=0', async () => {
@@ -632,20 +623,9 @@ describe('VectorStore', () => {
   })
 
   /**
-   * File Filter Contract:
-   *
-   * Given: Search results with filePath and distance score
-   *
-   * Algorithm:
-   * 1. Find the best (lowest) distance score per file
-   * 2. Rank files by their best score (ascending)
-   * 3. Keep only chunks from the top N files
-   *
-   * Guarantees:
-   * - If maxFiles is undefined: no filtering (all results returned)
-   * - If maxFiles >= unique file count: all results returned
-   * - If maxFiles < unique file count: only top N files' chunks returned
-   * - Chunk order within retained files is preserved
+   * The file filter ranks files by their best (lowest) distance and keeps the
+   * top N files' chunks, preserving chunk order within each. Undefined or a
+   * value at least the file count filters nothing.
    */
   describe('File filter (maxFiles)', () => {
     it('returns only chunks from best-scoring file when maxFiles=1', async () => {
@@ -877,23 +857,9 @@ describe('VectorStore', () => {
   })
 
   /**
-   * Grouping Algorithm Contract:
-   *
-   * Given: Search results sorted by distance score (ascending)
-   *
-   * Algorithm:
-   * 1. Calculate gaps between consecutive results
-   * 2. Find "significant gaps" using threshold: mean(gaps) + 1.5 * std(gaps)
-   * 3. Cut at boundaries based on mode:
-   *    - 'similar': Cut at first boundary (return first group only)
-   *    - 'related': Cut at second boundary (return up to 2 groups)
-   *
-   * Guarantees:
-   * - If results <= 1: return as-is
-   * - If no significant gaps: return all results
-   * - 'similar' with 1+ boundaries: return first group
-   * - 'related' with 1 boundary: return all results
-   * - 'related' with 2+ boundaries: return first 2 groups
+   * Grouping cuts the distance-sorted results at gaps wider than
+   * `mean + 1.5 * std`: `similar` keeps the first group, `related` up to two.
+   * With no significant gap, or a single result, everything is returned.
    */
   describe('Grouping algorithm (statistical threshold)', () => {
     describe('Contract guarantees', () => {
@@ -1581,17 +1547,12 @@ describe('VectorStore', () => {
   })
 
   /**
-   * contentHash production — the ingestion half of sync content identity.
+   * The ingestion half of sync content identity: one shared SHA-256 of the raw
+   * file bytes on every chunk, and vector construction completing before the
+   * destructive delete, so a construction failure cannot empty a file's rows.
    *
-   * Storage (above) proves the column round-trips. These tests prove the value
-   * actually written by filesystem ingestion: one shared SHA-256 of the raw
-   * file bytes on every chunk of a file, and vector construction completing
-   * before the destructive delete so a construction failure cannot empty a
-   * file's rows.
-   *
-   * The embedder/chunker/parser are deterministic stubs (external ML I/O is
-   * slow and non-deterministic); the store is real because value round-tripping
-   * is the subject.
+   * The embedder/chunker/parser are deterministic stubs; the store is real,
+   * because value round-tripping is the subject.
    */
   describe('contentHash production during ingestion', () => {
     // SHA-256 of the 5 bytes "hello" (`printf 'hello' | shasum -a 256`), an
@@ -1611,10 +1572,9 @@ describe('VectorStore', () => {
       }))
 
     /**
-     * Stubs for `ingestSingleFile`'s injected collaborators. `parsedText` is
-     * deliberately unrelated to the bytes on disk: the hash must come from the
-     * file, not from the parser output. `embeddingCount` below the chunk count
-     * reproduces the missing-embedding construction failure.
+     * `parsedText` is deliberately unrelated to the bytes on disk: the hash must
+     * come from the file, not the parser. An `embeddingCount` below the chunk
+     * count reproduces the missing-embedding construction failure.
      */
     function ingestCollaborators(options: {
       parsedText: string
@@ -1756,14 +1716,9 @@ describe('VectorStore', () => {
   })
 
   /**
-   * VectorStore.getChunksByRange — range-read primitive for read_chunk_neighbors.
-   *
-   * This describe block is the PROBE GATE for LanceDB numeric-predicate
-   * viability (chunkIndex >= N AND chunkIndex <= M). The first test is
-   * the Design Doc Early Verification Point. If it fails with a LanceDB
-   * SQL error, switch the primitive in src/vectordb/index.ts to the
-   * documented fallback (fetch-all + in-memory filter) and update the
-   * Design Doc Limitation note with the observed error text.
+   * PROBE GATE for LanceDB numeric predicates (`chunkIndex >= N AND <= M`). If
+   * the first test fails with a SQL error, switch the primitive in
+   * `src/vectordb/index.ts` to fetch-all plus an in-memory filter.
    */
   describe('getChunksByRange', () => {
     it('should return chunks in range [2, 5] in order when seeding 10 contiguous chunks (Early Verification Point)', async () => {
@@ -1981,15 +1936,11 @@ describe('VectorStore', () => {
   })
 
   /**
-   * search({ scope }) — scope prefix prefilter applied as a .where() on
-   * vectorSearch. Real-LanceDB integration (mocks cannot verify query/filter
-   * correctness). Discharges proof obligations AC3/AC5 (boundary-safe
-   * exact-or-descendant), AC6 (escaping), AC9 (separator from prefix).
+   * The scope prefilter as a `.where()` on vectorSearch. Real LanceDB, because
+   * a mock cannot verify filter correctness.
    *
-   * Helper: seed a corpus, search with scope, collect the distinct in-scope
-   * filePaths. A fixed all-ones vector against fixed normalized seeds returns
-   * every chunk as a candidate (limit*2), so the scope .where() prefilter is
-   * the only thing that restricts the result set.
+   * A fixed all-ones vector against fixed normalized seeds returns every chunk
+   * as a candidate, so the prefilter is the only thing restricting the result.
    */
   describe('search scope prefilter', () => {
     /** Collect the distinct filePaths returned by a scoped search. */
@@ -2171,13 +2122,9 @@ describe('VectorStore', () => {
   })
 
   /**
-   * search({ scope, queryText }) — the FTS / keyword-boost branch (Step 3 of
-   * search()). Distinct from the vector-only `search scope prefilter` block:
-   * every search here passes a non-empty queryText so the FTS branch is active
-   * (ftsEnabled is true after insertChunks creates the index). Real-LanceDB
-   * integration (mocks cannot verify the FTS `filePath IN (...)` / scope
-   * interaction). Discharges AC4 (FTS stays in-scope; skip on zero hits) and
-   * AC7 (scope-absent hybrid unchanged).
+   * The FTS / keyword-boost branch, distinct from the vector-only scope block:
+   * every search here passes a queryText so the branch is active. Real LanceDB,
+   * because a mock cannot verify the `filePath IN (...)` / scope interaction.
    */
   describe('search scope prefilter (FTS/hybrid branch)', () => {
     /** Distinct filePaths from a scoped hybrid (queryText present) search. */

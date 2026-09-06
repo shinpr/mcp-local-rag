@@ -1,8 +1,5 @@
-// Narrowing helpers for values that arrive from outside the type system:
-// parsed JSON, third-party library results, and `catch` bindings.
-//
-// Each one replaces a type assertion with a check the runtime actually
-// performs, so the declared type stays true to what was verified.
+// Narrowing helpers for values from outside the type system: parsed JSON,
+// third-party results, and `catch` bindings.
 
 /** True for any non-null object, narrowing it to an indexable record. */
 export function isRecord(value: unknown): value is Record<string, unknown> {

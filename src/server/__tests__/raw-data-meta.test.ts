@@ -1,4 +1,4 @@
-import { mkdir, readFile, rm } from 'node:fs/promises'
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -55,7 +55,7 @@ describe('meta.json utilities', () => {
       expect(parsed).toEqual(meta)
     })
 
-    it('should read existing .meta.json and return parsed data', async () => {
+    it('reads back the title a saved sidecar carries', async () => {
       const mdPath = join(testDir, 'test.md')
       const meta: RawDataMeta = {
         title: 'Test Title',
@@ -64,9 +64,32 @@ describe('meta.json utilities', () => {
       }
 
       await saveMetaJson(mdPath, meta)
-      const result = await loadMetaJson(mdPath)
 
-      expect(result).toEqual(meta)
+      // Re-ingest consumes only `title`, so that is the whole read contract.
+      expect(await loadMetaJson(mdPath)).toEqual({ title: 'Test Title' })
+    })
+
+    it('reads the title from a sidecar carrying nothing else', async () => {
+      const mdPath = join(testDir, 'title-only.md')
+      await writeFile(generateMetaJsonPath(mdPath), '{"title":"Title Only"}', 'utf-8')
+
+      // `source` / `format` are unread here, so their absence must not stop an
+      // otherwise valid re-ingest.
+      expect(await loadMetaJson(mdPath)).toEqual({ title: 'Title Only' })
+    })
+
+    it('reads a null title when the sidecar carries no usable one', async () => {
+      const mdPath = join(testDir, 'no-title.md')
+      await writeFile(generateMetaJsonPath(mdPath), '{"source":"https://example.com"}', 'utf-8')
+
+      expect(await loadMetaJson(mdPath)).toEqual({ title: null })
+    })
+
+    it('re-throws a JSON syntax error rather than reading a null title', async () => {
+      const mdPath = join(testDir, 'broken.md')
+      await writeFile(generateMetaJsonPath(mdPath), '{"title": "unterminated', 'utf-8')
+
+      await expect(loadMetaJson(mdPath)).rejects.toThrow()
     })
 
     it('should return null for non-existent .meta.json (ENOENT)', async () => {
@@ -75,7 +98,7 @@ describe('meta.json utilities', () => {
       expect(result).toBeNull()
     })
 
-    it('should round-trip: saveMetaJson -> loadMetaJson returns identical data', async () => {
+    it('round-trips a null title', async () => {
       const mdPath = join(testDir, 'roundtrip.md')
       const meta: RawDataMeta = {
         title: null,
@@ -84,9 +107,8 @@ describe('meta.json utilities', () => {
       }
 
       await saveMetaJson(mdPath, meta)
-      const loaded = await loadMetaJson(mdPath)
 
-      expect(loaded).toEqual(meta)
+      expect(await loadMetaJson(mdPath)).toEqual({ title: null })
     })
 
     it('should re-throw non-ENOENT errors from loadMetaJson', async () => {

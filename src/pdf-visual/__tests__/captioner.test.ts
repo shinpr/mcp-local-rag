@@ -1,33 +1,18 @@
-// `createCaptioner` (`fast` profile dispatch) unit test.
+// `createCaptioner` with the `fast` profile, which routes to
+// `captioners/fast.ts`.
 //
-// Phase 1 of the visual-quality-mode refactor routes the dispatcher's `fast`
-// profile to `captioners/fast.ts`, which is a verbatim port of the v0.14.0
-// captioner. The mock surface and assertions in this file were authored
-// against that port and continue to apply: the model class is still
-// `AutoModelForImageTextToText`, the processor is still called with an array-
-// form image list, generation options are still
-// `{max_new_tokens:128, repetition_penalty:1.15, no_repeat_ngram_size:3}`.
+// Pins the profile-specific choices a shared test cannot: the model class
+// (`AutoModelForImageTextToText`), the array-form image list, the generation
+// options (`max_new_tokens: 128`, `repetition_penalty: 1.15`,
+// `no_repeat_ngram_size: 3`), and the model identifier now living inside the
+// profile rather than in `CaptionerConfig`.
 //
-// What changed at the dispatcher boundary:
-//   - `CaptionerConfig` no longer carries `modelName`. The model identifier
-//     (`HuggingFaceTB/SmolVLM-256M-Instruct`) lives inside `captioners/fast.ts`.
-//   - Construction is `createCaptioner({ profile: 'fast', cacheDir, device? })`.
+// `postProcess`'s own rules are pinned in `captioners-shared.test.ts`, which
+// both profiles share.
 //
-// Verification points:
-//   - `from_pretrained` receives the `fast`-profile model identifier and the
-//     dispatcher-exposed `VLM_DTYPE`; model loading also receives the
-//     resolved device.
-//   - `model.generate` receives the `fast`-profile decoding options
-//     (`max_new_tokens`, `repetition_penalty`, `no_repeat_ngram_size`).
-//   - The decoded text is returned through `shared.postProcess`. The control-char,
-//     trim, emptiness, and length-cap rules are pinned directly on that function
-//     in `captioners-shared.test.ts`, which both profiles share.
-//   - Load / decode / generate failures throw `VlmError` with `pageNum` + `cause`.
-//
-// `@huggingface/transformers` is mocked via `vi.hoisted` per the project-wide
-// constraint (`vitest.config.mjs` sets `isolate: false`, so mocks must be
-// hoisted to be visible inside `vi.mock` factories before the SUT imports the
-// module).
+// `@huggingface/transformers` is mocked via `vi.hoisted`, required because
+// `isolate: false` means the mock must be visible inside the factory before
+// the SUT imports the module.
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { expectError, expectInstanceOf, expectRecord } from '../../__tests__/test-doubles.js'
@@ -379,12 +364,10 @@ describe('createCaptioner — fast profile dispatch (CaptionerConfig flow)', () 
     // Assert: all 3 page calls threw.
     expect(thrownErrors).toHaveLength(3)
 
-    // Assert: from_pretrained was invoked at most ONCE in total across all
-    // caption() calls. The processor load is the first attempt and it throws;
-    // the model load on the same call may or may not run depending on the
-    // sequence-vs-parallel semantics of the implementation. Either way the
-    // total combined call count across processor+model must NOT scale with
-    // page count.
+    // `from_pretrained` must be invoked at most ONCE in total across every
+    // caption() call. The processor load throws first; whether the model load
+    // also runs depends on sequence-vs-parallel semantics. Either way the
+    // combined count must not scale with page count.
     const totalLoadCalls =
       mocks.mockProcessorFromPretrained.mock.calls.length +
       mocks.mockModelFromPretrained.mock.calls.length

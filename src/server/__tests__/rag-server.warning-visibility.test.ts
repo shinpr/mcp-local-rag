@@ -1,16 +1,11 @@
-// RAG MCP Server warning-visibility tests (P3-T3, AC-003 / AC-009 / AC-010 / AC-013)
+// Config warnings must be surfaced in EVERY tool response, not only
+// `query_documents` / `status`, and a `configError` must make root-dependent
+// tools fail fast while `status` stays callable and reports the message.
 //
-// Verifies that config warnings stored on the server are surfaced in EVERY
-// MCP tool response (not only `query_documents` / `status`), and that a
-// `configError` (invalid `BASE_DIRS`) makes root-dependent tools fail fast
-// while keeping `status` callable and exposing the error message.
-//
-// Most assertions use the early-validation path (configError throws before
-// any DB/embedder traffic) so the suite stays fast; the `status` callable
-// case uses an initialized server because `vectorStore.getStatus()` is
-// exercised. The warning-block shape (text content + annotations) is
-// asserted directly on handler return values — the protocol layer just
-// forwards the array, so per-handler assertions cover the MCP contract.
+// Most assertions use the early-validation path, which fires before any DB or
+// embedder traffic, so the suite stays fast. The warning-block shape is
+// asserted on handler return values, since the protocol layer just forwards
+// the array.
 
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
@@ -50,16 +45,11 @@ function findWarningBlock(
   return undefined
 }
 
-// =============================================================================
-// Construction-only tests (no initialize/DB). Cover the early-error path that
-// fires BEFORE any I/O — root-dependent tools (the ones that touch
-// `baseDirs` directly, plus the user-supplied-filePath branches of dual-mode
-// tools) must reject when configError is present. Tools that do NOT touch
-// `baseDirs` (`query_documents`, `ingest_data`, and the source-mode branches
-// of `delete_file` / `read_chunk_neighbors`) MUST remain callable so MCP
-// users can still query, capture raw data, and operate by `source` while
-// they fix the config error visible from `status`.
-// =============================================================================
+// Construction-only: the early-error path, before any I/O. Root-dependent
+// tools must reject when a configError is present, while the ones that never
+// touch `baseDirs` — `query_documents`, `ingest_data`, and the source-mode
+// branches of `delete_file` / `read_chunk_neighbors` — must stay callable so a
+// user can keep working while fixing the config.
 describe('root-dependent tools fail fast on configError; non-root-dependent stay callable', () => {
   const testDbPath = resolve('./tmp/test-lancedb-warning-visibility-err')
   const testDataDir = resolve('./tmp/test-data-warning-visibility-err')
@@ -190,13 +180,9 @@ describe('P3-T3: status callable with configError and exposes diagnostic', () =>
   // `withWarnings` but never converted into a thrown McpError.
 
   it('query_documents remains callable in degraded mode (operates on DB only)', async () => {
-    // An uninitialized vector store returns an empty result set — the
-    // contract under test is that the handler does not throw an
-    // assertConfigOk error before the DB call. The handler attaches the
-    // configError-derived warning via `configWarnings` only when the caller
-    // also supplied them; this test fixture passes only `configError`, so we
-    // assert on callability + primary content shape, not on the warning
-    // block content (covered by the configWarnings suite below).
+    // An uninitialized store returns nothing; the contract here is that the
+    // handler does not throw an assertConfigOk error before the DB call. The
+    // warning-block content is covered by the configWarnings suite below.
     const result = await server.handleQueryDocuments({ query: 'no-op', limit: 1 })
     expect(result.content.length).toBeGreaterThanOrEqual(1)
     expect(result.content[0]?.type).toBe('text')
@@ -250,14 +236,9 @@ describe('P3-T3: status callable with configError and exposes diagnostic', () =>
   }, 60000)
 })
 
-// =============================================================================
-// Warnings present on every tool when configWarnings is non-empty.
-// We use the configError path to short-circuit root-dependent handlers and
-// inspect the rejection — but for that path the tool returns an error, not
-// content. So this block uses warnings WITHOUT a configError: the handler
-// must perform its normal flow AND attach warnings. For tools that need DB
-// state (query/ingest/...) we initialize a real server.
-// =============================================================================
+// Warnings on every tool. The configError path returns an error rather than
+// content, so this block uses warnings WITHOUT a configError: the handler must
+// run its normal flow AND attach them.
 describe('P3-T3: warnings appear in every tool response when warnings exist', () => {
   let server: RAGServer
   const testDbPath = resolve('./tmp/test-lancedb-warning-visibility-warn')

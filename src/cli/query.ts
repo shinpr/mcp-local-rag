@@ -156,8 +156,6 @@ function resolveLimit(rawLimit: number | undefined): number {
 
 /**
  * Run the query CLI subcommand.
- * @param args - Arguments after "query" (e.g., option flags and query text)
- * @param globalOptions - Global options parsed before the subcommand
  */
 export async function runQuery(args: string[], globalOptions: GlobalOptions = {}): Promise<void> {
   // Parse CLI options

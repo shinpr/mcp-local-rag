@@ -13,11 +13,6 @@
 //     included with its stored filePath spelling; empty/whitespace/missing
 //     `--scope` exits non-zero with a stderr message and config resolution still
 //     fires even when scope is present.
-// @category: integration
-// @lane: integration
-// @dependency: CLI runList + real LanceDB + real-FS fixture (mkdir/symlink) + RAGServer (fixture ingest) + realpathForMatch spy
-// @complexity: high (real embed/DB ingest, scan-path pushdown spy, symlink-alias fixture)
-// ROI: 72
 //
 // Mocking strategy (shared-registry safe per project-context: isolate:false,
 // pool forks, maxWorkers 1): `../../utils/scan.js` is partial-mocked via

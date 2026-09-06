@@ -1,11 +1,6 @@
-// Contract test: what real MuPDF's `toStructuredText().asJSON()` actually
-// yields, read through `extractPdfPages`.
-//
-// `asJSON()` is typed `string`, so `readPageStext` asserts the parsed shape
-// against `StextJson` rather than validating it. That assertion is only sound
-// while MuPDF really emits the fields this module reads, and every other PDF
-// test mocks MuPDF. This one runs the real library end to end so a MuPDF
-// upgrade that changes the output surfaces here instead of downstream.
+// `readPageStext` asserts MuPDF's `asJSON()` output against `StextJson`
+// instead of validating it, and every other PDF test mocks MuPDF. This one
+// runs the real library, so an upgrade that changes the output fails here.
 
 import * as mupdf from 'mupdf'
 import { describe, expect, it } from 'vitest'
@@ -14,7 +9,7 @@ import { expectArray, expectDefined, expectRecord } from '../../__tests__/test-d
 import { extractPdfPages } from '../pdf-extract.js'
 import type { EmbedderInterface } from '../pdf-filter.js'
 
-/** A single page never reaches sentence-pattern detection, so no vectors are needed. */
+/** A single page never reaches sentence-pattern detection. */
 const unusedEmbedder: EmbedderInterface = {
   embedBatch: async () => {
     throw new Error('single-page extraction must not embed')
@@ -45,7 +40,6 @@ describe('extractPdfPages against real MuPDF output', () => {
         fragment.text.includes('PDF Image Persistence Fixture Document')
       )
     )
-    // Every field `collectLineItems` builds an item from must be present.
     expect(heading.pageNum).toBe(1)
     expect(Number.isInteger(heading.blockOrdinal)).toBe(true)
     expect(Number.isInteger(heading.lineOrdinal)).toBe(true)
@@ -62,8 +56,7 @@ describe('extractPdfPages against real MuPDF output', () => {
     // The fixture writes five `Tj` strings in one text object.
     expect(page.textFragments.length).toBeGreaterThanOrEqual(5)
 
-    // Ordinals identify the source position, so they must index back into the
-    // raw structured text rather than into a filtered copy.
+    // Ordinals must index back into the raw structured text, not a filtered copy.
     const blocks = expectArray(expectRecord(page.stextJson)['blocks'])
     for (const fragment of page.textFragments) {
       const block = expectRecord(expectDefined(blocks[fragment.blockOrdinal]))

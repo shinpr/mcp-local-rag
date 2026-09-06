@@ -1,12 +1,9 @@
-// Pure `sources` classifier shared by the MCP `list_files` handler
-// (`src/server/index.ts`) and the `list` CLI (`src/cli/list.ts`). Extracted
-// from the byte-for-byte-identical inline blocks in both surfaces so the
-// raw-data / real-file scope branch lives in one place, mirroring the
-// drift-avoidance rationale behind the shared `scope-match.ts` matcher.
+// Pure `sources` classifier shared by the MCP `list_files` handler and the
+// `list` CLI, so the raw-data / real-file scope branch lives in one place.
 //
 // `sources` are ingested entries whose identity key matched no scanned file:
-// content ingested via `ingest_data` (raw-data paths) plus orphaned DB entries
-// for real files not currently on disk under a scanned root.
+// content from `ingest_data`, plus orphaned DB entries for files no longer on
+// disk under a scanned root.
 
 import { extractSourceFromPath, isManagedRawDataPath } from './raw-data-utils.js'
 import { matchesAnyScope } from './scope-match.js'
@@ -33,20 +30,11 @@ export type ClassifiedSource =
 /**
  * Classify the ingested entries that matched no scanned file into `sources`.
  *
- * Base filter (always): keep only entries whose `key` is absent from
- * `matchedKeys`.
- *
- * When `scope` is present (non-empty): raw-data entries
- * Managed raw-data entries have no filesystem path under a base directory, so
- * they are always emitted regardless of scope; real-file entries are kept only
- * when their stored `filePath` is under scope (`matchesAnyScope`) — a real-file
- * entry outside scope is dropped so it appears in neither `files[]` (already
- * pruned from the scan) nor `sources[]` (no orphan misclassification), while an
- * unmatched real-file entry under scope remains an orphan source.
- *
- * When `scope` is absent (or empty): behavior is unchanged from the pre-extraction
- * inline block — every unmatched entry is emitted, raw-data as `{ source }` when
- * `extractSourceFromPath` yields one, else as `{ filePath }`.
+ * Under a `scope`, a managed raw-data entry is always emitted — it has no
+ * filesystem path to be in or out of scope — while a real-file entry is kept
+ * only when its stored path is in scope. An out-of-scope real file therefore
+ * appears in neither `files[]` nor `sources[]`, rather than being
+ * misreported as an orphan.
  */
 export function classifyIngestedSources(
   ingestedKeyed: readonly KeyedIngestedEntry[],

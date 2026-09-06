@@ -1,5 +1,4 @@
 // Ingest Rollback Tests
-// Test Type: Unit Test (spy-based, compatible with isolate: false)
 // Tests rollback behavior when insertChunks fails during re-ingestion
 
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
@@ -13,12 +12,7 @@ import type { VectorChunk, VectorStore } from '../../vectordb/index.js'
 import { DatabaseError } from '../../vectordb/types.js'
 import { RAGServer } from '../index.js'
 
-/**
- * Reach the server's private `VectorStore` so persistence failures can be
- * simulated. Rollback is only observable through the store, and exposing it
- * publicly would widen the production API for a test. The cast is confined to
- * this one helper.
- */
+/** Rollback is only observable through the server's own store. */
 function privateVectorStore(server: RAGServer): VectorStore {
   return privateMembers<{ vectorStore: VectorStore }>(server).vectorStore
 }

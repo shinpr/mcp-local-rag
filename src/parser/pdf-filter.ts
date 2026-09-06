@@ -58,11 +58,9 @@ export interface FilteredPageLayout {
 // ============================================
 
 /**
- * Join page items into text
- *
- * Preserves the native item stream. `hasEOL` distinguishes fragments on the
- * same native line from the next line; geometry is retained as placement
- * metadata and is not used as a global reading-order comparator.
+ * Join page items into text, preserving the native item stream. `hasEOL`
+ * separates fragments on one native line from the next; geometry stays
+ * placement metadata and is never a global reading-order comparator.
  */
 /** A fragment positioned in the untrimmed page text, before rebasing. */
 type RawFragment = Omit<FilteredTextFragment, 'text' | 'pageTextStart' | 'pageTextEnd'> & {
@@ -189,12 +187,7 @@ function joinPageItems(items: TextItemWithPosition[]): string {
   return buildPageLayout(0, items).text
 }
 
-/**
- * Join filtered pages into text
- *
- * @param pages - Filtered page data
- * @returns Joined text with proper line breaks
- */
+/** Join filtered pages into one text. */
 export function joinFilteredPages(pages: PageData[]): string {
   return pages
     .map((page) => joinPageItems(page.items))
@@ -215,15 +208,8 @@ interface SentenceWithY {
 }
 
 /**
- * Split page items into sentences with Y coordinate
- *
- * 1. Join items into text (preserving item boundaries)
- * 2. Split into sentences using splitIntoSentences
- * 3. Map each sentence to the Y coordinate of its first item
- * 4. Merge sentences with same Y coordinate
- *
- * @param items - Text items with position
- * @returns Sentences with Y coordinate (merged by Y)
+ * Split page items into sentences, each mapped to the Y of its first item, and
+ * merged when they share a Y.
  */
 function splitItemsIntoSentencesWithY(items: TextItemWithPosition[]): SentenceWithY[] {
   if (items.length === 0) {
@@ -294,12 +280,7 @@ function splitItemsIntoSentencesWithY(items: TextItemWithPosition[]): SentenceWi
   return mergeSentencesByY(sentencesWithY)
 }
 
-/**
- * Merge sentences with same Y coordinate
- *
- * @param sentences - Sentences with Y coordinate
- * @returns Merged sentences (same Y = one sentence)
- */
+/** Sentences sharing a Y coordinate are one sentence. */
 function mergeSentencesByY(sentences: SentenceWithY[]): SentenceWithY[] {
   if (sentences.length === 0) {
     return []
@@ -361,11 +342,8 @@ function cosineSimilarity(vec1: number[], vec2: number[]): number {
 }
 
 /**
- * Calculate median pairwise similarity for a list of embeddings
- *
- * Uses median instead of mean for robustness against outliers.
- * This handles cases where some pages have different header content
- * (e.g., chapter title changes) that would otherwise drag down the average.
+ * Median pairwise similarity — median rather than mean so one page with
+ * different header content (a chapter title change) cannot drag it down.
  */
 function medianPairwiseSimilarity(embeddings: number[][]): number {
   if (embeddings.length < 2) {
@@ -459,17 +437,8 @@ export interface BlockAttributeHints {
 }
 
 /**
- * Detect candidate header/footer lines based on font size and Y position
- *
- * Stage 1 of the 2-stage header/footer detection:
- * 1. Sample center pages (same logic as detectSentencePatterns)
- * 2. Calculate median font size from all items across sampled pages
- * 3. Identify header candidates: fontSize < medianFontSize * 0.7 AND y > pageHeight * 0.9
- * 4. Identify footer candidates: fontSize < medianFontSize * 0.7 AND y < pageHeight * 0.1
- *
- * @param pages - Array of page data
- * @param config - Configuration options (minPages, samplePages)
- * @returns Block attribute hints with candidate Y positions
+ * Stage 1 of header/footer detection: on the sampled center pages, a small
+ * font near the top or bottom 10% of the page marks a candidate Y position.
  */
 /** Median font size across the sampled pages; 0 when nothing has a size. */
 function medianFontSizeOf(samplePages: readonly PageData[]): number {
@@ -582,35 +551,17 @@ interface SentencePatternResult {
 }
 
 /**
- * Detect header/footer patterns at sentence level
+ * Detect header/footer patterns at sentence level.
  *
- * Algorithm:
- * 1. Sample pages from the CENTER of the document (guaranteed to be content pages)
- * 2. Split each page into sentences with Y coordinate
- * 3. Collect first/last sentences from sampled pages
- * 4. Embed and calculate median pairwise similarity
- * 5. If similarity > threshold, mark as header/footer
- *
- * Key insight: Middle pages are always content pages (cover, TOC, index are at edges).
- * Using median instead of mean provides robustness against outliers.
- *
- * This approach handles variable content like page numbers ("7 of 75")
- * by using semantic similarity instead of exact text matching.
- *
- * @param pages - Array of page data
- * @param embedder - Embedder for generating embeddings
- * @param config - Configuration options
- * @returns Detection result
+ * Center pages are sampled because cover, TOC and index sit at the edges, and
+ * the median pairwise similarity resists an outlier page. Semantic similarity
+ * rather than exact matching is what makes variable text like "7 of 75" match.
  */
 /**
- * Shared boundary-pattern detection for the header (first-sentence) and footer
- * (last-sentence) cases of {@link detectSentencePatterns}. Embeds the sampled
- * boundary sentences, computes their median pairwise similarity, applies the
- * (optionally block-hint-boosted) threshold, logs on detection, and returns
- * the similarity plus the detection flag. The divergent part — which sentence
- * each page contributes and how its Y is derived — is computed by the caller
- * and passed in via `sentences` / `sentenceYs`, so this helper is identical
- * for both boundaries.
+ * Shared boundary-pattern detection for the header and footer cases of
+ * {@link detectSentencePatterns}. The divergent part — which sentence each page
+ * contributes and how its Y is derived — is passed in, so this helper is
+ * identical for both boundaries.
  */
 async function detectBoundaryPattern(params: {
   label: 'header' | 'footer'
@@ -744,18 +695,10 @@ export async function detectSentencePatterns(
 }
 
 /**
- * Filter page boundary sentences and return per-page filtered text
+ * Main entry point for sentence-level header/footer filtering: removes
+ * repeating boundary sentences and returns one filtered text per page.
  *
- * This is the main entry point for sentence-level header/footer filtering.
- * It detects and removes repeating sentence patterns at page boundaries.
- * Returns an array of filtered text per page, preserving page boundaries.
- *
- * Use this instead of joinFilteredPages when embedder is available.
- *
- * @param pages - Array of page data
- * @param embedder - Embedder for generating embeddings
- * @param config - Configuration options
- * @returns Array of filtered text strings, one per page
+ * Use this rather than {@link joinFilteredPages} when an embedder is available.
  */
 export async function filterPageBoundarySentences(
   pages: PageData[],

@@ -10,11 +10,6 @@
 //     `nonAbsolutePrefixes` and printed as a `Warning [scope]:` stderr line,
 //     process exits 0, stdout result stays empty for that prefix; absolute
 //     `--scope` emits no such warning and returns its scanned files[].
-// ROI: 80
-// @category: integration
-// @lane: integration
-// @dependency: CLI runList + real LanceDB + real-FS fixture (no embedder)
-// @complexity: low (no mocks; real dbPath/cacheDir + uningested scan fixture)
 
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'

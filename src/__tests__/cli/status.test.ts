@@ -1,5 +1,4 @@
 // CLI Status Tests
-// Test Type: Unit Test
 // Tests runStatus functionality with mocked dependencies
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'

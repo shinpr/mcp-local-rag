@@ -8,11 +8,8 @@ import { checkSensitivePath } from '../utils/sensitive-path.js'
 // ============================================
 
 /**
- * Validate that a path is not a sensitive system directory.
- * Delegates to the shared `checkSensitivePath` helper so the CLI and the
- * MCP server entry point share one policy implementation.
- *
- * Returns an error message if invalid, or undefined if valid.
+ * Delegates to `checkSensitivePath`, so the CLI and MCP entry points share one
+ * policy. Returns an error message, or `undefined` when valid.
  */
 export function validatePath(value: string, flagName: string): string | undefined {
   return checkSensitivePath(value, flagName)
@@ -60,21 +57,11 @@ export function validateChunkMinLength(value: number): string | undefined {
 // ============================================
 
 /**
- * Consume the value that follows a `--base-dir` flag and append it to
- * `collected`. Designed to be called from each subcommand's argv loop so
- * `--base-dir <path>` can be provided one or more times, with the order
- * preserved.
+ * Consume the value after a `--base-dir` and append it to `collected`, so the
+ * flag can repeat with its order preserved. Returns the value's index, or
+ * exits 1 when the value is missing.
  *
- * `argv` is the full argv slice the loop is iterating; `flagIndex` is the
- * index of the `--base-dir` token itself. On success returns the index of
- * the value (so the caller can advance past it). On failure prints
- * `Missing value for --base-dir` to stderr and calls `process.exit(1)` —
- * matching the existing single-value error path so callers don't have to
- * special-case the new shape.
- *
- * Why a shared helper: `ingest`, `list`, and `sync` parse `--base-dir` in
- * identical fashion, so centralizing the accumulate-and-validate step keeps
- * their argv loops in lockstep when the contract evolves.
+ * Shared because `ingest`, `list` and `sync` must stay in lockstep here.
  */
 export function consumeBaseDirArg(argv: string[], flagIndex: number, collected: string[]): number {
   const valueIndex = flagIndex + 1
@@ -88,13 +75,9 @@ export function consumeBaseDirArg(argv: string[], flagIndex: number, collected: 
 }
 
 /**
- * Read the required value that follows a value-taking flag at `argv[flagIndex]`.
- * Centralizes the identical "missing value" guard every value flag used to
- * inline (`--db-path`, `--cache-dir`, `--model-name`, `--max-file-size`,
- * `--chunk-min-length`, `--limit`): when the next token is absent or is itself
- * a flag, prints `Missing value for <flag>` and exits 1. The caller advances
- * its index by 2 (flag + value). Numeric flags apply their own format/range
- * validation to the returned string.
+ * Read the required value after a value-taking flag, exiting 1 when the next
+ * token is absent or is itself a flag. The caller advances by 2. Numeric flags
+ * validate the returned string themselves.
  */
 export function requireFlagValue(argv: string[], flagIndex: number, flag: string): string {
   const value = argv[flagIndex + 1]
@@ -163,11 +146,8 @@ Commands:
 // ============================================
 
 /**
- * Extract global options (--db-path, --cache-dir, --model-name, -h/--help)
- * from the argument list and return them along with the remaining args.
- *
- * Global options are only recognized BEFORE the first non-flag argument
- * (the subcommand). After the subcommand, everything is forwarded as-is.
+ * Extract global options, which are recognized only BEFORE the subcommand.
+ * Everything after it is forwarded as-is.
  */
 export function parseGlobalOptions(args: string[]): ParsedGlobalResult {
   const globalOptions: GlobalOptions = {}
@@ -273,13 +253,10 @@ export function resolveDevice(value: string | undefined): string {
 }
 
 /**
- * Resolve RAG_DTYPE. Like resolveDevice, the value is passed through to
- * transformers.js with no allowlist. Unlike resolveDevice, unset/whitespace-only
- * resolves to `undefined` (NOT a default dtype): the fp32 default literal lives
- * solely in Embedder.initialize(), and `undefined` is the only signal that
- * distinguishes "RAG_DTYPE unset" from an explicit "RAG_DTYPE=fp32". That
- * distinction gates failure-path error enrichment, so it must not be collapsed
- * into a default here.
+ * Resolve RAG_DTYPE, passed through with no allowlist like RAG_DEVICE. Unset
+ * resolves to `undefined`, NOT a default: that is the only signal separating
+ * "unset" from an explicit `RAG_DTYPE=fp32`, and it gates the failure-path
+ * error enrichment. The fp32 default lives in `Embedder.initialize()` alone.
  */
 export function resolveDtype(value: string | undefined): string | undefined {
   if (!value || value.trim() === '') {

@@ -10,11 +10,6 @@
 //     (uningested files only — no embedding needed) → warning block naming each
 //     non-absolute prefix; absolute prefixes produce no such block and still
 //     return their scoped files[].
-// ROI: 80
-// @category: integration
-// @lane: integration
-// @dependency: RAGServer handler + real LanceDB + real-FS fixture (no embedder)
-// @complexity: low (no mocks; construct RAGServer, scan uningested fixture)
 
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'

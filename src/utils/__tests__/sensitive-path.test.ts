@@ -1,5 +1,4 @@
 // Sensitive-path policy unit tests
-// Test Type: Unit Test
 
 import { describe, expect, it } from 'vitest'
 

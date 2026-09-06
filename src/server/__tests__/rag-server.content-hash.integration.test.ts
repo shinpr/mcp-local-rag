@@ -1,29 +1,23 @@
-// MCP ingest `contentHash` ordering integration test.
-// Test Type: Integration (real RAGServer, real VectorStore, real DocumentParser +
-// SemanticChunker, real filesystem under the gitignored project-root `tmp/`; the
-// embedder is stubbed and doubles as the "an editor saves while the file is being
-// ingested" trigger)
+// MCP ingest `contentHash` ordering. Only the embedder is stubbed, and it
+// doubles as the "an editor saves mid-ingestion" trigger.
 //
-// Work plan: docs/plans/20260726-feature-incremental-sync.md § Post-review Fixes
+// `contentHash` used to come from a read taken AFTER parse, chunk and embed,
+// while the chunks came from the parser's read. A save inside that window —
+// seconds for a large document — stored the NEW bytes' digest against chunks
+// built from the OLD ones, after which every sync saw a matching hash, skipped
+// the file, and served stale content permanently. The hash is now read before
+// the parse, so the stored digest is at worst OLDER than disk and the next sync
+// re-ingests: fail dirty, never fail clean.
 //
-// Why this file exists: `contentHash` used to come from a read taken after parse,
-// chunk, and embed, while the chunks came from the parser's read. A save inside
-// that window — seconds long for a large document — stored the NEW bytes' digest
-// against chunks built from the OLD ones, after which every sync saw
-// `disk hash == stored hash`, skipped the file, and the index served stale content
-// permanently. The hash is now read before the parse, so the stored digest is at
-// worst OLDER than the disk bytes and the next sync re-ingests: fail dirty, never
-// fail clean. The same ordering makes this read the first thing to touch a
-// client-supplied path, so the checks the parse used to perform ahead of it —
-// containment, size, and "is this even a regular file" — are pinned here too.
+// That ordering also makes this read the first thing to touch a client-supplied
+// path, so the checks the parse used to perform ahead of it — containment,
+// size, regular-file — are pinned here too.
 //
 // Mock isolation: `node:fs/promises` is imported across the codebase, so the
-// wrapper is installed with `vi.doMock` in `beforeAll` and removed with
-// `vi.doUnmock` + `vi.resetModules` in `afterAll`, with the server and the store
-// imported dynamically afterwards (see `.claude/skills/project-context/SKILL.md`
-// § Test Environment Constraints). The wrapper delegates every call to the real
-// module and only records which paths `readFile` was given, which is how "no byte
-// read happened" and "exactly one read happened" become observable.
+// wrapper is installed with `vi.doMock` in `beforeAll` and removed in
+// `afterAll` (see project-context § Test Environment Constraints). It delegates
+// every call to the real module and records which paths `readFile` was given,
+// which is how "no byte read happened" becomes observable.
 
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
@@ -104,11 +98,10 @@ function makeFixture(name: string): Fixture {
 }
 
 /**
- * When set, the next `embedBatch` call rewrites `filePath` with `content` before
- * returning: the stand-in for an editor saving mid-ingestion. `embedBatch` is the
- * right trigger because it runs after the parser has read the file (both from the
- * chunker and from the embed step) and before anything is persisted, which is
- * exactly the window the defect lived in.
+ * When set, the next `embedBatch` rewrites `filePath` before returning — the
+ * stand-in for an editor saving mid-ingestion. `embedBatch` is the right
+ * trigger because it runs after the parser's read and before anything is
+ * persisted, which is exactly the window the defect lived in.
  */
 let rewriteDuringEmbed: { filePath: string; content: string } | null = null
 

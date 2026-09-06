@@ -375,28 +375,18 @@ describe('AC-005: Error Handling (Basic)', () => {
   })
 })
 
-// ============================================================
-// SYNC-006 / SYNC-007: ordinary MCP SDK operation for the sync tools
-// ============================================================
+// SYNC-006 / SYNC-007 over the protocol boundary: a stock SDK `Client`,
+// declaring no capabilities, drives the real registration over
+// `InMemoryTransport.createLinkedPair()`, so every assertion travels as
+// JSON-RPC. Sync's in-process behavior is proven in
+// `rag-server.sync.integration.test.ts` and deliberately not repeated — what
+// is proven here is reachability and result shape over the wire.
 //
-// Subject: the protocol boundary. A stock SDK `Client` — declaring no
-// capabilities and using no experimental option — drives the real `RAGServer`
-// registration over `InMemoryTransport.createLinkedPair()`, so every assertion
-// below travels as `tools/list` / `tools/call` JSON-RPC traffic. The in-process
-// behavior of sync itself (counters, prune evidence, depth arithmetic) is
-// already proven in `rag-server.sync.integration.test.ts` and is deliberately
-// not repeated here; what is proven here is reachability and result shape over
-// the wire.
+// Only the embedder is stubbed, and only on this instance (`vi.spyOn`, never a
+// module mock): it doubles as the collaborator that parks one run inside
+// ingestion so the overlap window is deterministic.
 //
-// Only the embedder is stubbed, and only on this server instance (`vi.spyOn`,
-// never a module mock, so nothing enters the shared module registry): the model
-// is an external ~90MB download, and the stub doubles as the controlled
-// collaborator that parks one run inside ingestion so the overlap window is
-// deterministic. Transport, server registration, dispatcher, parser, chunker,
-// and the LanceDB store are real.
-//
-// No wait is a timed sleep: every wait polls the real `sync_status` tool over
-// the transport, yielding with `setImmediate`.
+// No wait is a timed sleep: every wait polls the real `sync_status` tool.
 
 /** Embedding width of the production model, so stub rows match the schema. */
 const VECTOR_DIMENSION = 384
@@ -451,10 +441,9 @@ type CallToolReturn = Awaited<ReturnType<Client['callTool']>>
 type ToolResult = Extract<CallToolReturn, { content: unknown }>
 
 /**
- * Narrow the SDK's `CallToolResult | CompatibilityCallToolResult` union to the
- * standard shape. Both union members carry an index signature, so the check has
- * to inspect the value; a server answering with the legacy `toolResult` shape
- * fails here rather than silently skipping the assertions.
+ * Narrow the SDK's result union to the standard shape. Both members carry an
+ * index signature, so the value has to be inspected; a server answering with
+ * the legacy `toolResult` shape fails here rather than skipping the assertions.
  */
 function isStandardToolResult(result: CallToolReturn): result is ToolResult {
   return Array.isArray(result['content'])

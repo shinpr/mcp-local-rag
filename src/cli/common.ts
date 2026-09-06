@@ -14,17 +14,11 @@ import { VectorStore } from '../vectordb/index.js'
 import { type ResolvedGlobalConfig, resolveDevice, resolveDtype, validatePath } from './options.js'
 
 /**
- * Render an unknown caught value for a CLI failure site: every link of the
- * `.cause` chain (via {@link getCauseChain}) followed by its stack, joined so
- * the operator sees the full diagnostic. Deeper links are prefixed
- * `Caused by: `; the outermost link is not.
+ * Render a caught value for a CLI failure: every `.cause` link with its stack,
+ * deeper links prefixed `Caused by: `.
  *
- * The CLI is operator-facing, so — unlike the MCP client boundary, which never
- * leaks the cause chain — the full chain IS printed (Contract-Delta CLI row:
- * `message` → `message` + cause chain on stderr). Callers keep their own
- * operation prefix and exit-code policy; this function only produces the
- * rendered reason. Single source for the CLI catch-block error-rendering
- * pattern, replacing the former message-only renderer.
+ * The CLI is operator-facing, so unlike the MCP boundary the full chain IS
+ * printed. Callers keep their own prefix and exit-code policy.
  */
 export function formatCliError(error: unknown): string {
   const err = error instanceof Error ? error : new Error(String(error))
@@ -79,30 +73,12 @@ export interface CliBaseDirsResolution {
 }
 
 /**
- * Resolve effective base directories for a CLI subcommand using the shared
- * resolver, surfacing any configuration error as a process-level failure.
+ * Resolve base directories for a CLI subcommand: `cliRoots` replaces the env
+ * roots rather than merging, and a config error exits 1 rather than falling
+ * back to cwd.
  *
- * Inputs (single source of truth for CLI precedence — kept here so per-
- * subcommand entry points don't each replicate the env-fallback chain):
- *  - `cliRoots`: repeated `--base-dir` flag values in CLI order. When non-
- *    empty, REPLACES env roots — no merge.
- *  - `process.env['BASE_DIRS']`: JSON array, used only when CLI roots are
- *    absent.
- *  - `process.env['BASE_DIR']`: single path, used only when CLI roots and
- *    `BASE_DIRS` are absent.
- *  - `process.cwd()`: final fallback.
- *
- * Failure mode: a `BaseDirsConfigError` (invalid `BASE_DIRS` JSON, missing
- * directory, not-a-directory, ...) is reported to stderr and exits with
- * code 1. This is intentional: the resolver explicitly does NOT fall back
- * (see §Technical Decisions → Resolution order in the multi-base-dirs
- * plan), so CLI consumers should fail fast rather than silently degrading
- * to `cwd`.
- *
- * Warnings (`base-dirs-overrides-base-dir`, `nested-root-pruned`) are
- * returned to the caller rather than written here, so each subcommand can
- * decide its own rendering (JSON-output subcommands like `list` may need
- * to keep stderr clean even when warnings are present).
+ * Warnings are returned, not printed, so a JSON-output subcommand can keep
+ * stderr clean.
  */
 /** Report the first sensitive root among `roots` and stop. */
 function exitOnSensitiveRoot(
@@ -159,12 +135,10 @@ export async function resolveCliBaseDirsOrExit(cliRoots: string[]): Promise<CliB
     process.exit(1)
   }
 
-  // Apply the sensitive-path policy uniformly to every effective root
-  // (CLI, env, or cwd). Pre-multi-root code validated `BASE_DIR` here; the
-  // same policy must continue to apply to `BASE_DIRS` entries and to CLI
-  // roots that pre-validation in the subcommand may have missed (e.g.
-  // realpath-resolved targets of symlinks). Reported under `--base-dir`
-  // because that is the flag the user most directly controls.
+  // The policy applies to every effective root, whatever its source: a CLI
+  // root may be a symlink whose realpath-resolved target the subcommand's
+  // pre-validation missed. Reported under `--base-dir`, the flag the user
+  // most directly controls.
   exitOnSensitiveRoot(result.config.baseDirs, validatePath, '--base-dir')
 
   return { config: result.config, warnings: result.warnings }

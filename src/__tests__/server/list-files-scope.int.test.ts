@@ -9,11 +9,6 @@
 //     sources retained, out-of-scope real-file orphan excluded, no scope-outside
 //     SCANNED path reaches realpathForMatch, symlink-alias entry included with
 //     its stored filePath spelling.
-// @category: integration
-// @lane: integration
-// @dependency: RAGServer handler + real LanceDB + real-FS fixture (mkdir/symlink) + realpathForMatch spy
-// @complexity: high (real embed/DB init, scan-path pushdown spy, symlink-alias fixture)
-// ROI: 96
 //
 // Mocking strategy (shared-registry safe per project-context: isolate:false,
 // pool forks, maxWorkers 1): `../../utils/scan.js` is partial-mocked via

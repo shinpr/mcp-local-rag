@@ -1,12 +1,6 @@
-// Runtime validation for MCP tool arguments.
-//
-// MCP tool arguments arrive as `unknown` from the SDK: TypeScript types are
-// erased at runtime, so the previous `as unknown as XxxInput` casts let
-// malformed input flow into the handlers (non-string query, negative limit,
-// missing metadata, enum-violating format). These validators reject malformed
-// input at the entry boundary with `McpError(InvalidParams)` — the same
-// structured failure shape `read_chunk_neighbors` already uses — without
-// leaking internal diagnostics to the client.
+// Runtime validation for MCP tool arguments, which arrive as `unknown` from
+// the SDK. These reject malformed input at the entry boundary with
+// `McpError(InvalidParams)`, without leaking internal diagnostics.
 
 import { isAbsolute } from 'node:path'
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js'
@@ -217,12 +211,12 @@ export function parseReadChunkNeighborsInput(raw: unknown): ReadChunkNeighborsIn
 }
 
 /**
- * Validate `sync_start` arguments. The tool is legitimately callable with no
- * arguments — an omitted `path` means "every configured base directory" — so
- * both `undefined` and `{}` are accepted, the same contract `list_files` has.
+ * `sync_start` is legitimately callable with no arguments — an omitted `path`
+ * means every configured root — so `undefined` and `{}` both pass, as with
+ * `list_files`.
  *
  * Root containment is deliberately not checked here: the sync core owns that
- * rule so the CLI and MCP surfaces cannot drift apart.
+ * rule, so the CLI and MCP surfaces cannot drift.
  */
 export function parseSyncStartInput(raw: unknown): SyncStartInput {
   if (raw === undefined) {
@@ -254,10 +248,9 @@ export function parseSyncStartInput(raw: unknown): SyncStartInput {
 }
 
 /**
- * A job id is a `randomUUID()` this server handed out: 36 characters of
- * hexadecimal and dashes. The cap and the alphabet are enforced because the value
- * is echoed into the "unknown sync job" message and into a stderr log line — an
- * unbounded id with a newline in it would forge a log line for the operator.
+ * A job id is a `randomUUID()` this server handed out. The alphabet and length
+ * are enforced because the value is echoed into an error message and a stderr
+ * line — an unbounded id containing a newline could forge a log line.
  */
 const JOB_ID_PATTERN = /^[0-9a-fA-F-]{1,128}$/
 

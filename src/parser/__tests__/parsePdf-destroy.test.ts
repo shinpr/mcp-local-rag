@@ -1,15 +1,10 @@
-// AC-013 — `parsePdf` calls `doc.destroy()` exactly once on both the success
-// path and the error path.
+// `parsePdf` calls `doc.destroy()` exactly once on both the success and the
+// error path.
 //
-// `parsePdfPages` has an asymmetric disposal contract per DD §
-// `parser.parsePdfPages` contract: on the SUCCESS path it does NOT call
-// `destroy` (caller-owned disposal); on the ERROR path it destroys `doc`
-// internally before re-throwing so the caller never receives a leaked handle.
-// The third test in this file is the success-path negative assertion.
-//
-// Witness: a `vi.fn()` attached as the `destroy` method of the mock document
-// returned by `mupdf.Document.openDocument`. The mock is built per-test so
-// each scenario observes its own spy.
+// `parsePdfPages` is asymmetric by contract: on SUCCESS it does NOT destroy
+// (the caller owns the handle); on ERROR it destroys internally before
+// re-throwing, so no leaked handle reaches the caller. The third test here is
+// that success-path negative assertion.
 
 import { mkdir, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -98,10 +93,9 @@ describe('parsePdf destroy lifecycle (AC-013)', () => {
   })
 
   /**
-   * Build a mupdf mock document. `destroyFn` is exposed so each test can
-   * assert the spy directly. When `pageLoadError` is provided, `loadPage`
-   * throws it on the first call — this drives the error path through
-   * `extractPdfPages` so the `finally` in `parsePdf` must still run.
+   * `destroyFn` is exposed so each test asserts the spy directly. A
+   * `pageLoadError` makes `loadPage` throw on the first call, driving the error
+   * path so `parsePdf`'s `finally` must still run.
    */
   function setupMupdfMock(options: {
     pages: Array<{

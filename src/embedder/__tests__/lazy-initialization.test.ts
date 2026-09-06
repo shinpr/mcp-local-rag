@@ -9,10 +9,8 @@ import type { EmbedderConfig } from '../index.js'
 import { Embedder } from '../index.js'
 
 /**
- * Spy on the private `initialize`. There is no public init-count surface, and
- * mocking @huggingface/transformers instead would risk cross-file mock leakage
- * (transformers is imported widely and vitest runs with `isolate: false`) and
- * lose real-model coverage. The cast is confined to this one helper.
+ * There is no public init-count surface, and mocking transformers instead
+ * would leak across files (`isolate: false`) and lose real-model coverage.
  */
 function spyOnInitialize(embedder: Embedder): MockInstance {
   return vi.spyOn(privateMembers<{ initialize: () => Promise<void> }>(embedder), 'initialize')
@@ -65,13 +63,7 @@ describe('Embedder - Lazy Initialization', () => {
   it('should initialize only once for concurrent embed() calls', async () => {
     const embedder = new Embedder(testConfig)
 
-    // Verifies the lazy-init-once contract under concurrency. The private
-    // `initialize` is spied deliberately: there is no public init-count
-    // surface, and replacing the real-model integration with a mocked
-    // @huggingface/transformers pipeline would risk cross-file mock leakage
-    // (transformers is imported widely and vitest runs with isolate:false) and
-    // would lose real-model coverage. So the private spy is the deliberate,
-    // lower-risk choice here.
+    // The lazy-init-once contract under concurrency.
     const initializeSpy = spyOnInitialize(embedder)
 
     // Make 5 concurrent embed() calls
@@ -131,13 +123,7 @@ describe('Embedder - Lazy Initialization', () => {
     // First call triggers lazy initialization
     await embedder.embed('first call')
 
-    // Verifies the lazy-init-once contract: after init, embed() must not
-    // re-initialize. The private `initialize` is spied deliberately: there is
-    // no public init-count surface, and replacing the real-model integration
-    // with a mocked @huggingface/transformers pipeline would risk cross-file
-    // mock leakage (transformers is imported widely and vitest runs with
-    // isolate:false) and would lose real-model coverage. So the private spy is
-    // the deliberate, lower-risk choice here.
+    // After init, embed() must not re-initialize.
     const initializeSpy = spyOnInitialize(embedder)
 
     // Second and third calls should not trigger initialization

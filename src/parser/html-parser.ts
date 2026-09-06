@@ -83,9 +83,7 @@ function createTurndownService(): TurndownService {
  * 3. Readability result → Turndown (Markdown conversion)
  * 4. Title extracted separately via extractHtmlTitle (NOT prepended to content)
  *
- * @param html - Raw HTML string
  * @param url - Source URL (used for resolving relative links)
- * @returns Object with content (markdown) and title (extracted separately)
  */
 export async function parseHtml(
   html: string,

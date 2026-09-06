@@ -1,5 +1,4 @@
 // CLI Delete Tests
-// Test Type: Unit Test
 // Tests runDelete functionality with mocked dependencies
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'

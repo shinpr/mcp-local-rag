@@ -25,9 +25,6 @@ export type Subcommand = (typeof SUBCOMMANDS)[number]
 /**
  * Handle CLI subcommands. The caller is expected to have already validated
  * `subcommand` against `SUBCOMMANDS`; the union type makes the switch exhaustive.
- * @param subcommand - The validated subcommand name
- * @param args - Arguments following the subcommand (subcommand itself excluded)
- * @param globalOptions - Global options parsed before the subcommand
  */
 export async function handleCli(
   subcommand: Subcommand,

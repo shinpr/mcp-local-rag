@@ -1,18 +1,12 @@
-// CLI sync Tests
-// Test Type: Integration Test (real VectorStore, real filesystem, real parser +
-// chunker; only the embedder factory is stubbed and the scanner is wrapped to
-// observe its call arguments)
+// CLI sync tests. Only the embedder is stubbed; the parser, chunker, store and
+// filesystem are real, because row and path correctness is the subject.
 //
-// Work plan: docs/plans/20260726-feature-incremental-sync.md
-//   § Reference Contract Values → CLI Contract, § Binding Contracts (SYNC-002/004/005)
-//
-// Mock isolation: `../../cli/common.js` and `../../utils/scan.js` are imported by
-// other test files, so both factories are installed with `vi.doMock` in
-// `beforeAll` and removed with `vi.doUnmock` + `vi.resetModules` in `afterAll`
-// (see `.claude/skills/project-context/SKILL.md` § Test Environment Constraints).
-// Both factories delegate to the real module: `createVectorStore` returns a real
-// store (instrumented to count `optimize`/`close`), and the scanner keeps walking
-// the real filesystem while recording the exact argument list it was called with.
+// Mock isolation: `cli/common.js` and `utils/scan.js` are imported by other
+// test files, so both factories are installed with `vi.doMock` in `beforeAll`
+// and removed in `afterAll` (see project-context § Test Environment
+// Constraints). Both delegate to the real module — the store is real but
+// instrumented, and the scanner still walks the real filesystem while
+// recording its argument list.
 
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
@@ -715,16 +709,12 @@ describe('CLI sync', () => {
     ])
   })
 
-  // --------------------------------------------
-  // An explicitly requested path passes the walker's predicates
-  // --------------------------------------------
+  // An explicitly requested path passes the walker's predicates.
   //
-  // A file the walker discovers must be a non-symlink, non-excluded, supported
-  // regular file before its bytes are touched. A path the caller names used to
-  // reach `readFile` first and be judged afterwards — by the parser, or (for a
-  // FIFO) never. Each case below asserts the controlled message AND that nothing
-  // was ingested, which is what "rejected before any read" looks like from
-  // outside.
+  // A named path used to reach `readFile` first and be judged afterwards — by
+  // the parser, or for a FIFO never. Each case asserts the controlled message
+  // AND that nothing was ingested, which is what "rejected before any read"
+  // looks like from outside.
 
   itWithSymlinks(
     'refuses an explicitly requested symbolic link without reading its target',
@@ -976,18 +966,14 @@ describe('CLI sync', () => {
     ])
   })
 
-  // --------------------------------------------
-  // Symlinked configured root
-  // --------------------------------------------
+  // Symlinked configured root.
   //
-  // Every other case lives where resolve() and realpath() agree, so the choice
-  // between the resolver's `rawBaseDirs` (resolve()-only) and `baseDirs`
-  // (realpath'd) is invisible there. Under a symlinked root prefix — macOS
-  // `/tmp`, a symlinked home or mount, a Windows junction — scanning in the
-  // realpath space yields spellings the DB never holds, so nothing ever
-  // converges: the whole tree is re-ingested on every run and a second row set
-  // accumulates per file. The core cannot catch this: it receives roots as an
-  // injected value and knows nothing of the resolver.
+  // Everywhere else resolve() and realpath() agree, so the choice between
+  // `rawBaseDirs` and `baseDirs` is invisible. Under a symlinked prefix —
+  // macOS `/tmp`, a symlinked home, a Windows junction — scanning in realpath
+  // space yields spellings the DB never holds, so nothing converges and a
+  // second row set accumulates per file every run. The core cannot catch this:
+  // roots arrive as an injected value.
 
   describeSymlinkedRoot('with a symlinked configured root', () => {
     it('stores the symlink spelling and converges on the second run', async () => {
@@ -1034,15 +1020,11 @@ describe('CLI sync', () => {
     })
   })
 
-  // --------------------------------------------
-  // A path named THROUGH a symlinked directory
-  // --------------------------------------------
+  // A path named THROUGH a symlinked directory.
   //
-  // `resolve()` is lexical: it cannot see that an intermediate component of the
-  // requested path is a symbolic link, so `<root>/link/x.md` looks in-root while
-  // its real location is outside every configured root. The walk is unaffected
-  // (it never descends into a link entry), so this is the one route that has to
-  // be closed, and it has to be closed before anything reads the target.
+  // `resolve()` is lexical, so `<root>/link/x.md` looks in-root while its real
+  // location is outside every root. The walk never descends into a link entry,
+  // so this is the one route that must be closed — before anything reads.
 
   describeSymlinkedRoot('with a symlinked intermediate directory', () => {
     interface EscapeFixture extends Fixture {

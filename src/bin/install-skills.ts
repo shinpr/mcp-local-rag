@@ -194,7 +194,6 @@ function install(targetPath: string): void {
 
 /**
  * Run the skills installer with the given arguments
- * @param args - Command line arguments (after "skills install")
  */
 export function run(args: string[]): void {
   // Default to help if no args

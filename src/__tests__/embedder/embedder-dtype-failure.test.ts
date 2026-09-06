@@ -1,5 +1,4 @@
 // Embedder dtype failure-path enrichment unit tests
-// Test Type: Unit Test (mocks the @huggingface/transformers `pipeline` and
 // `ModelRegistry.get_available_dtypes` boundaries)
 //
 // These tests exercise `Embedder.initialize()`'s catch path when the model load

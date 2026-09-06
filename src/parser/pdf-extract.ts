@@ -24,11 +24,7 @@ interface StextBbox {
   h: number
 }
 
-/**
- * Shape of mupdf's structured-text JSON used by the per-page loop.
- * Captured here so both the items-extraction step and the raw `stextJson`
- * we return remain typed.
- */
+/** The part of mupdf's structured-text JSON this module reads. */
 interface StextJson {
   blocks: Array<{
     type: string
@@ -45,10 +41,8 @@ interface StextJson {
 }
 
 /**
- * Per-page record produced by `extractPdfPages`. `text` is the page's text
- * after semantic header/footer filtering. `textFragments` carries every
- * survivor's native provenance and exact range in `text`; `stextJson` is the
- * copied raw mupdf structured-text JSON for downstream visual detection.
+ * `text` is post-header/footer-filtering; `stextJson` is the raw mupdf JSON,
+ * kept for the downstream visual detector.
  */
 interface ExtractedPage {
   pageNum: number
@@ -57,16 +51,7 @@ interface ExtractedPage {
   stextJson: StextJson
 }
 
-/**
- * Result returned by `extractPdfPages`. The helper lifts three concerns
- * out of the legacy `parsePdf` body:
- *   1. the per-page `toStructuredText` + `block.type === 'text'` loop;
- *   2. `filterPageBoundarySentences` for header/footer removal;
- *   3. title-resolution materials (`metadataTitle` and `page1FontHint`).
- *
- * Both `parsePdf` and `parsePdfPages` consume this helper; they differ only
- * in the `stextOptions` argument they pass to `page.toStructuredText(...)`.
- */
+/** Result returned by `extractPdfPages`. */
 interface ExtractedPdf {
   pages: ExtractedPage[]
   metadataTitle: string | undefined
@@ -74,32 +59,17 @@ interface ExtractedPdf {
 }
 
 /**
- * Per-page extraction shared by `parsePdf` and `parsePdfPages`.
+ * Per-page extraction shared by `parsePdf` and `parsePdfPages`, which differ
+ * only in `stextOptions`: `parsePdfPages` adds `preserve-images` so mupdf
+ * emits the image blocks the visual detector needs.
  *
- * Takes an already-open mupdf `Document` and:
- *   - reads `info:Title` once,
- *   - iterates pages calling `toStructuredText(stextOptions)`,
- *   - builds `PageData` items (only `block.type === 'text'` lines),
- *   - runs `filterPageBoundarySentences` to drop semantic headers/footers,
- *   - derives `page1FontHint` from page 1's largest-font lines.
- *
- * The two callers differ ONLY in `stextOptions`: `parsePdf` passes
- * `'preserve-whitespace'`;
- * `parsePdfPages` passes `'preserve-whitespace,preserve-images'` so mupdf
- * emits `block.type === 'image'` entries for the downstream visual-candidate
- * detector.
- *
- * Lifecycle: this helper does NOT call `doc.destroy()` — disposal stays
- * with the caller.
+ * Disposal of `doc` stays with the caller.
  */
 /**
  * Read one page's structured text, releasing the native handle either way.
  *
- * `asJSON()` is typed `string`, so the parsed structure is where MuPDF's
- * documented StructuredText output contract meets {@link StextJson}, this
- * module's declaration of the part of it the page loop reads. Asserting it
- * here keeps that single connection in one place; validating instead would
- * mean inventing a policy for malformed output, and dropping elements would
+ * `asJSON()` is typed `string`, so this is where MuPDF's documented output
+ * contract meets {@link StextJson}. Dropping malformed elements instead would
  * shift the `blockOrdinal`/`lineOrdinal` provenance recorded downstream.
  *
  * @see https://mupdf.readthedocs.io/en/1.28.0/reference/javascript/types/StructuredText.html

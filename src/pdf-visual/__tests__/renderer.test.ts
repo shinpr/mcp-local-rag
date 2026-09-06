@@ -1,20 +1,6 @@
-// T3.1 — `renderPdfPage` unit test.
-//
-// Asserts the public contract of `renderPdfPage` documented in
-// docs/design/vlm-pdf-enrichment-design.md §Component `pdf-visual/renderer.ts`:
-//
-//   renderPdfPage(doc: MupdfDocument, pageNum: number): Promise<Uint8Array>
-//
-// Verification points (DD §Testing matrix, row `renderer.test.ts`):
-//   - Result is a `Uint8Array` starting with PNG magic bytes (0x89 0x50 0x4E 0x47).
-//   - Out-of-range `pageNum` throws `VlmError` carrying `.pageNum` matching the
-//     requested 1-based page.
-//
-// This test runs against real mupdf (no `vi.mock('mupdf', ...)`). The PDF is
-// synthesized in-memory via `mupdf.PDFDocument` so the test is portable across
-// clean checkouts and CI — no external fixture file is required. A single
-// blank page is sufficient: page 1 exercises the happy path, page 999
-// exercises the out-of-range path.
+// `renderPdfPage` against real mupdf (no module mock). The PDF is synthesized
+// in memory, so the test needs no fixture file. One blank page suffices: page 1
+// is the happy path, page 999 the out-of-range `VlmError`.
 
 import * as mupdf from 'mupdf'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
@@ -25,12 +11,9 @@ import { renderImageRendition, renderPdfPage, VlmError } from '../renderer.js'
 const PNG_MAGIC = [0x89, 0x50, 0x4e, 0x47] as const
 
 /**
- * Build a minimal single-page PDF in memory and return its bytes. The page
- * has empty content (no drawn text or graphics), which is sufficient for the
- * renderer contract — `renderPdfPage` only needs a loadable page to produce
- * PNG bytes. `addPage` returns the new page object, and `insertPage(-1, …)`
- * appends it to the page tree; without `insertPage` mupdf would refuse to
- * load the page after re-opening the saved bytes.
+ * Minimal single-page PDF. Empty content is enough — `renderPdfPage` only needs
+ * a loadable page. `insertPage(-1, ...)` is required: without it mupdf refuses
+ * to load the page after re-opening the saved bytes.
  */
 function buildMinimalPdfBytes(width = 100, height = 100): Uint8Array {
   const pdf = new mupdf.PDFDocument()

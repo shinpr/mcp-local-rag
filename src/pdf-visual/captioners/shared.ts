@@ -1,15 +1,8 @@
-// Profile-agnostic helpers shared by every `captioners/*` profile.
-//
-// `stripControlChars` + `postProcess` are the post-generation pipeline
-// documented in the captioner contract: control-char stripping, whitespace
-// trim, empty → `null`, length cap with ellipsis. Both `fast` and `quality`
-// profiles run the captioner output through the same pipeline so caption
-// chunk shape is independent of profile.
-//
-// `VLM_DTYPE`, `buildModelLoadOptions`, `createModelLoader`, and
-// `decodePngToRawImage` are the profile-agnostic load/decode mechanics. The
-// model-class choice, prompt, processor call shape, and generation options
-// stay per-profile (that is where `fast` and `quality` genuinely diverge).
+// Profile-agnostic helpers shared by every `captioners/*` profile: the
+// post-generation pipeline (control-char strip, trim, empty → `null`, length
+// cap) so caption shape is independent of profile, plus the load/decode
+// mechanics. The model class, prompt, processor call shape and generation
+// options stay per-profile — that is where `fast` and `quality` diverge.
 
 import { type DeviceType, RawImage } from '@huggingface/transformers'
 
@@ -26,13 +19,8 @@ type CaptionerLoadState = { kind: 'pending' } | { kind: 'ok' } | { kind: 'failed
 
 /**
  * Build the `from_pretrained` option objects (processor + model) with the
- * pinned dtype and resolved device.
- *
- * `RAG_DEVICE` is passed through with no allowlist (see `resolveDevice`) so a
- * device transformers.js adds later works without a code change, while the
- * library types the parameter as a closed literal union. That gap is the one
- * thing here the type system cannot state, so it is suppressed at the single
- * line that crosses it.
+ * pinned dtype and resolved device. `RAG_DEVICE` passes through with no
+ * allowlist (see `resolveDevice`) into a closed literal union.
  */
 export function buildModelLoadOptions(resolvedDevice: string): {
   dtypeOpt: { dtype: 'q4' }
@@ -86,12 +74,10 @@ export interface LoadedModel {
 }
 
 /**
- * Lazy model loader shared by both profiles. Encapsulates the
- * pending→ok/failed state machine and the identical load-failure wrapping
- * (`Captioner load failed (modelName=..., device=...)`). The per-profile
- * `load` callback owns the model-class choice and receives the shared option
- * objects. On first `ensureLoaded()` the model loads; subsequent calls return
- * the cached pair; a prior failure re-throws the same wrapped error.
+ * Lazy model loader shared by both profiles: owns the pending→ok/failed state
+ * machine and the identical load-failure wrapping. A prior failure re-throws
+ * the same wrapped error rather than retrying. The per-profile `load` callback
+ * owns the model-class choice.
  */
 export function createModelLoader(
   modelName: string,

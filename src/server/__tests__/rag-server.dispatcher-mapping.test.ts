@@ -1,15 +1,10 @@
-// Central dispatcher error-mapping tests (Task 04 — Phase 3 commit 2).
+// The single try/catch wrapping the CallTool dispatcher must route every
+// handler error through `toMcpError(error, context)` + `logError`, preserving
+// each handler's message prefix. The handlers themselves carry no error
+// mapping and rethrow with the ORIGINAL identity.
 //
-// Verifies the single try/catch wrapping the CallTool dispatcher routes every
-// handler error through `toMcpError(error, context)` + `logError`, with each
-// handler's client-message prefix policy preserved exactly (Contract-Delta
-// per-handler table). The handlers themselves are gutted of error mapping and
-// rethrow the caught error with its ORIGINAL identity.
-//
-// Test type: unit (spy-based). We inject failures at the adapter boundary
-// (vectorStore / embedder / parser) and invoke the dispatcher closure directly
-// via the SDK's `_requestHandlers` map, which is the boundary that owns the
-// central mapping.
+// The dispatcher closure is invoked directly via the SDK's `_requestHandlers`
+// map, which is the boundary that owns the mapping.
 
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
@@ -409,14 +404,11 @@ describe('Config-gate central mapping + status diagnostic block (AC-007)', () =>
   })
 })
 
-// ---- SYNC-006/SYNC-007: sync dispatch + the server-instance mutation guard ----
-//
-// The guard lives in the `CallToolRequestSchema` closure, so these tests drive
-// it through the same `_requestHandlers` entry the SDK calls. The embedder is
-// stubbed (external ML I/O) and, for the overlap case, gated on a promise this
-// file resolves, so one mutation is provably still in flight — and parked
-// BEFORE any store mutation — while the probes run. Everything else (dispatch,
-// guard, parser, chunker, store, filesystem) is real.
+// SYNC-006/007: sync dispatch plus the mutation guard, which lives in the
+// `CallToolRequestSchema` closure — so these drive the same `_requestHandlers`
+// entry the SDK calls. For the overlap case the stubbed embedder is gated on a
+// promise this file resolves, so one mutation is provably still in flight and
+// parked BEFORE any store mutation while the probes run.
 describe('External mutation guard at the dispatch boundary (SYNC-007)', () => {
   let server: RAGServer
   const testDbPath = resolve('./tmp/test-lancedb-guard')

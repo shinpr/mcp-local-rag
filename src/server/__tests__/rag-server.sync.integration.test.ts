@@ -1,22 +1,15 @@
-// MCP sync tools integration test (SYNC-004 / SYNC-006 / SYNC-007)
-// Test Type: Integration (real RAGServer, real VectorStore, real parser +
-// chunker, real filesystem under `tmp/`; only the embedder is stubbed)
+// MCP sync tools integration. Only the embedder is stubbed; the parser,
+// chunker, store and real filesystem under `tmp/` are used as-is.
 //
-// Work plan: docs/plans/20260726-feature-incremental-sync.md
-//   § Reference Contract Values → MCP Contract, § MCP Mutation Guard,
-//   § Binding Contracts (SYNC-004/006/007)
+// Mock isolation: `utils/scan.js` is imported by other test files, so the
+// factory is installed with `vi.doMock` in `beforeAll` and removed in
+// `afterAll`, with the server imported dynamically afterwards (see
+// project-context § Test Environment Constraints). It delegates to the real
+// walker, recording arguments and — when a test asks — parking the scan so a
+// job can be observed while provably still running.
 //
-// Mock isolation: `../../utils/scan.js` is imported by other test files, so the
-// factory is installed with `vi.doMock` in `beforeAll` and removed with
-// `vi.doUnmock` + `vi.resetModules` in `afterAll`, with the server module
-// imported dynamically afterwards (see `.claude/skills/project-context/SKILL.md`
-// § Test Environment Constraints). The factory delegates to the real walker: it
-// only records the verbatim argument list and, when a test asks for it, parks
-// the sync scan so a job can be observed while it is provably still running.
-//
-// Background work is never awaited with a sleep: every wait polls the real
-// `sync_status` handler until the job leaves `running`, which is the same
-// signal an MCP client has.
+// No wait is a timed sleep: every wait polls the real `sync_status` handler,
+// which is the same signal an MCP client has.
 
 import { createHash } from 'node:crypto'
 import { mkdirSync, rmSync, symlinkSync } from 'node:fs'
@@ -783,15 +776,11 @@ describe('MCP sync tools', () => {
     ])
   }, 45000)
 
-  // --------------------------------------------
-  // A `path` named THROUGH a symlinked directory
-  // --------------------------------------------
-  //
-  // The MCP client fully controls `path` and is the untrusted party here.
-  // `resolve()` is lexical, so it cannot see that an intermediate component is a
-  // symbolic link: `<root>/link/x.md` passes a key-based containment check while
-  // its real location is outside every configured root. `ingest_file` already
-  // realpath-validates, so this surface must refuse the same paths.
+  // A `path` named THROUGH a symlinked directory. The MCP client fully
+  // controls `path` and is the untrusted party. `resolve()` is lexical, so
+  // `<root>/link/x.md` passes a key-based check while its real location is
+  // outside every root; `ingest_file` already realpath-validates, so this
+  // surface must refuse the same paths.
 
   describeSymlinkedRoot('with a symlinked intermediate directory', () => {
     interface EscapeFixture extends Fixture {

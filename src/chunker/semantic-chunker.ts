@@ -49,18 +49,9 @@ const WINDOW_SIZE = 5
 const MAX_SENTENCES = 15
 
 /**
- * Check if a chunk is garbage (should be filtered out)
- *
- * Criteria (language-agnostic):
- * 1. Empty after trimming
- * 2. Contains alphanumeric -> valid content (keep)
- * 3. Only decoration characters (----, ====, etc.) -> garbage
- * 4. Single character repeated >80% of text -> garbage
- *
- * Note: Applied after minChunkLength filter
- *
- * @param text - Chunk text to check
- * @returns true if chunk is garbage and should be removed
+ * Garbage chunks, language-agnostically: empty after trimming, only decoration
+ * characters (`----`, `====`), or one character repeated over 80% of the text.
+ * Anything alphanumeric is kept. Applied after the minChunkLength filter.
  */
 export function isGarbageChunk(text: string): boolean {
   const trimmed = text.trim()
@@ -110,16 +101,9 @@ const DEFAULT_SEMANTIC_CHUNKER_CONFIG: SemanticChunkerConfig = {
 // ============================================
 
 /**
- * Semantic chunker using Max-Min algorithm
- *
- * The algorithm groups consecutive sentences based on semantic similarity:
- * 1. Split text into sentences
- * 2. Generate embeddings for all sentences
- * 3. For each sentence, decide whether to add to current chunk or start new chunk
- * 4. Decision is based on comparing max similarity with new sentence vs min similarity within chunk
- *
- * Key insight: A sentence belongs to a chunk if its maximum similarity to any chunk member
- * is greater than the minimum similarity between existing chunk members (with threshold adjustment)
+ * Semantic chunker using the Max-Min algorithm: a sentence joins the current
+ * chunk when its maximum similarity to any member exceeds the minimum
+ * similarity between existing members, adjusted by the threshold.
  */
 export class SemanticChunker {
   private readonly config: SemanticChunkerConfig
@@ -130,10 +114,6 @@ export class SemanticChunker {
 
   /**
    * Split text into semantically coherent chunks
-   *
-   * @param text - The text to chunk
-   * @param embedder - Embedder to generate sentence embeddings
-   * @returns Array of text chunks
    */
   async chunkText(
     text: string,
@@ -197,12 +177,9 @@ export class SemanticChunker {
    * Group sentences into chunks using Max-Min algorithm
    */
   /**
-   * Whether a sentence continues the group being built.
-   *
-   * A one-sentence group is still in the init phase, where the paper's
-   * `initConst` scales the pairwise similarity. Beyond that the Max-Min rule
-   * decides, subject to the `MAX_SENTENCES` safety limit that force-splits an
-   * over-long chunk regardless of similarity.
+   * Whether a sentence continues the group being built: `initConst`-scaled
+   * similarity while the group holds one sentence, Max-Min beyond that, and
+   * never past `MAX_SENTENCES`.
    */
   private continuesGroup(embedding: number[], groupEmbeddings: number[][]): boolean {
     if (groupEmbeddings.length === 1) {
@@ -285,10 +262,9 @@ export class SemanticChunker {
   }
 
   /**
-   * Get minimum pairwise similarity within a chunk.
-   * Only compares the last WINDOW_SIZE sentences for O(1) complexity.
-   * This approximation is valid because recent sentences are most relevant
-   * for determining chunk coherence (per Max-Min paper's experimental setup).
+   * Minimum pairwise similarity within a chunk, over the last WINDOW_SIZE
+   * sentences only. The approximation follows the Max-Min paper: recent
+   * sentences are what determine coherence.
    */
   private getMinSimilarity(embeddings: number[][]): number {
     if (embeddings.length < 2) {

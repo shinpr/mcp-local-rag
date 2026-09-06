@@ -1,23 +1,15 @@
-// AC-002 / AC-003 — parser PDF path must rethrow a FOREIGN `AppError`
-// (e.g. `EmbeddingError` raised while the parser uses the embedder) UNCHANGED,
-// instead of relabeling it as `FileOperationError("Failed to parse PDF...")`.
+// A FOREIGN `AppError` — an `EmbeddingError` raised while the parser uses the
+// embedder — must rethrow UNCHANGED rather than being relabelled
+// `FileOperationError("Failed to parse PDF...")`. A genuine non-`AppError`
+// mupdf/IO failure still wraps, with `.cause` preserved.
 //
-// Boundaries exercised here:
-//   - parsePdf: foreign `EmbeddingError` from the embedder (surfaced via the
-//     mocked `filterPageBoundaryLayouts` inside `extractPdfPages`) propagates
-//     as-is; a genuine non-`AppError` mupdf/IO failure still wraps as
-//     `FileOperationError` with `.cause` identity preserved.
-//   - parsePdfPages: same foreign-vs-genuine split; on the foreign path the
-//     mupdf `doc` handle is still destroyed exactly once before the rethrow.
-//   - title extraction: a foreign `AppError` thrown during page-1 chunking
-//     propagates (no filename fallback); a non-`AppError` title-local failure
-//     still falls back to the filename-derived title.
+// Covered at three boundaries: `parsePdf`, `parsePdfPages` (where the handle
+// must still be destroyed exactly once before the foreign rethrow), and title
+// extraction (a foreign error propagates; a title-local one falls back to the
+// filename).
 //
-// Mocking strategy mirrors `parsePdf-destroy.test.ts`: `vi.hoisted` + `vi.doMock`
-// of `mupdf`, `../pdf-filter.js`, `../title-extractor.js`, `../../chunker/index.js`
-// installed in `beforeAll` and removed in `afterAll`. Foreign-error injection
-// points: `mockFilterPageBoundaryLayouts` (reaches the outer catch via
-// `extractPdfPages`) and `mockChunkText` (reaches the title inner catch).
+// Injection points: `mockFilterPageBoundaryLayouts` reaches the outer catch via
+// `extractPdfPages`, `mockChunkText` reaches the title inner catch.
 
 import { mkdir, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -111,10 +103,9 @@ describe('parser PDF foreign-error reclassification (AC-002 / AC-003)', () => {
   })
 
   /**
-   * Build a mupdf mock document. `destroyFn` is exposed so each test can
-   * assert disposal directly. The page bodies are minimal — the foreign /
-   * genuine error is injected via `mockFilterPageBoundaryLayouts`, not the
-   * page loop itself.
+   * `destroyFn` is exposed so each test asserts disposal directly. Page bodies
+   * are minimal: the error is injected via `mockFilterPageBoundaryLayouts`, not
+   * the page loop.
    */
   function setupMupdfMock(options?: { metadataTitle?: string }): {
     destroyFn: ReturnType<typeof vi.fn>

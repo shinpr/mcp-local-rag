@@ -100,8 +100,6 @@ function parseArgs(args: string[]): DeleteArgs {
 
 /**
  * Run the delete CLI subcommand.
- * @param args - Arguments after "delete"
- * @param globalOptions - Global options parsed before the subcommand
  */
 /**
  * Resolve the document to delete from either input form, or `null` when the

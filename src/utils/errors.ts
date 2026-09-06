@@ -44,12 +44,9 @@ export abstract class AppError extends Error {
 }
 
 /**
- * Narrow a caught value to an `Error` so it can be stored as a `cause`.
- *
- * `catch` binds `unknown`, but `AppError.cause` is deliberately `Error` (see
- * above). A thrown non-`Error` is wrapped rather than relabelled, which keeps
- * its text in the cause chain instead of dropping it at the first non-`Error`
- * link.
+ * Narrow a caught value to an `Error` so it can be stored as a `cause`. A
+ * non-`Error` is wrapped as `String(value)`, so its text survives in the chain
+ * but its structure does not.
  */
 export function toError(value: unknown): Error {
   return value instanceof Error ? value : new Error(String(value))

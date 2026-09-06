@@ -1,5 +1,4 @@
 // CLI Ingest Tests
-// Test Type: Unit Test
 // Tests runIngest functionality with mocked dependencies
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -128,14 +127,10 @@ const MOCKED_PATHS = [
   '../../cli/common.js',
 ] as const
 
-// Import after mocks are set up.
-// `node:path.resolve` is statically importable (no vi.mock target).
-// `cli/ingest.js` and `cli/options.js` are dynamically imported in beforeAll
-// after vi.resetModules() — this is the test-convention isolation mechanism
-// under vitest `isolate: false` (vitest.config.mjs). Without it, a sibling
-// file like `ingest-visual.test.ts` that vi.mock's the same module paths
-// (e.g., ../../cli/common.js) can win the module-registry race and bind
-// runIngest's closures to that file's factories instead of this file's.
+// `cli/ingest.js` and `cli/options.js` are imported dynamically in beforeAll
+// after vi.resetModules(). Load-bearing under `isolate: false`: a sibling file
+// mocking the same paths can otherwise win the module-registry race and bind
+// runIngest's closures to its factories instead of this file's.
 import { resolve } from 'node:path'
 import { expectError, expectRecord } from '../test-doubles.js'
 import { formatCliErrorShim } from './cli-error-shim.js'
@@ -202,10 +197,8 @@ function mockDirent(
 }
 
 /**
- * Drive the `readdir({ withFileTypes: true })` mock from a directory map.
- * dirMap: maps directory paths to their Dirent entries. `readdir(dirPath)`
- * resolves to the Dirent[] array for that directory (empty when absent),
- * mirroring the shared `bfsCollectSupportedFiles` scan helper.
+ * Drive the `readdir({ withFileTypes: true })` mock from a directory map;
+ * an absent directory resolves to an empty array.
  */
 function setupMockReaddir(dirMap: Record<string, ReturnType<typeof mockDirent>[]>) {
   mocks.readdir.mockImplementation(async (dirPath: string) => dirMap[dirPath] ?? [])
@@ -384,12 +377,10 @@ describe('CLI ingest', () => {
   // Multi-root directory ingest (P2-T2)
   // --------------------------------------------
   it('should scan only the positional directory even when multiple roots are configured', async () => {
-    // Post-Finding-#1: `ingest <dir>` scans `<dir>` (the positional path).
-    // The configured roots are the VALIDATION boundary (passed to the
-    // parser), not a replacement for the user's scan target. Previously
-    // this test asserted the buggy behavior of aggregating every root; that
-    // broke the CLI contract by ingesting unrelated content under `rootB`
-    // when the user only asked for `rootA`.
+    // `ingest <dir>` scans the positional path. The configured roots are the
+    // VALIDATION boundary passed to the parser, not a replacement scan target:
+    // aggregating every root would ingest unrelated content under `rootB` when
+    // the user asked only for `rootA`.
     const rootA = resolve('/tmp/test/rootA')
     const rootB = resolve('/tmp/test/rootB')
     mocks.stat.mockResolvedValueOnce(mockDirStat()).mockResolvedValueOnce(mockDirStat())
@@ -1251,13 +1242,10 @@ describe('CLI ingest', () => {
     })
 
     it('should error when BASE_DIR env var points to sensitive path', async () => {
-      // After the multi-root resolver rewiring (P2-T1), env-derived
-      // sensitive-path rejection lives in `resolveCliBaseDirsOrExit` rather
-      // than in `resolveConfig` itself. The shared CLI common mock here
-      // delegates to a per-test impl, so we simulate the resolver returning
-      // a BASE_DIR-resolved root and trust the unit under test
-      // (resolveConfig) to propagate the rejection by letting the mocked
-      // resolveCliBaseDirsOrExit raise the same exit(1).
+      // Env-derived sensitive-path rejection lives in
+      // `resolveCliBaseDirsOrExit`, not in `resolveConfig`, so the mocked
+      // resolver raises the exit(1) and this asserts that `resolveConfig`
+      // propagates it.
       process.env['BASE_DIR'] = '/etc/documents'
       mocks.resolveCliBaseDirs.mockImplementation(() => {
         console.error('Refusing to use sensitive system path for --base-dir: /etc/documents')
@@ -1400,14 +1388,9 @@ describe('CLI ingest', () => {
     })
   })
 
-  // --------------------------------------------
-  // P2-T3: CLI multi-root precedence / fallback / config-error matrix
-  //
-  // Mirrors the cases added to `list.test.ts` so the boundary contract
-  // between `runIngest` and the shared resolver is asserted at both CLI
-  // entry points. Scenarios are driven from the resolver mock (no real env
-  // vars / filesystem) so they remain deterministic.
-  // --------------------------------------------
+  // Multi-root precedence / fallback / config-error matrix, mirroring
+  // `list.test.ts` so the resolver boundary is asserted at both CLI entry
+  // points. Driven from the resolver mock, so no real env or filesystem.
   describe('multi-root precedence (P2-T3)', () => {
     it('passes CLI roots verbatim to the resolver and suppresses any env precedence warning', async () => {
       // Arrange: env vars are set but the user supplied --base-dir. The

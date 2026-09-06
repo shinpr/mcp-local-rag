@@ -27,10 +27,9 @@ export interface EmbedderConfig {
   /** Device type */
   device?: string
   /**
-   * Embedding quantization dtype (fp32, fp16, q8, int8, ...). Passed through to
-   * transformers.js — no allowlist. Undefined means "unset": initialize() then
-   * applies the fp32 default. The unset-vs-explicit-fp32 distinction is
-   * preserved on purpose (it gates failure-path error enrichment).
+   * Quantization dtype, passed through to transformers.js with no allowlist.
+   * `undefined` means unset, which `initialize()` resolves to fp32 — the
+   * distinction gates failure-path error enrichment, so keep it.
    */
   dtype?: string
 }
@@ -42,10 +41,8 @@ interface IndexedEmbeddingInput {
 }
 
 /**
- * The transformers.js pipeline as this module calls it. Both results are typed
- * with the looseness the runtime actually admits — the library gives no
- * compile-time guarantee — so the shape checks at each call site stay live
- * instead of being dead code under an optimistic declaration.
+ * The transformers.js pipeline as this module calls it. Results are typed as
+ * loosely as the runtime admits, so the shape checks below stay live.
  */
 interface EmbeddingPipeline {
   (input: string, options: unknown): Promise<{ data?: unknown; dims?: number[] } | null | undefined>
@@ -148,14 +145,7 @@ export class EmbeddingError extends AppError {
 // Embedder Class
 // ============================================
 
-/**
- * Embedding generation class using Transformers.js
- *
- * Responsibilities:
- * - Generate embedding vectors (dimension depends on model)
- * - Transformers.js wrapper
- * - Batch processing (size 8)
- */
+/** Transformers.js wrapper: lazily loaded model, batched embedding. */
 export class Embedder {
   // Using unknown to avoid TS2590 (union type too complex with @types/jsdom)
   private model: unknown = null
@@ -203,11 +193,8 @@ export class Embedder {
 
     try {
       this.model = await pipeline('feature-extraction', this.config.modelPath, {
-        // The sole fp32 default literal: unset dtype loads fp32, unchanged from
-        // before this knob existed. RAG_DTYPE and RAG_DEVICE are both
-        // deliberate un-allowlisted passthroughs (see `resolveDevice`), while
-        // transformers.js types each as a closed literal union — the one gap
-        // here the type system cannot state.
+        // The sole fp32 default literal. Both values pass through
+        // un-allowlisted (see `resolveDevice`) into a closed literal union.
         // biome-ignore lint/nursery/noUnsafeTypeAssertion: un-allowlisted passthrough to a closed literal union
         dtype: (this.config.dtype ?? 'fp32') as DataType,
         // biome-ignore lint/nursery/noUnsafeTypeAssertion: un-allowlisted passthrough to a closed literal union
@@ -227,19 +214,13 @@ export class Embedder {
   }
 
   /**
-   * Best-effort failure-path enrichment for an explicit `RAG_DTYPE`.
+   * Best-effort failure-path enrichment for an explicit `RAG_DTYPE`: name the
+   * dtypes the model does provide when the requested one is absent.
    *
-   * When the load failed and a dtype was explicitly requested, consult the
-   * model's available dtypes and, if the requested one is absent, return a
-   * message that names what the model provides. The enumeration is a Hub
-   * network call wrapped in its own try/catch: if it fails (e.g. air-gapped
-   * after caching) it degrades to a generic clear, dtype-aware message rather
-   * than surfacing a confusing secondary error (TD-3). This method never throws
-   * and never converts the load failure into a fallback — the caller always
-   * re-throws.
-   *
-   * @param nativeMessage - The underlying load-failure message.
-   * @returns The message to wrap in the thrown `EmbeddingError`.
+   * The enumeration is a Hub network call in its own try/catch, so an
+   * air-gapped run degrades to a generic dtype-aware message instead of
+   * surfacing a confusing secondary error. Never throws, and never converts
+   * the load failure into a fallback — the caller always re-throws.
    */
   private async enrichDtypeFailureMessage(nativeMessage: string): Promise<string> {
     const requestedDtype = this.config.dtype
@@ -291,12 +272,7 @@ export class Embedder {
     await this.initPromise
   }
 
-  /**
-   * Convert single text to embedding vector
-   *
-   * @param text - Text
-   * @returns Embedding vector (dimension depends on model)
-   */
+  /** Single-text embedding; the vector dimension depends on the model. */
   async embed(text: string): Promise<number[]> {
     // Reject empty input before paying for model init.
     if (text.length === 0) {
@@ -327,12 +303,7 @@ export class Embedder {
     }
   }
 
-  /**
-   * Convert multiple texts to embedding vectors with batch processing
-   *
-   * @param texts - Array of texts
-   * @returns Array of embedding vectors (dimension depends on model)
-   */
+  /** Batched embedding; the vector dimension depends on the model. */
   async embedBatch(texts: string[]): Promise<number[][]> {
     // Nothing to embed → skip model init entirely.
     if (texts.length === 0) {
@@ -350,13 +321,11 @@ export class Embedder {
 
     try {
       const options = { pooling: 'mean', normalize: true }
-      // True batched inference: the feature-extraction pipeline accepts an
-      // array of texts and returns a single [batchLen, dim] tensor in one
-      // forward pass. The previous implementation called the model once per
-      // text via Promise.all, so `batchSize` had no real effect (onnxruntime
-      // inference is not parallelized by Promise.all). Passing the whole batch
-      // lets the runtime batch the matmuls. Mean-pooling honors the attention
-      // mask, so per-row vectors match the single-text result.
+      // True batched inference: the pipeline takes an array and returns one
+      // [batchLen, dim] tensor per forward pass. Calling it once per text via
+      // Promise.all made `batchSize` meaningless, since onnxruntime inference
+      // is not parallelized that way. Mean-pooling honors the attention mask,
+      // so per-row vectors match the single-text result.
       if (!isEmbeddingPipeline(this.model)) {
         throw new EmbeddingError('Embedder pipeline is not callable')
       }

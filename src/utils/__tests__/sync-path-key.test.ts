@@ -1,5 +1,4 @@
 // Sync comparison-key generation unit tests
-// Test Type: Unit Test
 //
 // Containment cases are asserted through the real, unchanged `isUnderOrEqual`
 // so the composed contract (`isUnderOrEqual(toSyncPathKey(candidate),

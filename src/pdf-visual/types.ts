@@ -1,13 +1,6 @@
-// Shared types for the `pdf-visual` package.
-//
-// `VlmError` is the package-wide named error for the visual ingest path.
-// `renderer.ts`, `captioner.ts`, and the orchestrator (`index.ts`) import it
-// from this single source. It joins the shared `AppError` taxonomy (taxonomy
-// only — name/message/cause behavior is unchanged) and additionally carries
-// the offending page number.
-//
-// `CaptionerConfig` / `Captioner` are the captioner's public interface,
-// shared across the visual ingest modules.
+// Shared types for the `pdf-visual` package: `VlmError` (the package-wide
+// named error, which also carries the offending page number) plus the
+// captioner's public interface.
 
 import { AppError } from '../utils/errors.js'
 
@@ -26,20 +19,17 @@ export class VlmError extends AppError {
 }
 
 /**
- * Visual-quality profile selector. Each profile resolves to a self-contained
- * captioner implementation under `captioners/`. `fast` ports the original
- * SmolVLM-256M / IDEFICS3 captioner (lightweight default, ~250 MB cache);
- * `quality` ports the Qwen2.5-VL-3B-Instruct-ONNX captioner (~2.9 GB cache,
- * ~2× per-page inference, higher fidelity on figures with in-image text).
+ * Visual-quality profile. `fast` is SmolVLM-256M / IDEFICS3 (~250 MB cache);
+ * `quality` is Qwen2.5-VL-3B-Instruct-ONNX (~2.9 GB, ~2x per-page inference,
+ * better on figures with in-image text).
  */
 export const QUALITY_PROFILES = ['fast', 'quality'] as const
 export type QualityProfile = (typeof QUALITY_PROFILES)[number]
 
 /**
- * Captioner configuration. The model identifier is no longer caller-tunable;
- * it is resolved inside the selected `profile` so that prompt, chat template,
- * processor signature, generation options, and model class stay coherent per
- * profile.
+ * Captioner configuration. The model id is not caller-tunable: the selected
+ * `profile` resolves it, so prompt, chat template, processor signature,
+ * generation options and model class stay coherent together.
  */
 export interface CaptionerConfig {
   /** Visual-quality profile — selects the underlying VLM family. */
@@ -51,10 +41,9 @@ export interface CaptionerConfig {
 }
 
 /**
- * Captioner public surface. Returns the caption string or `null` when the
- * model produced an empty result (after control-char stripping + whitespace
- * trim). A `null` return signals the orchestrator to skip this page without
- * raising — only model load / image decode / generation failures throw.
+ * Returns the caption, or `null` when the model produced nothing after
+ * stripping and trimming — which tells the orchestrator to skip the page
+ * without raising. Only load, decode and generation failures throw.
  */
 export interface Captioner {
   caption(pngBytes: Uint8Array, pageNum: number): Promise<string | null>

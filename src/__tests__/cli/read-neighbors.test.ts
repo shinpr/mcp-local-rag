@@ -1,5 +1,4 @@
 // CLI read-neighbors Tests
-// Test Type: Unit Test
 // Tests runReadNeighbors functionality with mocked dependencies.
 //
 // AC parity: runReadNeighbors does not instantiate an embedder; this test file

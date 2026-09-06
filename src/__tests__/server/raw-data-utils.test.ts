@@ -1,5 +1,4 @@
 // Raw Data Utilities Test
-// Test Type: Unit Test
 
 import { mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { join, resolve, sep } from 'node:path'

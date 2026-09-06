@@ -1,5 +1,4 @@
 // CLI Query Tests
-// Test Type: Unit Test
 // Tests runQuery functionality with mocked dependencies
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
