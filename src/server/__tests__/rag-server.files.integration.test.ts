@@ -474,7 +474,8 @@ describe('AC-008: list_files multi-root contract', () => {
       // privileges; in that environment the cross-root dedup contract is not
       // observable so we surface the failure rather than silently skipping.
       throw new Error(
-        `symlink creation failed for cross-root dedup test: ${expectError(error).message}`
+        `symlink creation failed for cross-root dedup test: ${expectError(error).message}`,
+        { cause: error }
       )
     }
 

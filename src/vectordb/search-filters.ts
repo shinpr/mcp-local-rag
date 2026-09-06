@@ -124,8 +124,12 @@ export function applyFileFilter(results: SearchResult[], maxFiles: number): Sear
  * @param weight - Boost weight (0-1, from hybridWeight config)
  */
 /**
- * BM25 score of one raw FTS row. LanceDB supplies rows loosely: an entry can be
- * absent and `_score` is untyped, and neither contributes to the ranking.
+ * BM25 score of one raw FTS row.
+ *
+ * A row without a numeric `_score` scores 0 rather than propagating a `NaN`
+ * through the normalization below. This is stricter than the previous
+ * `(row['_score'] as number) ?? 0`, which passed a non-numeric value straight
+ * into the arithmetic.
  */
 function readBm25Score(row: FtsRow): number {
   const score = row?.['_score']
@@ -133,8 +137,11 @@ function readBm25Score(row: FtsRow): number {
 }
 
 /**
- * One raw row from a LanceDB full-text search. Holes are observed in practice,
- * so the element type admits them rather than making the guards below dead.
+ * One raw row from a LanceDB full-text search.
+ *
+ * The element type admits a missing entry because the code has always guarded
+ * for one and `search-filters.test.ts` pins that behavior; the previous
+ * non-nullable annotation contradicted both.
  */
 export type FtsRow = Record<string, unknown> | null | undefined
 

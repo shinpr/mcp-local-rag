@@ -83,7 +83,8 @@ function parseSuccessfulListOutput(run: CliRun): ParsedListResult {
   } catch (error) {
     throw new Error(
       `CLI stdout was not valid JSON (${expectError(error).message}).\n` +
-        `--- stdout ---\n${run.stdout}\n--- stderr ---\n${run.stderr}`
+        `--- stdout ---\n${run.stdout}\n--- stderr ---\n${run.stderr}`,
+      { cause: error }
     )
   }
 }
