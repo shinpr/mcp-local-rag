@@ -217,6 +217,7 @@ export class VectorStore {
           ...chunk,
           fileTitle: chunk.fileTitle ?? '',
           contentHash: chunk.contentHash ?? '',
+          visualProfile: chunk.visualProfile ?? '',
           visualAttachments: normalizeVisualAttachments(chunk.visualAttachments),
         }))
         this.table = await this.db.createTable(this.config.tableName, records)
@@ -226,8 +227,12 @@ export class VectorStore {
         await this.ensureFtsIndex()
       } else {
         // Add data to existing table
+        // An explicit `null` rather than an omitted key: `add` builds its batch
+        // from the supplied properties, so omission on an optional column is not
+        // a reliable way to write "no value".
         const records = chunks.map((chunk) => ({
           ...chunk,
+          visualProfile: chunk.visualProfile ?? null,
           visualAttachments: normalizeVisualAttachments(chunk.visualAttachments),
         }))
         await this.table.add(records)
@@ -312,6 +317,11 @@ export class VectorStore {
     if (!hasField('visualAttachments')) {
       await this.table.addColumns([{ name: 'visualAttachments', valueSql: 'cast(NULL as string)' }])
       console.error('VectorStore: Migrated schema - added visualAttachments column')
+    }
+
+    if (!hasField('visualProfile')) {
+      await this.table.addColumns([{ name: 'visualProfile', valueSql: 'cast(NULL as string)' }])
+      console.error('VectorStore: Migrated schema - added visualProfile column')
     }
   }
 
@@ -536,20 +546,24 @@ export class VectorStore {
   }
 
   /**
-   * Per-chunk `(filePath, contentHash)` projection used by incremental sync.
+   * Per-chunk `(filePath, contentHash, visualProfile)` projection used by
+   * incremental sync.
    *
-   * One entry per row rather than per file, so a file whose rows disagree on
-   * the hash is detectable as dirty. `filePath` is the verbatim stored
-   * spelling, since that is what {@link deleteChunks} matches. The empty-string
-   * hash the create path seeds for Arrow inference normalizes to `null`.
+   * One entry per row rather than per file, so a file whose rows disagree on the
+   * hash or the recorded profile is detectable as dirty. `filePath` is the
+   * verbatim stored spelling, since that is what {@link deleteChunks} matches.
+   * The empty-string placeholder the create path seeds for Arrow inference
+   * normalizes to `null`, while any other stored profile string reaches the
+   * planner unchanged so it can validate the vocabulary itself.
    *
-   * Projects only those two columns, so a manifest load does not materialize
+   * Projects only those three columns, so a manifest load does not materialize
    * embedding vectors or attachment payloads.
    */
-  async listChunkHashes(): Promise<
+  async listSyncManifest(): Promise<
     {
       filePath: string
       contentHash: string | null
+      visualProfile: string | null
     }[]
   > {
     await this.openExistingTable()
@@ -558,14 +572,19 @@ export class VectorStore {
     }
 
     try {
-      const records = await this.table.query().select(['filePath', 'contentHash']).toArray()
+      const records = await this.table
+        .query()
+        .select(['filePath', 'contentHash', 'visualProfile'])
+        .toArray()
       const entries: {
         filePath: string
         contentHash: string | null
+        visualProfile: string | null
       }[] = []
       for (const record of records) {
         const filePath: unknown = record.filePath
         const contentHash: unknown = record.contentHash
+        const visualProfile: unknown = record.visualProfile
         // Type-guard parity with listFiles: skip rows missing the expected
         // string column rather than coercing via `as string`.
         if (typeof filePath !== 'string') {
@@ -575,11 +594,13 @@ export class VectorStore {
           filePath,
           contentHash:
             typeof contentHash === 'string' && contentHash.length > 0 ? contentHash : null,
+          visualProfile:
+            typeof visualProfile === 'string' && visualProfile.length > 0 ? visualProfile : null,
         })
       }
       return entries
     } catch (error) {
-      throw new DatabaseError('Failed to list chunk content hashes', { cause: toError(error) })
+      throw new DatabaseError('Failed to list the sync manifest', { cause: toError(error) })
     }
   }
 

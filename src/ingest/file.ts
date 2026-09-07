@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises'
 import type { SemanticChunker, TextChunk } from '../chunker/index.js'
 import type { EmbedderInterface } from '../chunker/semantic-chunker.js'
 import type { DocumentParser } from '../parser/index.js'
+import type { QualityProfile } from '../utils/visual-profile.js'
 import type { VectorChunk, VisualAttachment } from '../vectordb/index.js'
 import { buildChunksFromParseResult, buildVectorChunks, computeContentHash } from './compute.js'
 import {
@@ -30,6 +31,8 @@ export interface PreparedFileIngest {
   textLength: number
   title: string | null
   contentHash: string
+  /** Requested visual intent of this run: a profile for a captioned PDF, `null` otherwise. */
+  visualProfile: QualityProfile | null
   visualAttachments: Map<number, VisualAttachment[]>
   omittedImageCount: number
 }
@@ -42,6 +45,7 @@ export function buildPreparedFileVectorChunks(prepared: PreparedFileIngest): Vec
     fileSize: prepared.textLength,
     fileTitle: prepared.title,
     contentHash: prepared.contentHash,
+    visualProfile: prepared.visualProfile,
     visualAttachments: prepared.visualAttachments,
   })
 }
@@ -56,6 +60,10 @@ async function readPreParseContentHash(filePath: string, parser: DocumentParser)
  * Prepare one validated source file for persistence without touching storage or
  * process output. The source hash is read before parsing so a concurrent rewrite
  * remains visible to the next sync instead of being paired with stale chunks.
+ *
+ * The visual profile is resolved from the request before any caption outcome is
+ * known, so it records what was asked for: a run with no qualifying region or a
+ * tolerated caption failure still carries the requested profile.
  */
 export async function prepareFileForIngest(
   filePath: string,
@@ -102,6 +110,7 @@ export async function prepareFileForIngest(
     textLength: text.length,
     title,
     contentHash,
+    visualProfile: isPdf ? (options.captioner?.profile ?? null) : null,
     visualAttachments,
     omittedImageCount,
   }

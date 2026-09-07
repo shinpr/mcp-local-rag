@@ -1181,7 +1181,7 @@ export class RAGServer {
         // The core hashes every scanned file before it loads the manifest, so
         // this is the first moment the supported-file count is final.
         this.updateSyncJob(jobId, { total: hashedFiles })
-        return await this.vectorStore.listChunkHashes()
+        return await this.vectorStore.listSyncManifest()
       },
       ingestFile: async (filePath: string, images: boolean) => {
         const chunkCount = await this.ingestFileForSync(filePath, images)

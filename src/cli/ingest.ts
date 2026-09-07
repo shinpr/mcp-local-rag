@@ -7,9 +7,9 @@ import { SemanticChunker } from '../chunker/index.js'
 import type { Embedder } from '../embedder/index.js'
 import { buildPreparedFileVectorChunks, prepareFileForIngest } from '../ingest/file.js'
 import { DocumentParser } from '../parser/index.js'
-import { QUALITY_PROFILES, type QualityProfile } from '../pdf-visual/types.js'
 import type { BaseDirsConfig, BaseDirsConfigWarning } from '../utils/base-dirs.js'
 import { DEFAULT_MAX_FILE_SIZE, MAX_CHUNK_MIN_LENGTH } from '../utils/limits.js'
+import { isQualityProfile, type QualityProfile } from '../utils/visual-profile.js'
 import type { VectorStore } from '../vectordb/index.js'
 import {
   createEmbedder,
@@ -64,10 +64,6 @@ interface ParsedArgs {
   positional: string | undefined
   options: IngestCliOptions
   help: boolean
-}
-
-function isQualityProfile(value: string): value is QualityProfile {
-  return QUALITY_PROFILES.some((profile) => profile === value)
 }
 
 // ============================================

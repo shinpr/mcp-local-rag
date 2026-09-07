@@ -53,10 +53,13 @@ export interface SyncScanResult extends SyncScanCoverage {
  * One stored chunk row (or row group) of the database manifest. `filePath` is
  * the verbatim stored spelling — the only value valid for deletion. A `null` or
  * absent `contentHash` marks the row hashless, which makes its file dirty.
+ * `visualProfile` is the raw stored value, unvalidated: the vocabulary check
+ * belongs to the planner, not to the storage projection.
  */
 export interface SyncManifestRow {
   filePath: string
   contentHash?: string | null
+  visualProfile?: string | null
 }
 
 /** One supported file found on disk, with the hash of its current bytes. */

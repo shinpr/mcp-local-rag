@@ -1387,7 +1387,7 @@ describe('sync executor against a real VectorStore (Early Verification Point)', 
       .map((chunk: VectorChunk) => chunk.contentHash ?? null)
 
   const manifestFrom = (store: VectorStore) => async (): Promise<SyncManifestRow[]> =>
-    await store.listChunkHashes()
+    await store.listSyncManifest()
 
   it('(a) prunes an absent sibling while leaving the live file and a prefix-sharing sibling readable', async () => {
     await withStore('scope-siblings', async (store, dbPath) => {

@@ -229,7 +229,7 @@ export async function runSync(args: string[], globalOptions: GlobalOptions = {})
       }
       return computeContentHash(await readFile(filePath))
     },
-    loadDbManifest: async () => await vectorStore.listChunkHashes(),
+    loadDbManifest: async () => await vectorStore.listSyncManifest(),
     // Named as it happens, so a long run shows which file it is on and the
     // counters alone are not the only record of what changed. A zero-chunk file
     // already reports itself from inside `ingestSingleFile`.

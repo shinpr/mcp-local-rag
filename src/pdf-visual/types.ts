@@ -3,6 +3,7 @@
 // captioner's public interface.
 
 import { AppError } from '../utils/errors.js'
+import type { QualityProfile } from '../utils/visual-profile.js'
 
 /**
  * Error raised by any module on the visual ingest path. Carries the offending
@@ -17,14 +18,6 @@ export class VlmError extends AppError {
     this.pageNum = options.pageNum
   }
 }
-
-/**
- * Visual-quality profile. `fast` is SmolVLM-256M / IDEFICS3 (~250 MB cache);
- * `quality` is Qwen2.5-VL-3B-Instruct-ONNX (~2.9 GB, ~2x per-page inference,
- * better on figures with in-image text).
- */
-export const QUALITY_PROFILES = ['fast', 'quality'] as const
-export type QualityProfile = (typeof QUALITY_PROFILES)[number]
 
 /**
  * Captioner configuration. The model id is not caller-tunable: the selected
