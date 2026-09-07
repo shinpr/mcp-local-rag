@@ -234,11 +234,7 @@ export interface RunSyncInput {
   requestedPath?: string | undefined
   /** `true` stores images for files already selected as new or changed. */
   images?: boolean | undefined
-  /**
-   * Explicit visual request for every eligible PDF in scope. Only the CLI
-   * supplies it; path-only MCP sync omits it so each PDF inherits its recorded
-   * profile.
-   */
+  /** Explicit visual request, as on {@link SyncPlanInput}. Only the CLI supplies one. */
   visualProfile?: QualityProfile | undefined
   collaborators: SyncCollaborators
 }
@@ -264,14 +260,10 @@ function isEligiblePdf(filePath: string): boolean {
  * The desired profile for one eligible PDF, and the only place a stored profile
  * is interpreted.
  *
- * An explicit override wins outright, which is what lets one CLI run repair
- * stored state this function would otherwise refuse to read: with a preference
- * supplied, nothing has to be inferred from the rows.
- *
- * Without an override the rows must speak with one voice. Multiple known
- * profiles, or a nonempty value outside the vocabulary, leave no defensible
- * choice, so planning fails before anything is mutated rather than silently
- * converging the file onto a guess.
+ * An override is not read against the rows at all, which is what lets one CLI
+ * run repair stored state this function would otherwise refuse to interpret.
+ * Without one, rows that admit no single answer throw rather than converge the
+ * file onto a guess.
  */
 function resolveDesiredProfile(
   filePath: string,

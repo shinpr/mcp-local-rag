@@ -1,11 +1,9 @@
 // CLI visual-profile sync against a real temporary LanceDB.
 //
 // The parser, chunker, detector, renderer, region orchestrator, planner, shared
-// preparation and store are all real: what is stubbed is exactly the two model
-// boundaries. The embedder is an external ~90MB download and the captioner is a
-// VLM, and neither one's output is what these cases are about — the subject is
-// which profile each row ends up carrying and whether a caption survives a
-// later sync.
+// preparation and store are all real; only the embedder and the captioner are
+// stubbed, because their outputs are external downloads rather than the subject,
+// which is the profile each row carries and whether a caption survives a sync.
 //
 // Mock isolation: `cli/common.js` and `pdf-visual/captioner.js` are imported by
 // other test files, so both factories are installed with `vi.doMock` in

@@ -47,8 +47,6 @@ describe('ingest --images option', () => {
   })
 })
 
-// `--visual-quality` is validated in one place for `ingest` and `sync`, so both
-// subcommands accept and reject exactly the same values.
 describe('requireVisualQuality', () => {
   let exitSpy: ReturnType<typeof vi.spyOn>
   let errorSpy: ReturnType<typeof vi.spyOn>

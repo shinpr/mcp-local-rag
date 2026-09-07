@@ -46,10 +46,13 @@ unchanged files alone, and remove index entries for files that are gone.
 Each changed PDF keeps the visual profile it was last indexed with; a new PDF,
 or one indexed before profiles were recorded, stays text-only. Use --visual to
 request VLM captioning for every PDF in scope instead, which also establishes a
-profile for those PDFs and re-ingests unchanged ones. To turn visual mode off
-for a path, or to retry a failed caption, run "ingest <path>" instead: a
-successful normal ingest clears the recorded profile. Image storage is separate:
---images is never recorded and never makes a file changed.
+profile for those PDFs. A PDF is re-ingested when its bytes or its profile
+differ from what is indexed, and skipped otherwise. To turn visual mode off
+for a path, run "ingest <path>": a successful normal ingest clears the recorded
+profile. To retry a failed caption, run "ingest <path> --visual
+--visual-quality <profile>" with the profile you want, because a plain ingest
+clears it. Image storage is separate: --images is never recorded and never
+makes a file changed.
 
 Runs in the foreground until it finishes. Use your shell to run it in the
 background.

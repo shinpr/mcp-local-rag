@@ -161,7 +161,7 @@ La incorporación de archivos no admite Excel, PowerPoint, imágenes independien
 Sincroniza todo el contenido de los directorios raíz configurados y espera a que termine.
 ```
 
-La herramienta devuelve un `jobId` de inmediato. El cliente debe consultar `sync_status` hasta que el estado sea `succeeded` o `failed`. Cada PDF modificado se vuelve a incorporar con el perfil visual que ya tiene registrado: un PDF indexado inicialmente con descripciones las conserva y un PDF sin perfil registrado se mantiene solo como texto; `sync_start` no ofrece ninguna opción para cambiar el perfil.
+La herramienta devuelve un `jobId` de inmediato. El cliente debe consultar `sync_status` hasta que el estado sea `succeeded` o `failed`. Un PDF modificado conserva el perfil visual con el que se indexó; un PDF sin perfil registrado se mantiene solo como texto. `sync_start` no puede cambiar el perfil.
 
 El proceso del servidor solo conserva un trabajo de sincronización. Un trabajo nuevo sustituye el registro de uno ya terminado y el registro se pierde al reiniciar el servidor.
 
@@ -220,6 +220,20 @@ npx mcp-local-rag ingest ./docs/research-paper.pdf --visual
 | `quality` | unos 2,9 GB | Figuras con etiquetas, anotaciones u otro texto dentro de la imagen |
 
 Selecciona el modelo más grande con `visualQuality: "quality"` en MCP o con `--visual-quality quality` en la CLI. En pruebas con CPU, la inferencia tardó aproximadamente el doble que con `fast`, aunque el resultado depende del hardware y de las actualizaciones del modelo.
+
+#### Modo visual entre sincronizaciones
+
+El perfil con el que se indexó un PDF queda registrado y `sync` lo reutiliza: un PDF indexado con `fast` o `quality` se vuelve a incorporar con ese mismo perfil y un PDF sin perfil registrado se incorpora como texto.
+
+```bash
+npx mcp-local-rag sync ./docs/                      # conservar el perfil registrado de cada PDF
+npx mcp-local-rag sync ./docs/ --visual             # solicitar fast para todos los PDF del ámbito
+npx mcp-local-rag sync ./docs/ --visual --visual-quality quality
+```
+
+`--visual` sustituye los perfiles registrados, así que también describe los PDF que se indexaron como texto. Cambiar de perfil vuelve a incorporar el PDF aunque el archivo no haya cambiado; repetir el mismo comando no hace nada ni carga ningún modelo.
+
+Para desactivar las descripciones en una ruta, ejecuta `ingest` sobre ella: una incorporación normal correcta borra el perfil registrado. Para reintentar una página cuya descripción falló, ejecuta `ingest <ruta> --visual --visual-quality <perfil>` con el perfil que quieras: un `ingest` sin más lo borra. Si las filas indexadas de un PDF no coinciden en el perfil, `sync` se detiene antes de cambiar nada e indica el archivo; vuelve a ejecutarlo con `--visual` para fijar el perfil.
 
 Las descripciones son texto auxiliar, no transcripciones fieles. Trata las descripciones y el texto recuperado de los documentos como entradas no fiables, no como instrucciones.
 

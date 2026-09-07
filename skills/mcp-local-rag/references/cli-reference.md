@@ -76,12 +76,12 @@ Reconcile the index with the files on disk: ingest new and changed files, leave 
 
 | Stored state of the PDF | Plain `sync` | `sync --visual[ --visual-quality quality]` |
 |---|---|---|
-| Indexed with `fast` or `quality` | Changed file re-ingested with that profile | Re-ingested with the requested profile, even if its bytes are unchanged |
+| Indexed with `fast` or `quality` | Changed file re-ingested with that profile | Re-ingested if bytes or profile differ; otherwise skipped |
 | Indexed before this feature, or last ingested text-only | Stays text-only | Ingested visually, which is how a legacy PDF gets a profile |
 | New file found by the scan | Ingested text-only | Ingested visually |
 | Rows disagree on the profile, or hold an unsupported value | Planning fails before any mutation and names the file | Repaired: the explicit request replaces the stored state |
 
-Bare `--visual` means `fast`, including for a PDF recorded as `quality`. A profile change makes an otherwise unchanged PDF dirty; the identical run afterwards is a no-op that loads no model. Non-PDFs ignore both flags. To clear the profile — turning visual mode off for a path — run a normal `ingest <path>`; a successful normal replacement records absence. A tolerated per-page caption failure is not retried by sync, because the recorded profile is the requested mode rather than the caption outcome; re-run `ingest --visual` to retry it.
+Bare `--visual` means `fast`, including for a PDF recorded as `quality`. A profile change makes an otherwise unchanged PDF dirty; the identical run afterwards is a no-op that loads no model. Non-PDFs ignore both flags. To clear the profile — turning visual mode off for a path — run a normal `ingest <path>`; a successful normal replacement records absence. A tolerated per-page caption failure is not retried by sync, because the recorded profile is the requested mode rather than the caption outcome; retry it with `ingest <path> --visual --visual-quality <profile>`, naming the profile because a plain `ingest` clears it.
 
 Image settings stay invocation-scoped: `--images` is never recorded, never makes a file dirty, and a file selected for another reason is ingested with the current run's image setting.
 
