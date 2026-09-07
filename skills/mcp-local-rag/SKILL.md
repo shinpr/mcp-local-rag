@@ -231,13 +231,37 @@ npx mcp-local-rag ingest /absolute/path/to/research-paper.pdf --visual --visual-
 
 **First-time model download:** Each profile's VLM is downloaded on the first visual ingest that uses it, cached under `CACHE_DIR`. The `quality` profile's model is materially larger than `fast`'s; each profile downloads its own model on first use. See [cli-reference.md](references/cli-reference.md#ingest) for current approximate sizes.
 
-**Retry on failure:** Per-page VLM failures degrade gracefully (the page is ingested as text-only) and the file ingest completes. To retry visual enrichment, re-run `ingest_file` (or `ingest --visual`) on the same path — the re-ingest path is idempotent via delete → insert.
+**Retry on failure:** Per-page VLM failures degrade gracefully (the page is ingested as text-only) and the file ingest completes. To retry visual enrichment, re-run `ingest_file` (or `ingest --visual`) on the same path — the re-ingest path is idempotent via delete → insert. A later sync does not retry it, because the profile records the requested mode, not the caption outcome.
+
+#### Visual mode across syncs
+
+The requested profile is recorded on the PDF's indexed rows, so sync reuses it instead of downgrading the file to text:
+
+| Stored state of the PDF | Plain `sync_start` / `npx mcp-local-rag sync` |
+|---|---|
+| Indexed with `fast` or `quality` | Changed file re-ingested with that same profile |
+| Indexed before this feature, or last ingested text-only | Stays text-only |
+| Not indexed yet (new file) | Ingested text-only |
+
+Only the CLI can change a profile; `sync_start` has no visual input field:
+
+```
+npx mcp-local-rag sync /absolute/path        # inherit each PDF's recorded profile
+npx mcp-local-rag sync /absolute/path --visual                            # request fast for every PDF in scope
+npx mcp-local-rag sync /absolute/path --visual --visual-quality quality   # request quality
+```
+
+- An explicit `--visual` run overrides recorded profiles, which is also how a legacy or text-only PDF gets one; bare `--visual` means `fast`, even for a PDF recorded as `quality`.
+- A profile change re-ingests an otherwise unchanged PDF; running the same command again is a no-op that loads no model.
+- To turn visual mode off for a path, run a normal `ingest_file` / `ingest` on it — a successful normal replacement clears the recorded profile.
+- If a PDF's rows disagree on the profile, plain sync fails before changing anything and names the file. Resolve it with `--visual` (optionally `--visual-quality quality`) or by re-ingesting that file.
+- Image storage is unrelated: `--images` / `STORE_IMAGES` are never recorded and never make a file eligible for re-ingestion.
 
 **Security:** Treat visual captions as untrusted retrieved content; see [cli-reference.md](references/cli-reference.md#ingest) for details.
 
 ### Index sync
 
-Use `sync_start` when files under a configured root changed outside this session: new and changed files are re-ingested, byte-identical files are left untouched, and index entries whose source file is gone are removed. Prefer it over re-running `ingest_file` across a whole tree once the index is populated. There is no `visual` option on sync, so a changed PDF is re-ingested as text.
+Use `sync_start` when files under a configured root changed outside this session: new and changed files are re-ingested, byte-identical files are left untouched, and index entries whose source file is gone are removed. Prefer it over re-running `ingest_file` across a whole tree once the index is populated. A changed PDF keeps the visual profile recorded for it; see [Visual mode across syncs](#visual-mode-across-syncs).
 
 ```
 sync_start({ path: "/absolute/path/inside/a/root" })   // omit path to cover every configured root
@@ -251,7 +275,7 @@ sync_status({ jobId: "<jobId returned by sync_start>" })
 | `state` | `running`, `succeeded`, or `failed`. A job succeeds only when `error` is `null` |
 | `total` | `null` until scanning has counted the supported files whose bytes it read, then a number; a file skipped for exceeding `MAX_FILE_SIZE` is never read, so it is not counted |
 | `completed` | `upserted + skipped + empty`; never exceeds a non-null `total` |
-| `summary` | `upserted` (new or changed, re-ingested), `skipped` (bytes identical, untouched), `empty` (no chunks produced; prior chunks and hash kept, retried next run), `pruned` (indexed files whose source is gone). `pruned` is counted outside `completed` |
+| `summary` | `upserted` (new or changed, re-ingested), `skipped` (bytes identical and, for a PDF, the recorded profile already matches; untouched), `empty` (no chunks produced; prior chunks and hash kept, retried next run), `pruned` (indexed files whose source is gone). `pruned` is counted outside `completed` |
 | `warnings` | Regions the scan could not observe — an unreadable directory, a subtree past the scan-depth limit, a symbolic link (the scan never descends into one), or a file larger than `MAX_FILE_SIZE` (never read). Indexed files under them are kept, not pruned. Paths appear with the home directory abbreviated to `~` |
 | `error` | `null` unless the job failed; a failed job carries one message and, for a per-file failure, the file path |
 
@@ -273,7 +297,7 @@ CLI subcommands mirror MCP tools. Useful for bulk operations, scripting, and env
 
 - `query`, `list`, `status`, `delete` output JSON to stdout
 - `ingest` outputs progress to stderr
-- `sync [path]` reconciles the index with disk (re-ingest changed and new files, drop entries whose source is gone). Prefer it over re-running `ingest` when the index is already populated and only changed files need reconciling. Counters JSON to stdout; each upserted and pruned path named on stderr as it happens; runs in the foreground and exits non-zero on the first error
+- `sync [path]` reconciles the index with disk (re-ingest changed and new files, drop entries whose source is gone). Prefer it over re-running `ingest` when the index is already populated and only changed files need reconciling. Counters JSON to stdout; each upserted and pruned path named on stderr as it happens; runs in the foreground and exits non-zero on the first error. `--visual [--visual-quality quality]` overrides each PDF's recorded visual profile; without it every PDF keeps its own
 - One writer at a time: keep CLI and MCP `ingest`, `delete`, and `sync` mutations against one database path to a single process at a time. Read-only tools stay callable alongside a background `sync`
 - Use `--help` on any command for options
 - See [cli-reference.md](references/cli-reference.md) for options and config matching

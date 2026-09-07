@@ -43,8 +43,13 @@ const HELP_TEXT = `Usage: mcp-local-rag [global-options] sync [options] [path]
 Reconcile the index with the files on disk: ingest new and changed files, leave
 unchanged files alone, and remove index entries for files that are gone.
 
-Each changed PDF keeps the visual profile it was last indexed with. Use
---visual to request VLM captioning for every PDF in scope instead.
+Each changed PDF keeps the visual profile it was last indexed with; a new PDF,
+or one indexed before profiles were recorded, stays text-only. Use --visual to
+request VLM captioning for every PDF in scope instead, which also establishes a
+profile for those PDFs and re-ingests unchanged ones. To turn visual mode off
+for a path, or to retry a failed caption, run "ingest <path>" instead: a
+successful normal ingest clears the recorded profile. Image storage is separate:
+--images is never recorded and never makes a file changed.
 
 Runs in the foreground until it finishes. Use your shell to run it in the
 background.

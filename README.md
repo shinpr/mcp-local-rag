@@ -181,9 +181,11 @@ Sync everything under the configured document roots and wait for completion.
 ```
 
 The tool returns a `jobId` immediately. Clients should poll `sync_status` until its state becomes
-`succeeded` or `failed`. Sync does not generate visual captions. Set `STORE_IMAGES=true` in the
-MCP server environment to store supported PDF and DOCX images for new or changed files selected
-by sync; unchanged files remain skipped.
+`succeeded` or `failed`. Each changed PDF is re-ingested with the visual profile already recorded
+for it, so a PDF first indexed with captions keeps them and a PDF with no recorded profile stays
+text-only; `sync_start` has no option to change a profile. Set `STORE_IMAGES=true` in the MCP
+server environment to store supported PDF and DOCX images for new or changed files selected by
+sync; unchanged files remain skipped.
 
 Only one sync job is retained by the server process. A newer job replaces a finished record, and
 restarting the server discards it.
@@ -273,6 +275,35 @@ alter ranking, scores, or result count.
 Select the larger model with `visualQuality: "quality"` over MCP or
 `--visual-quality quality` over CLI. Measured CPU inference was about twice as slow as `fast`,
 though results depend on hardware and model updates.
+
+#### Visual Mode Across Syncs
+
+The profile requested for a PDF is recorded on its indexed rows, and `sync` reuses it:
+
+| Situation | What sync does |
+|---|---|
+| PDF indexed with `fast` or `quality`, file changed | Re-ingested with that same recorded profile |
+| PDF never indexed visually, or indexed before this feature existed | Stays text-only until a visual run establishes a profile |
+| New PDF found by sync | Text-only, unless the run passes `--visual` |
+| CLI `sync --visual` | Requests `fast` for every PDF in scope, overriding recorded profiles |
+| CLI `sync --visual --visual-quality quality` | Requests `quality` for every PDF in scope |
+
+```bash
+npx mcp-local-rag sync ./docs/                              # inherit each PDF's recorded profile
+npx mcp-local-rag sync ./docs/ --visual                     # request fast for every PDF in scope
+npx mcp-local-rag sync ./docs/ --visual --visual-quality quality
+```
+
+A profile change makes an otherwise unchanged PDF eligible for re-ingestion; repeating the same
+run afterwards is a no-op that loads no model. To turn visual mode off for a path, or to retry a
+page whose captioning failed, run the explicit replacement operation — CLI `ingest <path>` or MCP
+`ingest_file` — which records the profile of that run (absence for a normal ingest).
+
+If a PDF's indexed rows disagree about the profile, plain sync stops before changing anything and
+names the file; re-run with `--visual` (optionally `--visual-quality quality`) or re-ingest the
+file to settle it. Image storage stays independent: `--images` and `STORE_IMAGES` are never
+recorded and never make a file eligible for re-ingestion, and a file selected for another reason
+uses the current run's image setting.
 
 Captions are auxiliary text, not faithful transcriptions. Treat retrieved captions and document
 text as untrusted input rather than instructions.

@@ -64,11 +64,26 @@ The CLI accepts only `fast` or `quality` for `--visual-quality`. The MCP `ingest
 npx mcp-local-rag [global-options] sync [options] [path]
 ```
 
-Reconcile the index with the files on disk: ingest new and changed files, leave unchanged files alone, and remove index entries for files that are gone. `--base-dir <path>` is repeatable. There is no `--visual` on `sync`, so a changed PDF is re-ingested without VLM captions. `--images` applies to new and changed PDF/DOCX files selected by the same comparison.
+Reconcile the index with the files on disk: ingest new and changed files, leave unchanged files alone, and remove index entries for files that are gone. `--base-dir <path>` is repeatable. `--images` applies to new and changed PDF/DOCX files selected by the same comparison.
 
 | Option | Env Var | Default | Description |
 |--------|---------|---------|-------------|
 | `--images` | — | `false` | Store supported images while ingesting new or changed PDF/DOCX files. |
+| `--visual` | — | `false` | Request VLM captioning for every PDF in scope, overriding each PDF's recorded profile (PDFs only). |
+| `--visual-quality <profile>` | — | `fast` | VLM profile when `--visual` is set: `fast` or `quality`. Parsed but ignored when `--visual` is absent. |
+
+**Visual profiles across syncs** — the profile requested when a PDF was ingested is recorded on its indexed rows, and plain `sync` reuses it:
+
+| Stored state of the PDF | Plain `sync` | `sync --visual[ --visual-quality quality]` |
+|---|---|---|
+| Indexed with `fast` or `quality` | Changed file re-ingested with that profile | Re-ingested with the requested profile, even if its bytes are unchanged |
+| Indexed before this feature, or last ingested text-only | Stays text-only | Ingested visually, which is how a legacy PDF gets a profile |
+| New file found by the scan | Ingested text-only | Ingested visually |
+| Rows disagree on the profile, or hold an unsupported value | Planning fails before any mutation and names the file | Repaired: the explicit request replaces the stored state |
+
+Bare `--visual` means `fast`, including for a PDF recorded as `quality`. A profile change makes an otherwise unchanged PDF dirty; the identical run afterwards is a no-op that loads no model. Non-PDFs ignore both flags. To clear the profile — turning visual mode off for a path — run a normal `ingest <path>`; a successful normal replacement records absence. A tolerated per-page caption failure is not retried by sync, because the recorded profile is the requested mode rather than the caption outcome; re-run `ingest --visual` to retry it.
+
+Image settings stay invocation-scoped: `--images` is never recorded, never makes a file dirty, and a file selected for another reason is ingested with the current run's image setting.
 
 The positional `path` is optional and must sit inside a configured base directory; omit it to synchronize every configured root. A directory is scanned, while a single file is synchronized on its own and its siblings are left untouched. Without `--base-dir`, roots come from `BASE_DIRS` / `BASE_DIR` (default: cwd).
 
@@ -76,8 +91,8 @@ Output: one JSON object to stdout on success. Each upserted and pruned path is n
 
 | Counter | Meaning |
 |---------|---------|
-| `upserted` | Files re-ingested because they are new or their bytes changed |
-| `skipped` | Files whose bytes are unchanged — not parsed, embedded, or written |
+| `upserted` | Files re-ingested because they are new, their bytes changed, or (PDFs) their recorded visual profile differs from the requested one |
+| `skipped` | Files whose bytes are unchanged and, for PDFs, whose recorded profile already matches — not parsed, embedded, or written |
 | `empty` | Files that produced no chunks; previously indexed chunks and their hash are kept, and the file is retried on the next run |
 | `pruned` | Indexed files whose source is gone and whose absence the scan observed |
 

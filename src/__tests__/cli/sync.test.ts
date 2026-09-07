@@ -369,6 +369,8 @@ describe('CLI sync', () => {
     expect(help).toContain('-h, --help')
     expect(help).toContain('--visual')
     expect(help).toContain('--visual-quality <profile>')
+    // The inheritance default is the part a user cannot infer from the flag list.
+    expect(help).toMatch(/keeps the visual profile it was last indexed with/)
     expect(help).not.toContain('--dry-run')
   })
 

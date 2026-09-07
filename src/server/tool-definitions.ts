@@ -173,7 +173,7 @@ export const toolDefinitions: Tool[] = [
   {
     name: 'sync_start',
     description:
-      'Reconcile the index with the files on disk: ingest new and changed files, leave unchanged files alone, and remove index entries for files that are gone. Each changed PDF is re-ingested with the visual profile ("fast" or "quality") already recorded for it, so a PDF indexed with VLM captions keeps them; a PDF with no recorded profile stays text-only. There is no option to change a profile here — use the CLI (mcp-local-rag sync --visual) or ingest_file for that. Returns { jobId } without waiting for the run to finish; poll sync_status with that jobId for progress and the final outcome. Only one job is kept, and it is lost when the server process exits.',
+      'Reconcile the index with the files on disk: ingest new and changed files, leave unchanged files alone, and remove index entries for files that are gone. Each changed PDF is re-ingested with the visual profile ("fast" or "quality") already recorded for it, so a PDF indexed with VLM captions keeps them; a PDF with no recorded profile stays text-only. There is no option to change a profile here — use the CLI (mcp-local-rag sync --visual) to set one, or ingest_file to replace the file, where a normal ingest clears the recorded profile. Stored images are unrelated: STORE_IMAGES applies to whatever this run re-ingests and never makes a file changed. Returns { jobId } without waiting for the run to finish; poll sync_status with that jobId for progress and the final outcome. Only one job is kept, and it is lost when the server process exits.',
     inputSchema: {
       type: 'object',
       properties: {
