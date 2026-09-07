@@ -190,19 +190,21 @@ async function seedRows(
   }
 }
 
-/** `(filePath, contentHash)` manifest of the store, sorted for stable equality. */
+/** `(filePath, contentHash)` view of the sync manifest, sorted for stable equality. */
 async function storedManifest(
   fixture: Fixture
 ): Promise<{ filePath: string; contentHash: string | null }[]> {
   const store = new VectorStore({ dbPath: fixture.dbPath, tableName: 'chunks' })
   await store.initialize()
   try {
-    const rows = await store.listChunkHashes()
-    return rows.sort(
-      (left, right) =>
-        left.filePath.localeCompare(right.filePath) ||
-        (left.contentHash ?? '').localeCompare(right.contentHash ?? '')
-    )
+    const rows = await store.listSyncManifest()
+    return rows
+      .map(({ filePath, contentHash }) => ({ filePath, contentHash }))
+      .sort(
+        (left, right) =>
+          left.filePath.localeCompare(right.filePath) ||
+          (left.contentHash ?? '').localeCompare(right.contentHash ?? '')
+      )
   } finally {
     await store.close()
   }

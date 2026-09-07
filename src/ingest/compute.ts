@@ -169,6 +169,11 @@ export function computeContentHash(bytes: Uint8Array): string {
  * then omitted rather than stored empty, so a hashless row is never mistaken
  * for a real hash. Required, not optional, so a new call site cannot silently
  * write hashless rows.
+ *
+ * `visualProfile` is the requested visual intent of this ingestion, copied to
+ * every row. It accepts `null`/`undefined` and then omits the optional property,
+ * so a caller holding a nullable value can pass it directly under
+ * `exactOptionalPropertyTypes` and a caller with no visual concept can omit it.
  */
 export function buildVectorChunks(params: {
   filePath: string
@@ -178,6 +183,7 @@ export function buildVectorChunks(params: {
   fileTitle: string | null
   contentHash: string | null
   visualAttachments?: ReadonlyMap<number, readonly VisualAttachment[]>
+  visualProfile?: string | null
 }): VectorChunk[] {
   const {
     filePath,
@@ -187,6 +193,7 @@ export function buildVectorChunks(params: {
     fileTitle,
     contentHash,
     visualAttachments = new Map(),
+    visualProfile = null,
   } = params
   const timestamp = new Date().toISOString()
   return chunks.map((chunk, index) => {
@@ -214,6 +221,7 @@ export function buildVectorChunks(params: {
       },
       fileTitle,
       ...(contentHash === null ? {} : { contentHash }),
+      ...(visualProfile === null || visualProfile === undefined ? {} : { visualProfile }),
       visualAttachments: JSON.stringify(attachments),
       timestamp,
     }

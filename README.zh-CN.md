@@ -161,7 +161,7 @@ CLI 默认将当前目录作为文档根目录。请在同一目录中运行这�
 同步已配置文档根目录中的所有内容，并等待完成。
 ```
 
-该工具会立即返回 `jobId`。客户端应持续查询 `sync_status`，直到状态变为 `succeeded` 或 `failed`。同步期间不使用视觉模式；发生变化的 PDF 会按文本导入。
+该工具会立即返回 `jobId`。客户端应持续查询 `sync_status`，直到状态变为 `succeeded` 或 `failed`。发生变化的 PDF 会沿用索引时所用的模式重新导入；索引时未使用视觉模式的 PDF 仍按纯文本处理。`sync_start` 无法更改该模式。
 
 服务器进程只保留一个同步任务记录。新任务会替换已经结束的记录，服务器重启后该记录也会丢失。
 
@@ -220,6 +220,20 @@ npx mcp-local-rag ingest ./docs/research-paper.pdf --visual
 | `quality` | 约 2.9 GB | 包含标签、标注或其他图中文字的图像 |
 
 通过 MCP 使用 `visualQuality: "quality"`，或通过 CLI 使用 `--visual-quality quality`，即可选择较大的模型。实测 CPU 推理耗时约为 `fast` 的两倍，但实际结果取决于硬件和模型更新。
+
+#### 跨同步的视觉模式
+
+PDF 索引时所用的模式会被记录下来，`sync` 会沿用它：以 `fast` 或 `quality` 索引的 PDF 会按同一模式重新导入，没有记录模式的 PDF 按文本导入。
+
+```bash
+npx mcp-local-rag sync ./docs/                      # 沿用每个 PDF 记录的模式
+npx mcp-local-rag sync ./docs/ --visual             # 为范围内所有 PDF 请求 fast
+npx mcp-local-rag sync ./docs/ --visual --visual-quality quality
+```
+
+`--visual` 会覆盖已记录的模式，因此也会为按文本索引的 PDF 生成说明文字。更换模式后，即使文件本身没有变化，该 PDF 也会重新导入；再次执行同一命令则不做任何处理，也不加载模型。
+
+要关闭某个路径的说明文字，请对它执行 `ingest`：一次成功的常规导入会清除已记录的模式。要重试生成失败的页面，请执行 `ingest <路径> --visual --visual-quality <模式>` 并指定所需模式——只用 `ingest` 反而会清除它。如果一个 PDF 的索引记录中模式不一致，`sync` 会在做出任何更改前停止并指出该文件；使用 `--visual` 重新运行即可确定模式。
 
 生成的说明文字只是辅助文本，并非忠实的逐字转录。检索到的说明文字和文档文本都应视为不可信输入，而不是操作指令。
 

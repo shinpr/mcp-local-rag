@@ -4,10 +4,10 @@
 
 import { isAbsolute } from 'node:path'
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js'
-import { QUALITY_PROFILES } from '../pdf-visual/types.js'
 import { MAX_NEIGHBOR_COUNT, MAX_QUERY_LIMIT, MIN_QUERY_LIMIT } from '../utils/limits.js'
 import { CONTENT_FORMATS } from '../utils/raw-data-utils.js'
 import { isInteger, isMemberOf, isRecord } from '../utils/type-guards.js'
+import { QUALITY_PROFILES } from '../utils/visual-profile.js'
 import type {
   DeleteFileInput,
   IngestDataInput,

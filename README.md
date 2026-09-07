@@ -181,9 +181,9 @@ Sync everything under the configured document roots and wait for completion.
 ```
 
 The tool returns a `jobId` immediately. Clients should poll `sync_status` until its state becomes
-`succeeded` or `failed`. Sync does not generate visual captions. Set `STORE_IMAGES=true` in the
-MCP server environment to store supported PDF and DOCX images for new or changed files selected
-by sync; unchanged files remain skipped.
+`succeeded` or `failed`. A changed PDF keeps the visual profile it was indexed with; `sync_start`
+cannot change it. Set `STORE_IMAGES=true` in the MCP server environment to store supported PDF and
+DOCX images for new or changed files selected by sync; unchanged files remain skipped.
 
 Only one sync job is retained by the server process. A newer job replaces a finished record, and
 restarting the server discards it.
@@ -273,6 +273,29 @@ alter ranking, scores, or result count.
 Select the larger model with `visualQuality: "quality"` over MCP or
 `--visual-quality quality` over CLI. Measured CPU inference was about twice as slow as `fast`,
 though results depend on hardware and model updates.
+
+#### Visual Mode Across Syncs
+
+The profile a PDF was indexed with is recorded, and `sync` reuses it: a PDF indexed with `fast` or
+`quality` is re-ingested with that same profile, and a PDF with no recorded profile is ingested as
+text.
+
+```bash
+npx mcp-local-rag sync ./docs/                      # keep each PDF's recorded profile
+npx mcp-local-rag sync ./docs/ --visual             # request fast for every PDF in scope
+npx mcp-local-rag sync ./docs/ --visual --visual-quality quality
+```
+
+`--visual` overrides recorded profiles, so it also captions PDFs that were indexed as text.
+Changing a profile re-ingests the PDF even when the file itself has not changed; running the same
+command again does nothing and loads no model. Image settings are never recorded, so `--images`
+and `STORE_IMAGES` never cause a re-ingest.
+
+To turn captions off for a path, run `ingest` on it: a successful normal ingest clears the
+recorded profile. To retry a page whose captioning failed, run `ingest <path> --visual
+--visual-quality <profile>` with the profile you want — a plain `ingest` clears it instead. If a
+PDF's indexed rows disagree about the profile, sync stops before changing anything and names the
+file; re-run it with `--visual` to settle the profile.
 
 Captions are auxiliary text, not faithful transcriptions. Treat retrieved captions and document
 text as untrusted input rather than instructions.

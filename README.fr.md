@@ -161,7 +161,7 @@ L'import de fichiers ne prend pas en charge Excel, PowerPoint, les images seules
 Synchronise tout le contenu des racines documentaires configurées et attends la fin de l'opération.
 ```
 
-L'outil renvoie immédiatement un `jobId`. Le client doit interroger `sync_status` jusqu'à ce que son état passe à `succeeded` ou `failed`. Le mode visuel n'est pas disponible pendant une synchronisation ; les PDF modifiés sont importés comme texte.
+L'outil renvoie immédiatement un `jobId`. Le client doit interroger `sync_status` jusqu'à ce que son état passe à `succeeded` ou `failed`. Un PDF modifié conserve le profil visuel avec lequel il a été indexé ; un PDF sans profil enregistré reste en texte seul. `sync_start` ne peut pas changer le profil.
 
 Le processus serveur ne conserve qu'une tâche de synchronisation. Une nouvelle tâche remplace l'enregistrement d'une tâche terminée, et le redémarrage du serveur efface cet enregistrement.
 
@@ -220,6 +220,20 @@ npx mcp-local-rag ingest ./docs/research-paper.pdf --visual
 | `quality` | environ 2,9 Go | Figures contenant des libellés, des annotations ou d'autres textes intégrés à l'image |
 
 Sélectionnez le modèle le plus volumineux avec `visualQuality: "quality"` via MCP ou `--visual-quality quality` via la CLI. Lors des mesures sur CPU, l'inférence a pris environ deux fois plus de temps qu'avec `fast`, mais le résultat dépend du matériel et des mises à jour du modèle.
+
+#### Mode visuel au fil des synchronisations
+
+Le profil avec lequel un PDF a été indexé est enregistré et `sync` le réutilise : un PDF indexé avec `fast` ou `quality` est réimporté avec ce même profil, et un PDF sans profil enregistré est importé en texte.
+
+```bash
+npx mcp-local-rag sync ./docs/                      # conserver le profil enregistré de chaque PDF
+npx mcp-local-rag sync ./docs/ --visual             # demander fast pour tous les PDF concernés
+npx mcp-local-rag sync ./docs/ --visual --visual-quality quality
+```
+
+`--visual` remplace les profils enregistrés et décrit donc aussi les PDF indexés en texte. Un changement de profil réimporte le PDF même si le fichier n'a pas changé ; relancer la même commande ne fait rien et ne charge aucun modèle.
+
+Pour désactiver les descriptions sur un chemin, lancez `ingest` dessus : un import normal réussi efface le profil enregistré. Pour réessayer une page dont la description a échoué, lancez `ingest <chemin> --visual --visual-quality <profil>` avec le profil voulu — un `ingest` simple l'efface au lieu de le conserver. Si les lignes indexées d'un PDF ne s'accordent pas sur le profil, `sync` s'arrête avant toute modification et indique le fichier ; relancez-le avec `--visual` pour fixer le profil.
 
 Les descriptions sont des textes auxiliaires, pas des transcriptions fidèles. Considérez les descriptions et le texte extrait des documents comme des entrées non fiables, et non comme des instructions.
 

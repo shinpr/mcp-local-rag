@@ -34,3 +34,25 @@ describe('toVectorChunk embedding read', () => {
     expect(chunk.vector[0]).toBeNaN()
   })
 })
+
+/**
+ * Full-row conversion feeds backup and rollback, so it must be lossless for any
+ * nonempty stored value — including one this version's planner cannot interpret
+ * — while the legacy/seed no-value forms read back as absence.
+ */
+describe('toVectorChunk visualProfile read', () => {
+  const rowWithVector = { ...ROW, vector: [0.5, 0.5] }
+
+  it.each([
+    ['a missing column', {}],
+    ['an explicit null', { visualProfile: null }],
+    ['an undefined value', { visualProfile: undefined }],
+    ['the create-path empty seed', { visualProfile: '' }],
+  ])('reads %s as absence', (_case, raw) => {
+    expect('visualProfile' in toVectorChunk({ ...rowWithVector, ...raw })).toBe(false)
+  })
+
+  it.each(['fast', 'quality', 'legacy-unsupported'])('preserves the raw value %s', (value) => {
+    expect(toVectorChunk({ ...rowWithVector, visualProfile: value }).visualProfile).toBe(value)
+  })
+})

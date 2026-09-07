@@ -22,6 +22,7 @@ import {
   runSync,
   type SyncCollaborators,
   type SyncCoverage,
+  type SyncIngestOptions,
 } from '../features/sync.js'
 import {
   buildChunksAndEmbeddings,
@@ -1181,10 +1182,10 @@ export class RAGServer {
         // The core hashes every scanned file before it loads the manifest, so
         // this is the first moment the supported-file count is final.
         this.updateSyncJob(jobId, { total: hashedFiles })
-        return await this.vectorStore.listChunkHashes()
+        return await this.vectorStore.listSyncManifest()
       },
-      ingestFile: async (filePath: string, images: boolean) => {
-        const chunkCount = await this.ingestFileForSync(filePath, images)
+      ingestFile: async (filePath: string, options: SyncIngestOptions) => {
+        const chunkCount = await this.ingestFileForSync(filePath, options)
         ingestedFiles += 1
         this.updateSyncJob(jobId, { completed: ingestedFiles })
         return chunkCount
@@ -1231,13 +1232,25 @@ export class RAGServer {
    * its backup and rollback semantics. A zero-chunk file is rejected before the
    * delete, so prior rows survive, and is reported as `empty`.
    *
+   * The planner's resolved profile is expressed through the same `visual` /
+   * `visualQuality` arguments a direct `ingest_file` call uses, so inheritance
+   * reuses the configured cache and device rather than a second VLM route.
+   *
    * Per-file compaction is skipped because the sync core runs one `optimize()`
    * for the whole run. A rollback still compacts — that path restores rows and
    * then aborts, so no later `optimize()` follows.
    */
-  private async ingestFileForSync(filePath: string, images: boolean): Promise<number> {
+  private async ingestFileForSync(
+    filePath: string,
+    { images, visualProfile }: SyncIngestOptions
+  ): Promise<number> {
     try {
-      const result = await this.ingestFile({ filePath }, { images })
+      const result = await this.ingestFile(
+        visualProfile === null
+          ? { filePath }
+          : { filePath, visual: true, visualQuality: visualProfile },
+        { images }
+      )
       return result.chunkCount
     } catch (error) {
       if (error instanceof NoChunksError) {

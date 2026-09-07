@@ -2,6 +2,7 @@
 
 import { MAX_CHUNK_MIN_LENGTH, MAX_FILE_SIZE_LIMIT } from '../utils/limits.js'
 import { checkSensitivePath } from '../utils/sensitive-path.js'
+import { isQualityProfile, type QualityProfile } from '../utils/visual-profile.js'
 
 // ============================================
 // Validation Helpers
@@ -83,6 +84,22 @@ export function requireFlagValue(argv: string[], flagIndex: number, flag: string
   const value = argv[flagIndex + 1]
   if (value === undefined || value.startsWith('-')) {
     console.error(`Missing value for ${flag}`)
+    process.exit(1)
+  }
+  return value
+}
+
+/**
+ * Read the `--visual-quality` value, exiting 1 when it is missing or outside
+ * the profile vocabulary. Shared by `ingest` and `sync` so both subcommands
+ * accept and reject exactly the same values with the same message.
+ */
+export function requireVisualQuality(argv: string[], flagIndex: number): QualityProfile {
+  const value = requireFlagValue(argv, flagIndex, '--visual-quality')
+  if (!isQualityProfile(value)) {
+    console.error(
+      `Invalid value for --visual-quality: "${value.slice(0, 100)}". Expected "fast" or "quality".`
+    )
     process.exit(1)
   }
   return value

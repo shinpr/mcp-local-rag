@@ -135,7 +135,7 @@ async function ingestWithMidFlightModification(): Promise<VectorChunk[]> {
       embedder: fixedEmbedder(),
       vectorStore: store,
     },
-    { visual: false }
+    { images: false }
   )
   return inserted
 }
@@ -258,7 +258,7 @@ describe('ingestSingleFile — the pre-parse read is validated first', () => {
           embedder: fixedEmbedder(),
           vectorStore: store,
         },
-        { visual: false }
+        { images: false }
       )
     ).rejects.toThrow(/File size exceeds limit/)
 
@@ -284,7 +284,7 @@ describe('ingestSingleFile — the pre-parse read is validated first', () => {
           embedder: fixedEmbedder(),
           vectorStore: store,
         },
-        { visual: false }
+        { images: false }
       )
     ).rejects.toThrow(/within a configured base directory/)
 

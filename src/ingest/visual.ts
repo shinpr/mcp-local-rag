@@ -2,11 +2,8 @@ import type { AtomicTextRange, SemanticChunker, TextChunk } from '../chunker/ind
 import type { EmbedderInterface } from '../chunker/semantic-chunker.js'
 import type { DocumentParser } from '../parser/index.js'
 import type { FilteredTextFragment } from '../parser/pdf-filter.js'
-import type {
-  DetectedVisualRegion,
-  ProcessedVisualRegion,
-  QualityProfile,
-} from '../pdf-visual/types.js'
+import type { DetectedVisualRegion, ProcessedVisualRegion } from '../pdf-visual/types.js'
+import type { QualityProfile } from '../utils/visual-profile.js'
 import type { VisualAttachment } from '../vectordb/types.js'
 import { buildChunksAndEmbeddings, createVisualAttachment, findNearestChunk } from './compute.js'
 

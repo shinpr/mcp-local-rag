@@ -1,8 +1,8 @@
 // Type definitions for RAGServer
 
-import type { QualityProfile } from '../pdf-visual/types.js'
 import type { BaseDirsConfigError } from '../utils/base-dirs.js'
 import type { ContentFormat } from '../utils/raw-data-utils.js'
+import type { QualityProfile } from '../utils/visual-profile.js'
 import type { GroupingMode } from '../vectordb/index.js'
 
 /**

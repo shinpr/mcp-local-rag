@@ -181,14 +181,17 @@ function firstBlock(result: DispatchResult): string {
   return result.content[0]?.text ?? ''
 }
 
-/** `(filePath, contentHash)` rows of the store, read through a fresh connection. */
+/** `(filePath, contentHash)` view of the sync manifest, read through a fresh connection. */
 async function storedManifest(
   fixture: Fixture
 ): Promise<{ filePath: string; contentHash: string | null }[]> {
   const store = new VectorStore({ dbPath: fixture.dbPath, tableName: 'chunks' })
   await store.initialize()
   try {
-    return await store.listChunkHashes()
+    return (await store.listSyncManifest()).map(({ filePath, contentHash }) => ({
+      filePath,
+      contentHash,
+    }))
   } finally {
     await store.close()
   }

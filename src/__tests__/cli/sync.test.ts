@@ -231,19 +231,21 @@ async function seedRows(
   }
 }
 
-/** `(filePath, contentHash)` manifest of the store, sorted for stable equality. */
+/** `(filePath, contentHash)` view of the sync manifest, sorted for stable equality. */
 async function storedManifest(
   fixture: Fixture
 ): Promise<{ filePath: string; contentHash: string | null }[]> {
   const store = new VectorStore({ dbPath: fixture.dbPath, tableName: 'chunks' })
   await store.initialize()
   try {
-    const rows = await store.listChunkHashes()
-    return rows.sort(
-      (left, right) =>
-        left.filePath.localeCompare(right.filePath) ||
-        (left.contentHash ?? '').localeCompare(right.contentHash ?? '')
-    )
+    const rows = await store.listSyncManifest()
+    return rows
+      .map(({ filePath, contentHash }) => ({ filePath, contentHash }))
+      .sort(
+        (left, right) =>
+          left.filePath.localeCompare(right.filePath) ||
+          (left.contentHash ?? '').localeCompare(right.contentHash ?? '')
+      )
   } finally {
     await store.close()
   }
@@ -351,10 +353,10 @@ describe('CLI sync', () => {
   })
 
   // --------------------------------------------
-  // Argument parsing: repeatable roots, one path, no visual option
+  // Argument parsing: repeatable roots, one path, visual override
   // --------------------------------------------
 
-  it('shows repeatable base-directory help with no visual option and exits 0', async () => {
+  it('shows repeatable base-directory and visual help and exits 0', async () => {
     const fixture = await makeFixture('help')
 
     const outcome = await runCli(fixture, ['--help'])
@@ -365,7 +367,10 @@ describe('CLI sync', () => {
     expect(help).toContain('--base-dir <path>')
     expect(help).toContain('repeatable')
     expect(help).toContain('-h, --help')
-    expect(help).not.toContain('--visual')
+    expect(help).toContain('--visual')
+    expect(help).toContain('--visual-quality <profile>')
+    // The inheritance default is the part a user cannot infer from the flag list.
+    expect(help).toMatch(/keeps the visual profile it was last indexed with/)
     expect(help).not.toContain('--dry-run')
   })
 
@@ -472,23 +477,39 @@ describe('CLI sync', () => {
     expect(calls.createEmbedder).toBe(0)
   })
 
-  it('rejects --visual with a non-zero exit and mutates nothing', async () => {
-    const fixture = await makeFixture('visual-rejected')
+  it.each([
+    { args: ['--visual-quality', 'ultra'], message: 'Invalid value for --visual-quality' },
+    { args: ['--visual', '--visual-quality'], message: 'Missing value for --visual-quality' },
+  ])('rejects $args before touching the database', async ({ args, message }) => {
+    const fixture = await makeFixture(`visual-quality-${args.length}-${args[1] ?? 'end'}`)
     const filePath = await writeFixtureFile(
       join(expectDefined(fixture.roots[0]), 'a.md'),
       'a'.repeat(200)
     )
     await seedRows(fixture, filePath, 'stale-hash')
 
-    const outcome = await runCli(fixture, ['--visual'])
+    const outcome = await runCli(fixture, args)
 
     expect(outcome.exitError?.message).toBe('process.exit(1)')
-    expect(outcome.stderr.join('\n')).toContain('Unknown option: --visual')
+    expect(outcome.stderr.join('\n')).toContain(message)
     expect(calls.createEmbedder).toBe(0)
     expect(await storedManifest(fixture)).toEqual([
       { filePath, contentHash: 'stale-hash' },
       { filePath, contentHash: 'stale-hash' },
     ])
+  })
+
+  it('accepts a valid --visual-quality without --visual and syncs a non-PDF unchanged', async () => {
+    const fixture = await makeFixture('visual-quality-ignored')
+    const content = 'b'.repeat(200)
+    const filePath = await writeFixtureFile(join(expectDefined(fixture.roots[0]), 'a.md'), content)
+
+    const outcome = await runCli(fixture, ['--visual-quality', 'quality'])
+
+    expect(outcome.exitError).toBeUndefined()
+    expect(outcome.exitCode).toBeUndefined()
+    expect(reportedCounters(outcome)).toEqual({ upserted: 1, skipped: 0, empty: 0, pruned: 0 })
+    expect(await storedManifest(fixture)).toEqual([{ filePath, contentHash: sha256(content) }])
   })
 
   // --------------------------------------------

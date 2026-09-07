@@ -5,11 +5,15 @@ import { resolve, sep } from 'node:path'
 
 import { SemanticChunker } from '../chunker/index.js'
 import type { Embedder } from '../embedder/index.js'
-import { buildPreparedFileVectorChunks, prepareFileForIngest } from '../ingest/file.js'
+import {
+  buildPreparedFileVectorChunks,
+  type PrepareFileForIngestOptions,
+  prepareFileForIngest,
+} from '../ingest/file.js'
 import { DocumentParser } from '../parser/index.js'
-import { QUALITY_PROFILES, type QualityProfile } from '../pdf-visual/types.js'
 import type { BaseDirsConfig, BaseDirsConfigWarning } from '../utils/base-dirs.js'
 import { DEFAULT_MAX_FILE_SIZE, MAX_CHUNK_MIN_LENGTH } from '../utils/limits.js'
+import type { QualityProfile } from '../utils/visual-profile.js'
 import type { VectorStore } from '../vectordb/index.js'
 import {
   createEmbedder,
@@ -22,6 +26,7 @@ import type { GlobalOptions, ResolvedGlobalConfig } from './options.js'
 import {
   consumeBaseDirArg,
   requireFlagValue,
+  requireVisualQuality,
   resolveDevice,
   resolveGlobalConfig,
   validateChunkMinLength,
@@ -64,10 +69,6 @@ interface ParsedArgs {
   positional: string | undefined
   options: IngestCliOptions
   help: boolean
-}
-
-function isQualityProfile(value: string): value is QualityProfile {
-  return QUALITY_PROFILES.some((profile) => profile === value)
 }
 
 // ============================================
@@ -172,18 +173,10 @@ export function parseArgs(args: string[]): ParsedArgs {
         options.images = true
         i++
         break
-      case '--visual-quality': {
-        const value = requireFlagValue(args, i, '--visual-quality')
-        if (!isQualityProfile(value)) {
-          console.error(
-            `Invalid value for --visual-quality: "${value.slice(0, 100)}". Expected "fast" or "quality".`
-          )
-          process.exit(1)
-        }
-        options.visualQuality = value
+      case '--visual-quality':
+        options.visualQuality = requireVisualQuality(args, i)
         i += 2
         break
-      }
       default:
         rejectUnexpectedArgument(arg, positional)
         positional = arg
@@ -271,27 +264,6 @@ export async function resolveConfig(
 // Per-file Ingestion
 // ============================================
 
-/**
- * Options for `ingestSingleFile`. VLM configuration is required only when
- * visual captions are enabled.
- */
-export type IngestSingleFileOptions =
-  | { visual?: false | undefined; images?: false | undefined }
-  | { visual: false; images: true }
-  | {
-      visual: true
-      images?: boolean | undefined
-      profile: QualityProfile
-      cacheDir: string
-      device?: string | undefined
-    }
-
-/**
- * Ingest one file, returning the number of chunks inserted.
- *
- * `visual: true` on a `.pdf` routes through VLM captioning. `pdf-visual` is
- * loaded by dynamic import, so no other path pulls the VLM module in.
- */
 /** Collaborators one CLI ingest run needs, injected as a unit. */
 export interface SingleFileIngestCollaborators {
   parser: DocumentParser
@@ -300,29 +272,21 @@ export interface SingleFileIngestCollaborators {
   vectorStore: VectorStore
 }
 
+/**
+ * Ingest one file, returning the number of chunks inserted.
+ *
+ * `options` is the shared preparation contract, passed straight through: a
+ * `captioner` on a `.pdf` routes through VLM captioning, and `pdf-visual` is
+ * loaded by dynamic import, so no other path pulls the VLM module in.
+ */
 export async function ingestSingleFile(
   filePath: string,
   collaborators: SingleFileIngestCollaborators,
-  options?: IngestSingleFileOptions
+  options: PrepareFileForIngestOptions = { images: false }
 ): Promise<number> {
   const { parser, chunker, embedder, vectorStore } = collaborators
   const isPdf = filePath.toLowerCase().endsWith('.pdf')
-  const prepared = await prepareFileForIngest(
-    filePath,
-    { parser, chunker, embedder },
-    {
-      images: options?.images === true,
-      ...(options?.visual === true
-        ? {
-            captioner: {
-              profile: options.profile,
-              cacheDir: options.cacheDir,
-              device: options.device,
-            },
-          }
-        : {}),
-    }
-  )
+  const prepared = await prepareFileForIngest(filePath, { parser, chunker, embedder }, options)
   if (prepared.omittedImageCount > 0) {
     console.error(
       `  Warning: skipped ${prepared.omittedImageCount} undecodable or oversized ${isPdf ? 'PDF' : 'DOCX'} image(s)`
@@ -346,28 +310,26 @@ export async function ingestSingleFile(
 // Main Entry Point
 // ============================================
 
-/** Run the ingest CLI subcommand. */
 /**
- * The two variants are built explicitly so VLM fields only travel with the
- * visual-true branch, carrying the cacheDir `resolveGlobalConfig` validated.
+ * Turn a resolved per-file request into shared preparation options. The
+ * captioner block travels only with a non-null profile, carrying the cacheDir
+ * `resolveGlobalConfig` validated. Shared by `ingest` and CLI `sync`, so both
+ * reach the VLM through one mapping.
  */
-function buildIngestOptions(
-  options: IngestCliOptions,
+export function buildFileIngestOptions(
+  request: { images: boolean; visualProfile: QualityProfile | null },
   globalConfig: ResolvedGlobalConfig
-): IngestSingleFileOptions {
-  if (!options.visual) {
-    return { visual: false, images: options.images === true }
+): PrepareFileForIngestOptions {
+  if (request.visualProfile === null) {
+    return { images: request.images }
   }
   return {
-    visual: true,
-    images: options.images === true,
-    // Default the profile to `'fast'` when `--visual-quality` was not
-    // provided. The flag is silently ignored when `--visual` itself is absent
-    // (mirrors the existing `--visual` precedent of silently coercing for
-    // non-PDF files).
-    profile: options.visualQuality ?? 'fast',
-    cacheDir: globalConfig.cacheDir,
-    device: resolveDevice(process.env['RAG_DEVICE']),
+    images: request.images,
+    captioner: {
+      profile: request.visualProfile,
+      cacheDir: globalConfig.cacheDir,
+      device: resolveDevice(process.env['RAG_DEVICE']),
+    },
   }
 }
 
@@ -447,7 +409,16 @@ export async function runIngest(args: string[], globalOptions: GlobalOptions = {
         const chunkCount = await ingestSingleFile(
           filePath,
           { parser, chunker, embedder, vectorStore },
-          buildIngestOptions(options, globalConfig)
+          buildFileIngestOptions(
+            {
+              images: options.images === true,
+              // `--visual-quality` defaults to `fast` and is silently ignored
+              // without `--visual`, mirroring how `--visual` itself is silently
+              // coerced away for non-PDF files.
+              visualProfile: options.visual === true ? (options.visualQuality ?? 'fast') : null,
+            },
+            globalConfig
+          )
         )
         if (chunkCount === 0) {
           // 0 chunks is a skip/warning, not a failure

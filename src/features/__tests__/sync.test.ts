@@ -1,6 +1,7 @@
 import * as fs from 'node:fs'
 import { basename } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
+import { expectDefined } from '../../__tests__/test-doubles.js'
 import { buildVectorChunks } from '../../ingest/compute.js'
 import { type VectorChunk, VectorStore } from '../../vectordb/index.js'
 import {
@@ -93,7 +94,9 @@ describe('planSync — content-hash decisions (SYNC-001)', () => {
       planInput({ diskFiles: [{ filePath: `${ROOT}/new.md`, contentHash: HASH_A }] })
     )
 
-    expect(plan.upserts).toEqual([{ filePath: `${ROOT}/new.md`, staleStoredPaths: [] }])
+    expect(plan.upserts).toEqual([
+      { filePath: `${ROOT}/new.md`, staleStoredPaths: [], visualProfile: null },
+    ])
     expect(plan.skipped).toBe(0)
   })
 
@@ -458,7 +461,11 @@ describe('planSync — Windows comparison keys', () => {
 
     expect(plan).toEqual({
       upserts: [
-        { filePath: 'C:\\Root\\Sub\\Live.md', staleStoredPaths: ['c:\\root\\sub\\live.md'] },
+        {
+          filePath: 'C:\\Root\\Sub\\Live.md',
+          staleStoredPaths: ['c:\\root\\sub\\live.md'],
+          visualProfile: null,
+        },
       ],
       skipped: 0,
       prunes: [],
@@ -483,6 +490,7 @@ describe('planSync — Windows comparison keys', () => {
       {
         filePath: 'C:\\Root\\Sub\\Live.md',
         staleStoredPaths: ['c:\\root\\sub\\live.md', 'C:\\ROOT\\SUB\\LIVE.MD'],
+        visualProfile: null,
       },
     ])
     expect(plan.prunes).toEqual([])
@@ -551,6 +559,211 @@ describe('planSync — Windows comparison keys', () => {
 })
 
 // ============================================================
+// Planner: visual-profile resolution and convergence
+// ============================================================
+
+describe('planSync — visual-profile resolution', () => {
+  const PDF = `${ROOT}/report.pdf`
+
+  /** The single action for `filePath`, so the resolved profile is read directly. */
+  const actionFor = (plan: SyncPlan, filePath: string) =>
+    plan.upserts.find((action) => action.filePath === filePath)
+
+  it('inherits the single recorded profile of a changed PDF', () => {
+    for (const recorded of ['fast', 'quality'] as const) {
+      const plan = planSync(
+        planInput({
+          diskFiles: [{ filePath: PDF, contentHash: HASH_B }],
+          dbRows: [
+            { filePath: PDF, contentHash: HASH_A, visualProfile: recorded },
+            { filePath: PDF, contentHash: HASH_A, visualProfile: recorded },
+          ],
+        })
+      )
+
+      expect(actionFor(plan, PDF)).toEqual({
+        filePath: PDF,
+        staleStoredPaths: [],
+        visualProfile: recorded,
+      })
+    }
+  })
+
+  it('inherits the known profile when some rows record absence', () => {
+    const plan = planSync(
+      planInput({
+        diskFiles: [{ filePath: PDF, contentHash: HASH_A }],
+        dbRows: [
+          { filePath: PDF, contentHash: HASH_A, visualProfile: 'quality' },
+          { filePath: PDF, contentHash: HASH_A, visualProfile: null },
+          { filePath: PDF, contentHash: HASH_A, visualProfile: '' },
+          { filePath: PDF, contentHash: HASH_A },
+        ],
+      })
+    )
+
+    // Unchanged bytes, but the rows disagree on the profile, so the file is
+    // re-ingested to make every row record `quality`.
+    expect(actionFor(plan, PDF)?.visualProfile).toBe('quality')
+    expect(plan.skipped).toBe(0)
+  })
+
+  it('plans a new or profile-less PDF as normal text ingestion', () => {
+    const plan = planSync(
+      planInput({
+        diskFiles: [
+          { filePath: `${ROOT}/new.pdf`, contentHash: HASH_A },
+          { filePath: `${ROOT}/legacy.pdf`, contentHash: HASH_B },
+        ],
+        dbRows: [{ filePath: `${ROOT}/legacy.pdf`, contentHash: HASH_A }],
+      })
+    )
+
+    expect(actionFor(plan, `${ROOT}/new.pdf`)?.visualProfile).toBeNull()
+    expect(actionFor(plan, `${ROOT}/legacy.pdf`)?.visualProfile).toBeNull()
+  })
+
+  it('skips a PDF whose hash and every row profile already match', () => {
+    const plan = planSync(
+      planInput({
+        diskFiles: [{ filePath: PDF, contentHash: HASH_A }],
+        dbRows: [
+          { filePath: PDF, contentHash: HASH_A, visualProfile: 'fast' },
+          { filePath: PDF, contentHash: HASH_A, visualProfile: 'fast' },
+        ],
+      })
+    )
+
+    expect(plan).toEqual({ upserts: [], skipped: 1, prunes: [] })
+  })
+
+  it('skips an unchanged visual PDF when the explicit request repeats its profile', () => {
+    const plan = planSync(
+      planInput({
+        visualProfile: 'quality',
+        diskFiles: [{ filePath: PDF, contentHash: HASH_A }],
+        dbRows: [{ filePath: PDF, contentHash: HASH_A, visualProfile: 'quality' }],
+      })
+    )
+
+    expect(plan).toEqual({ upserts: [], skipped: 1, prunes: [] })
+  })
+
+  it.each([
+    { title: 'promotes an unchanged normal PDF', recorded: null, requested: 'fast' as const },
+    { title: 'promotes an unchanged legacy PDF', recorded: null, requested: 'quality' as const },
+    { title: 'converts quality to fast', recorded: 'quality', requested: 'fast' as const },
+    { title: 'converts fast to quality', recorded: 'fast', requested: 'quality' as const },
+  ])('$title on identical bytes', ({ recorded, requested }) => {
+    const plan = planSync(
+      planInput({
+        visualProfile: requested,
+        diskFiles: [{ filePath: PDF, contentHash: HASH_A }],
+        dbRows: [
+          recorded === null
+            ? { filePath: PDF, contentHash: HASH_A }
+            : { filePath: PDF, contentHash: HASH_A, visualProfile: recorded },
+        ],
+      })
+    )
+
+    expect(actionFor(plan, PDF)?.visualProfile).toBe(requested)
+    expect(plan.skipped).toBe(0)
+  })
+
+  it.each([
+    {
+      case: 'conflicting known profiles',
+      rows: ['fast', 'quality'],
+      expected: 'its indexed rows disagree (fast, quality)',
+    },
+    {
+      case: 'an unsupported nonempty profile',
+      rows: ['ultra'],
+      expected: 'it stores an unsupported visual profile "ultra"',
+    },
+  ])('refuses to plan a PDF with $case', ({ rows, expected }) => {
+    const input = planInput({
+      diskFiles: [{ filePath: PDF, contentHash: HASH_B }],
+      dbRows: rows.map((visualProfile) => ({
+        filePath: PDF,
+        contentHash: HASH_A,
+        visualProfile,
+      })),
+    })
+
+    expect(() => planSync(input)).toThrow(expected)
+    expect(() => planSync(input)).toThrow(PDF)
+  })
+
+  it.each(['fast', 'quality'] as const)(
+    'repairs ambiguous stored state with --visual %s',
+    (requested) => {
+      const plan = planSync(
+        planInput({
+          visualProfile: requested,
+          diskFiles: [{ filePath: PDF, contentHash: HASH_A }],
+          dbRows: [
+            { filePath: PDF, contentHash: HASH_A, visualProfile: 'fast' },
+            { filePath: PDF, contentHash: HASH_A, visualProfile: 'quality' },
+            { filePath: PDF, contentHash: HASH_A, visualProfile: 'ultra' },
+          ],
+        })
+      )
+
+      expect(actionFor(plan, PDF)?.visualProfile).toBe(requested)
+    }
+  )
+
+  it('ignores stored profiles on a non-PDF, with or without an explicit request', () => {
+    for (const override of [undefined, 'quality' as const]) {
+      const plan = planSync(
+        planInput({
+          ...(override === undefined ? {} : { visualProfile: override }),
+          diskFiles: [{ filePath: `${ROOT}/notes.md`, contentHash: HASH_A }],
+          dbRows: [
+            { filePath: `${ROOT}/notes.md`, contentHash: HASH_A, visualProfile: 'fast' },
+            { filePath: `${ROOT}/notes.md`, contentHash: HASH_A, visualProfile: 'ultra' },
+          ],
+        })
+      )
+
+      expect(plan).toEqual({ upserts: [], skipped: 1, prunes: [] })
+    }
+  })
+
+  it('does not let a corrupt profile outside the requested scope fail the run', () => {
+    const plan = planSync(
+      planInput({
+        request: { kind: 'directory', path: `${ROOT}/sub` },
+        diskFiles: [{ filePath: `${ROOT}/sub/a.pdf`, contentHash: HASH_A }],
+        dbRows: [
+          { filePath: `${ROOT}/sub/a.pdf`, contentHash: HASH_A },
+          { filePath: `${ROOT}/elsewhere.pdf`, contentHash: HASH_B, visualProfile: 'ultra' },
+        ],
+      })
+    )
+
+    expect(upsertPaths(plan)).toEqual([])
+    expect(plan.skipped).toBe(1)
+    expect(prunedPaths(plan)).toEqual([])
+  })
+
+  it('does not interpret the profile of an oversized file whose bytes were never read', () => {
+    const oversized = `${ROOT}/huge.pdf`
+    const plan = planSync(
+      planInput({
+        diskFiles: [],
+        dbRows: [{ filePath: oversized, contentHash: HASH_A, visualProfile: 'ultra' }],
+        coverage: { ...noCoverage(), oversizedFiles: [oversized] },
+      })
+    )
+
+    expect(plan).toEqual({ upserts: [], skipped: 0, prunes: [] })
+  })
+})
+
+// ============================================================
 // Executor with injected fakes
 // ============================================================
 
@@ -586,6 +799,7 @@ function createExecutor(
 const upsertOf = (filePath: string, staleStoredPaths: string[] = []) => ({
   filePath,
   staleStoredPaths,
+  visualProfile: null,
 })
 
 describe('executeSyncPlan — mutation gating', () => {
@@ -600,7 +814,35 @@ describe('executeSyncPlan — mutation gating', () => {
     )
 
     expect(ingestFile).toHaveBeenCalledOnce()
-    expect(ingestFile).toHaveBeenCalledWith(`${ROOT}/changed.pdf`, true)
+    expect(ingestFile).toHaveBeenCalledWith(`${ROOT}/changed.pdf`, {
+      images: true,
+      visualProfile: null,
+    })
+  })
+
+  it('combines the one run-level image flag with each action own resolved profile', async () => {
+    const { executor } = createExecutor()
+    const ingestFile = vi.spyOn(executor, 'ingestFile')
+
+    await executeSyncPlan(
+      {
+        upserts: [
+          { ...upsertOf(`${ROOT}/inherited.pdf`), visualProfile: 'quality' },
+          { ...upsertOf(`${ROOT}/promoted.pdf`), visualProfile: 'fast' },
+          upsertOf(`${ROOT}/notes.md`),
+        ],
+        skipped: 0,
+        prunes: [],
+      },
+      executor,
+      false
+    )
+
+    expect(ingestFile.mock.calls).toEqual([
+      [`${ROOT}/inherited.pdf`, { images: false, visualProfile: 'quality' }],
+      [`${ROOT}/promoted.pdf`, { images: false, visualProfile: 'fast' }],
+      [`${ROOT}/notes.md`, { images: false, visualProfile: null }],
+    ])
   })
 
   it('touches no collaborator for a skip-only plan', async () => {
@@ -1157,6 +1399,39 @@ describe('runSync — gathering', () => {
     })
   })
 
+  it('reports a profile-resolution failure through the same envelope, before any executor call', async () => {
+    const { collaborators, log } = createCollaborators({
+      scans: { [ROOT]: { files: [`${ROOT}/report.pdf`, `${ROOT}/notes.md`] } },
+      hashes: { [`${ROOT}/report.pdf`]: HASH_A, [`${ROOT}/notes.md`]: HASH_B },
+      dbRows: [
+        { filePath: `${ROOT}/report.pdf`, contentHash: HASH_C, visualProfile: 'fast' },
+        { filePath: `${ROOT}/report.pdf`, contentHash: HASH_C, visualProfile: 'quality' },
+        { filePath: `${ROOT}/gone.md`, contentHash: HASH_A },
+      ],
+    })
+
+    const result = await runSync(runInput(collaborators))
+
+    // Nothing after the manifest load ran: no ingest, no delete for the
+    // otherwise prunable `gone.md`, no optimize.
+    expect(log).toEqual([
+      `scan:${ROOT}`,
+      `hash:${ROOT}/report.pdf`,
+      `hash:${ROOT}/notes.md`,
+      'manifest',
+    ])
+    expect(result).toMatchObject({
+      upserted: 0,
+      skipped: 0,
+      empty: 0,
+      pruned: 0,
+      prunedPaths: [],
+      coverage: noCoverage(),
+    })
+    expect(result.error?.message).toContain(`${ROOT}/report.pdf`)
+    expect(formatSyncError(expectDefined(result.error))).toContain('its indexed rows disagree')
+  })
+
   // A file the hasher declines to read (over the configured size limit) has no
   // known content identity this run. It must not become an upsert, must not look
   // deleted, and must not stop the run — one oversized file would otherwise make
@@ -1387,7 +1662,7 @@ describe('sync executor against a real VectorStore (Early Verification Point)', 
       .map((chunk: VectorChunk) => chunk.contentHash ?? null)
 
   const manifestFrom = (store: VectorStore) => async (): Promise<SyncManifestRow[]> =>
-    await store.listChunkHashes()
+    await store.listSyncManifest()
 
   it('(a) prunes an absent sibling while leaving the live file and a prefix-sharing sibling readable', async () => {
     await withStore('scope-siblings', async (store, dbPath) => {

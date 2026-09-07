@@ -6,6 +6,7 @@ import { parseArgs as parseIngestArgs } from '../../cli/ingest.js'
 import {
   parseGlobalOptions,
   ROOT_HELP_TEXT,
+  requireVisualQuality,
   resolveDtype,
   resolveGlobalConfig,
   validateMaxFileSize,
@@ -43,6 +44,51 @@ describe('ingest --images option', () => {
     expect(parsed.positional).toBe('/docs/manual.pdf')
     expect(parsed.options.visual).toBe(visual)
     expect(parsed.options.images).toBe(images)
+  })
+})
+
+describe('requireVisualQuality', () => {
+  let exitSpy: ReturnType<typeof vi.spyOn>
+  let errorSpy: ReturnType<typeof vi.spyOn>
+
+  beforeEach(() => {
+    exitSpy = vi
+      .spyOn(process, 'exit')
+      .mockImplementation((code?: number | string | null | undefined) => {
+        throw new Error(`process.exit(${code})`)
+      })
+    errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+  })
+
+  afterEach(() => {
+    exitSpy.mockRestore()
+    errorSpy.mockRestore()
+  })
+
+  it.each(['fast', 'quality'] as const)('returns the %s profile', (profile) => {
+    expect(requireVisualQuality(['--visual-quality', profile], 0)).toBe(profile)
+  })
+
+  it.each([
+    { argv: ['--visual-quality', 'ultra'], message: 'Invalid value for --visual-quality' },
+    { argv: ['--visual-quality', 'FAST'], message: 'Invalid value for --visual-quality' },
+    { argv: ['--visual-quality'], message: 'Missing value for --visual-quality' },
+    { argv: ['--visual-quality', '--images'], message: 'Missing value for --visual-quality' },
+  ])('exits 1 for $argv', ({ argv, message }) => {
+    expect(() => requireVisualQuality(argv, 0)).toThrow('process.exit(1)')
+    expect(errorSpy.mock.calls.map(String).join('\n')).toContain(message)
+  })
+
+  it('is the validator the ingest parser uses', () => {
+    expect(
+      parseIngestArgs(['--visual-quality', 'quality', '/docs/m.pdf']).options.visualQuality
+    ).toBe('quality')
+    expect(() => parseIngestArgs(['--visual-quality', 'ultra', '/docs/m.pdf'])).toThrow(
+      'process.exit(1)'
+    )
+    expect(errorSpy.mock.calls.map(String).join('\n')).toContain(
+      'Invalid value for --visual-quality: "ultra"'
+    )
   })
 })
 

@@ -121,7 +121,7 @@ describe('VectorStore', () => {
             expect(await reader.listFiles()).toHaveLength(1)
             break
           case 'hashes':
-            expect(await reader.listChunkHashes()).toHaveLength(1)
+            expect(await reader.listSyncManifest()).toHaveLength(1)
             break
           case 'range':
             expect(await reader.getChunksByRange(chunk.filePath, 0, 0)).toHaveLength(1)
@@ -1451,12 +1451,13 @@ describe('VectorStore', () => {
     })
 
     /**
-     * `listChunkHashes` is the DB-manifest projection sync reconciles against.
+     * `listSyncManifest` is the DB-manifest projection sync reconciles against.
      * It must preserve verbatim stored spellings (they are the deletion keys),
      * emit one entry per chunk row (so a conflicting-hash file is detectable),
-     * and report a hashless row as `null` rather than the create-path `''` seed.
+     * and report a hashless or profile-less row as `null` rather than the
+     * create-path `''` seed.
      */
-    describe('listChunkHashes projection', () => {
+    describe('listSyncManifest projection', () => {
       // Row order is not a storage contract, so compare as a code-point-sorted
       // list (hashless entries first) rather than asserting insertion order.
       const compare = (a: string, b: string): number => {
@@ -1465,7 +1466,9 @@ describe('VectorStore', () => {
         }
         return a > b ? 1 : 0
       }
-      const sortEntries = <T extends { filePath: string; contentHash: string | null }>(
+      const sortEntries = <
+        T extends { filePath: string; contentHash: string | null; visualProfile: string | null },
+      >(
         entries: T[]
       ): T[] =>
         [...entries].sort(
@@ -1490,10 +1493,10 @@ describe('VectorStore', () => {
             },
           ])
 
-          expect(sortEntries(await store.listChunkHashes())).toEqual([
-            { filePath: '/test/B.md', contentHash: HASH_TWO },
-            { filePath: '/test/a.md', contentHash: HASH_ONE },
-            { filePath: '/test/a.md', contentHash: HASH_ONE },
+          expect(sortEntries(await store.listSyncManifest())).toEqual([
+            { filePath: '/test/B.md', contentHash: HASH_TWO, visualProfile: null },
+            { filePath: '/test/a.md', contentHash: HASH_ONE, visualProfile: null },
+            { filePath: '/test/a.md', contentHash: HASH_ONE, visualProfile: null },
           ])
         })
       })
@@ -1508,9 +1511,9 @@ describe('VectorStore', () => {
             createTestChunk('hashless', '/test/hashless.md', 0, createNormalizedVector(2)),
           ])
 
-          expect(sortEntries(await store.listChunkHashes())).toEqual([
-            { filePath: '/test/hashed.md', contentHash: HASH_ONE },
-            { filePath: '/test/hashless.md', contentHash: null },
+          expect(sortEntries(await store.listSyncManifest())).toEqual([
+            { filePath: '/test/hashed.md', contentHash: HASH_ONE, visualProfile: null },
+            { filePath: '/test/hashless.md', contentHash: null, visualProfile: null },
           ])
         })
       })
@@ -1530,17 +1533,17 @@ describe('VectorStore', () => {
             createTestChunk('three', filePath, 2, createNormalizedVector(3)),
           ])
 
-          expect(sortEntries(await store.listChunkHashes())).toEqual([
-            { filePath, contentHash: null },
-            { filePath, contentHash: HASH_TWO },
-            { filePath, contentHash: HASH_ONE },
+          expect(sortEntries(await store.listSyncManifest())).toEqual([
+            { filePath, contentHash: null, visualProfile: null },
+            { filePath, contentHash: HASH_TWO, visualProfile: null },
+            { filePath, contentHash: HASH_ONE, visualProfile: null },
           ])
         })
       })
 
       it('returns an empty manifest when the backing table does not exist yet', async () => {
         await withTempDb('list-chunk-hashes-lazy', async (store) => {
-          expect(await store.listChunkHashes()).toEqual([])
+          expect(await store.listSyncManifest()).toEqual([])
         })
       })
     })
@@ -2342,11 +2345,13 @@ describe('visualAttachments schema and hydration', () => {
       const { fileTitle: _title, visualAttachments: _images, ...legacy } = chunk('/legacy.pdf')
       await writer.createTable('chunks', [legacy])
       const [hashes, range, images] = await Promise.all([
-        reader.listChunkHashes(),
+        reader.listSyncManifest(),
         reader.getChunksByRange(legacy.filePath, 0, 0),
         reader.hydrateVisualAttachments([{ id: legacy.id }]),
       ])
-      expect(hashes).toEqual([{ filePath: legacy.filePath, contentHash: null }])
+      expect(hashes).toEqual([
+        { filePath: legacy.filePath, contentHash: null, visualProfile: null },
+      ])
       expect(range).toHaveLength(1)
       expect(images.rows).toEqual([{ id: legacy.id, attachments: [] }])
     } finally {
@@ -2437,6 +2442,151 @@ describe('visualAttachments schema and hydration', () => {
       const hydration = await store.hydrateVisualAttachments([expectDefined(oldResult)])
       expect(hydration.rows).toEqual([{ id: oldRow.id, attachments: [] }])
       expect(hydration.omittedCount).toBe(1)
+    } finally {
+      await store.close()
+      fs.rmSync(dbPath, { recursive: true, force: true })
+    }
+  })
+})
+
+/**
+ * `visualProfile` is a real column on the same rows as the indexed content, so
+ * every one of these observations reopens the store: a value that only exists
+ * in the in-memory record would pass an assertion made through the writer.
+ *
+ * The two creation orders matter independently — Arrow infers the column type
+ * from the first insert, so a first-normal ingestion must still leave a string
+ * column a later visual value fits into.
+ */
+describe('visualProfile schema and persistence', () => {
+  function profileChunk(filePath: string, visualProfile?: string): VectorChunk {
+    return {
+      id: randomUUID(),
+      filePath,
+      chunkIndex: 0,
+      text: 'profile carrying text',
+      vector: new Array(384).fill(0).map((_, index) => (index === 0 ? 1 : 0)),
+      metadata: { fileName: path.basename(filePath), fileSize: 21, fileType: 'pdf' },
+      fileTitle: null,
+      contentHash: 'a'.repeat(64),
+      timestamp: new Date().toISOString(),
+      ...(visualProfile === undefined ? {} : { visualProfile }),
+    }
+  }
+
+  /** Write through one store, then read every observation through a second one. */
+  async function withReopenedStore(
+    name: string,
+    write: (store: VectorStore) => Promise<void>,
+    read: (store: VectorStore) => Promise<void>
+  ): Promise<void> {
+    const dbPath = `./tmp/test-vectordb-${name}`
+    fs.rmSync(dbPath, { recursive: true, force: true })
+    const writer = new VectorStore({ dbPath, tableName: 'chunks' })
+    const reader = new VectorStore({ dbPath, tableName: 'chunks' })
+    try {
+      await writer.initialize()
+      await write(writer)
+      await writer.close()
+      await reader.initialize()
+      await read(reader)
+    } finally {
+      await reader.close()
+      await writer.close()
+      fs.rmSync(dbPath, { recursive: true, force: true })
+    }
+  }
+
+  it('keeps a first-visual value readable after the table is created for it', async () => {
+    await withReopenedStore(
+      'profile-fresh-visual',
+      async (store) => {
+        await store.insertChunks([profileChunk('/first.pdf', 'quality')])
+      },
+      async (store) => {
+        expect((await store.getChunksByFilePath('/first.pdf'))[0]?.visualProfile).toBe('quality')
+        expect(await store.listSyncManifest()).toEqual([
+          { filePath: '/first.pdf', contentHash: 'a'.repeat(64), visualProfile: 'quality' },
+        ])
+      }
+    )
+  })
+
+  it('accepts a visual addition to a table created by a normal ingestion', async () => {
+    await withReopenedStore(
+      'profile-fresh-normal',
+      async (store) => {
+        await store.insertChunks([profileChunk('/normal.md')])
+        await store.insertChunks([profileChunk('/added.pdf', 'fast')])
+      },
+      async (store) => {
+        expect((await store.getChunksByFilePath('/normal.md'))[0]?.visualProfile).toBeUndefined()
+        expect((await store.getChunksByFilePath('/added.pdf'))[0]?.visualProfile).toBe('fast')
+      }
+    )
+  })
+
+  it('clears the profile when a visual file is replaced by a normal ingestion', async () => {
+    await withReopenedStore(
+      'profile-reset',
+      async (store) => {
+        await store.insertChunks([profileChunk('/reset.pdf', 'quality')])
+        await store.deleteChunks('/reset.pdf')
+        await store.insertChunks([profileChunk('/reset.pdf')])
+      },
+      async (store) => {
+        expect((await store.getChunksByFilePath('/reset.pdf'))[0]?.visualProfile).toBeUndefined()
+        expect(await store.listSyncManifest()).toEqual([
+          { filePath: '/reset.pdf', contentHash: 'a'.repeat(64), visualProfile: null },
+        ])
+      }
+    )
+  })
+
+  it('preserves an unsupported stored value through a full-row backup read', async () => {
+    // Lossless backup is what makes rollback safe; the planner rejects such a
+    // value later, but storage must not silently drop or normalize it.
+    await withReopenedStore(
+      'profile-unsupported-backup',
+      async (store) => {
+        await store.insertChunks([profileChunk('/unsupported.pdf', 'ultra')])
+      },
+      async (store) => {
+        const [row] = await store.getChunksByFilePath('/unsupported.pdf')
+        expect(row?.visualProfile).toBe('ultra')
+        await store.deleteChunks('/unsupported.pdf')
+        await store.insertChunks([expectDefined(row)])
+        expect((await store.getChunksByFilePath('/unsupported.pdf'))[0]?.visualProfile).toBe(
+          'ultra'
+        )
+      }
+    )
+  })
+
+  it('migrates a legacy table and keeps a later profile alongside the absent old one', async () => {
+    const dbPath = './tmp/test-vectordb-profile-migration'
+    fs.rmSync(dbPath, { recursive: true, force: true })
+    const { connect } = await import('@lancedb/lancedb')
+    const db = await connect(dbPath)
+    const { visualProfile: _omitted, ...legacy } = profileChunk('/legacy.pdf', 'ignored')
+    await db.createTable('chunks', [{ ...legacy, fileTitle: '', visualAttachments: '[]' }])
+    await db.close()
+
+    const store = new VectorStore({ dbPath, tableName: 'chunks' })
+    try {
+      await store.initialize()
+      await store.insertChunks([profileChunk('/migrated.pdf', 'fast')])
+
+      expect((await store.getChunksByFilePath('/legacy.pdf'))[0]?.visualProfile).toBeUndefined()
+      expect((await store.getChunksByFilePath('/migrated.pdf'))[0]?.visualProfile).toBe('fast')
+      expect(
+        (await store.listSyncManifest()).sort((left, right) =>
+          left.filePath < right.filePath ? -1 : 1
+        )
+      ).toEqual([
+        { filePath: '/legacy.pdf', contentHash: 'a'.repeat(64), visualProfile: null },
+        { filePath: '/migrated.pdf', contentHash: 'a'.repeat(64), visualProfile: 'fast' },
+      ])
     } finally {
       await store.close()
       fs.rmSync(dbPath, { recursive: true, force: true })

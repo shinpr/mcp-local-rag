@@ -5,8 +5,10 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node
 import { resolve } from 'node:path'
 import type { MockInstance } from 'vitest'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
+import { buildPdfWithImageBytes } from '../../__tests__/pdf-image-fixture.js'
 import { testModelCacheDir, withTestDevice } from '../../__tests__/test-device.js'
 import { expectError, expectRecord, privateMembers } from '../../__tests__/test-doubles.js'
+import { buildVectorChunks } from '../../ingest/compute.js'
 import * as rawDataUtils from '../../utils/raw-data-utils.js'
 import type { VectorChunk, VectorStore } from '../../vectordb/index.js'
 import { DatabaseError } from '../../vectordb/types.js'
@@ -15,6 +17,40 @@ import { RAGServer } from '../index.js'
 /** Rollback is only observable through the server's own store. */
 function privateVectorStore(server: RAGServer): VectorStore {
   return privateMembers<{ vectorStore: VectorStore }>(server).vectorStore
+}
+
+/**
+ * Replace `filePath`'s rows with a set carrying `visualProfile`, standing in for
+ * a prior visual ingest without loading a VLM. The profile is what backup,
+ * rollback and zero-chunk preservation must carry with the rest of the row.
+ */
+async function seedProfiledRows(
+  store: VectorStore,
+  filePath: string,
+  visualProfile: string
+): Promise<VectorChunk[]> {
+  await store.deleteChunks(filePath)
+  await store.insertChunks(
+    buildVectorChunks({
+      filePath,
+      chunks: [0, 1].map((index) => ({
+        index,
+        text: `prior ${visualProfile} chunk ${index} with a caption marker for ${filePath}`,
+        sourceStart: index * 80,
+        sourceEnd: index * 80 + 79,
+      })),
+      embeddings: [0, 1].map((index) => {
+        const vector = new Array<number>(384).fill(0)
+        vector[index] = 1
+        return vector
+      }),
+      fileSize: 160,
+      fileTitle: 'Prior visual title',
+      contentHash: `seeded-hash-${visualProfile}`,
+      visualProfile,
+    })
+  )
+  return await store.getChunksByFilePath(filePath)
 }
 
 describe('Ingest Rollback', () => {
@@ -261,6 +297,59 @@ describe('Ingest Rollback', () => {
 
     insertSpy.mockRestore()
     optimizeSpy.mockRestore()
+  })
+
+  it('restores the recorded visual profile with the rest of the old rows on rollback', async () => {
+    // Arrange: a real PDF whose stored rows record a `quality` visual ingest.
+    const testFile = resolve(testDataDir, 'rollback-visual-profile.pdf')
+    writeFileSync(testFile, buildPdfWithImageBytes())
+    const vectorStore = privateVectorStore(ragServer)
+    const original = await seedProfiledRows(vectorStore, testFile, 'quality')
+    expect(original.map((row) => row.visualProfile)).toEqual(['quality', 'quality'])
+
+    // Fail the replacement insert, then let the rollback restore run for real.
+    const originalInsert = vectorStore.insertChunks.bind(vectorStore)
+    const insertSpy = vi
+      .spyOn(vectorStore, 'insertChunks')
+      .mockRejectedValueOnce(new Error('Simulated replacement failure'))
+      .mockImplementationOnce((chunks: VectorChunk[]) => originalInsert(chunks))
+
+    // Act: a plain (nonvisual) replacement, which on success would have cleared
+    // the profile — so a rollback that loses it is indistinguishable from a
+    // silent downgrade.
+    await expect(ragServer.handleIngestFile({ filePath: testFile })).rejects.toThrow(
+      'Simulated replacement failure'
+    )
+
+    // Assert: whole-row equality, which includes `visualProfile`.
+    const byIndex = (rows: VectorChunk[]): VectorChunk[] =>
+      [...rows].sort((left, right) => left.chunkIndex - right.chunkIndex)
+    const restored = await vectorStore.getChunksByFilePath(testFile)
+    expect(byIndex(restored)).toEqual(byIndex(original))
+
+    insertSpy.mockRestore()
+  })
+
+  it('preserves the recorded visual profile when preparation yields zero chunks', async () => {
+    // Arrange: rows recording a `fast` visual ingest, then a replacement source
+    // too short to produce a single chunk.
+    const testFile = resolve(testDataDir, 'zero-chunk-visual-profile.txt')
+    writeFileSync(testFile, 'seed')
+    const vectorStore = privateVectorStore(ragServer)
+    const original = await seedProfiledRows(vectorStore, testFile, 'fast')
+
+    writeFileSync(testFile, '   ')
+
+    // Act
+    await expect(ragServer.handleIngestFile({ filePath: testFile })).rejects.toThrow(
+      'No chunks generated from file'
+    )
+
+    // Assert: the pre-delete rejection leaves every prior row, and its recorded
+    // intent, exactly as it was — no new intent is written either.
+    const preserved = await vectorStore.getChunksByFilePath(testFile)
+    expect(preserved).toEqual(original)
+    expect(preserved.map((row) => row.visualProfile)).toEqual(['fast', 'fast'])
   })
 
   it('leaves no partial data when insert fails for a new file (no backup to roll back to)', async () => {

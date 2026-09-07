@@ -108,6 +108,12 @@ export interface VectorChunk {
   contentHash?: string
   /** Ordered `JSON.stringify(VisualAttachment[])`; omitted means no attachments. */
   visualAttachments?: string
+  /**
+   * Requested visual-caption profile of the ingestion that wrote this row;
+   * omitted means normal text ingestion. Stored as a raw string: the store does
+   * not interpret the vocabulary, so an unknown value survives a backup.
+   */
+  visualProfile?: string
   /** Ingestion timestamp (ISO 8601 format) */
   timestamp: string
 }
@@ -276,6 +282,7 @@ export function toVectorChunk(raw: unknown): VectorChunk {
     fileTitle,
     contentHash,
     visualAttachments,
+    visualProfile,
     timestamp,
   } = raw
   if (
@@ -302,6 +309,10 @@ export function toVectorChunk(raw: unknown): VectorChunk {
     // for schema inference, and a '' that survived to a caller would read as a
     // real hash equal to nothing on disk.
     ...(typeof contentHash === 'string' && contentHash.length > 0 ? { contentHash } : {}),
+    // Same absence rule as contentHash, applied to every legacy no-value form
+    // (missing column, NULL, create-path ''). Any other string is preserved
+    // verbatim so a backup taken here restores the row unchanged.
+    ...(typeof visualProfile === 'string' && visualProfile.length > 0 ? { visualProfile } : {}),
     visualAttachments: normalizeVisualAttachments(visualAttachments),
     timestamp,
   }
