@@ -221,15 +221,15 @@ npx mcp-local-rag ingest ./docs/research-paper.pdf --visual
 
 Selecciona el modelo más grande con `visualQuality: "quality"` en MCP o con `--visual-quality quality` en la CLI. En pruebas con CPU, la inferencia tardó aproximadamente el triple que con `fast`, aunque el resultado depende del hardware y de las actualizaciones del modelo.
 
-#### Si vienes de un modelo `quality` anterior
+#### Actualizar las descripciones `quality` existentes
 
-`quality` ahora usa Qwen3.5-2B; las versiones anteriores usaban Qwen2.5-VL-3B. Las descripciones ya indexadas conservan el texto del modelo anterior y `sync` no las regenera, así que vuelve a incorporar lo que quieras actualizar:
+Desde 0.18.4, `quality` usa Qwen3.5-2B; las versiones anteriores usaban Qwen2.5-VL-3B. Las descripciones ya indexadas conservan el texto del modelo anterior y `sync` no las regenera, así que vuelve a importar los archivos que quieras actualizar:
 
 ```bash
-npx mcp-local-rag ingest ./docs/ --visual --visual-quality quality
+npx mcp-local-rag ingest ./docs/research-paper.pdf --visual --visual-quality quality
 ```
 
-El modelo anterior permanece en el disco. Cuando ya nada lo use, elimina `<cache-dir>/onnx-community/Qwen2.5-VL-3B-Instruct-ONNX/` (`./models/` por defecto).
+Añade `--images` si el archivo se incorporó con esa opción, porque una ejecución sin ella reemplaza las imágenes almacenadas. El modelo anterior permanece en el disco. Cuando ya nada lo use, elimina `onnx-community/Qwen2.5-VL-3B-Instruct-ONNX/` del directorio de caché de modelos: `<cache-dir>`, que por defecto es `./models/`.
 
 #### Modo visual entre sincronizaciones
 

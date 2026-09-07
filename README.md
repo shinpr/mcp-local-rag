@@ -274,17 +274,20 @@ Select the larger model with `visualQuality: "quality"` over MCP or
 `--visual-quality quality` over CLI. Measured CPU inference was about three times as slow as
 `fast`, though results depend on hardware and model updates.
 
-#### Coming From an Earlier `quality` Model
+#### Updating Existing `quality` Captions
 
-`quality` now runs Qwen3.5-2B; earlier versions ran Qwen2.5-VL-3B. Captions already indexed keep the
-wording the old model produced, and `sync` will not redo them, so re-ingest what you want refreshed:
+From 0.18.4 `quality` runs Qwen3.5-2B; earlier versions ran Qwen2.5-VL-3B. Captions already indexed
+keep the wording the old model produced, and `sync` will not redo them, so re-ingest the files you
+want refreshed:
 
 ```bash
-npx mcp-local-rag ingest ./docs/ --visual --visual-quality quality
+npx mcp-local-rag ingest ./docs/research-paper.pdf --visual --visual-quality quality
 ```
 
-The old model stays on disk. Once nothing else uses it, delete
-`<cache-dir>/onnx-community/Qwen2.5-VL-3B-Instruct-ONNX/` (`./models/` by default).
+Add `--images` if the file was ingested with it, because a run without it replaces the stored
+images. The old model stays on disk. Once nothing else uses it, delete
+`onnx-community/Qwen2.5-VL-3B-Instruct-ONNX/` from the model cache directory — `<cache-dir>`, which
+defaults to `./models/`.
 
 #### Visual Mode Across Syncs
 
