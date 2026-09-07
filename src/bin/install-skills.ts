@@ -13,7 +13,7 @@
  *   npx mcp-local-rag skills install --path /custom/path    # Custom
  */
 
-import { cpSync, existsSync, mkdirSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, rmSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -169,6 +169,21 @@ function getTargetPath(options: Options): string {
   return TARGETS[options.target]
 }
 
+/**
+ * The reference files this project ships. `install` copies exactly these, so a
+ * file added under `skills/mcp-local-rag/references/` reaches users only once it
+ * is listed here; `install-skills.test.ts` fails when the two disagree.
+ */
+const SHIPPED_REFERENCES = ['cli-reference.md', 'html-ingestion.md'] as const
+
+/**
+ * References this project shipped and later dropped. `install` deletes these from
+ * an existing install so a stale copy is not loaded. Move a name here when
+ * retiring it, rather than deleting the directory: anything under `references/`
+ * that appears in neither list belongs to the user and is left alone.
+ */
+const RETIRED_REFERENCES = ['query-optimization.md', 'result-refinement.md'] as const
+
 function install(targetPath: string): void {
   // Check source exists
   if (!existsSync(SKILLS_SOURCE)) {
@@ -183,8 +198,21 @@ function install(targetPath: string): void {
     console.log(`Created directory: ${targetDir}`)
   }
 
-  // Copy skills
-  cpSync(SKILLS_SOURCE, targetPath, { recursive: true })
+  const targetReferences = join(targetPath, 'references')
+  mkdirSync(targetReferences, { recursive: true })
+
+  for (const name of RETIRED_REFERENCES) {
+    const retired = join(targetReferences, name)
+    if (existsSync(retired)) {
+      rmSync(retired)
+      console.log(`Removed retired reference: references/${name}`)
+    }
+  }
+
+  cpSync(join(SKILLS_SOURCE, 'SKILL.md'), join(targetPath, 'SKILL.md'))
+  for (const name of SHIPPED_REFERENCES) {
+    cpSync(join(SKILLS_SOURCE, 'references', name), join(targetReferences, name))
+  }
   console.log(`Installed skills to: ${targetPath}`)
 }
 
@@ -223,7 +251,7 @@ export function run(args: string[]): void {
   console.log()
   console.log('The following skills are now available:')
   console.log('  - mcp-local-rag (SKILL.md)')
-  console.log('  - references/html-ingestion.md')
-  console.log('  - references/query-optimization.md')
-  console.log('  - references/result-refinement.md')
+  for (const name of SHIPPED_REFERENCES) {
+    console.log(`  - references/${name}`)
+  }
 }

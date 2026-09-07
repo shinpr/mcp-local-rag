@@ -21,11 +21,9 @@ description: Searches, saves, and maintains a local document index through a loc
 
 ## Workflow
 
-1. For search requests, formulate a focused hybrid query, choose `limit` by intent, optionally narrow to a corpus/path with `scope`, then filter results by score AND topical relevance.
-2. When a retrieved hit lacks enough surrounding context for a grounded answer, expand only that chunk via `read_chunk_neighbors`.
-3. For ingestion, choose `ingest_file` for local files and `ingest_data` for raw/web content.
-4. `visual: true` / `--visual` enables visual ingest for PDFs: a VLM adds descriptions of figures and tables to searchable chunk text. Independently of this setting, query results for PDF or DOCX chunks may include stored image attachments when the source contains supported images.
-5. Call `sync_start` once and poll `sync_status` when the user asks to synchronize, or when a change they reported on disk has to be reflected before you can answer. It replaces re-running `ingest_file` file by file.
+1. Search: query, then filter by score **and** topical relevance. Expand a hit with `read_chunk_neighbors` only when it alone cannot ground the answer.
+2. Ingest: `ingest_file` for local files, `ingest_data` for raw or web content.
+3. Reconcile: `sync_start` once, then poll `sync_status`, instead of re-running `ingest_file` file by file.
 
 ## Search: Core Rules
 
@@ -33,14 +31,18 @@ Hybrid search combines vector (semantic) and keyword (BM25).
 
 ### Score Interpretation
 
-Lower = better match. Use this to filter noise.
+Lower = better match.
 
 | Score | Action |
 |-------|--------|
 | < 0.3 | Use directly |
-| 0.3-0.5 | Include if mentions same concept/entity |
+| 0.3-0.5 | Include if it mentions the same concept/entity |
 | 0.5-0.7 | Include only if directly relevant to the question |
 | > 0.7 | Skip unless no better results |
+
+Score ranks lexical and semantic proximity, not usefulness: drop a hit that shares keywords with the query but not its intent, whatever it scored.
+
+When two hits contradict each other, settle it on source, stated version, and surrounding context — not on score, which says nothing about which one is current or correct — and report the discrepancy when that does not settle it. When a query returns nothing, check `list_files` before answering that the corpus has no such content — an empty result also means never ingested.
 
 ### Limit Selection
 
@@ -64,46 +66,13 @@ Prefixes must be absolute, in the server's OS path style — relative prefixes m
 
 ### Query Formulation
 
-| Situation | Why Transform | Action |
-|-----------|---------------|--------|
-| Specific term mentioned | Keyword search needs exact match | KEEP term |
-| Vague query | Vector search needs semantic signal | ADD context |
-| Error stack or code block | Long text dilutes relevance | EXTRACT core keywords |
-| Multiple distinct topics | Single query conflates results | SPLIT queries |
-| Few/poor results | Term mismatch | EXPAND (see below) |
+The BM25 half matches literally, so carry the user's exact identifiers, error strings, and API names into the query rather than paraphrasing them. The vector half needs enough words to have a topic, so a bare term gains from surrounding context.
 
-### Query Expansion
-
-When results are few or all score > 0.5, expand query terms:
-
-- Keep original term first, add 2-4 variants
-- Types: synonyms, abbreviations, related terms, word forms
-- Example: `"config"` → `"config configuration settings configure"`
-- Cap expansion at 2-4 added terms to prevent topic drift.
-
-### Result Selection
-
-When to include vs skip—based on answer quality, not just score.
-
-**INCLUDE** if:
-- Directly answers the question, OR
-- Provides necessary context for the answer, OR
-- Topically relevant AND score < 0.5
-
-**SKIP** if:
-- Shares keywords with the query but not intent
-- Mentions the term without explanation
-- Score > 0.7 AND better results exist
+When results are few or all score above 0.5, add 2-4 variants after the original term. More than that drifts off topic.
 
 ### fileTitle
 
-Each result includes `fileTitle` (document title extracted from content). Null when extraction fails.
-
-| Use | How |
-|-----|-----|
-| Disambiguate chunks | Use fileTitle to identify which document the chunk belongs to |
-| Group related chunks | Same fileTitle = same document context |
-| Deprioritize mismatches | fileTitle unrelated to query AND score > 0.5 → rank lower |
+Each result carries `fileTitle`, the title extracted from the document, or `null` when extraction failed — so group and attribute chunks by `filePath`/`source` rather than by title alone.
 
 ### Stored images
 
@@ -138,40 +107,13 @@ See [cli-reference.md](references/cli-reference.md#read-neighbors) for output fi
 ingest_file({ filePath: "/absolute/path/to/document.pdf" })
 ```
 
-**PDF visual-mode decision:**
+**PDF visual mode:** For non-PDFs, use a normal ingest; `visual` and `visualQuality` are accepted but ignored. For PDFs, follow an ingest mode the request already states: asking for visual content (figures, charts, tables, diagrams, labels, annotations) **to be searchable** means `visual: true`, and "text only" means a normal ingest. Merely mentioning that a PDF contains figures is not such a request. Otherwise ask before ingesting, because the choice spends the user's disk and machine time and they alone know whether the figures need to be searchable. One question, disclosing all three options and both costs:
 
-For non-PDF files (`.md`, `.docx`, `.txt`), use normal `ingest_file`; `visual` and `visualQuality` have no effect.
+- text-only — no VLM download or visual-page inference.
+- `fast` — figure titles and broad types; in-image text is less reliable. Downloads ~250 MB **the first time this profile is used**, then inference per visual page.
+- `quality` — reads in-image text (axis labels, panel sub-labels, flowchart nodes) far more reliably. ~2.9 GB on first use, ~2x per-page inference.
 
-For PDFs, the decision has two factors: whether the document needs visual ingest, and which VLM profile to use if so. Both are cost trade-offs along two axes:
-- **Disk**: enabling `visual` downloads a local VLM. `quality` downloads a materially larger model than `fast`.
-- **Machine load**: per-visual-page inference. `quality` is materially heavier per page than `fast`.
-
-Pick by these rules:
-
-1. **Current request already specifies an ingest mode** — follow it without asking:
-   - User explicitly mentions visual content to be searchable (figures, charts, tables, diagrams, screenshots, captions, labels, annotations, faithful captions): use `visual: true`. Select the profile per "Profile signals" below.
-   - User explicitly picks a profile (e.g., "use quality profile", "visual quality"): use that profile.
-   - User explicitly opts out of searchable visual captions (e.g., "text only", "skip visual search", "skip figure captions"): use text-only ingest.
-
-2. **Current request does not specify a mode**: ask the user before ingesting, in one consolidated question:
-
-   > "Is this PDF image-heavy (figures, charts, tables, or diagrams that should be searchable)?
-   >
-   > If **no** — text-only ingest (fastest; no VLM download, no per-page inference).
-   >
-   > If **yes** — choose a VLM profile:
-   > - **fast** — captures figure titles and broad figure types; detailed in-image text (axis labels, annotations) is less reliable. Downloads a local VLM (extra disk) and runs inference per visual page (machine load). Relatively lightweight.
-   > - **quality** — captures in-image text (axis labels, panel sub-labels, flowchart nodes) more reliably. Materially heavier than 'fast' on both disk and machine load.
-   >
-   > Which fits?"
-
-   Map the reply: no / text-only → text-only ingest. yes + fast / lightweight → `visual: true` (omit `visualQuality`). yes + quality / faithful / labels / accurate captions → `visual: true, visualQuality: 'quality'`.
-
-**Profile signals** (used when `visual: true` and the user did not explicitly pick a profile):
-
-- Default: omit `visualQuality` → server uses `'fast'`.
-- Use `visualQuality: 'quality'` when the user signals in-image text fidelity matters: axis labels, panel sub-labels, annotations, faithful captions, research paper figures, technical diagrams with embedded labels (manuals, architecture diagrams), dense dashboards.
-- If unsure between `fast` and `quality`, ask: "Use the 'quality' profile? It captures in-image text (axis labels, annotations) more reliably but is materially heavier on disk and machine load than 'fast'."
+A profile the request names wins. Otherwise reach for `quality` when in-image text fidelity is the point — research figures, technical diagrams with embedded labels, dense dashboards — and `fast` for everything else.
 
 ### ingest_data
 ```
@@ -203,33 +145,14 @@ Re-ingest same source to update. Use same source in `delete_file` to remove.
 
 ### Visual content (PDFs)
 
-Opt-in visual ingest adds searchable captions for figures, charts, tables, and diagrams produced by a local Vision Language Model (VLM). Use the decision protocol in `ingest_file` to choose visual mode and select between the `fast` (lightweight) and `quality` (more faithful, heavier) profiles.
-
-Each caption is an atomic range wrapped as `[Visual content on page <N>, visual <index>: <caption>]` before semantic chunking, so it can join surrounding text but cannot be split.
+A local VLM describes figures, charts, tables, and diagrams, and each description is wrapped as `[Visual content on page <N>, visual <index>: <caption>]` before semantic chunking — one atomic range that can join surrounding text but never be split. Captions are searchable like any other text.
 
 ```
-ingest_file({ filePath: "/absolute/path/to/figures.pdf", visual: true })
 ingest_file({ filePath: "/absolute/path/to/research-paper.pdf", visual: true, visualQuality: "quality" })
-```
-
-```
 npx mcp-local-rag ingest /absolute/path/to/figures.pdf --visual
-npx mcp-local-rag ingest /absolute/path/to/research-paper.pdf --visual --visual-quality quality
 ```
 
-- `visual` defaults to `false`. Without it, ingest behavior is identical to before; no VLM is loaded and no model is downloaded.
-- `visual: true` only takes effect for `.pdf` files. For non-PDFs (`.md`, `.docx`, `.txt`), the flag is silently ignored.
-- `visualQuality` selects the VLM profile (`'fast'` default, `'quality'` for higher in-image text fidelity). Selection criteria live in the `ingest_file` protocol above. Silently ignored when `visual` is false. The MCP boundary also accepts `""` as a synonym for omitted.
-- Caption chunks are searchable via `query_documents` like any other text.
-- VLM failures use text-only fallback; see Retry on failure below.
-
-**Environment variables:**
-
-| Env | Default | Purpose |
-|-----|---------|---------|
-| `CACHE_DIR` | `./models/` | Shared model cache directory for the embedder and VLM (both profiles) |
-
-**First-time model download:** Each profile's VLM is downloaded on the first visual ingest that uses it, cached under `CACHE_DIR`. The `quality` profile's model is materially larger than `fast`'s; each profile downloads its own model on first use. See [cli-reference.md](references/cli-reference.md#ingest) for current approximate sizes.
+Choose the mode with the `ingest_file` gate above. Each profile's model is cached under `CACHE_DIR` (default `./models/`, shared with the embedder) on its own first use.
 
 **Retry on failure:** Per-page VLM failures degrade gracefully (the page is ingested as text-only) and the file ingest completes. Sync does not retry them, because the recorded profile is the requested mode rather than the caption outcome. Retry with `ingest_file` using `visual: true` and the profile to use, or CLI `ingest <path> --visual --visual-quality <profile>`; re-ingest is idempotent via delete → insert.
 
@@ -307,8 +230,5 @@ When a user reports unexpected ingest scope or "path outside BASE_DIR" errors, c
 
 ## References
 
-For edge cases and examples:
-- [html-ingestion.md](references/html-ingestion.md) - URL normalization, SPA handling
-- [query-optimization.md](references/query-optimization.md) - Query patterns by intent
-- [result-refinement.md](references/result-refinement.md) - Synthesis vs filter strategy, contradiction resolution, chunking
+- [html-ingestion.md](references/html-ingestion.md) - URL normalization, raw-data paths, SPA handling
 - [cli-reference.md](references/cli-reference.md) - CLI command options, config matching, output conventions
