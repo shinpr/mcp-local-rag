@@ -161,7 +161,7 @@ A importação de arquivos não aceita Excel, PowerPoint, imagens avulsas nem ex
 Sincronize todo o conteúdo dos diretórios raiz configurados e aguarde a conclusão.
 ```
 
-A ferramenta retorna um `jobId` imediatamente. O cliente deve consultar `sync_status` até o estado mudar para `succeeded` ou `failed`. Não há modo visual durante a sincronização; arquivos PDF alterados são importados como texto.
+A ferramenta retorna um `jobId` imediatamente. O cliente deve consultar `sync_status` até o estado mudar para `succeeded` ou `failed`. Cada PDF alterado é reimportado com o perfil visual já registrado para ele: um PDF indexado inicialmente com descrições as mantém e um PDF sem perfil registrado continua apenas como texto; `sync_start` não oferece opção para alterar o perfil.
 
 O processo do servidor mantém apenas o registro de um job de sincronização. Um novo job substitui o registro de outro já concluído, e o registro é descartado quando o servidor reinicia.
 

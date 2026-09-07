@@ -161,7 +161,7 @@ L'import de fichiers ne prend pas en charge Excel, PowerPoint, les images seules
 Synchronise tout le contenu des racines documentaires configurées et attends la fin de l'opération.
 ```
 
-L'outil renvoie immédiatement un `jobId`. Le client doit interroger `sync_status` jusqu'à ce que son état passe à `succeeded` ou `failed`. Le mode visuel n'est pas disponible pendant une synchronisation ; les PDF modifiés sont importés comme texte.
+L'outil renvoie immédiatement un `jobId`. Le client doit interroger `sync_status` jusqu'à ce que son état passe à `succeeded` ou `failed`. Chaque PDF modifié est réimporté avec le profil visuel déjà enregistré pour lui : un PDF indexé initialement avec des descriptions les conserve, et un PDF sans profil enregistré reste en texte seul ; `sync_start` n'offre aucune option pour changer de profil.
 
 Le processus serveur ne conserve qu'une tâche de synchronisation. Une nouvelle tâche remplace l'enregistrement d'une tâche terminée, et le redémarrage du serveur efface cet enregistrement.
 

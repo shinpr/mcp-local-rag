@@ -161,7 +161,7 @@ La incorporación de archivos no admite Excel, PowerPoint, imágenes independien
 Sincroniza todo el contenido de los directorios raíz configurados y espera a que termine.
 ```
 
-La herramienta devuelve un `jobId` de inmediato. El cliente debe consultar `sync_status` hasta que el estado sea `succeeded` o `failed`. Durante la sincronización no hay modo visual; los PDF modificados se incorporan como texto.
+La herramienta devuelve un `jobId` de inmediato. El cliente debe consultar `sync_status` hasta que el estado sea `succeeded` o `failed`. Cada PDF modificado se vuelve a incorporar con el perfil visual que ya tiene registrado: un PDF indexado inicialmente con descripciones las conserva y un PDF sin perfil registrado se mantiene solo como texto; `sync_start` no ofrece ninguna opción para cambiar el perfil.
 
 El proceso del servidor solo conserva un trabajo de sincronización. Un trabajo nuevo sustituye el registro de uno ya terminado y el registro se pierde al reiniciar el servidor.
 

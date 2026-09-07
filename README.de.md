@@ -161,7 +161,7 @@ Excel, PowerPoint, einzelne Bilddateien und Quellcodedateien werden beim Dateiim
 Synchronisiere alle Inhalte in den konfigurierten Dokumentenstämmen und warte auf den Abschluss.
 ```
 
-Das Werkzeug gibt sofort eine `jobId` zurück. Clients sollten `sync_status` abfragen, bis der Status `succeeded` oder `failed` lautet. Während der Synchronisierung gibt es keinen visuellen Modus; geänderte PDFs werden als Text importiert.
+Das Werkzeug gibt sofort eine `jobId` zurück. Clients sollten `sync_status` abfragen, bis der Status `succeeded` oder `failed` lautet. Jedes geänderte PDF wird mit dem bereits dafür gespeicherten visuellen Profil neu importiert: Ein PDF, das zuerst mit Bildbeschreibungen indexiert wurde, behält sie, und ein PDF ohne gespeichertes Profil bleibt reiner Text; `sync_start` bietet keine Option, das Profil zu ändern.
 
 Der Serverprozess speichert nur einen Synchronisierungsauftrag. Ein neuer Auftrag ersetzt den Eintrag eines abgeschlossenen Auftrags. Beim Neustart des Servers geht der Eintrag verloren.
 
