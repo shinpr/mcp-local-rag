@@ -1,71 +1,68 @@
-// `quality` visual-quality profile — Qwen2.5-VL-3B-Instruct-ONNX.
+// `quality` visual-quality profile — Qwen3.5-2B.
 //
-// Higher fidelity than `fast` on figures with in-image text (axis labels,
-// panel sub-labels), at ~10x the model cache and ~2x per-page inference on
-// CPU. Shares the load/decode mechanics with `fast` via `shared.ts`, and keeps
-// its own model class, prompt, resize, processor call shape and generation
-// options.
-//
-// Three details are not inferable from the code:
-//   - The image is resized to a fixed 448x448 matching the onnx-community
-//     reference example, though Qwen2.5-VL supports dynamic resolution.
-//   - `repetition_penalty` / `no_repeat_ngram_size`, which `fast` uses, are
-//     deliberately absent: on Qwen2.5-VL they force variant generation
-//     whenever a figure repeats a phrase ("Cycles per cycle" becomes "Cpu
-//     cycles/cycle", then "Cnt cyles/clk").
-//   - The conversation shape is hard-coded against the Qwen2.5-VL family, so a
-//     non-Qwen-VL model needs a new profile.
+// Non-obvious constraints:
+//   - The `-ONNX-OPT` export of this model needs an ORT contrib op
+//     (`com.microsoft:CausalConvWithState`) that onnxruntime-node does not
+//     register, so the plain `-ONNX` repo is the only loadable one here.
+//   - Generation options were picked by measurement over a figure fixture set:
+//     a stronger `repetition_penalty` (1.15, as `fast` uses) makes this family
+//     invent label variants, and `no_repeat_ngram_size: 3` costs recall,
+//     because a figure legitimately repeats short phrases.
+//   - Keywords precede the summary because `postProcess` truncates the tail,
+//     and the tail is where an exhausted run degenerates.
 
-import { AutoProcessor, Qwen2_5_VLForConditionalGeneration } from '@huggingface/transformers'
+import { AutoProcessor, Qwen3_5ForConditionalGeneration } from '@huggingface/transformers'
 
 import type { Captioner } from '../types.js'
 import { VlmError } from '../types.js'
 import {
   asVlmModel,
   asVlmProcessor,
+  capLongEdge,
   createModelLoader,
   decodePngToRawImage,
   postProcess,
 } from './shared.js'
 
-const MODEL_NAME = 'onnx-community/Qwen2.5-VL-3B-Instruct-ONNX'
+const MODEL_NAME = 'onnx-community/Qwen3.5-2B-ONNX'
 
 /**
- * Fixed input resolution (px) for the Qwen2.5-VL reference resize. Matches the
- * onnx-community Qwen2-VL example's stable-behavior fixed resize.
+ * Input long-edge cap (px). The image processor does not downscale on its own,
+ * so this is what bounds per-page CPU time. Measured: 768 loses small in-figure
+ * text, 1280 costs ~20% more time for no recall gain.
  */
-const QWEN_INPUT_SIZE = 448
+const INPUT_LONG_EDGE = 1024
 
-/**
- * Static prompt, tuned for retrieval indexing: scan the whole image before
- * composing, then answer as Summary + Keywords. No length specifier — length
- * is `max_new_tokens`'s job, because a spec in the prompt narrows coverage.
- */
-const PROMPT = `Describe this PDF page image for retrieval search indexing.
+const PROMPT = `This image is a figure region cropped from a PDF page. Write search text for it.
 
-Procedure:
-1. Scan the whole image and identify every distinct region.
-2. Compose the output from across all regions identified.
+Output two lines, in this order:
 
-Output exactly two parts:
+Line 1 starts with "Keywords:" and then lists the phrases, separated by semicolons.
+Line 2 starts with "Summary:" and then holds one sentence.
 
-Summary: Describe the page's content, including its type and subject when identifiable.
+Keywords rules:
+- Copy the text that is legible in the image: titles, axis names, legend entries, row and column names, panel labels, annotations, diagram node and step names, and numbers shown as labels.
+- Use the exact wording from the image.
+- Keep a number with the label it belongs to, printed as shown, including decimal points and units.
+- Every part of the image that carries legible text contributes at least one phrase.
+- List each phrase once.
+- For partly legible text, keep the part you can read.
+- For a table, keep its title, row names and column names; leave the cell-by-cell values out.
+- Once the legible labels are listed, write the Summary line and stop.
 
-Keywords: Phrases separated by semicolons. Capture readable text and visible labels from across the page — including section titles, sub-labels inside figures, tables, panels, or annotations. Use exact wording from the image when readable. Cover the visible regions of the page. List each phrase once.
+Summary rule:
+- One sentence naming the figure type and its subject.
 
-Use only details visible in the image. If a region is unreadable, skip it.`
+Ground every phrase and the summary in what is visible. Where a region carries no legible text, describe it in the summary instead of supplying words for it.`
 
 /**
  * Create a `quality` profile captioner. The dispatcher has already configured
  * `env.cacheDir`; this profile only owns lazy model loading and inference.
  */
 export function createQualityCaptioner(resolvedDevice: string): Captioner {
-  // The explicit `Qwen2_5_VLForConditionalGeneration` class matches the
-  // onnx-community reference example (rather than the architecture-agnostic
-  // AutoModelForImageTextToText entry point used by `fast`).
   const loader = createModelLoader(MODEL_NAME, resolvedDevice, async ({ dtypeOpt, modelOpt }) => {
     const processor = await AutoProcessor.from_pretrained(MODEL_NAME, dtypeOpt)
-    const model = await Qwen2_5_VLForConditionalGeneration.from_pretrained(MODEL_NAME, modelOpt)
+    const model = await Qwen3_5ForConditionalGeneration.from_pretrained(MODEL_NAME, modelOpt)
     return { processor, model }
   })
 
@@ -75,26 +72,15 @@ export function createQualityCaptioner(resolvedDevice: string): Captioner {
       try {
         const { processor, model } = await loader.ensureLoaded()
 
-        // Decode PNG → RawImage, then resize to 448x448 to match the
-        // onnx-community Qwen2-VL reference example. Qwen2.5-VL supports dynamic
-        // resolution natively, but the reference example uses a fixed resize for
-        // stable behavior; revisit if small in-figure text is lost.
-        const rawImage = await (await decodePngToRawImage(pngBytes)).resize(
-          QWEN_INPUT_SIZE,
-          QWEN_INPUT_SIZE
-        )
+        const rawImage = await capLongEdge(await decodePngToRawImage(pngBytes), INPUT_LONG_EDGE)
 
-        // Build chat-style input. The Qwen2.5-VL conversation shape mirrors
-        // the onnx-community Qwen2-VL reference: a single user turn with an
-        // image placeholder followed by the text prompt.
         const messages = [
           {
             role: 'user',
             content: [{ type: 'image' }, { type: 'text', text: PROMPT }],
           },
         ]
-        // Qwen2.5-VL takes a single image (not an array), per the
-        // onnx-community reference `processor(text, image)`.
+        // Qwen3.5 takes a single image, not an array.
         const proc = asVlmProcessor(processor)
         const mdl = asVlmModel(model)
 
@@ -103,12 +89,14 @@ export function createQualityCaptioner(resolvedDevice: string): Captioner {
 
         const outputs = await mdl.generate({
           ...inputs,
-          max_new_tokens: 128,
+          max_new_tokens: 160,
+          no_repeat_ngram_size: 6,
+          repetition_penalty: 1.05,
+          // The model ships `do_sample: true`, which would make captions for
+          // the same page differ between ingests.
+          do_sample: false,
         })
 
-        // `outputs.slice(null, [inputLen, null])` strips the prompt tokens.
-        // `dims.at(-1)` reads the last dimension defensively — matches the
-        // onnx-community reference example.
         const inputLen = inputs.input_ids.dims.at(-1)
         if (typeof inputLen !== 'number') {
           throw new VlmError('Captioner returned an input tensor without a token dimension', {

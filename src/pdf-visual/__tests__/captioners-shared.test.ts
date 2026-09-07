@@ -1,8 +1,10 @@
-// Both captioner profiles route decoded output through `postProcess`, so its
-// rules are pinned here once instead of through each profile's mock stack.
+// Profile-agnostic helpers, pinned once instead of through each profile's
+// mock stack.
 
+import { RawImage } from '@huggingface/transformers'
 import { describe, expect, it } from 'vitest'
-import { postProcess } from '../captioners/shared.js'
+
+import { capLongEdge, postProcess } from '../captioners/shared.js'
 
 // Built from code points rather than written as escapes: a literal control
 // character in a fixture is invisible in review, which is how an earlier version
@@ -76,5 +78,31 @@ describe('postProcess — length cap', () => {
     const text = `${'c'.repeat(1000)}${chars(0x00).repeat(500)}`
 
     expect(postProcess(text)).toBe('c'.repeat(1000))
+  })
+})
+
+describe('capLongEdge', () => {
+  const image = (width: number, height: number) =>
+    new RawImage(new Uint8ClampedArray(width * height * 3), width, height, 3)
+
+  it('returns the image untouched when it already fits', async () => {
+    const source = image(80, 60)
+    expect(await capLongEdge(source, 1024)).toBe(source)
+  })
+
+  it('scales the long edge down to the cap, keeping the aspect ratio', async () => {
+    const resized = await capLongEdge(image(2000, 1000), 1024)
+    expect([resized.width, resized.height]).toEqual([1024, 512])
+  })
+
+  it('widens a hairline crop to the ratio the processor accepts', async () => {
+    const resized = await capLongEdge(image(4000, 2), 1024)
+    expect([resized.width, resized.height]).toEqual([1024, 6])
+    expect(resized.width / resized.height).toBeLessThan(200)
+  })
+
+  it('widens a hairline crop that needs no downscaling', async () => {
+    const resized = await capLongEdge(image(600, 1), 1024)
+    expect([resized.width, resized.height]).toEqual([600, 3])
   })
 })

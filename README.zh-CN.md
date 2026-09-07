@@ -217,9 +217,19 @@ npx mcp-local-rag ingest ./docs/research-paper.pdf --visual
 | 模式 | 模型缓存 | 适用场景 |
 |---|---:|---|
 | `fast`（默认） | 约 250 MB | 轻量视觉索引 |
-| `quality` | 约 2.9 GB | 包含标签、标注或其他图中文字的图像 |
+| `quality` | 约 1.7 GB | 包含标签、标注或其他图中文字的图像 |
 
-通过 MCP 使用 `visualQuality: "quality"`，或通过 CLI 使用 `--visual-quality quality`，即可选择较大的模型。实测 CPU 推理耗时约为 `fast` 的两倍，但实际结果取决于硬件和模型更新。
+通过 MCP 使用 `visualQuality: "quality"`，或通过 CLI 使用 `--visual-quality quality`，即可选择较大的模型。实测 CPU 推理耗时约为 `fast` 的三倍，但实际结果取决于硬件和模型更新。
+
+#### 从旧版 `quality` 模型迁移
+
+`quality` 现在使用 Qwen3.5-2B，旧版本使用 Qwen2.5-VL-3B。已索引的说明文字仍是旧模型生成的内容，`sync` 不会重新生成，需要更新的文件请重新导入：
+
+```bash
+npx mcp-local-rag ingest ./docs/ --visual --visual-quality quality
+```
+
+旧模型仍留在磁盘上。确认不再使用后，可删除 `<cache-dir>/onnx-community/Qwen2.5-VL-3B-Instruct-ONNX/`（默认为 `./models/`）。
 
 #### 跨同步的视觉模式
 

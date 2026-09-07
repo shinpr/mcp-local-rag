@@ -217,9 +217,19 @@ npx mcp-local-rag ingest ./docs/research-paper.pdf --visual
 | Profil | Cache du modèle | Usage |
 |---|---:|---|
 | `fast` (par défaut) | environ 250 Mo | Indexation visuelle légère |
-| `quality` | environ 2,9 Go | Figures contenant des libellés, des annotations ou d'autres textes intégrés à l'image |
+| `quality` | environ 1,7 Go | Figures contenant des libellés, des annotations ou d'autres textes intégrés à l'image |
 
-Sélectionnez le modèle le plus volumineux avec `visualQuality: "quality"` via MCP ou `--visual-quality quality` via la CLI. Lors des mesures sur CPU, l'inférence a pris environ deux fois plus de temps qu'avec `fast`, mais le résultat dépend du matériel et des mises à jour du modèle.
+Sélectionnez le modèle le plus volumineux avec `visualQuality: "quality"` via MCP ou `--visual-quality quality` via la CLI. Lors des mesures sur CPU, l'inférence a pris environ trois fois plus de temps qu'avec `fast`, mais le résultat dépend du matériel et des mises à jour du modèle.
+
+#### Migration depuis un modèle `quality` précédent
+
+`quality` utilise désormais Qwen3.5-2B ; les versions précédentes utilisaient Qwen2.5-VL-3B. Les descriptions déjà indexées conservent le texte produit par l'ancien modèle et `sync` ne les régénère pas : réimportez ce que vous voulez mettre à jour.
+
+```bash
+npx mcp-local-rag ingest ./docs/ --visual --visual-quality quality
+```
+
+L'ancien modèle reste sur le disque. Lorsque plus rien ne l'utilise, supprimez `<cache-dir>/onnx-community/Qwen2.5-VL-3B-Instruct-ONNX/` (`./models/` par défaut).
 
 #### Mode visuel au fil des synchronisations
 
