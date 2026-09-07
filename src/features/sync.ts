@@ -21,6 +21,7 @@ import { isManagedRawDataPath } from '../utils/raw-data-utils.js'
 import type { ScanEntryKind } from '../utils/scan.js'
 import { isUnderOrEqual } from '../utils/scope-match.js'
 import { toSyncPathKey } from '../utils/sync-path-key.js'
+import { isQualityProfile, type QualityProfile } from '../utils/visual-profile.js'
 
 // ============================================
 // Data contracts
@@ -88,6 +89,12 @@ export interface SyncUpsertAction {
   filePath: string
   /** Verbatim stored spellings of the same comparison key, excluding `filePath`. */
   staleStoredPaths: string[]
+  /**
+   * The profile this file must be re-ingested with, resolved once here so the
+   * CLI and MCP adapters cannot reach different conclusions. `null` means
+   * normal text ingestion, and is the only value a non-PDF ever carries.
+   */
+  visualProfile: QualityProfile | null
 }
 
 /** Remove every stored spelling of one comparison key that left the disk. */
@@ -112,6 +119,13 @@ export interface SyncPlanInput {
   diskFiles: readonly SyncDiskFile[]
   dbRows: readonly SyncManifestRow[]
   coverage: SyncCoverage
+  /**
+   * Explicit per-invocation visual request. Present means every eligible PDF in
+   * scope is desired at this profile regardless of what is stored, which is also
+   * what repairs conflicting or unreadable stored state. Absent means each PDF
+   * inherits its own recorded profile.
+   */
+  visualProfile?: QualityProfile | undefined
 }
 
 /** The one controlled error a failed run exposes. */
@@ -149,6 +163,14 @@ export interface SyncResult extends SyncCounters, PrunedPaths {
   error: SyncError | null
 }
 
+/** How one planned file must be ingested: run-level images, per-file profile. */
+export interface SyncIngestOptions {
+  /** `true` stores images for this file, from the current invocation alone. */
+  images: boolean
+  /** The planner's resolved profile; `null` means normal text ingestion. */
+  visualProfile: QualityProfile | null
+}
+
 /** Mutating collaborators, injected by the CLI and MCP adapters. */
 export interface SyncExecutor {
   /**
@@ -157,7 +179,7 @@ export interface SyncExecutor {
    * store untouched: the executor relies on that to keep a zero-chunk file's
    * prior rows and hash intact.
    */
-  ingestFile(filePath: string, images: boolean): Promise<number>
+  ingestFile(filePath: string, options: SyncIngestOptions): Promise<number>
   /** Delete the rows of exactly one stored path spelling. */
   deleteExactPath(filePath: string): Promise<number>
   optimize(): Promise<void>
@@ -212,6 +234,12 @@ export interface RunSyncInput {
   requestedPath?: string | undefined
   /** `true` stores images for files already selected as new or changed. */
   images?: boolean | undefined
+  /**
+   * Explicit visual request for every eligible PDF in scope. Only the CLI
+   * supplies it; path-only MCP sync omits it so each PDF inherits its recorded
+   * profile.
+   */
+  visualProfile?: QualityProfile | undefined
   collaborators: SyncCollaborators
 }
 
@@ -223,12 +251,62 @@ interface StoredGroup {
   /** Verbatim stored spellings of this key, deduped, in manifest order. */
   paths: string[]
   hashes: (string | null)[]
+  /** Raw stored profiles, one per row, with absence already normalized to `null`. */
+  profiles: (string | null)[]
+}
+
+/** Only a PDF carries visual intent; every other type ignores stored profiles. */
+function isEligiblePdf(filePath: string): boolean {
+  return filePath.toLowerCase().endsWith('.pdf')
+}
+
+/**
+ * The desired profile for one eligible PDF, and the only place a stored profile
+ * is interpreted.
+ *
+ * An explicit override wins outright, which is what lets one CLI run repair
+ * stored state this function would otherwise refuse to read: with a preference
+ * supplied, nothing has to be inferred from the rows.
+ *
+ * Without an override the rows must speak with one voice. Multiple known
+ * profiles, or a nonempty value outside the vocabulary, leave no defensible
+ * choice, so planning fails before anything is mutated rather than silently
+ * converging the file onto a guess.
+ */
+function resolveDesiredProfile(
+  filePath: string,
+  stored: StoredGroup | undefined,
+  override: QualityProfile | undefined
+): QualityProfile | null {
+  if (override !== undefined) {
+    return override
+  }
+  const known = new Set<QualityProfile>()
+  for (const profile of stored?.profiles ?? []) {
+    if (profile === null) {
+      continue
+    }
+    if (!isQualityProfile(profile)) {
+      throw new Error(
+        `Sync cannot infer the visual mode of ${filePath}: it stores an unsupported visual profile "${profile}". Re-run sync with --visual (optionally --visual-quality quality) to set one explicitly, or re-ingest the file.`
+      )
+    }
+    known.add(profile)
+  }
+  if (known.size > 1) {
+    throw new Error(
+      `Sync cannot infer the visual mode of ${filePath}: its indexed rows disagree (${[...known].sort().join(', ')}). Re-run sync with --visual (optionally --visual-quality quality) to set one explicitly, or re-ingest the file.`
+    )
+  }
+  return known.values().next().value ?? null
 }
 
 /**
  * A comparison key is converged only when it is stored under exactly one
- * spelling and every one of that spelling's rows carries the current disk hash.
- * No rows, a hashless row, disagreeing rows, or a stale hash all make it dirty.
+ * spelling, every one of that spelling's rows carries the current disk hash,
+ * and — for a PDF — every row already records the desired profile. No rows, a
+ * hashless row, disagreeing rows, a stale hash, or a profile mismatch all make
+ * it dirty.
  *
  * The single-spelling condition matters because deletion is by exact path: on
  * Windows, ingesting `C:\Docs\A.md` and later `c:\docs\a.md` leaves two row sets
@@ -237,8 +315,16 @@ interface StoredGroup {
  * it, the key is re-ingested and the other spellings become stale deletions, so
  * one run converges it back to a single spelling.
  */
-function isConverged(stored: StoredGroup, diskHash: string): boolean {
-  return stored.paths.length === 1 && stored.hashes.every((hash) => hash === diskHash)
+function isConverged(
+  stored: StoredGroup,
+  diskHash: string,
+  desiredProfile: QualityProfile | null,
+  comparesProfile: boolean
+): boolean {
+  if (stored.paths.length !== 1 || !stored.hashes.every((hash) => hash === diskHash)) {
+    return false
+  }
+  return !comparesProfile || stored.profiles.every((profile) => profile === desiredProfile)
 }
 
 /**
@@ -247,6 +333,9 @@ function isConverged(stored: StoredGroup, diskHash: string): boolean {
  * A key is pruned only when every one of four conditions holds: inside the
  * requested scope, absent from disk, outside the excluded and managed paths,
  * and outside every unobserved prefix. Dropping any one protects the rows.
+ *
+ * Throws when an eligible PDF's stored profiles admit no single answer; the
+ * caller must surface that before any mutation runs.
  */
 export function planSync(input: SyncPlanInput): SyncPlan {
   const keyOf = (path: string): string => toSyncPathKey(path, input.platform)
@@ -266,7 +355,7 @@ export function planSync(input: SyncPlanInput): SyncPlan {
 
   const diskByKey = groupDiskFilesByKey(input.diskFiles, keyOf)
   const storedByKey = groupStoredRowsByKey(input.dbRows, keyOf)
-  const { upserts, skipped } = planUpserts(diskByKey, storedByKey)
+  const { upserts, skipped } = planUpserts(diskByKey, storedByKey, input.visualProfile)
 
   const unobservedPrefixes = [
     ...input.coverage.unreadableDirs.map((dir) => dir.dirPath),
@@ -314,26 +403,40 @@ function groupStoredRowsByKey(
   const storedByKey = new Map<string, StoredGroup>()
   for (const row of dbRows) {
     const rowKey = keyOf(row.filePath)
-    const group = storedByKey.get(rowKey) ?? { paths: [], hashes: [] }
+    const group = storedByKey.get(rowKey) ?? { paths: [], hashes: [], profiles: [] }
     if (!group.paths.includes(row.filePath)) {
       group.paths.push(row.filePath)
     }
     group.hashes.push(row.contentHash ?? null)
+    // An empty string is what the fresh-table create path seeds for Arrow
+    // inference, so it means absence exactly like `null` and `undefined`.
+    const profile = row.visualProfile ?? null
+    group.profiles.push(profile === '' ? null : profile)
     storedByKey.set(rowKey, group)
   }
   return storedByKey
 }
 
-/** A disk file is skipped when the index already agrees with it. */
+/**
+ * A disk file is skipped when the index already agrees with it.
+ *
+ * Profile resolution happens here, per scanned file, which is what confines a
+ * corrupt stored value to the file that owns it: a row outside the requested
+ * scope, under a missing or oversized file, or attached to a non-PDF is never
+ * interpreted and therefore cannot fail an unrelated run.
+ */
 function planUpserts(
   diskByKey: Map<string, SyncDiskFile>,
-  storedByKey: Map<string, StoredGroup>
+  storedByKey: Map<string, StoredGroup>,
+  override: QualityProfile | undefined
 ): { upserts: SyncUpsertAction[]; skipped: number } {
   const upserts: SyncUpsertAction[] = []
   let skipped = 0
   for (const [fileKey, file] of diskByKey) {
     const group = storedByKey.get(fileKey)
-    if (group && isConverged(group, file.contentHash)) {
+    const isPdf = isEligiblePdf(file.filePath)
+    const visualProfile = isPdf ? resolveDesiredProfile(file.filePath, group, override) : null
+    if (group && isConverged(group, file.contentHash, visualProfile, isPdf)) {
       skipped += 1
       continue
     }
@@ -342,6 +445,7 @@ function planUpserts(
       // `ingestFile` replaces its own spelling; any other spelling of the same
       // key would otherwise survive as a duplicate of the same file.
       staleStoredPaths: (group?.paths ?? []).filter((path) => path !== file.filePath),
+      visualProfile,
     })
   }
   return { upserts, skipped }
@@ -458,7 +562,10 @@ async function runUpserts(
 ): Promise<void> {
   for (const action of plan.upserts) {
     try {
-      const chunkCount = await executor.ingestFile(action.filePath, images)
+      const chunkCount = await executor.ingestFile(action.filePath, {
+        images,
+        visualProfile: action.visualProfile,
+      })
       if (chunkCount === 0) {
         state.empty += 1
         continue
@@ -668,16 +775,33 @@ export async function runSync(input: RunSyncInput): Promise<SyncResult> {
     }
   }
 
-  const plan = planSync({
-    roots: input.roots,
-    dbPath: input.dbPath,
-    excludePaths: input.excludePaths,
-    platform: input.platform,
-    request: gathered.request,
-    diskFiles: gathered.diskFiles,
-    dbRows: gathered.dbRows,
-    coverage: gathered.coverage,
-  })
+  let plan: SyncPlan
+  try {
+    plan = planSync({
+      roots: input.roots,
+      dbPath: input.dbPath,
+      excludePaths: input.excludePaths,
+      platform: input.platform,
+      request: gathered.request,
+      diskFiles: gathered.diskFiles,
+      dbRows: gathered.dbRows,
+      coverage: gathered.coverage,
+      ...(input.visualProfile === undefined ? {} : { visualProfile: input.visualProfile }),
+    })
+  } catch (caught) {
+    // Planning is pure, so nothing has been written yet: the run reports the
+    // same envelope a gathering failure does, with no executor call at all. The
+    // message already names the file it is attributable to.
+    return {
+      upserted: 0,
+      skipped: 0,
+      empty: 0,
+      pruned: 0,
+      prunedPaths: [],
+      coverage: gathered.coverage,
+      error: { message: toMessage(caught), filePath: null },
+    }
+  }
 
   const execution = await executeSyncPlan(plan, input.collaborators, input.images === true)
   return { ...execution, coverage: gathered.coverage }

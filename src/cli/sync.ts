@@ -18,6 +18,7 @@ import {
   runSync as runSyncCore,
   type SyncCollaborators,
   type SyncCoverage,
+  type SyncIngestOptions,
 } from '../features/sync.js'
 import { computeContentHash } from '../ingest/compute.js'
 import { DocumentParser } from '../parser/index.js'
@@ -27,10 +28,11 @@ import {
   canonicalizeRequestedPath,
   classifyRequestedPath,
 } from '../utils/scan.js'
+import type { QualityProfile } from '../utils/visual-profile.js'
 import { createEmbedder, createVectorStore, formatCliError } from './common.js'
-import { type IngestSingleFileOptions, ingestSingleFile, resolveConfig } from './ingest.js'
+import { buildFileIngestOptions, ingestSingleFile, resolveConfig } from './ingest.js'
 import type { GlobalOptions } from './options.js'
-import { consumeBaseDirArg, resolveGlobalConfig } from './options.js'
+import { consumeBaseDirArg, requireVisualQuality, resolveGlobalConfig } from './options.js'
 
 // ============================================
 // Help
@@ -40,6 +42,9 @@ const HELP_TEXT = `Usage: mcp-local-rag [global-options] sync [options] [path]
 
 Reconcile the index with the files on disk: ingest new and changed files, leave
 unchanged files alone, and remove index entries for files that are gone.
+
+Each changed PDF keeps the visual profile it was last indexed with. Use
+--visual to request VLM captioning for every PDF in scope instead.
 
 Runs in the foreground until it finishes. Use your shell to run it in the
 background.
@@ -51,6 +56,12 @@ Arguments:
 Options:
   --base-dir <path>      Document root (repeatable; overrides environment roots)
   --images               Store images for new/changed PDF and DOCX files
+  --visual               Request VLM captioning for every PDF in scope, overriding
+                         each PDF's recorded profile (PDFs only)
+  --visual-quality <profile>
+                         VLM profile when --visual is set: fast (default,
+                         lightweight) or quality (Qwen2.5-VL-3B, ~10x cache,
+                         ~2x inference)
   -h, --help             Show this help
 
 Without --base-dir, roots come from BASE_DIRS / BASE_DIR (default: current directory).
@@ -69,6 +80,9 @@ interface SyncArgs {
   baseDirs: string[]
   path?: string
   images: boolean
+  visual: boolean
+  /** Parsed whenever the flag appears; only consulted when `visual` is true. */
+  visualQuality?: QualityProfile
 }
 
 /**
@@ -80,6 +94,8 @@ function parseArgs(args: string[]): SyncArgs {
   const baseDirs: string[] = []
   let path: string | undefined
   let images = false
+  let visual = false
+  let visualQuality: QualityProfile | undefined
 
   let index = 0
   while (index < args.length) {
@@ -98,6 +114,14 @@ function parseArgs(args: string[]): SyncArgs {
       case '--images':
         images = true
         index++
+        break
+      case '--visual':
+        visual = true
+        index++
+        break
+      case '--visual-quality':
+        visualQuality = requireVisualQuality(args, index)
+        index += 2
         break
       default:
         if (arg.startsWith('-')) {
@@ -118,9 +142,12 @@ function parseArgs(args: string[]): SyncArgs {
     }
   }
 
-  const parsed: SyncArgs = { help, baseDirs, images }
+  const parsed: SyncArgs = { help, baseDirs, images, visual }
   if (path !== undefined) {
     parsed.path = path
+  }
+  if (visualQuality !== undefined) {
+    parsed.visualQuality = visualQuality
   }
   return parsed
 }
@@ -233,14 +260,11 @@ export async function runSync(args: string[], globalOptions: GlobalOptions = {})
     // Named as it happens, so a long run shows which file it is on and the
     // counters alone are not the only record of what changed. A zero-chunk file
     // already reports itself from inside `ingestSingleFile`.
-    ingestFile: async (filePath: string, images: boolean) => {
-      const ingestOptions: IngestSingleFileOptions = images
-        ? { visual: false, images: true }
-        : { visual: false, images: false }
+    ingestFile: async (filePath: string, options: SyncIngestOptions) => {
       const chunkCount = await ingestSingleFile(
         filePath,
         { parser, chunker, embedder: ensureEmbedder(), vectorStore },
-        ingestOptions
+        buildFileIngestOptions(options, globalConfig)
       )
       if (chunkCount > 0) {
         console.error(`upserted ${filePath} (${chunkCount} chunks)`)
@@ -268,6 +292,10 @@ export async function runSync(args: string[], globalOptions: GlobalOptions = {})
       // stored DB keys; the core validates it against the configured roots.
       ...(parsed.path === undefined ? {} : { requestedPath: resolve(parsed.path) }),
       ...(parsed.images ? { images: true } : {}),
+      // Only `--visual` makes the request explicit. Without it the core lets
+      // each PDF inherit its recorded profile, so a bare `--visual-quality` is
+      // parsed (and validated) but has no effect.
+      ...(parsed.visual ? { visualProfile: parsed.visualQuality ?? 'fast' } : {}),
       collaborators,
     })
 

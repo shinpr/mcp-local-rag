@@ -89,8 +89,10 @@ describe('sync_start tool definition', () => {
     expect(Object.keys(syncStart.inputSchema.properties ?? {})).toEqual(['path'])
   })
 
-  it('exposes no visual PDF option', () => {
-    expect(JSON.stringify(syncStart)).not.toMatch(/visual/i)
+  it('exposes no visual input field while documenting per-file inheritance', () => {
+    expect(JSON.stringify(syncStart.inputSchema)).not.toMatch(/visual/i)
+    expect(syncStart.description).toMatch(/visual profile/i)
+    expect(syncStart.description).toMatch(/already recorded/i)
   })
 })
 
