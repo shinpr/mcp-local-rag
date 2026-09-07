@@ -50,7 +50,7 @@ VLM failures degrade to text-only ingest. A failed page produces no caption reco
 | Profile | Model | Cache (approx) | Per-page inference (approx) | Suited for |
 |---------|-------|----------------|------------------------------|------------|
 | `fast` (default) | `HuggingFaceTB/SmolVLM-256M-Instruct` | ~250 MB | baseline | Chart titles, figure types, broad layout. Lightweight first-run. |
-| `quality` | `onnx-community/Qwen2.5-VL-3B-Instruct-ONNX` | ~2.9 GB | ~2× `fast` | Figures with in-image text (axis labels, panel sub-labels, annotations) where caption fidelity matters more than inference throughput. |
+| `quality` | `onnx-community/Qwen3.5-2B-ONNX` | ~1.7 GB | ~3× `fast` | Figures with in-image text (axis labels, panel sub-labels, annotations) where caption fidelity matters more than inference throughput. |
 
 Numbers are approximate at the time of writing and may shift with model updates or differ by hardware. Switching profiles does not invalidate the other's cache.
 

@@ -111,7 +111,7 @@ ingest_file({ filePath: "/absolute/path/to/document.pdf" })
 
 - text-only — no VLM download or visual-page inference.
 - `fast` — figure titles and broad types; in-image text is less reliable. Downloads ~250 MB **the first time this profile is used**, then inference per visual page.
-- `quality` — reads in-image text (axis labels, panel sub-labels, flowchart nodes) far more reliably. ~2.9 GB on first use, ~2x per-page inference.
+- `quality` — reads in-image text (axis labels, panel sub-labels, flowchart nodes) far more reliably. ~1.7 GB on first use, ~3x per-page inference.
 
 A profile the request names wins. Otherwise reach for `quality` when in-image text fidelity is the point — research figures, technical diagrams with embedded labels, dense dashboards — and `fast` for everything else.
 

@@ -137,6 +137,29 @@ export async function decodePngToRawImage(pngBytes: Uint8Array): Promise<RawImag
   return RawImage.fromBlob(blob)
 }
 
+/** Aspect ratio the Qwen image processors reject above. */
+const MAX_ASPECT_RATIO = 200
+
+/**
+ * Downscale so the long edge is at most `longEdge`, preserving the aspect
+ * ratio, and widen a hairline crop until the processor accepts it. Alignment to
+ * the model's patch grid is left to the image processor. Returns the image
+ * untouched when it already satisfies both.
+ */
+export async function capLongEdge(image: RawImage, longEdge: number): Promise<RawImage> {
+  const scale = Math.min(1, longEdge / Math.max(image.width, image.height))
+  const scaled = (size: number): number => Math.max(1, Math.floor(size * scale))
+  // Stretching the thin side rather than padding it: at this ratio the crop
+  // holds no legible text either way, and a caption beats a thrown page.
+  const shortest = Math.ceil(Math.max(scaled(image.width), scaled(image.height)) / MAX_ASPECT_RATIO)
+  const width = Math.max(scaled(image.width), shortest)
+  const height = Math.max(scaled(image.height), shortest)
+  if (width === image.width && height === image.height) {
+    return image
+  }
+  return image.resize(width, height)
+}
+
 /** Maximum caption length in characters; longer captions are truncated with an ellipsis. */
 const MAX_CAPTION_LENGTH = 1000
 

@@ -268,11 +268,26 @@ alter ranking, scores, or result count.
 | Profile | Model cache | Use case |
 |---|---:|---|
 | `fast` (default) | about 250 MB | Lightweight visual indexing |
-| `quality` | about 2.9 GB | Figures containing labels, annotations, or other in-image text |
+| `quality` | about 1.7 GB | Figures containing labels, annotations, or other in-image text |
 
 Select the larger model with `visualQuality: "quality"` over MCP or
-`--visual-quality quality` over CLI. Measured CPU inference was about twice as slow as `fast`,
-though results depend on hardware and model updates.
+`--visual-quality quality` over CLI. Measured CPU inference was about three times as slow as
+`fast`, though results depend on hardware and model updates.
+
+#### Updating Existing `quality` Captions
+
+From 0.18.4 `quality` runs Qwen3.5-2B; earlier versions ran Qwen2.5-VL-3B. Captions already indexed
+keep the wording the old model produced, and `sync` will not redo them, so re-ingest the files you
+want refreshed:
+
+```bash
+npx mcp-local-rag ingest ./docs/research-paper.pdf --visual --visual-quality quality
+```
+
+Add `--images` if the file was ingested with it, because a run without it replaces the stored
+images. The old model stays on disk. Once nothing else uses it, delete
+`onnx-community/Qwen2.5-VL-3B-Instruct-ONNX/` from the model cache directory — `<cache-dir>`, which
+defaults to `./models/`.
 
 #### Visual Mode Across Syncs
 

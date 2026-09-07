@@ -217,9 +217,19 @@ npx mcp-local-rag ingest ./docs/research-paper.pdf --visual
 | Profil | Modellcache | Geeignet für |
 |---|---:|---|
 | `fast` (Standard) | etwa 250 MB | Leichtgewichtige visuelle Indexierung |
-| `quality` | etwa 2,9 GB | Abbildungen mit Beschriftungen, Anmerkungen oder anderem Text im Bild |
+| `quality` | etwa 1,7 GB | Abbildungen mit Beschriftungen, Anmerkungen oder anderem Text im Bild |
 
-Wähle das größere Modell über MCP mit `visualQuality: "quality"` oder über die CLI mit `--visual-quality quality`. In CPU-Messungen dauerte die Inferenz etwa doppelt so lange wie mit `fast`; die tatsächliche Geschwindigkeit hängt von Hardware und Modellversion ab.
+Wähle das größere Modell über MCP mit `visualQuality: "quality"` oder über die CLI mit `--visual-quality quality`. In CPU-Messungen dauerte die Inferenz etwa dreimal so lange wie mit `fast`; die tatsächliche Geschwindigkeit hängt von Hardware und Modellversion ab.
+
+#### Bestehende `quality`-Bildbeschreibungen aktualisieren
+
+Ab 0.18.4 nutzt `quality` Qwen3.5-2B, frühere Versionen nutzten Qwen2.5-VL-3B. Bereits indexierte Bildbeschreibungen behalten den Wortlaut des alten Modells, und `sync` erzeugt sie nicht neu. Importiere die betroffenen Dateien erneut, um ihre Bildbeschreibungen zu aktualisieren:
+
+```bash
+npx mcp-local-rag ingest ./docs/research-paper.pdf --visual --visual-quality quality
+```
+
+Gib `--images` mit, wenn die Datei damit importiert wurde, denn ein Lauf ohne diese Option ersetzt die gespeicherten Bilder. Das alte Modell bleibt auf der Festplatte. Sobald es nicht mehr gebraucht wird, lösche `onnx-community/Qwen2.5-VL-3B-Instruct-ONNX/` aus dem Modellcache-Verzeichnis — `<cache-dir>`, standardmäßig `./models/`.
 
 #### Visueller Modus über Synchronisierungen hinweg
 
