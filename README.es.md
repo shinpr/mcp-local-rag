@@ -303,7 +303,7 @@ En especificaciones de API y otros documentos con muchos identificadores, un pes
 
 El servidor envía al comando cada conjunto de resultados, incluido el texto de los fragmentos encontrados, por la entrada estándar. La consulta solo se pasa si la plantilla contiene `{query}`. Un comando que contacta con un servicio remoto puede enviar fuera de esta máquina el contenido que recibe.
 
-Escribe el ejecutable y su plantilla completa de argumentos. Coloca `{query}` y `{top}` donde el comando espera la consulta y el número de resultados; el servidor no añade argumentos. Las comillas simples o dobles agrupan rutas o argumentos con espacios, y las barras invertidas se conservan literalmente. El servidor lanza el ejecutable sin shell, así que en Windows un adaptador `.cmd` instalado por npm no arranca.
+Escribe el ejecutable y su plantilla completa de argumentos. Coloca `{query}` y `{top}` donde el comando espera la consulta y el número de resultados. Las comillas simples o dobles agrupan rutas o argumentos con espacios, y las barras invertidas se conservan literalmente. El servidor lanza el ejecutable sin shell, así que en Windows un adaptador `.cmd` instalado por npm no arranca.
 
 ```json
 "env": {

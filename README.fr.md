@@ -303,7 +303,7 @@ Pour les spécifications d'API et les autres documents comportant de nombreux id
 
 Le serveur transmet à la commande chaque liste de résultats, avec le texte des passages trouvés, par l'entrée standard. La requête n'est transmise que si le modèle contient `{query}`. Une commande qui appelle un service distant peut envoyer hors de cette machine le contenu qu'elle reçoit.
 
-Indiquez l'exécutable et le modèle complet de ses arguments. Placez `{query}` et `{top}` là où la commande attend la requête et le nombre de résultats ; le serveur n'ajoute aucun argument. Les guillemets simples ou doubles regroupent les chemins ou arguments contenant des espaces, et les barres obliques inverses restent littérales. Le serveur lance l'exécutable sans shell, si bien qu'un script `.cmd` installé par npm ne démarre pas sous Windows.
+Indiquez l'exécutable et le modèle complet de ses arguments. Placez `{query}` et `{top}` là où la commande attend la requête et le nombre de résultats. Les guillemets simples ou doubles regroupent les chemins ou arguments contenant des espaces, et les barres obliques inverses restent littérales. Le serveur lance l'exécutable sans shell, si bien qu'un script `.cmd` installé par npm ne démarre pas sous Windows.
 
 ```json
 "env": {

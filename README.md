@@ -385,7 +385,7 @@ stdin. It passes the search query only where the template contains `{query}`. A 
 a remote service may send the content it receives off this machine.
 
 Give the executable and its complete argument template. Put `{query}` and `{top}` where the
-command expects the query and result count; the server adds no flags. Single or double quotes
+command expects the query and result count. Single or double quotes
 group paths or arguments containing spaces, and backslashes stay literal. The server runs the
 executable without a shell, so an npm-installed `.cmd` shim on Windows will not start.
 

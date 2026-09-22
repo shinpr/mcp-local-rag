@@ -303,7 +303,7 @@ Em especificações de API e outros documentos com muitos identificadores, um pe
 
 O servidor envia ao comando cada conjunto de resultados, incluindo o texto dos trechos encontrados, pela entrada padrão. A consulta só é passada se o modelo contiver `{query}`. Um comando que acessa um serviço remoto pode enviar para fora desta máquina o conteúdo que recebe.
 
-Informe o executável e o modelo completo dos argumentos. Coloque `{query}` e `{top}` onde o comando espera a consulta e a quantidade de resultados; o servidor não acrescenta argumentos. Aspas simples ou duplas agrupam caminhos ou argumentos com espaços, e as barras invertidas permanecem literais. O servidor inicia o executável sem shell, então no Windows um atalho `.cmd` instalado pelo npm não abre.
+Informe o executável e o modelo completo dos argumentos. Coloque `{query}` e `{top}` onde o comando espera a consulta e a quantidade de resultados. Aspas simples ou duplas agrupam caminhos ou argumentos com espaços, e as barras invertidas permanecem literais. O servidor inicia o executável sem shell, então no Windows um atalho `.cmd` instalado pelo npm não abre.
 
 ```json
 "env": {

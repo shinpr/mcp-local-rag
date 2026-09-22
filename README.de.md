@@ -303,7 +303,7 @@ Bei API-Spezifikationen und anderen Dokumenten mit vielen Bezeichnern kann ein h
 
 Der Server übergibt dem Befehl jede Trefferliste mit dem Text der gefundenen Abschnitte über die Standardeingabe. Die Suchanfrage erhält der Befehl nur, wenn die Vorlage `{query}` enthält. Ein Befehl, der einen entfernten Dienst aufruft, kann die erhaltenen Inhalte von diesem Rechner fortschicken.
 
-Gib die ausführbare Datei und die vollständige Argumentvorlage an. Setze `{query}` und `{top}` dort ein, wo der Befehl die Suchanfrage und die Anzahl der Ergebnisse erwartet; der Server hängt keine Argumente an. Einfache oder doppelte Anführungszeichen fassen Pfade oder Argumente mit Leerzeichen zusammen, und Backslashes bleiben wörtlich. Der Server startet sie ohne Shell, deshalb lässt sich ein von npm installierter `.cmd`-Wrapper unter Windows nicht starten.
+Gib die ausführbare Datei und die vollständige Argumentvorlage an. Setze `{query}` und `{top}` dort ein, wo der Befehl die Suchanfrage und die Anzahl der Ergebnisse erwartet. Einfache oder doppelte Anführungszeichen fassen Pfade oder Argumente mit Leerzeichen zusammen, und Backslashes bleiben wörtlich. Der Server startet sie ohne Shell, deshalb lässt sich ein von npm installierter `.cmd`-Wrapper unter Windows nicht starten.
 
 ```json
 "env": {
