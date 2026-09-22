@@ -312,8 +312,6 @@ Escribe el ejecutable y su plantilla completa de argumentos. Coloca `{query}` y 
 }
 ```
 
-Si tu configuración anterior dependía de que el servidor añadiera `--query` y `--top`, inclúyelos en la plantilla como en el ejemplo.
-
 El comando recibe cada resultado con la forma publicada en [`docs/schema/query-output.schema.json`](docs/schema/query-output.schema.json) y debe responder con esa misma forma. Dentro de ella lo decide todo: qué conservar, cómo ordenarlo y qué dice el texto. Lo que devuelva es lo que verás.
 
 Los resultados conservan su orden original si el comando falla, agota el tiempo o responde con algo que no tiene esa forma.

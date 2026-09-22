@@ -312,8 +312,6 @@ Gib die ausführbare Datei und die vollständige Argumentvorlage an. Setze `{que
 }
 ```
 
-Wenn deine bisherige Einstellung auf automatisch ergänzte Argumente `--query` und `--top` angewiesen war, nimm sie wie im Beispiel in die Vorlage auf.
-
 Der Befehl erhält jeden Treffer in der unter [`docs/schema/query-output.schema.json`](docs/schema/query-output.schema.json) veröffentlichten Form und muss in derselben Form antworten. Darin entscheidet er alles: was er behält, wie er es ordnet und was im Text steht. Was er zurückgibt, bekommst du zu sehen.
 
 Schlägt der Befehl fehl, läuft er in die Zeitgrenze oder antwortet er mit etwas, das diese Form nicht hat, bleibt die ursprüngliche Reihenfolge erhalten.

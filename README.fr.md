@@ -312,8 +312,6 @@ Indiquez l'exécutable et le modèle complet de ses arguments. Placez `{query}` 
 }
 ```
 
-Si votre configuration précédente comptait sur l'ajout de `--query` et `--top` par le serveur, ajoutez-les au modèle comme dans l'exemple.
-
 La commande reçoit chaque résultat dans la forme publiée à [`docs/schema/query-output.schema.json`](docs/schema/query-output.schema.json) et doit répondre dans cette même forme. À l'intérieur, elle décide de tout : ce qu'elle garde, comment elle l'ordonne et ce que dit le texte. Ce qu'elle renvoie est ce que vous voyez.
 
 Les résultats conservent leur ordre d'origine si la commande échoue, dépasse le délai ou répond avec autre chose que cette forme.

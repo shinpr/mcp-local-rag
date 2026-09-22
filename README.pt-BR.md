@@ -312,8 +312,6 @@ Informe o executável e o modelo completo dos argumentos. Coloque `{query}` e `{
 }
 ```
 
-Se a configuração anterior dependia de `--query` e `--top` acrescentados pelo servidor, inclua-os no modelo como no exemplo.
-
 O comando recebe cada resultado no formato publicado em [`docs/schema/query-output.schema.json`](docs/schema/query-output.schema.json) e precisa responder nesse mesmo formato. Dentro dele o comando decide tudo: o que manter, como ordenar e o que o texto diz. O que ele devolver é o que você vê.
 
 Os resultados mantêm a ordem original se o comando falhar, estourar o tempo ou responder com algo fora desse formato.

@@ -396,9 +396,6 @@ executable without a shell, so an npm-installed `.cmd` shim on Windows will not 
 }
 ```
 
-If your existing setting relied on the server adding `--query` and `--top`, add them to the
-template as shown.
-
 The command receives each result in the form published at
 [`docs/schema/query-output.schema.json`](docs/schema/query-output.schema.json) and has to answer
 in that same form. Within it the command decides everything: what to keep, how to order it, and
