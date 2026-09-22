@@ -285,7 +285,7 @@ El refuerzo de palabras clave está activado de forma predeterminada. Para corpu
 | `RAG_GROUPING` | sin configurar | `similar` conserva el primer grupo de relevancia; `related` conserva hasta dos y usa saltos importantes de distancia vectorial como límites. |
 | `RAG_MAX_DISTANCE` | sin configurar | Descarta resultados poco relevantes (por ejemplo, `0.5`). |
 | `RAG_MAX_FILES` | sin configurar | Limita los resultados a los N archivos mejor clasificados (por ejemplo, `1` deja solo el mejor archivo). |
-| `RAG_RERANK_CMD` | sin configurar | Solo servidor MCP: comando externo que reordena los resultados. Tu consulta y el texto encontrado se le envían. |
+| `RAG_RERANK_CMD` | sin configurar | Solo servidor MCP: plantilla de un comando externo que reordena los resultados. El texto encontrado se envía por la entrada estándar; `{query}` pasa la consulta. |
 | `RAG_RERANK_TIMEOUT_MS` | `10000` | Tiempo máximo por llamada de reordenamiento en milisegundos (100–600000). |
 
 En especificaciones de API y otros documentos con muchos identificadores, un peso mayor de palabras clave puede mejorar la clasificación de términos exactos:
@@ -301,16 +301,18 @@ En especificaciones de API y otros documentos con muchos identificadores, un pes
 
 ### Reordenamiento externo (`RAG_RERANK_CMD`)
 
-Indica aquí un comando y el servidor le entrega cada conjunto de resultados para reordenarlo, junto con tu consulta y el texto de los fragmentos encontrados. Un comando que contacta con un servicio remoto envía todo eso fuera de esta máquina.
+El servidor envía al comando cada conjunto de resultados, incluido el texto de los fragmentos encontrados, por la entrada estándar. La consulta solo se pasa si la plantilla contiene `{query}`. Un comando que contacta con un servicio remoto puede enviar fuera de esta máquina el contenido que recibe.
 
-Escribe el comando y sus argumentos separados por espacios. Tiene que ser un ejecutable: el servidor lo lanza sin shell, así que en Windows un adaptador `.cmd` instalado por npm no arranca.
+Escribe el ejecutable y su plantilla completa de argumentos. Coloca `{query}` y `{top}` donde el comando espera la consulta y el número de resultados; el servidor no añade argumentos. Las comillas simples o dobles agrupan rutas o argumentos con espacios, y las barras invertidas se conservan literalmente. El servidor lanza el ejecutable sin shell, así que en Windows un adaptador `.cmd` instalado por npm no arranca.
 
 ```json
 "env": {
-  "RAG_RERANK_CMD": "/path/to/reranker",
+  "RAG_RERANK_CMD": "/path/to/reranker --query {query} --top {top}",
   "RAG_RERANK_TIMEOUT_MS": "10000"
 }
 ```
+
+Si tu configuración anterior dependía de que el servidor añadiera `--query` y `--top`, inclúyelos en la plantilla como en el ejemplo.
 
 El comando recibe cada resultado con la forma publicada en [`docs/schema/query-output.schema.json`](docs/schema/query-output.schema.json) y debe responder con esa misma forma. Dentro de ella lo decide todo: qué conservar, cómo ordenarlo y qué dice el texto. Lo que devuelva es lo que verás.
 

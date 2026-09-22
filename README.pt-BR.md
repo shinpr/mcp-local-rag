@@ -285,7 +285,7 @@ O reforço por palavras-chave é ativado por padrão. Para acervos que exigem um
 | `RAG_GROUPING` | não definido | `similar` mantém o primeiro grupo de relevância; `related` mantém até dois e usa saltos relevantes na distância vetorial como limites. |
 | `RAG_MAX_DISTANCE` | não definido | Descarta resultados pouco relevantes, por exemplo, com `0.5`. |
 | `RAG_MAX_FILES` | não definido | Limita os resultados aos N arquivos mais bem classificados, por exemplo, `1` para apenas o melhor arquivo. |
-| `RAG_RERANK_CMD` | não definido | Somente servidor MCP: comando externo que reordena os resultados. Sua consulta e o texto encontrado são enviados a ele. |
+| `RAG_RERANK_CMD` | não definido | Somente servidor MCP: modelo de comando externo que reordena os resultados. O texto encontrado é enviado pela entrada padrão; `{query}` passa a consulta. |
 | `RAG_RERANK_TIMEOUT_MS` | `10000` | Tempo máximo por reordenamento em milissegundos (100–600000). |
 
 Em especificações de API e outros documentos com muitos identificadores, um peso maior para palavras-chave pode melhorar a classificação de termos exatos:
@@ -301,16 +301,18 @@ Em especificações de API e outros documentos com muitos identificadores, um pe
 
 ### Reordenamento externo (`RAG_RERANK_CMD`)
 
-Informe aqui um comando e o servidor entrega a ele cada conjunto de resultados para reordenar, junto com sua consulta e o texto dos trechos encontrados. Um comando que acessa um serviço remoto envia tudo isso para fora desta máquina.
+O servidor envia ao comando cada conjunto de resultados, incluindo o texto dos trechos encontrados, pela entrada padrão. A consulta só é passada se o modelo contiver `{query}`. Um comando que acessa um serviço remoto pode enviar para fora desta máquina o conteúdo que recebe.
 
-Escreva o comando e seus argumentos separados por espaços. Precisa ser um executável: o servidor o inicia sem shell, então no Windows um atalho `.cmd` instalado pelo npm não abre.
+Informe o executável e o modelo completo dos argumentos. Coloque `{query}` e `{top}` onde o comando espera a consulta e a quantidade de resultados; o servidor não acrescenta argumentos. Aspas simples ou duplas agrupam caminhos ou argumentos com espaços, e as barras invertidas permanecem literais. O servidor inicia o executável sem shell, então no Windows um atalho `.cmd` instalado pelo npm não abre.
 
 ```json
 "env": {
-  "RAG_RERANK_CMD": "/path/to/reranker",
+  "RAG_RERANK_CMD": "/path/to/reranker --query {query} --top {top}",
   "RAG_RERANK_TIMEOUT_MS": "10000"
 }
 ```
+
+Se a configuração anterior dependia de `--query` e `--top` acrescentados pelo servidor, inclua-os no modelo como no exemplo.
 
 O comando recebe cada resultado no formato publicado em [`docs/schema/query-output.schema.json`](docs/schema/query-output.schema.json) e precisa responder nesse mesmo formato. Dentro dele o comando decide tudo: o que manter, como ordenar e o que o texto diz. O que ele devolver é o que você vê.
 

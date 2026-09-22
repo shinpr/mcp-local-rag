@@ -1,15 +1,11 @@
-// Command parsing: the configured string becomes an argv vector, and the
-// server's own flags are appended as separate elements so query text can never
-// be read as command syntax.
-
 import { describe, expect, it } from 'vitest'
 import { buildRerankArgv, parseRerankCommand } from '../command.js'
 
 describe('parseRerankCommand', () => {
-  it('should split the configured command into an executable and its arguments', () => {
-    expect(parseRerankCommand('jev-reranker --score-field score --score-order asc')).toEqual({
+  it('should split the executable and unquoted arguments', () => {
+    expect(parseRerankCommand('jev-reranker --query {query} --top {top}')).toEqual({
       executable: 'jev-reranker',
-      args: ['--score-field', 'score', '--score-order', 'asc'],
+      args: ['--query', '{query}', '--top', '{top}'],
     })
   })
 
@@ -24,39 +20,75 @@ describe('parseRerankCommand', () => {
     })
   })
 
-  it('should keep quote characters as part of the token, since no shell interprets them', () => {
-    expect(parseRerankCommand(`jev-reranker --label 'two`)).toEqual({
-      executable: 'jev-reranker',
-      args: ['--label', `'two`],
+  it('should group single- and double-quoted text without passing the quotes', () => {
+    expect(
+      parseRerankCommand(`"/path with spaces/reranker" --label 'two words' --model="large model"`)
+    ).toEqual({
+      executable: '/path with spaces/reranker',
+      args: ['--label', 'two words', '--model=large model'],
     })
   })
 
-  it('should return undefined for a command with no token', () => {
+  it('should preserve empty quoted arguments and literal backslashes', () => {
+    expect(parseRerankCommand(`"C:\\Program Files\\reranker.exe" '' ""`)).toEqual({
+      executable: 'C:\\Program Files\\reranker.exe',
+      args: ['', ''],
+    })
+  })
+
+  it('should reject an empty executable and unterminated quotes', () => {
     expect(parseRerankCommand('')).toBeUndefined()
     expect(parseRerankCommand('   \t ')).toBeUndefined()
+    expect(parseRerankCommand(`'' --query {query}`)).toBeUndefined()
+    expect(parseRerankCommand(`reranker "unterminated`)).toBeUndefined()
+    expect(parseRerankCommand(`reranker 'unterminated`)).toBeUndefined()
   })
 })
 
 describe('buildRerankArgv', () => {
-  it('should append --query and --top after the configured arguments as separate elements', () => {
+  it('should render custom flag names, positional values, repeated values, and embedded values', () => {
     expect(
-      buildRerankArgv({ executable: 'jev-reranker', args: ['--score-field', 'score'] }, 'cats', 3)
-    ).toEqual(['--score-field', 'score', '--query', 'cats', '--top', '3'])
+      buildRerankArgv(
+        {
+          executable: 'jev-reranker',
+          args: ['--prompt', '{query}', '--limit={top}', '{query}', '{top}'],
+        },
+        'cats',
+        3
+      )
+    ).toEqual(['--prompt', 'cats', '--limit=3', 'cats', '3'])
   })
 
-  it('should keep a query containing shell metacharacters as one element', () => {
+  it('should not append query or top when the template omits them', () => {
+    expect(
+      buildRerankArgv({ executable: 'reranker', args: ['--model', 'base'] }, 'cats', 3)
+    ).toEqual(['--model', 'base'])
+  })
+
+  it('should keep a query containing whitespace and shell metacharacters in one element', () => {
     const query = 'cats; rm -rf / && echo "$(whoami)" | tee /tmp/x'
-    const argv = buildRerankArgv({ executable: 'jev-reranker', args: [] }, query, 1)
+    const argv = buildRerankArgv(
+      { executable: 'reranker', args: ['--prompt={query}', '--limit', '{top}'] },
+      query,
+      1
+    )
 
-    expect(argv).toEqual(['--query', query, '--top', '1'])
+    expect(argv).toEqual([`--prompt=${query}`, '--limit', '1'])
   })
 
-  it('should keep a query that is empty or only whitespace as one element', () => {
-    expect(buildRerankArgv({ executable: 'r', args: [] }, '   ', 2)).toEqual([
-      '--query',
-      '   ',
-      '--top',
-      '2',
-    ])
+  it('should replace only placeholders present in the original template', () => {
+    expect(
+      buildRerankArgv(
+        { executable: 'reranker', args: ['{query}', '{top}', '{unknown}'] },
+        'literal {top} and {query} $& $$',
+        2
+      )
+    ).toEqual(['literal {top} and {query} $& $$', '2', '{unknown}'])
+  })
+
+  it('should preserve an empty or whitespace-only query as one element', () => {
+    expect(
+      buildRerankArgv({ executable: 'reranker', args: ['before', '{query}', 'after'] }, '   ', 2)
+    ).toEqual(['before', '   ', 'after'])
   })
 })

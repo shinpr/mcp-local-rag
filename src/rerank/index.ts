@@ -18,11 +18,11 @@ export type { RerankResult } from './response.js'
 export interface RerankRequest {
   /** Search results in their pre-rerank order. Returned as-is on failure. */
   candidates: RerankResult[]
-  /** Query text, passed to the command as its own argv element. */
+  /** Query text, substituted for `{query}` in configured argument templates. */
   query: string
-  /** Result count the caller wants, passed through as `--top`. */
+  /** Result count the caller wants, substituted for `{top}`. */
   top: number
-  /** Configured command, parsed as a whitespace-separated argv vector. */
+  /** Configured executable and argument template. */
   command: string
   /** Per-call budget. The spawned process is killed when it elapses. */
   timeoutMs: number
@@ -67,8 +67,8 @@ function runRerankCommand(
 
     let child: ReturnType<typeof spawn>
     try {
-      // No shell on any platform: the query travels as its own argv element and
-      // nothing can splice it back into a command string. `stderr` is ignored
+      // No shell on any platform: rendered arguments go straight to spawn and
+      // nothing can splice them back into a command string. `stderr` is ignored
       // because the child is untrusted and could otherwise write document text
       // into this server's log stream.
       child = spawn(executable, argv, { stdio: ['pipe', 'pipe', 'ignore'] })
@@ -125,7 +125,7 @@ export async function rerankCandidates(request: RerankRequest): Promise<RerankRe
   const { candidates, query, top, command, timeoutMs } = request
   const parsed = parseRerankCommand(command)
   if (parsed === undefined) {
-    return fallback(candidates, 'the configured command is empty')
+    return fallback(candidates, 'the configured command is empty or has invalid quoting')
   }
 
   const run = await runRerankCommand(

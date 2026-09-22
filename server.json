@@ -8,13 +8,13 @@
     "url": "https://github.com/shinpr/mcp-local-rag",
     "source": "github"
   },
-  "version": "0.19.0",
+  "version": "0.19.1",
   "packages": [
     {
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "mcp-local-rag",
-      "version": "0.19.0",
+      "version": "0.19.1",
       "transport": {
         "type": "stdio"
       },
@@ -126,7 +126,7 @@
         },
         {
           "name": "RAG_RERANK_CMD",
-          "description": "External command that reorders query_documents results (unset disables reranking). The search query and the matched document chunks, including their text, are passed to this command, so a command that contacts a remote service sends that content off this machine.",
+          "description": "External reranker command template. Use {query} and {top} for query text and result count; unset disables reranking.",
           "isRequired": false,
           "format": "string",
           "isSecret": false
