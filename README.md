@@ -363,7 +363,7 @@ server and to CLI `query` alike.
 | `RAG_GROUPING` | (not set) | `similar` keeps the first relevance group; `related` keeps up to two, using significant vector-distance gaps as boundaries. |
 | `RAG_MAX_DISTANCE` | (not set) | Filter out low-relevance results (e.g., `0.5`). |
 | `RAG_MAX_FILES` | (not set) | Limit results to top N files (e.g., `1` for single best file). |
-| `RAG_RERANK_CMD` | (not set) | MCP server only: external command that reorders results. Your query and the matched text are sent to it. |
+| `RAG_RERANK_CMD` | (not set) | MCP server only: external command template that reorders results. Matched text is sent on stdin; `{query}` passes the query. |
 | `RAG_RERANK_TIMEOUT_MS` | `10000` | Time budget per rerank call in milliseconds (100–600000). |
 
 For API specifications and other documents containing many identifiers, a stronger keyword
@@ -380,16 +380,18 @@ weight can improve exact-term ranking:
 
 ### External Reranking (`RAG_RERANK_CMD`)
 
-Name a command here and the server hands it each set of search results to reorder, together with
-your query and the text of the matched chunks. A command that calls a remote service sends all of
-that off this machine.
+The server sends each set of search results, including the matched chunk text, to the command on
+stdin. It passes the search query only where the template contains `{query}`. A command that calls
+a remote service may send the content it receives off this machine.
 
-Give the command and its arguments separated by spaces. It has to be an executable: the server
-runs it without a shell, so an npm-installed `.cmd` shim on Windows will not start.
+Give the executable and its complete argument template. Put `{query}` and `{top}` where the
+command expects the query and result count. Single or double quotes
+group paths or arguments containing spaces, and backslashes stay literal. The server runs the
+executable without a shell, so an npm-installed `.cmd` shim on Windows will not start.
 
 ```json
 "env": {
-  "RAG_RERANK_CMD": "/path/to/reranker",
+  "RAG_RERANK_CMD": "/path/to/reranker --query {query} --top {top}",
   "RAG_RERANK_TIMEOUT_MS": "10000"
 }
 ```

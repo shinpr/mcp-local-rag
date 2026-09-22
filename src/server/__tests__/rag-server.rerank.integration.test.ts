@@ -35,8 +35,8 @@ const dbPath = resolve('./tmp/test-lancedb-rerank-handler')
 const dataDir = resolve('./tmp/test-data-rerank-handler')
 let fixtureCount = 0
 
-/** Writes a child script and returns a command string naming it directly. */
-function fixtureCommand(source: string, configuredArgs = ''): string {
+/** Writes a child script and returns a complete command template naming it directly. */
+function fixtureCommand(source: string, configuredArgs = '--query {query} --top {top}'): string {
   fixtureCount += 1
   const scriptPath = join(workDir, `fixture-${fixtureCount}.mjs`)
   writeFileSync(scriptPath, source)
@@ -56,7 +56,8 @@ const argv = process.argv.slice(2)
 const stdin = readFileSync(0, 'utf8')
 writeFileSync(${JSON.stringify(argvPath)}, JSON.stringify(argv))
 writeFileSync(${JSON.stringify(stdinPath)}, stdin)
-const top = Number(argv[argv.indexOf('--top') + 1])
+const topFlagIndex = argv.findIndex((argument) => argument === '--top' || argument === '--limit')
+const top = Number(argv[topFlagIndex + 1])
 const items = JSON.parse(stdin).reverse().slice(0, top)
 process.stdout.write(JSON.stringify(items))
 `
@@ -325,12 +326,12 @@ process.stdout.write(JSON.stringify([{ ...items[0], text: 'rewritten', rerankSco
     expect(schemaViolations(parseJson<unknown>(readFileSync(stdinPath, 'utf8')))).toEqual([])
   })
 
-  it('passes a query containing shell metacharacters as one argv element', async () => {
+  it('renders custom flags and passes shell metacharacters as one argv element', async () => {
     const argvPath = artifactPath('argv')
     const server = makeServer({
       rerankCommand: fixtureCommand(
         recordingReranker(argvPath, artifactPath('stdin')),
-        '--score-order asc'
+        '--label "two words" --prompt {query} --limit {top}'
       ),
     })
     stubSearch(server, [0, 1, 2].map(searchResult))
@@ -339,11 +340,11 @@ process.stdout.write(JSON.stringify([{ ...items[0], text: 'rewritten', rerankSco
     await server.handleQueryDocuments({ query, limit: 2 })
 
     expect(parseJson<string[]>(readFileSync(argvPath, 'utf8'))).toEqual([
-      '--score-order',
-      'asc',
-      '--query',
+      '--label',
+      'two words',
+      '--prompt',
       query,
-      '--top',
+      '--limit',
       '2',
     ])
   })

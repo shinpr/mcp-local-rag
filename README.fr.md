@@ -285,7 +285,7 @@ Le renforcement par mots-clés est activé par défaut. Pour les corpus qui néc
 | `RAG_GROUPING` | non définie | `similar` conserve le premier groupe de pertinence ; `related` en conserve jusqu'à deux et utilise les écarts importants de distance vectorielle comme limites. |
 | `RAG_MAX_DISTANCE` | non définie | Écarte les résultats peu pertinents, par exemple avec `0.5`. |
 | `RAG_MAX_FILES` | non définie | Limite les résultats aux N fichiers les mieux classés, par exemple `1` pour le meilleur fichier uniquement. |
-| `RAG_RERANK_CMD` | non définie | Serveur MCP uniquement : commande externe qui reclasse les résultats. Votre requête et le texte trouvé lui sont transmis. |
+| `RAG_RERANK_CMD` | non définie | Serveur MCP uniquement : modèle de commande externe qui reclasse les résultats. Le texte trouvé est envoyé par l'entrée standard ; `{query}` transmet la requête. |
 | `RAG_RERANK_TIMEOUT_MS` | `10000` | Délai maximal par reclassement, en millisecondes (100–600000). |
 
 Pour les spécifications d'API et les autres documents comportant de nombreux identifiants, un poids plus élevé des mots-clés peut améliorer le classement des termes exacts :
@@ -301,13 +301,13 @@ Pour les spécifications d'API et les autres documents comportant de nombreux id
 
 ### Reclassement externe (`RAG_RERANK_CMD`)
 
-Indiquez ici une commande et le serveur lui confie chaque liste de résultats à reclasser, avec votre requête et le texte des passages trouvés. Une commande qui appelle un service distant envoie tout cela hors de cette machine.
+Le serveur transmet à la commande chaque liste de résultats, avec le texte des passages trouvés, par l'entrée standard. La requête n'est transmise que si le modèle contient `{query}`. Une commande qui appelle un service distant peut envoyer hors de cette machine le contenu qu'elle reçoit.
 
-Donnez la commande et ses arguments séparés par des espaces. Ce doit être un exécutable : le serveur le lance sans shell, si bien qu'un script `.cmd` installé par npm ne démarre pas sous Windows.
+Indiquez l'exécutable et le modèle complet de ses arguments. Placez `{query}` et `{top}` là où la commande attend la requête et le nombre de résultats. Les guillemets simples ou doubles regroupent les chemins ou arguments contenant des espaces, et les barres obliques inverses restent littérales. Le serveur lance l'exécutable sans shell, si bien qu'un script `.cmd` installé par npm ne démarre pas sous Windows.
 
 ```json
 "env": {
-  "RAG_RERANK_CMD": "/path/to/reranker",
+  "RAG_RERANK_CMD": "/path/to/reranker --query {query} --top {top}",
   "RAG_RERANK_TIMEOUT_MS": "10000"
 }
 ```

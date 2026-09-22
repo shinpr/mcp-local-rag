@@ -285,7 +285,7 @@ Die Stichwortgewichtung ist standardmäßig aktiv. Für Korpora, die eine streng
 | `RAG_GROUPING` | nicht gesetzt | `similar` behält die erste Relevanzgruppe; `related` behält bis zu zwei Gruppen und trennt sie an deutlichen Sprüngen der Vektordistanz. |
 | `RAG_MAX_DISTANCE` | nicht gesetzt | Filtert wenig relevante Treffer heraus, zum Beispiel mit `0.5`. |
 | `RAG_MAX_FILES` | nicht gesetzt | Beschränkt die Treffer auf die besten N Dateien, zum Beispiel mit `1` auf die beste Datei. |
-| `RAG_RERANK_CMD` | nicht gesetzt | Nur MCP-Server: externer Befehl, der die Treffer neu ordnet. Deine Suchanfrage und der gefundene Text gehen an ihn. |
+| `RAG_RERANK_CMD` | nicht gesetzt | Nur MCP-Server: Vorlage für einen externen Befehl zur Neuordnung. Der gefundene Text geht über die Standardeingabe an ihn; `{query}` übergibt die Suchanfrage. |
 | `RAG_RERANK_TIMEOUT_MS` | `10000` | Zeitbudget pro Neuordnung in Millisekunden (100–600000). |
 
 Bei API-Spezifikationen und anderen Dokumenten mit vielen Bezeichnern kann ein höheres Stichwortgewicht die Rangfolge exakter Treffer verbessern:
@@ -301,13 +301,13 @@ Bei API-Spezifikationen und anderen Dokumenten mit vielen Bezeichnern kann ein h
 
 ### Externes Neuordnen (`RAG_RERANK_CMD`)
 
-Nenne hier einen Befehl, und der Server übergibt ihm jede Trefferliste zum Neuordnen, zusammen mit deiner Suchanfrage und dem Text der gefundenen Abschnitte. Ein Befehl, der einen entfernten Dienst aufruft, sendet all das von diesem Rechner fort.
+Der Server übergibt dem Befehl jede Trefferliste mit dem Text der gefundenen Abschnitte über die Standardeingabe. Die Suchanfrage erhält der Befehl nur, wenn die Vorlage `{query}` enthält. Ein Befehl, der einen entfernten Dienst aufruft, kann die erhaltenen Inhalte von diesem Rechner fortschicken.
 
-Gib den Befehl und seine Argumente durch Leerzeichen getrennt an. Es muss eine ausführbare Datei sein: Der Server startet sie ohne Shell, deshalb lässt sich ein von npm installierter `.cmd`-Wrapper unter Windows nicht starten.
+Gib die ausführbare Datei und die vollständige Argumentvorlage an. Setze `{query}` und `{top}` dort ein, wo der Befehl die Suchanfrage und die Anzahl der Ergebnisse erwartet. Einfache oder doppelte Anführungszeichen fassen Pfade oder Argumente mit Leerzeichen zusammen, und Backslashes bleiben wörtlich. Der Server startet sie ohne Shell, deshalb lässt sich ein von npm installierter `.cmd`-Wrapper unter Windows nicht starten.
 
 ```json
 "env": {
-  "RAG_RERANK_CMD": "/path/to/reranker",
+  "RAG_RERANK_CMD": "/path/to/reranker --query {query} --top {top}",
   "RAG_RERANK_TIMEOUT_MS": "10000"
 }
 ```

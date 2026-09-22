@@ -14,8 +14,8 @@ import { type RerankResult, rerankCandidates } from '../index.js'
 const workDir = mkdtempSync(join(tmpdir(), 'rerank-test-'))
 let fixtureCount = 0
 
-/** Writes a child script and returns a command string naming it directly. */
-function fixtureCommand(source: string, configuredArgs = ''): string {
+/** Writes a child script and returns a complete command template naming it directly. */
+function fixtureCommand(source: string, configuredArgs = '--query {query} --top {top}'): string {
   fixtureCount += 1
   const scriptPath = join(workDir, `fixture-${fixtureCount}.mjs`)
   writeFileSync(scriptPath, source)
@@ -35,7 +35,8 @@ const argv = process.argv.slice(2)
 const stdin = readFileSync(0, 'utf8')
 writeFileSync(${JSON.stringify(argvPath)}, JSON.stringify(argv))
 writeFileSync(${JSON.stringify(stdinPath)}, stdin)
-const top = Number(argv[argv.indexOf('--top') + 1])
+const topFlagIndex = argv.findIndex((argument) => argument === '--top' || argument === '--limit')
+const top = Number(argv[topFlagIndex + 1])
 const items = JSON.parse(stdin).reverse().slice(0, top)
 process.stdout.write(JSON.stringify(items))
 `
@@ -113,22 +114,22 @@ describe('rerankCandidates with a cooperating child', () => {
     )
   })
 
-  it('should pass a query containing shell metacharacters as one argv element', async () => {
+  it('should render custom flags and pass shell metacharacters as one argv element', async () => {
     const argvPath = artifactPath('argv')
     const command = fixtureCommand(
       recordingReranker(argvPath, artifactPath('stdin')),
-      '--score-order asc'
+      '--label "two words" --prompt {query} --limit {top}'
     )
     const query = 'cats; rm -rf / && echo "$(whoami)" | tee /tmp/pwned'
 
     await rerankCandidates({ candidates, query, top: 3, command, timeoutMs: 5000 })
 
     expect(JSON.parse(readFileSync(argvPath, 'utf8'))).toEqual([
-      '--score-order',
-      'asc',
-      '--query',
+      '--label',
+      'two words',
+      '--prompt',
       query,
-      '--top',
+      '--limit',
       '3',
     ])
   })
@@ -170,6 +171,20 @@ describe('rerankCandidates with a cooperating child', () => {
 })
 
 describe('rerankCandidates fallback', () => {
+  it('should return the pre-rerank ordering when the command template has invalid quoting', async () => {
+    const result = await rerankCandidates({
+      candidates,
+      query: 'cats',
+      top: 3,
+      command: `${process.execPath} "unterminated`,
+      timeoutMs: 5000,
+    })
+
+    expect(result).toEqual(candidates)
+    expect(stderrLines()).toHaveLength(1)
+    expect(stderrLines()[0]).toMatch(/invalid quoting/)
+  })
+
   it('should return the pre-rerank ordering when the command does not exist', async () => {
     const result = await rerankCandidates({
       candidates,
