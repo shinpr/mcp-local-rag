@@ -1720,7 +1720,7 @@ describe('VectorStore', () => {
     })
 
     it('should store one identical hash of the file bytes on every chunk of an ingested file', async () => {
-      await withTempDb('ingest-content-hash', async (store) => {
+      await withTempDb('ingest-content-hash', async (store, dbPath) => {
         const filePath = writeSourceFile('hello.md', 'hello')
         const { parser, chunker, embedder } = ingestCollaborators({
           parsedText: 'parsed text that is deliberately not the file bytes',
@@ -1728,6 +1728,7 @@ describe('VectorStore', () => {
         })
 
         const inserted = await ingestSingleFile(filePath, {
+          dbPath,
           parser,
           chunker,
           embedder,
@@ -1747,7 +1748,7 @@ describe('VectorStore', () => {
     })
 
     it('should keep previously stored rows when vector construction fails during re-ingest', async () => {
-      await withTempDb('ingest-construct-before-delete', async (store) => {
+      await withTempDb('ingest-construct-before-delete', async (store, dbPath) => {
         const filePath = writeSourceFile('kept.md', 'hello')
         await store.insertChunks([
           createTestChunk('stored one', filePath, 0, createNormalizedVector(1)),
@@ -1762,7 +1763,7 @@ describe('VectorStore', () => {
         })
 
         await expect(
-          ingestSingleFile(filePath, { parser, chunker, embedder, vectorStore: store })
+          ingestSingleFile(filePath, { dbPath, parser, chunker, embedder, vectorStore: store })
         ).rejects.toThrow('Missing embedding for chunk 1')
 
         const rows = byChunkIndex(await store.getChunksByFilePath(filePath))

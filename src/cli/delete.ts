@@ -2,6 +2,7 @@
 
 import { unlink } from 'node:fs/promises'
 import { resolve } from 'node:path'
+import { removeEmbeddingSnapshot } from '../embedder/embedding-snapshot.js'
 import {
   checkRawDataArtifacts,
   generateMetaJsonPath,
@@ -180,6 +181,7 @@ export async function runDelete(args: string[], globalOptions: GlobalOptions = {
 
     // Delete chunks from VectorStore
     const removedChunks = await vectorStore.deleteChunks(targetPath)
+    await removeEmbeddingSnapshot(globalConfig.dbPath, targetPath)
     // Optimize immediately after the DB delete: a later raw-data unlink failure
     // (re-thrown below for non-ENOENT) must not skip compaction once the rows
     // are already gone.

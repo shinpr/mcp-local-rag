@@ -188,6 +188,7 @@ describe('VLM PDF Enrichment - Phase 0 Equivalence (AC-008)', () => {
 
     // Act: CLI path
     await ingestSingleFile(fixtureFilePath, {
+      dbPath: cliDbPath,
       parser: cliParser,
       chunker: cliChunker,
       embedder: cliEmbedder,
@@ -242,6 +243,7 @@ describe('VLM PDF Enrichment - Phase 0 Equivalence (AC-008)', () => {
 
     await server.handleIngestFile({ filePath: docxFixtureFilePath })
     await ingestSingleFile(docxFixtureFilePath, {
+      dbPath: cliDbPath,
       parser: cliParser,
       chunker: cliChunker,
       embedder: cliEmbedder,

@@ -12,6 +12,7 @@ import { readFile, stat } from 'node:fs/promises'
 import { resolve, sep } from 'node:path'
 
 import { SemanticChunker } from '../chunker/index.js'
+import { removeEmbeddingSnapshot } from '../embedder/embedding-snapshot.js'
 import type { Embedder } from '../embedder/index.js'
 import {
   formatSyncError,
@@ -271,7 +272,7 @@ export async function runSync(args: string[], globalOptions: GlobalOptions = {})
     ingestFile: async (filePath: string, options: SyncIngestOptions) => {
       const chunkCount = await ingestSingleFile(
         filePath,
-        { parser, chunker, embedder: ensureEmbedder(), vectorStore },
+        { dbPath: globalConfig.dbPath, parser, chunker, embedder: ensureEmbedder(), vectorStore },
         buildFileIngestOptions(options, globalConfig)
       )
       if (chunkCount > 0) {
@@ -279,7 +280,11 @@ export async function runSync(args: string[], globalOptions: GlobalOptions = {})
       }
       return chunkCount
     },
-    deleteExactPath: async (filePath: string) => await vectorStore.deleteChunks(filePath),
+    deleteExactPath: async (filePath: string) => {
+      const removedChunks = await vectorStore.deleteChunks(filePath)
+      await removeEmbeddingSnapshot(globalConfig.dbPath, filePath)
+      return removedChunks
+    },
     optimize: async () => {
       await vectorStore.optimize()
     },

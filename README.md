@@ -388,6 +388,12 @@ image setting alone does not refresh unchanged files; re-ingest them to apply it
 - The server is designed for one local user and does not provide authentication or access control.
 - Do not run multiple CLI or MCP writers against the same `DB_PATH`. Read-only queries can run
   while a sync is active.
+- Ingestion keeps one latest embedding snapshot per indexed file under `DB_PATH/embedding-cache`.
+  Successful deletion and sync pruning remove that file's snapshot. It is disposable: removing
+  `embedding-cache` leaves the current index searchable and makes later ingestion recompute those
+  vectors. Copying the whole `DB_PATH` for backup includes the snapshots; model downloads stay in
+  `CACHE_DIR`. Snapshots do not change the explicit re-ingestion required after model, dtype, or
+  embedding-prefix changes.
 - Back up an index by copying its `DB_PATH` directory while no writer is active.
 
 <details>

@@ -10,10 +10,11 @@
 
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { lstatSync, mkdirSync, rmSync, symlinkSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { chmod, mkdir, rm, symlink, writeFile } from 'node:fs/promises'
-import { join, resolve, sep } from 'node:path'
+import { dirname, join, resolve, sep } from 'node:path'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { embeddingSnapshotPath } from '../../embedder/embedding-snapshot.js'
 import { isRecord } from '../../utils/type-guards.js'
 import { expectDefined, expectError, parseJson } from '../test-doubles.js'
 
@@ -592,6 +593,9 @@ describe('CLI sync', () => {
     await seedRows(fixture, changedPath, sha256('a previous revision'))
     await seedRows(fixture, unchangedPath, sha256(unchangedContent))
     await seedRows(fixture, gonePath, sha256('deleted from disk'))
+    const goneSnapshot = embeddingSnapshotPath(fixture.dbPath, gonePath)
+    await mkdir(dirname(goneSnapshot), { recursive: true })
+    writeFileSync(goneSnapshot, 'previous document snapshot')
 
     const outcome = await runCli(fixture, [])
 
@@ -617,6 +621,7 @@ describe('CLI sync', () => {
     ])
     expect(manifest.filter((row) => row.filePath === emptyPath)).toEqual([])
     expect(manifest.filter((row) => row.filePath === gonePath)).toEqual([])
+    expect(existsSync(goneSnapshot)).toBe(false)
 
     // Counters alone do not say which file changed, so each mutated path is named.
     // Unchanged files stay silent, which keeps the output proportional to changes.

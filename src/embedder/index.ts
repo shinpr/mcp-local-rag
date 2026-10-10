@@ -1,10 +1,17 @@
 // Embedder implementation with Transformers.js
 
+import { createHash } from 'node:crypto'
+import { createReadStream, existsSync } from 'node:fs'
+import { readFile, stat } from 'node:fs/promises'
+import { createRequire } from 'node:module'
+import { dirname, isAbsolute, join, resolve } from 'node:path'
+import { serialize } from 'node:v8'
 import {
   type DataType,
   type DeviceType,
   env,
   ModelRegistry,
+  type PretrainedConfig,
   pipeline,
 } from '@huggingface/transformers'
 import { AppError, toError } from '../utils/errors.js'
@@ -70,7 +77,23 @@ export interface PipelineTokenizer {
 
 interface PipelineModelConfig {
   max_position_embeddings?: unknown
+  hidden_size?: unknown
 }
+
+export interface EmbeddingComputationIdentity {
+  fingerprint: string
+  dimension: number
+}
+
+interface HashedModelAsset {
+  name: string
+  sha256: string
+}
+
+const EMBEDDING_IMPLEMENTATION_VERSION = 1
+const require = createRequire(import.meta.url)
+const transformersRequire = createRequire(require.resolve('@huggingface/transformers'))
+let runtimeVersionsPromise: Promise<Record<string, string> | null> | null = null
 
 /**
  * The transformers.js pipeline as this module calls it.
@@ -95,6 +118,37 @@ function isEmbeddingPipeline(value: unknown): value is EmbeddingPipeline {
   return (
     typeof value === 'function' && 'tokenizer' in value && typeof value.tokenizer === 'function'
   )
+}
+
+function isPretrainedConfig(value: unknown): value is PretrainedConfig {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'model_type' in value &&
+    (typeof value.model_type === 'string' || value.model_type === null) &&
+    'is_encoder_decoder' in value &&
+    typeof value.is_encoder_decoder === 'boolean' &&
+    'transformers.js_config' in value &&
+    (value['transformers.js_config'] === undefined ||
+      (typeof value['transformers.js_config'] === 'object' &&
+        value['transformers.js_config'] !== null)) &&
+    'normalized_config' in value
+  )
+}
+
+function embeddingDimension(loadedModel: EmbeddingPipeline): number | null {
+  const dimension = loadedModel.model?.config?.hidden_size
+  return typeof dimension === 'number' && Number.isInteger(dimension) && dimension > 0
+    ? dimension
+    : null
+}
+
+async function statOrNull(filePath: string): Promise<Awaited<ReturnType<typeof stat>> | null> {
+  try {
+    return await stat(filePath)
+  } catch {
+    return null
+  }
 }
 
 // ============================================
@@ -282,6 +336,7 @@ export class Embedder {
   private prompts: ModelPrompts = { query: '', document: '', default: '' }
   private warnings: string[] = []
   private readonly config: EmbedderConfig
+  private computationIdentityPromise: Promise<EmbeddingComputationIdentity | null> | null = null
 
   constructor(config: EmbedderConfig) {
     this.config = config
@@ -317,6 +372,7 @@ export class Embedder {
     this.initPromise = null
     this.tokenLimit = null
     this.measurementTokenizer = null
+    this.computationIdentityPromise = null
   }
 
   /**
@@ -327,6 +383,7 @@ export class Embedder {
     if (this.model) {
       return
     }
+    this.computationIdentityPromise = null
 
     // Set cache directory BEFORE creating pipeline
     env.cacheDir = this.config.cacheDir
@@ -363,9 +420,19 @@ export class Embedder {
 
     try {
       this.model = await pipeline('feature-extraction', this.config.modelPath, { dtype, device })
-      const clamp = installTokenLimitClamp(this.model)
+      const loadedModel = this.model
+      const clamp = installTokenLimitClamp(loadedModel)
       this.tokenLimit = clamp.tokenLimit
       this.measurementTokenizer = clamp.measurementTokenizer
+      // Start asset hashing against the initialized pipeline while parsing and
+      // token measurement proceed. The promise is retained with this model and
+      // is cleared only when the pipeline is disposed.
+      this.computationIdentityPromise = this.createComputationIdentity(
+        loadedModel,
+        device,
+        dtype,
+        clamp.tokenLimit
+      )
       console.error(`Embedder: Model loaded successfully (device=${device})`)
     } catch (error) {
       const nativeError = toError(error)
@@ -436,6 +503,132 @@ export class Embedder {
     })
 
     await this.initPromise
+  }
+
+  /** Identity of the loaded embedding function, or `null` when local assets cannot be proven. */
+  async getComputationIdentity(): Promise<EmbeddingComputationIdentity | null> {
+    await this.ensureInitialized()
+    if (this.computationIdentityPromise === null) {
+      return null
+    }
+    return await this.computationIdentityPromise
+  }
+
+  private async createComputationIdentity(
+    loadedModel: unknown,
+    device: DeviceType,
+    dtype: DataType,
+    tokenLimit: number | null
+  ): Promise<EmbeddingComputationIdentity | null> {
+    try {
+      if (!isEmbeddingPipeline(loadedModel)) {
+        return null
+      }
+      const dimensionValue = embeddingDimension(loadedModel)
+      if (dimensionValue === null) {
+        return null
+      }
+
+      const assets = await this.hashModelAssets(loadedModel, dtype, device)
+      if (!assets) {
+        return null
+      }
+
+      const runtimeVersions = await getRuntimeVersions()
+      if (runtimeVersions === null) {
+        return null
+      }
+      const fingerprintInput = {
+        implementationVersion: EMBEDDING_IMPLEMENTATION_VERSION,
+        assets,
+        runtimeVersions,
+        nodeVersion: process.versions.node,
+        transformersVersion: env.version,
+        modelPath: this.config.modelPath,
+        device,
+        dtype,
+        prompts: this.prompts,
+        tokenLimit,
+        pooling: 'mean',
+        normalize: true,
+        titlePrefix: this.titlePrefix,
+        headingPrefix: this.headingPrefix,
+        dimension: dimensionValue,
+      }
+      const fingerprint = createHash('sha256').update(serialize(fingerprintInput)).digest('hex')
+      return { fingerprint, dimension: dimensionValue }
+    } catch {
+      // Identity is optional acceleration metadata. A failure to enumerate or
+      // hash local assets must never prevent normal embedding inference.
+      return null
+    }
+  }
+
+  private async hashModelAssets(
+    loadedModel: EmbeddingPipeline,
+    dtype: DataType,
+    device: DeviceType
+  ): Promise<HashedModelAsset[] | null> {
+    const tokenizerConfigPath = this.resolveAssetPath('tokenizer_config.json')
+    if (
+      !tokenizerConfigPath ||
+      !existsSync(tokenizerConfigPath) ||
+      env.cacheDir === null ||
+      resolve(env.cacheDir) !== resolve(this.config.cacheDir)
+    ) {
+      // In the installed Transformers.js version file enumeration probes
+      // tokenizer_config.json. Requiring it locally prevents that optional
+      // metadata lookup from making a separate Hub request.
+      return null
+    }
+    const modelConfig = loadedModel.model?.config
+    if (!modelConfig || !isPretrainedConfig(modelConfig)) {
+      return null
+    }
+    const fileNames = await ModelRegistry.get_pipeline_files(
+      'feature-extraction',
+      this.config.modelPath,
+      { config: modelConfig, dtype, device }
+    )
+    const assetNames = [...new Set([...fileNames, 'config_sentence_transformers.json'])].sort()
+    const assets: HashedModelAsset[] = []
+    for (const name of assetNames) {
+      const path = this.resolveAssetPath(name)
+      if (!path) {
+        if (name === 'config_sentence_transformers.json') {
+          continue
+        }
+        return null
+      }
+      const info = await statOrNull(path)
+      if (!info?.isFile()) {
+        if (name === 'config_sentence_transformers.json') {
+          continue
+        }
+        return null
+      }
+      assets.push({ name, sha256: await hashFile(path) })
+    }
+    return assets
+  }
+
+  private resolveAssetPath(name: string): string | null {
+    const normalizedName = name.replaceAll('\\', '/')
+    if (
+      isAbsolute(name) ||
+      normalizedName.startsWith('/') ||
+      normalizedName.split('/').some((part) => part === '..')
+    ) {
+      return null
+    }
+    const modelPath = this.config.modelPath
+    const cachePath = join(this.config.cacheDir, modelPath, name)
+    const directModelPath = resolve(modelPath, name)
+    const localModelPath = join(env.localModelPath, modelPath, name)
+    const candidates = isAbsolute(modelPath)
+      ? [join(this.config.cacheDir, modelPath, name), directModelPath]
+      : [cachePath, localModelPath, directModelPath]
+    return candidates.find((candidate) => existsSync(candidate)) ?? null
   }
 
   /**
@@ -644,5 +837,77 @@ export class Embedder {
         cause: toError(error),
       })
     }
+  }
+}
+
+async function hashFile(filePath: string): Promise<string> {
+  const hash = createHash('sha256')
+  for await (const chunk of createReadStream(filePath)) {
+    hash.update(chunk)
+  }
+  return hash.digest('hex')
+}
+
+async function getRuntimeVersions(): Promise<Record<string, string> | null> {
+  if (runtimeVersionsPromise === null) {
+    runtimeVersionsPromise = Promise.all(
+      [
+        '@huggingface/transformers',
+        '@huggingface/tokenizers',
+        'onnxruntime-node',
+        'onnxruntime-web',
+      ].map(
+        async (packageName) =>
+          [packageName, await readInstalledPackageVersion(packageName)] as const
+      )
+    ).then((entries) => {
+      const versions: Record<string, string> = {}
+      for (const [name, version] of entries) {
+        if (version === null) {
+          return null
+        }
+        versions[name] = version
+      }
+      return versions
+    })
+  }
+  return await runtimeVersionsPromise
+}
+
+async function readInstalledPackageVersion(packageName: string): Promise<string | null> {
+  try {
+    let packageEntry: string
+    try {
+      packageEntry = require.resolve(packageName)
+    } catch {
+      // pnpm keeps some dependencies private to the Transformers.js package.
+      packageEntry = transformersRequire.resolve(packageName)
+    }
+    for (
+      let directory = dirname(packageEntry);
+      directory !== dirname(directory);
+      directory = dirname(directory)
+    ) {
+      try {
+        const metadata: unknown = JSON.parse(
+          await readFile(join(directory, 'package.json'), 'utf8')
+        )
+        if (
+          typeof metadata === 'object' &&
+          metadata !== null &&
+          'name' in metadata &&
+          metadata.name === packageName &&
+          'version' in metadata &&
+          typeof metadata.version === 'string'
+        ) {
+          return metadata.version
+        }
+      } catch {
+        // Continue toward the package root.
+      }
+    }
+    return null
+  } catch {
+    return null
   }
 }

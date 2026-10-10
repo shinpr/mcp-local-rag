@@ -8,6 +8,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { buildPdfWithImageBytes } from '../../__tests__/pdf-image-fixture.js'
 import { testModelCacheDir, withTestDevice } from '../../__tests__/test-device.js'
 import { expectError, expectRecord, privateMembers } from '../../__tests__/test-doubles.js'
+import { embeddingSnapshotPath } from '../../embedder/embedding-snapshot.js'
 import { buildVectorChunks } from '../../ingest/compute.js'
 import * as rawDataUtils from '../../utils/raw-data-utils.js'
 import type { VectorChunk, VectorStore } from '../../vectordb/index.js'
@@ -138,6 +139,9 @@ describe('Ingest Rollback', () => {
       const replacement = `# Replacement title\n\n${'Replacement content for source preservation. '.repeat(15)}`
       await ragServer.handleIngestData({ content: original, metadata })
       const filePath = rawDataUtils.generateRawDataPath(testDbPath, source)
+      const snapshotPath = embeddingSnapshotPath(testDbPath, filePath)
+      expect(existsSync(snapshotPath)).toBe(true)
+      const originalSnapshot = readFileSync(snapshotPath)
       const metaPath = rawDataUtils.generateMetaJsonPath(filePath)
       const originalMeta = readFileSync(metaPath, 'utf8')
       const store = privateMembers<{ vectorStore: VectorStore }>(ragServer).vectorStore
@@ -177,10 +181,12 @@ describe('Ingest Rollback', () => {
           expect(rows.length).toBeGreaterThan(0)
           expect(rows.every((row) => row.text.includes('Replacement'))).toBe(true)
           expect(new Set(rows.map((row) => row.chunkIndex)).size).toBe(rows.length)
+          expect(readFileSync(snapshotPath)).not.toEqual(originalSnapshot)
         } else {
           expect(readFileSync(filePath, 'utf8')).toBe(original)
           expect(readFileSync(metaPath, 'utf8')).toBe(originalMeta)
           expect(rows).toEqual(originalRows)
+          expect(readFileSync(snapshotPath)).toEqual(originalSnapshot)
         }
       } finally {
         spy?.mockRestore()

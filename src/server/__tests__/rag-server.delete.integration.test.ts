@@ -1,10 +1,11 @@
 // RAG MCP Server Integration Test - File Deletion
 // Split from: rag-server.integration.test.ts (AC-010)
 
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { testModelCacheDir, withTestDevice } from '../../__tests__/test-device.js'
+import { embeddingSnapshotPath } from '../../embedder/embedding-snapshot.js'
 import { RAGServer } from '../index.js'
 
 describe('AC-010: File Deletion', () => {
@@ -41,6 +42,8 @@ describe('AC-010: File Deletion', () => {
     const testFile = resolve(localTestDataDir, 'test-delete.txt')
     writeFileSync(testFile, 'This file will be deleted. '.repeat(50))
     await localRagServer.handleIngestFile({ filePath: testFile })
+    const snapshotPath = embeddingSnapshotPath(localTestDbPath, testFile)
+    expect(existsSync(snapshotPath)).toBe(true)
 
     // Verify file exists before deletion
     const listBefore = await localRagServer.handleListFiles()
@@ -49,6 +52,7 @@ describe('AC-010: File Deletion', () => {
 
     // Execute deletion
     await localRagServer.handleDeleteFile({ filePath: testFile })
+    expect(existsSync(snapshotPath)).toBe(false)
 
     // Verify file is no longer ingested after deletion (still on disk, but ingested: false)
     const listAfter = await localRagServer.handleListFiles()
