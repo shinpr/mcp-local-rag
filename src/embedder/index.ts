@@ -1,7 +1,7 @@
 // Embedder implementation with Transformers.js
 
 import { createHash } from 'node:crypto'
-import { type BigIntStats, createReadStream, existsSync } from 'node:fs'
+import { type BigIntStats, createReadStream } from 'node:fs'
 import { readFile, stat } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
@@ -632,10 +632,9 @@ export class Embedder {
     device: DeviceType
   ): Promise<ModelAssetSnapshot | null> {
     try {
-      const tokenizerConfigPath = this.resolveAssetPath('tokenizer_config.json')
+      const tokenizerConfigPath = await this.resolveAssetPath('tokenizer_config.json')
       if (
         !tokenizerConfigPath ||
-        !existsSync(tokenizerConfigPath) ||
         env.cacheDir === null ||
         resolve(env.cacheDir) !== resolve(this.config.cacheDir)
       ) {
@@ -659,7 +658,7 @@ export class Embedder {
       )
       const files: ModelAssetSnapshotEntry[] = []
       for (const name of [...new Set(fileNames)].sort()) {
-        const path = this.resolveAssetPath(name)
+        const path = await this.resolveAssetPath(name)
         const info = path ? await statOrNull(path) : null
         if (!path || !info?.isFile()) {
           return null
@@ -674,7 +673,7 @@ export class Embedder {
     }
   }
 
-  private resolveAssetPath(name: string): string | null {
+  private async resolveAssetPath(name: string): Promise<string | null> {
     const normalizedName = name.replaceAll('\\', '/')
     if (
       isAbsolute(name) ||
@@ -696,7 +695,20 @@ export class Embedder {
     } else {
       candidates = [directModelPath, cachePath]
     }
-    return candidates.find((candidate) => existsSync(candidate)) ?? null
+    const available: { path: string; identity: string }[] = []
+    for (const candidate of candidates) {
+      const info = await statOrNull(candidate)
+      if (info?.isFile()) {
+        available.push({ path: candidate, identity: `${info.dev}:${info.ino}` })
+      }
+    }
+    if (new Set(available.map(({ identity }) => identity)).size > 1) {
+      // A model may resolve from multiple local/cache candidates. If they
+      // contain different files, this resolver cannot prove which one the
+      // pipeline loaded, so persistent reuse is unsafe for this instance.
+      return null
+    }
+    return available[0]?.path ?? null
   }
 
   /**

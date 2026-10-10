@@ -1,10 +1,18 @@
-import { cpSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs'
 import { join, resolve } from 'node:path'
 import { PassThrough } from 'node:stream'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { getTestDevice } from '../../__tests__/test-device.js'
 import { isRecord } from '../../utils/type-guards.js'
-import { DocumentEmbeddingSession } from '../embedding-snapshot.js'
+import { DocumentEmbeddingSession, embeddingSnapshotPath } from '../embedding-snapshot.js'
 import type { Embedder, EmbedderConfig, EmbeddingComputationIdentity } from '../index.js'
 
 const streamGate = (() => {
@@ -94,8 +102,8 @@ function createEmbedderConfig(overrides: Partial<EmbedderConfig> = {}): Embedder
   }
 }
 
-function swapCatAndDogTokenIds(): void {
-  const tokenizer: unknown = JSON.parse(readFileSync(TOKENIZER_PATH, 'utf8'))
+function swapCatAndDogTokenIds(path: string = TOKENIZER_PATH): void {
+  const tokenizer: unknown = JSON.parse(readFileSync(path, 'utf8'))
   if (!isRecord(tokenizer) || !isRecord(tokenizer['model'])) {
     throw new Error('Expected a tokenizer JSON model')
   }
@@ -110,7 +118,7 @@ function swapCatAndDogTokenIds(): void {
   }
   vocabulary['cat'] = dogId
   vocabulary['dog'] = catId
-  writeFileSync(TOKENIZER_PATH, JSON.stringify(tokenizer))
+  writeFileSync(path, JSON.stringify(tokenizer))
 }
 
 function maximumVectorDifference(left: number[], right: number[]): number {
@@ -337,4 +345,63 @@ describe('Embedder computation identity', () => {
       await headingEmbedder.dispose()
     }
   }, 300_000)
+
+  it('does not share snapshots when local and cache model copies disagree', async () => {
+    const transformers = await import('@huggingface/transformers')
+    const previousEnvironment = {
+      cacheDir: transformers.env.cacheDir,
+      localModelPath: transformers.env.localModelPath,
+      remoteHost: transformers.env.remoteHost,
+    }
+    const localModelDir = join(TEST_ROOT, 'local-assets', MODEL_PATH)
+    const localTokenizerPath = join(localModelDir, 'tokenizer.json')
+    const dbPath = join(TEST_ROOT, 'db')
+    const filePath = join(TEST_ROOT, 'ambiguous-document.md')
+    const snapshotPath = embeddingSnapshotPath(dbPath, filePath)
+    let first: Embedder | null = null
+    let second: Embedder | null = null
+
+    mkdirSync(localModelDir, { recursive: true })
+    for (const name of ['config.json', 'tokenizer.json', 'tokenizer_config.json']) {
+      cpSync(join(SOURCE_MODEL_DIR, name), join(localModelDir, name))
+    }
+    symlinkSync(join(SOURCE_MODEL_DIR, 'onnx'), join(localModelDir, 'onnx'), 'dir')
+    // The pipeline resolves this model ID from the cache when both locations
+    // exist. Give the local candidate a different tokenizer to expose ambiguity.
+    swapCatAndDogTokenIds(localTokenizerPath)
+    try {
+      transformers.env.localModelPath = join(TEST_ROOT, 'local-assets')
+      const { Embedder: EmbedderClass } = await import('../index.js')
+      first = new EmbedderClass(createEmbedderConfig())
+      expect(await first.getComputationIdentity()).toBeNull()
+      const firstInference = vi.spyOn(first, 'embedBatch')
+      const firstSession = new DocumentEmbeddingSession(dbPath, filePath, first)
+      const original = await firstSession.embedBatch([TEXT], 'document')
+      await firstSession.publish()
+      expect(firstInference).toHaveBeenCalledOnce()
+      expect(existsSync(snapshotPath)).toBe(false)
+
+      // Make the cache match the local candidate. The next pipeline loads a
+      // different tokenizer and must infer rather than reuse the first output.
+      cpSync(localTokenizerPath, TOKENIZER_PATH)
+      second = new EmbedderClass(createEmbedderConfig())
+      expect(await second.getComputationIdentity()).toBeNull()
+      const secondInference = vi.spyOn(second, 'embedBatch')
+      const secondSession = new DocumentEmbeddingSession(dbPath, filePath, second)
+      const current = await secondSession.embedBatch([TEXT], 'document')
+      await secondSession.publish()
+      expect(secondInference).toHaveBeenCalledOnce()
+      expect(existsSync(snapshotPath)).toBe(false)
+      expect(maximumVectorDifference(original[0] ?? [], current[0] ?? [])).toBeGreaterThan(0.01)
+    } finally {
+      try {
+        await first?.dispose()
+        await second?.dispose()
+      } finally {
+        transformers.env.cacheDir = previousEnvironment.cacheDir
+        transformers.env.localModelPath = previousEnvironment.localModelPath
+        transformers.env.remoteHost = previousEnvironment.remoteHost
+      }
+    }
+  }, 180_000)
 })
