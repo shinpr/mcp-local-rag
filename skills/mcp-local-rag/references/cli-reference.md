@@ -156,36 +156,6 @@ Either `--source` or `<file-path>`, not both. Idempotent (non-existent target ex
 
 Output: JSON to stdout.
 
-### relocate
-
-```bash
-npx mcp-local-rag [global-options] relocate --from <old-absolute-directory> --to <new-absolute-directory>
-```
-
-Update indexed absolute file paths after moving the project and its files. Stop the MCP server
-and other database writers, move the project and database while preserving the layout, then run
-the command with `--db-path` set to the database's current location. The old directory need not
-exist. Both roots must be absolute native paths, the new root must be a directory, and each
-mapped destination must exist as a regular file. A symlink to a regular file passes this check.
-The command does not read file contents or verify content identity; a different file at the
-expected path is accepted.
-
-```bash
-npx mcp-local-rag --db-path /new/project/lancedb relocate --from /old/project --to /new/project
-```
-
-Windows example:
-
-```powershell
-npx mcp-local-rag --db-path 'F:\Archive\lancedb' relocate --from 'C:\Folder' --to 'F:\Archive'
-```
-
-Output: JSON to stdout with `filesRelocated` and `chunksRelocated` counts, including zero-match
-successes. Failures are written to stderr and exit nonzero. Afterward, update `BASE_DIR` or
-`BASE_DIRS` and `DB_PATH` in the MCP client configuration before restarting it. Existing vectors
-remain searchable; optional path-keyed embedding snapshots are not renamed, so a later ingest may
-recompute embeddings on a cache miss.
-
 ### read-neighbors
 
 ```bash
