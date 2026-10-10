@@ -279,7 +279,8 @@ export function toSearchResult(raw: unknown): SearchResult {
  * Map a raw LanceDB row to a full {@link VectorChunk}, embedding included, so
  * it round-trips back through `insertChunks` — unlike {@link toChunkRow} and
  * {@link toSearchResult}, which drop the vector. LanceDB returns a typed array,
- * normalized here to `number[]`.
+ * normalized here to `number[]`. Arrow struct metadata is copied to a plain
+ * object accepted by LanceDB's schema inference on reinsertion.
  */
 export function toVectorChunk(raw: unknown): VectorChunk {
   if (!isRecord(raw)) {
@@ -317,7 +318,7 @@ export function toVectorChunk(raw: unknown): VectorChunk {
     chunkIndex,
     text,
     vector: toEmbeddingVector(vector),
-    metadata,
+    metadata: { ...metadata },
     fileTitle: typeof fileTitle === 'string' && fileTitle.length > 0 ? fileTitle : null,
     // Omit the key rather than store '' or undefined: the create path seeds ''
     // for schema inference, and a '' that survived to a caller would read as a

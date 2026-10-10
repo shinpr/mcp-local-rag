@@ -234,6 +234,8 @@ async function makeServer(fixture: Fixture): Promise<ServerInstance> {
     })
   )
   const embedder = privateMembers<{ embedder: Embedder }>(server).embedder
+  vi.spyOn(embedder, 'getTokenLimit').mockResolvedValue(null)
+  vi.spyOn(embedder, 'getComputationIdentity').mockResolvedValue(null)
   vi.spyOn(embedder, 'embedBatch').mockImplementation(async (texts: string[]) => {
     if (texts.some((text) => text.includes(FAIL_MARKER))) {
       throw new Error('induced embedding failure')
