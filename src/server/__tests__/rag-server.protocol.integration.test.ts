@@ -514,6 +514,8 @@ describe('SYNC-006 / SYNC-007: sync tools over the MCP SDK protocol', () => {
     )
 
     const embedder = privateMembers<{ embedder: Embedder }>(ragServer).embedder
+    vi.spyOn(embedder, 'getTokenLimit').mockResolvedValue(null)
+    vi.spyOn(embedder, 'getComputationIdentity').mockResolvedValue(null)
     vi.spyOn(embedder, 'embedBatch').mockImplementation(async (texts: string[]) => {
       if (activeGate !== null && texts.some((text) => text.includes(GATE_MARKER))) {
         activeGate.markEntered()

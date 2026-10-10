@@ -4,6 +4,7 @@ import { stat } from 'node:fs/promises'
 import { resolve, sep } from 'node:path'
 
 import { SemanticChunker } from '../chunker/index.js'
+import { DocumentEmbeddingSession } from '../embedder/embedding-snapshot.js'
 import type { Embedder } from '../embedder/index.js'
 import {
   buildPreparedFileVectorChunks,
@@ -266,6 +267,7 @@ export async function resolveConfig(
 
 /** Collaborators one CLI ingest run needs, injected as a unit. */
 export interface SingleFileIngestCollaborators {
+  dbPath: string
   parser: DocumentParser
   chunker: SemanticChunker
   embedder: Embedder
@@ -284,26 +286,37 @@ export async function ingestSingleFile(
   collaborators: SingleFileIngestCollaborators,
   options: PrepareFileForIngestOptions = { images: false }
 ): Promise<number> {
-  const { parser, chunker, embedder, vectorStore } = collaborators
+  const { dbPath, parser, chunker, embedder, vectorStore } = collaborators
   const isPdf = filePath.toLowerCase().endsWith('.pdf')
-  const prepared = await prepareFileForIngest(filePath, { parser, chunker, embedder }, options)
-  if (prepared.omittedImageCount > 0) {
-    console.error(
-      `  Warning: skipped ${prepared.omittedImageCount} undecodable or oversized ${isPdf ? 'PDF' : 'DOCX'} image(s)`
+  const session = new DocumentEmbeddingSession(dbPath, filePath, embedder)
+  try {
+    const prepared = await prepareFileForIngest(
+      filePath,
+      { parser, chunker, embedder: session },
+      options
     )
+    if (prepared.omittedImageCount > 0) {
+      console.error(
+        `  Warning: skipped ${prepared.omittedImageCount} undecodable or oversized ${isPdf ? 'PDF' : 'DOCX'} image(s)`
+      )
+    }
+    if (prepared.chunks.length === 0) {
+      console.error(`  Warning: 0 chunks generated (file may be empty or too short)`)
+      return 0
+    }
+
+    const vectorChunks = buildPreparedFileVectorChunks(prepared)
+
+    // Delete existing chunks for this file, then insert the new ones.
+    // Snapshot publication follows the successful per-file insertion.
+    await vectorStore.deleteChunks(filePath)
+    await vectorStore.insertChunks(vectorChunks)
+    await session.publish()
+
+    return vectorChunks.length
+  } finally {
+    session.dispose()
   }
-  if (prepared.chunks.length === 0) {
-    console.error(`  Warning: 0 chunks generated (file may be empty or too short)`)
-    return 0
-  }
-
-  const vectorChunks = buildPreparedFileVectorChunks(prepared)
-
-  // Delete existing chunks for this file, then insert the new ones
-  await vectorStore.deleteChunks(filePath)
-  await vectorStore.insertChunks(vectorChunks)
-
-  return vectorChunks.length
 }
 
 // ============================================
@@ -408,7 +421,7 @@ export async function runIngest(args: string[], globalOptions: GlobalOptions = {
       try {
         const chunkCount = await ingestSingleFile(
           filePath,
-          { parser, chunker, embedder, vectorStore },
+          { dbPath: globalConfig.dbPath, parser, chunker, embedder, vectorStore },
           buildFileIngestOptions(
             {
               images: options.images === true,

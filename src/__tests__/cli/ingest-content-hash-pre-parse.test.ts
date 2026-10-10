@@ -130,6 +130,7 @@ async function ingestWithMidFlightModification(): Promise<VectorChunk[]> {
   await ingestSingleFile(
     REPORT_PATH,
     {
+      dbPath: join(TMP_ROOT, 'db'),
       parser: racingParser(),
       chunker: singleChunkChunker(),
       embedder: fixedEmbedder(),
@@ -253,6 +254,7 @@ describe('ingestSingleFile — the pre-parse read is validated first', () => {
       ingestSingleFile(
         REPORT_PATH,
         {
+          dbPath: join(TMP_ROOT, 'db'),
           parser: realParser(8),
           chunker: singleChunkChunker(),
           embedder: fixedEmbedder(),
@@ -279,6 +281,7 @@ describe('ingestSingleFile — the pre-parse read is validated first', () => {
       ingestSingleFile(
         outsidePath,
         {
+          dbPath: join(TMP_ROOT, 'db'),
           parser: realParser(1024 * 1024),
           chunker: singleChunkChunker(),
           embedder: fixedEmbedder(),

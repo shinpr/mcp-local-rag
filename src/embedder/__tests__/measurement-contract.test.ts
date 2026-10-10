@@ -61,4 +61,18 @@ describe('Embedder measurement contract', () => {
 
     await expect(embedder.countTokens(['text'])).rejects.toThrow(EmbeddingError)
   })
+
+  it('identifies the initialized default model from local assets and retains that identity', async () => {
+    const embedder = new Embedder(testConfig)
+    try {
+      const identity = await embedder.getComputationIdentity()
+
+      expect(identity).not.toBeNull()
+      expect(identity?.dimension).toBe(384)
+      expect(identity?.fingerprint).toMatch(/^[a-f\d]{64}$/)
+      expect(await embedder.getComputationIdentity()).toEqual(identity)
+    } finally {
+      await embedder.dispose()
+    }
+  }, 180_000)
 })

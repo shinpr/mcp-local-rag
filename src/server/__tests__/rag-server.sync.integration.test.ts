@@ -12,12 +12,13 @@
 // which is the same signal an MCP client has.
 
 import { createHash } from 'node:crypto'
-import { mkdirSync, rmSync, symlinkSync } from 'node:fs'
+import { existsSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { chmod, mkdir, rm, symlink, writeFile } from 'node:fs/promises'
-import { join, resolve, sep } from 'node:path'
+import { dirname, join, resolve, sep } from 'node:path'
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { withTestDevice } from '../../__tests__/test-device.js'
 import { parseJson, privateMembers } from '../../__tests__/test-doubles.js'
+import { embeddingSnapshotPath } from '../../embedder/embedding-snapshot.js'
 import type { Embedder } from '../../embedder/index.js'
 import { isRecord } from '../../utils/type-guards.js'
 import type { SyncStatusResult } from '../types.js'
@@ -233,6 +234,8 @@ async function makeServer(fixture: Fixture): Promise<ServerInstance> {
     })
   )
   const embedder = privateMembers<{ embedder: Embedder }>(server).embedder
+  vi.spyOn(embedder, 'getTokenLimit').mockResolvedValue(null)
+  vi.spyOn(embedder, 'getComputationIdentity').mockResolvedValue(null)
   vi.spyOn(embedder, 'embedBatch').mockImplementation(async (texts: string[]) => {
     if (texts.some((text) => text.includes(FAIL_MARKER))) {
       throw new Error('induced embedding failure')
@@ -431,6 +434,9 @@ describe('MCP sync tools', () => {
     await seedRows(fixture, changedPath, sha256('a previous revision'))
     await seedRows(fixture, unchangedPath, sha256(unchangedContent))
     await seedRows(fixture, gonePath, sha256('deleted from disk'))
+    const goneSnapshot = embeddingSnapshotPath(fixture.dbPath, gonePath)
+    await mkdir(dirname(goneSnapshot), { recursive: true })
+    writeFileSync(goneSnapshot, 'previous document snapshot')
 
     const server = await makeServer(fixture)
     try {
@@ -467,6 +473,7 @@ describe('MCP sync tools', () => {
     ).toEqual(new Set([sha256(changedContent)]))
     expect(manifest.filter((row) => row.filePath === emptyPath)).toEqual([])
     expect(manifest.filter((row) => row.filePath === gonePath)).toEqual([])
+    expect(existsSync(goneSnapshot)).toBe(false)
   }, 60000)
 
   // --------------------------------------------
@@ -482,6 +489,9 @@ describe('MCP sync tools', () => {
     )
     const gonePath = join(rootDir, 'gone.md')
     await seedRows(fixture, gonePath, sha256('deleted from disk'))
+    const goneSnapshot = embeddingSnapshotPath(fixture.dbPath, gonePath)
+    await mkdir(dirname(goneSnapshot), { recursive: true })
+    writeFileSync(goneSnapshot, 'previous document snapshot')
 
     const server = await makeServer(fixture)
     let terminal: SyncStatusResult
@@ -501,6 +511,7 @@ describe('MCP sync tools', () => {
     // The first error stops the run before the prune phase: the row for the
     // file that left the disk survives.
     expect(await storedPaths(fixture)).toEqual([gonePath])
+    expect(existsSync(goneSnapshot)).toBe(true)
   }, 45000)
 
   // --------------------------------------------
