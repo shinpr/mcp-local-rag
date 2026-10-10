@@ -1,7 +1,8 @@
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
-import { serialize } from 'node:v8'
+import { deserialize, serialize } from 'node:v8'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { isRecord } from '../../utils/type-guards.js'
 import type { PersistentEmbeddingProvider } from '../embedding-snapshot.js'
 import {
   DocumentEmbeddingSession,
@@ -35,6 +36,23 @@ function createEmbedder(identity: EmbeddingComputationIdentity | null = IDENTITY
     headingPrefix: false,
   }
   return { embedder, calls }
+}
+
+function readSnapshotEnvelope(path: string): Record<string, unknown> {
+  const value: unknown = deserialize(readFileSync(path))
+  if (!isRecord(value)) {
+    throw new Error('Expected a serialized snapshot object')
+  }
+  return value
+}
+
+function replaceFirstSnapshotVector(envelope: Record<string, unknown>, vector: Float32Array): void {
+  const entries = envelope['entries']
+  const firstEntry = Array.isArray(entries) ? entries[0] : undefined
+  if (!Array.isArray(firstEntry)) {
+    throw new Error('Expected a serialized snapshot entry')
+  }
+  firstEntry[1] = vector
 }
 
 describe('DocumentEmbeddingSession', () => {
@@ -209,5 +227,125 @@ describe('DocumentEmbeddingSession', () => {
     await expect(session.publish()).resolves.toBeUndefined()
     expect(warning).toHaveBeenCalled()
     warning.mockRestore()
+  })
+
+  it('reloads complete current output after competing publishers replace one snapshot', async () => {
+    const dbPath = join(TEST_ROOT, 'db')
+    const filePath = join(TEST_ROOT, 'concurrent.md')
+    const firstText = 'first publisher input'
+    const secondText = 'second publisher input'
+    const first = createEmbedder()
+    const second = createEmbedder()
+    const firstSession = new DocumentEmbeddingSession(dbPath, filePath, first.embedder)
+    const secondSession = new DocumentEmbeddingSession(dbPath, filePath, second.embedder)
+
+    await expect(firstSession.embedBatch([firstText])).resolves.toEqual([[firstText.length, 1, 3]])
+    await expect(secondSession.embedBatch([secondText])).resolves.toEqual([
+      [secondText.length, 1, 3],
+    ])
+    await Promise.all([firstSession.publish(), secondSession.publish()])
+
+    const envelope = readSnapshotEnvelope(embeddingSnapshotPath(dbPath, filePath))
+    expect(envelope['entries']).toHaveLength(1)
+
+    const restarted = createEmbedder()
+    const reader = new DocumentEmbeddingSession(dbPath, filePath, restarted.embedder)
+    await expect(reader.embedBatch([firstText, secondText])).resolves.toEqual([
+      [firstText.length, 1, 3],
+      [secondText.length, 1, 3],
+    ])
+    expect(restarted.calls).toHaveLength(1)
+    expect(restarted.calls[0]?.texts).toHaveLength(1)
+
+    firstSession.dispose()
+    secondSession.dispose()
+    reader.dispose()
+  })
+
+  it.each(['wrong dimension', 'non-finite'] as const)(
+    'rejects a stored vector with %s and recomputes current output',
+    async (corruption) => {
+      const dbPath = join(TEST_ROOT, 'db')
+      const filePath = join(TEST_ROOT, `corrupt-${corruption}.md`)
+      const original = createEmbedder()
+      const writer = new DocumentEmbeddingSession(dbPath, filePath, original.embedder)
+      await writer.embedBatch(['current value'])
+      await writer.publish()
+
+      const path = embeddingSnapshotPath(dbPath, filePath)
+      const envelope = readSnapshotEnvelope(path)
+      replaceFirstSnapshotVector(
+        envelope,
+        corruption === 'wrong dimension'
+          ? new Float32Array([8, 9])
+          : new Float32Array([8, 9, Number.NaN])
+      )
+      writeFileSync(path, serialize(envelope))
+
+      const current = createEmbedder()
+      const reader = new DocumentEmbeddingSession(dbPath, filePath, current.embedder)
+      await expect(reader.embedBatch(['current value'])).resolves.toEqual([[13, 1, 3]])
+      expect(current.calls).toEqual([{ role: undefined, texts: ['current value'] }])
+
+      writer.dispose()
+      reader.dispose()
+    }
+  )
+
+  it('returns all current outputs when a document exceeds the persistence bound', async () => {
+    const dbPath = join(TEST_ROOT, 'db')
+    const filePath = join(TEST_ROOT, 'oversized.md')
+    const dimension = 2_200_000
+    const texts = ['large first vector', 'large second vector']
+    const calls: string[][] = []
+    const oversized: PersistentEmbeddingProvider = {
+      getComputationIdentity: async () => ({ fingerprint: 'c'.repeat(64), dimension }),
+      embedBatch: async (requested) => {
+        calls.push([...requested])
+        return requested.map((text) => Array<number>(dimension).fill(text.length))
+      },
+    }
+    const session = new DocumentEmbeddingSession(dbPath, filePath, oversized)
+
+    const result = await session.embedBatch(texts)
+
+    expect(result).toHaveLength(texts.length)
+    expect(result.map((vector) => vector.length)).toEqual([dimension, dimension])
+    expect(result.map((vector) => [vector[0], vector.at(-1)])).toEqual(
+      texts.map((text) => [text.length, text.length])
+    )
+    expect(calls).toEqual([texts])
+    await session.publish()
+    expect(() => readFileSync(embeddingSnapshotPath(dbPath, filePath))).toThrow()
+    session.dispose()
+  })
+
+  it('replaces the snapshot with only the current request set', async () => {
+    const dbPath = join(TEST_ROOT, 'db')
+    const filePath = join(TEST_ROOT, 'latest-only.md')
+    const previous = createEmbedder()
+    const first = new DocumentEmbeddingSession(dbPath, filePath, previous.embedder)
+    await first.embedBatch(['old input', 'still old input'])
+    await first.publish()
+
+    const current = createEmbedder()
+    const latest = new DocumentEmbeddingSession(dbPath, filePath, current.embedder)
+    await expect(latest.embedBatch(['latest input'])).resolves.toEqual([[12, 1, 3]])
+    expect(current.calls).toEqual([{ role: undefined, texts: ['latest input'] }])
+    await latest.publish()
+
+    const path = embeddingSnapshotPath(dbPath, filePath)
+    expect(readSnapshotEnvelope(path)['entries']).toHaveLength(1)
+
+    const restarted = createEmbedder()
+    const verifyLatest = new DocumentEmbeddingSession(dbPath, filePath, restarted.embedder)
+    await expect(verifyLatest.embedBatch(['latest input'])).resolves.toEqual([[12, 1, 3]])
+    expect(restarted.calls).toEqual([])
+    await expect(verifyLatest.embedBatch(['old input'])).resolves.toEqual([[9, 1, 3]])
+    expect(restarted.calls).toEqual([{ role: undefined, texts: ['old input'] }])
+
+    first.dispose()
+    latest.dispose()
+    verifyLatest.dispose()
   })
 })

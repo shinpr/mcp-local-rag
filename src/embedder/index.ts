@@ -1,12 +1,13 @@
 // Embedder implementation with Transformers.js
 
 import { createHash } from 'node:crypto'
-import { createReadStream, existsSync } from 'node:fs'
+import { type BigIntStats, createReadStream, existsSync } from 'node:fs'
 import { readFile, stat } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { serialize } from 'node:v8'
 import {
+  AutoConfig,
   type DataType,
   type DeviceType,
   env,
@@ -90,6 +91,26 @@ interface HashedModelAsset {
   sha256: string
 }
 
+interface ModelAssetSnapshotEntry {
+  name: string
+  path: string
+  statSignature: string
+}
+
+interface ModelAssetSnapshot {
+  config: PretrainedConfig
+  files: ModelAssetSnapshotEntry[]
+}
+
+interface ComputationIdentityInput {
+  loadedModel: unknown
+  device: DeviceType
+  dtype: DataType
+  tokenLimit: number | null
+  assetSnapshot: ModelAssetSnapshot | null
+  sentenceTransformersConfig: unknown
+}
+
 const EMBEDDING_IMPLEMENTATION_VERSION = 1
 const require = createRequire(import.meta.url)
 const transformersRequire = createRequire(require.resolve('@huggingface/transformers'))
@@ -143,12 +164,16 @@ function embeddingDimension(loadedModel: EmbeddingPipeline): number | null {
     : null
 }
 
-async function statOrNull(filePath: string): Promise<Awaited<ReturnType<typeof stat>> | null> {
+async function statOrNull(filePath: string): Promise<BigIntStats | null> {
   try {
-    return await stat(filePath)
+    return await stat(filePath, { bigint: true })
   } catch {
     return null
   }
+}
+
+function statSignature(info: BigIntStats): string {
+  return [info.dev, info.ino, info.size, info.mtimeNs, info.ctimeNs].join(':')
 }
 
 // ============================================
@@ -403,13 +428,12 @@ export class Embedder {
 
     // Resolved before the pipeline: once `this.model` is set, `ensureInitialized`
     // lets callers through, so no await may follow that assignment.
-    const settings = resolveModelSettings(
+    const sentenceTransformersConfig = await loadSentenceTransformersConfig(
       this.config.modelPath,
-      await loadSentenceTransformersConfig(this.config.modelPath, this.config.cacheDir, {
-        dtype,
-        device,
-      })
+      this.config.cacheDir,
+      { dtype, device }
     )
+    const settings = resolveModelSettings(this.config.modelPath, sentenceTransformersConfig)
     for (const warning of settings.warnings) {
       console.error(`Embedder: ${warning}`)
     }
@@ -419,6 +443,11 @@ export class Embedder {
     console.error(`Embedder: Loading model "${this.config.modelPath}" on device "${device}"...`)
 
     try {
+      // Capture local asset names and file signatures before the pipeline can
+      // load them. Later content hashes are trusted only while these exact
+      // files remain unchanged, so a disk update during model loading cannot
+      // assign the new asset identity to an older in-memory pipeline.
+      const assetSnapshot = await this.captureModelAssetSnapshot(dtype, device)
       this.model = await pipeline('feature-extraction', this.config.modelPath, { dtype, device })
       const loadedModel = this.model
       const clamp = installTokenLimitClamp(loadedModel)
@@ -427,12 +456,14 @@ export class Embedder {
       // Start asset hashing against the initialized pipeline while parsing and
       // token measurement proceed. The promise is retained with this model and
       // is cleared only when the pipeline is disposed.
-      this.computationIdentityPromise = this.createComputationIdentity(
+      this.computationIdentityPromise = this.createComputationIdentity({
         loadedModel,
         device,
         dtype,
-        clamp.tokenLimit
-      )
+        tokenLimit: clamp.tokenLimit,
+        assetSnapshot,
+        sentenceTransformersConfig,
+      })
       console.error(`Embedder: Model loaded successfully (device=${device})`)
     } catch (error) {
       const nativeError = toError(error)
@@ -514,12 +545,14 @@ export class Embedder {
     return await this.computationIdentityPromise
   }
 
-  private async createComputationIdentity(
-    loadedModel: unknown,
-    device: DeviceType,
-    dtype: DataType,
-    tokenLimit: number | null
-  ): Promise<EmbeddingComputationIdentity | null> {
+  private async createComputationIdentity({
+    loadedModel,
+    device,
+    dtype,
+    tokenLimit,
+    assetSnapshot,
+    sentenceTransformersConfig,
+  }: ComputationIdentityInput): Promise<EmbeddingComputationIdentity | null> {
     try {
       if (!isEmbeddingPipeline(loadedModel)) {
         return null
@@ -529,10 +562,23 @@ export class Embedder {
         return null
       }
 
-      const assets = await this.hashModelAssets(loadedModel, dtype, device)
+      const loadedConfig = loadedModel.model?.config
+      if (
+        !assetSnapshot ||
+        !isPretrainedConfig(loadedConfig) ||
+        JSON.stringify(assetSnapshot.config) !== JSON.stringify(loadedConfig)
+      ) {
+        return null
+      }
+
+      const assets = await this.hashModelAssets(assetSnapshot)
       if (!assets) {
         return null
       }
+      assets.push({
+        name: 'config_sentence_transformers.json',
+        sha256: createHash('sha256').update(serialize(sentenceTransformersConfig)).digest('hex'),
+      })
 
       const runtimeVersions = await getRuntimeVersions()
       if (runtimeVersions === null) {
@@ -564,52 +610,68 @@ export class Embedder {
     }
   }
 
-  private async hashModelAssets(
-    loadedModel: EmbeddingPipeline,
-    dtype: DataType,
-    device: DeviceType
-  ): Promise<HashedModelAsset[] | null> {
-    const tokenizerConfigPath = this.resolveAssetPath('tokenizer_config.json')
-    if (
-      !tokenizerConfigPath ||
-      !existsSync(tokenizerConfigPath) ||
-      env.cacheDir === null ||
-      resolve(env.cacheDir) !== resolve(this.config.cacheDir)
-    ) {
-      // In the installed Transformers.js version file enumeration probes
-      // tokenizer_config.json. Requiring it locally prevents that optional
-      // metadata lookup from making a separate Hub request.
-      return null
-    }
-    const modelConfig = loadedModel.model?.config
-    if (!modelConfig || !isPretrainedConfig(modelConfig)) {
-      return null
-    }
-    const fileNames = await ModelRegistry.get_pipeline_files(
-      'feature-extraction',
-      this.config.modelPath,
-      { config: modelConfig, dtype, device }
-    )
-    const assetNames = [...new Set([...fileNames, 'config_sentence_transformers.json'])].sort()
+  private async hashModelAssets(snapshot: ModelAssetSnapshot): Promise<HashedModelAsset[] | null> {
     const assets: HashedModelAsset[] = []
-    for (const name of assetNames) {
-      const path = this.resolveAssetPath(name)
-      if (!path) {
-        if (name === 'config_sentence_transformers.json') {
-          continue
-        }
+    for (const file of snapshot.files) {
+      const beforeHash = await statOrNull(file.path)
+      if (!beforeHash?.isFile() || statSignature(beforeHash) !== file.statSignature) {
         return null
       }
-      const info = await statOrNull(path)
-      if (!info?.isFile()) {
-        if (name === 'config_sentence_transformers.json') {
-          continue
-        }
+      const sha256 = await hashFile(file.path)
+      const afterHash = await statOrNull(file.path)
+      if (!afterHash?.isFile() || statSignature(afterHash) !== file.statSignature) {
         return null
       }
-      assets.push({ name, sha256: await hashFile(path) })
+      assets.push({ name: file.name, sha256 })
     }
     return assets
+  }
+
+  private async captureModelAssetSnapshot(
+    dtype: DataType,
+    device: DeviceType
+  ): Promise<ModelAssetSnapshot | null> {
+    try {
+      const tokenizerConfigPath = this.resolveAssetPath('tokenizer_config.json')
+      if (
+        !tokenizerConfigPath ||
+        !existsSync(tokenizerConfigPath) ||
+        env.cacheDir === null ||
+        resolve(env.cacheDir) !== resolve(this.config.cacheDir)
+      ) {
+        // Transformers.js 4.3.1 probes tokenizer_config.json while listing
+        // pipeline assets. Require it locally before enumeration so identity
+        // discovery cannot cause a separate Hub metadata lookup.
+        return null
+      }
+
+      const config = await AutoConfig.from_pretrained(this.config.modelPath, {
+        cache_dir: this.config.cacheDir,
+        local_files_only: true,
+      })
+      if (!isPretrainedConfig(config)) {
+        return null
+      }
+      const fileNames = await ModelRegistry.get_pipeline_files(
+        'feature-extraction',
+        this.config.modelPath,
+        { config, dtype, device }
+      )
+      const files: ModelAssetSnapshotEntry[] = []
+      for (const name of [...new Set(fileNames)].sort()) {
+        const path = this.resolveAssetPath(name)
+        const info = path ? await statOrNull(path) : null
+        if (!path || !info?.isFile()) {
+          return null
+        }
+        files.push({ name, path, statSignature: statSignature(info) })
+      }
+      return files.length === 0 ? null : { config, files }
+    } catch {
+      // Local identity is optional; a missing cached asset or config mismatch
+      // disables reuse without changing normal pipeline initialization.
+      return null
+    }
   }
 
   private resolveAssetPath(name: string): string | null {
@@ -625,9 +687,15 @@ export class Embedder {
     const cachePath = join(this.config.cacheDir, modelPath, name)
     const directModelPath = resolve(modelPath, name)
     const localModelPath = join(env.localModelPath, modelPath, name)
-    const candidates = isAbsolute(modelPath)
-      ? [join(this.config.cacheDir, modelPath, name), directModelPath]
-      : [cachePath, localModelPath, directModelPath]
+    const modelId = /^[^./:\\]+\/[^./\\]+$/.test(modelPath)
+    let candidates: string[]
+    if (isAbsolute(modelPath)) {
+      candidates = [directModelPath]
+    } else if (modelId) {
+      candidates = [localModelPath, cachePath]
+    } else {
+      candidates = [directModelPath, cachePath]
+    }
     return candidates.find((candidate) => existsSync(candidate)) ?? null
   }
 
