@@ -177,14 +177,13 @@ Busca qué dice la documentación sobre ERR_CONNECTION_REFUSED.
 Lee también los segmentos anteriores y posteriores a ese resultado.
 ```
 
-También puedes incorporar un solo archivo o HTML que el cliente ya haya obtenido. Usar la misma
-ruta o fuente actualiza la entrada existente. Las rutas de archivos en MCP deben ser absolutas
-y estar dentro de un directorio raíz configurado.
+También puedes incorporar un solo archivo o HTML que el cliente ya haya obtenido. Para
+actualizar una entrada existente, vuelve a incorporar el documento con la misma ruta o
+identificador de origen. `sync` omite los archivos sin cambios. Las rutas de archivos en MCP
+deben ser absolutas y estar dentro de un directorio raíz configurado.
 
-La información de origen puede incluir títulos de sección, números de línea del archivo
-original en MD/TXT y números de página en PDF. En los PDF, la detección puede omitir títulos o
-confundir texto del cuerpo con un título. Vuelve a incorporar los documentos indexados antes de
-v0.21.0 para añadir estos datos; `sync` omite los archivos sin cambios.
+Los títulos de sección detectados en un PDF pueden ser incorrectos. Si necesitas el título
+exacto, compruébalo en la página original.
 
 <details>
 <summary>Herramientas MCP</summary>
@@ -398,6 +397,10 @@ para aplicarla.
 - El procesamiento de documentos y las búsquedas no realizan solicitudes de red una vez que los modelos necesarios están en caché, salvo que `RAG_RERANK_CMD` indique un comando que sí las realice.
 - El servidor está diseñado para un único usuario local y no ofrece autenticación ni control de acceso.
 - No ejecutes varios procesos de escritura de la CLI o MCP sobre el mismo `DB_PATH`. Las consultas de solo lectura pueden ejecutarse mientras hay una sincronización en curso.
+- Al volver a incorporar un documento, se pueden reutilizar los embeddings del texto sin
+  cambios si coinciden el modelo y los ajustes, evitando repetir ese cálculo. Se guardan en
+  `DB_PATH/embedding-cache`. Puedes borrar esta caché sin perder el índice de búsqueda.
+  En la siguiente incorporación se volverán a calcular esos embeddings.
 - Para crear una copia de seguridad del índice, copia el directorio `DB_PATH` cuando no haya ningún proceso de escritura activo.
 
 <details>

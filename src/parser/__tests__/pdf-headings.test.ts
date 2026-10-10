@@ -48,6 +48,26 @@ describe('PDF heading inference', () => {
     ])
   })
 
+  it('keeps separate column headings separate when they share a baseline', () => {
+    const items: PageData['items'] = [
+      { ...line('1 Left Column', 100, 14), blockOrdinal: 0, lineOrdinal: 0 },
+      { ...line('2 Right Column', 100, 14), blockOrdinal: 1, lineOrdinal: 0 },
+      { ...line(body, 80), blockOrdinal: 2, lineOrdinal: 0 },
+    ]
+    const text = items.map((item) => item.text).join('\n')
+
+    expect(
+      pdfHeadings(
+        asDouble<Document>({ loadOutline: () => [] }),
+        [{ pageNum: 1, items }],
+        [{ text, textFragments: [] }]
+      )[0]
+    ).toEqual([
+      { offset: 0, level: 1, text: '1 Left Column' },
+      { offset: text.indexOf('2 Right Column'), level: 1, text: '2 Right Column' },
+    ])
+  })
+
   it('matches a wrapped full-width outline heading after text normalization', () => {
     const doc = asDouble<Document>({
       loadOutline: () => [{ title: '１.１  目的とスコープ', page: 0, uri: undefined, open: false }],

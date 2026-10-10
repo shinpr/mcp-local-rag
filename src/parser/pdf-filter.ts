@@ -3,7 +3,7 @@
 // - Semantic similarity-based header/footer detection (sentence-level)
 
 import type { EmbedderInterface } from '../chunker/semantic-chunker.js'
-import { splitIntoSentences } from '../chunker/sentence-splitter.js'
+import { splitIntoSentenceUnits } from '../chunker/sentence-splitter.js'
 
 // Re-export for consumers of this module
 export type { EmbedderInterface }
@@ -68,30 +68,41 @@ type RawFragment = Omit<FilteredTextFragment, 'text' | 'pageTextStart' | 'pageTe
   rawEnd: number
 }
 
+function beginsNewNativeBlock(
+  previousItem: TextItemWithPosition,
+  item: TextItemWithPosition
+): boolean {
+  if (previousItem.blockOrdinal !== undefined && item.blockOrdinal !== undefined) {
+    return previousItem.blockOrdinal !== item.blockOrdinal
+  }
+  return (
+    previousItem.blockOrdinal !== undefined ||
+    item.blockOrdinal !== undefined ||
+    previousItem.hasEOL
+  )
+}
+
 function buildPageLayout(pageNum: number, items: TextItemWithPosition[]): FilteredPageLayout {
   let rawText = ''
   let previousItem: TextItemWithPosition | undefined
   const rawFragments: RawFragment[] = []
   const fragmentCounts = new Map<string, number>()
 
-  const orderedItems = [...items].sort(
-    (left, right) => Math.round(right.y) - Math.round(left.y) || left.x - right.x
-  )
-  for (let itemIndex = 0; itemIndex < orderedItems.length; itemIndex++) {
-    const item = orderedItems[itemIndex]
+  for (let itemIndex = 0; itemIndex < items.length; itemIndex++) {
+    const item = items[itemIndex]
     if (!item || item.text.trim().length === 0) {
       continue
     }
 
     if (previousItem) {
-      rawText += Math.round(previousItem.y) === Math.round(item.y) ? ' ' : '\n'
+      rawText += beginsNewNativeBlock(previousItem, item) ? '\n' : ' '
     }
 
     const rawStart = rawText.length
     rawText += item.text
     const rawEnd = rawText.length
-    const blockOrdinal = item.blockOrdinal ?? 0
-    const lineOrdinal = item.lineOrdinal ?? itemIndex
+    const blockOrdinal = item.blockOrdinal ?? itemIndex
+    const lineOrdinal = item.lineOrdinal ?? 0
     const lineKey = `${blockOrdinal}:${lineOrdinal}`
     const fragmentOrdinal = fragmentCounts.get(lineKey) ?? 0
     fragmentCounts.set(lineKey, fragmentOrdinal + 1)
@@ -143,43 +154,79 @@ function trimToPageText(rawText: string, rawFragments: readonly RawFragment[]): 
   return { text, textFragments }
 }
 
-function buildSentenceLayout(
-  pageNum: number,
-  sentences: readonly SentenceWithY[],
-  items: readonly TextItemWithPosition[]
+interface KeptTextSegment {
+  sourceStart: number
+  sourceEnd: number
+  outputStart: number
+}
+
+/** Remove only selected source ranges and rebase the surviving fragments. */
+function removeSourceSpans(
+  layout: FilteredPageLayout,
+  spans: readonly Pick<SentenceWithY, 'sourceStart' | 'sourceEnd'>[]
 ): FilteredPageLayout {
-  let text = ''
-  const textFragments: FilteredTextFragment[] = []
-  for (const sentence of sentences) {
-    if (text) {
-      text += ' '
+  const kept: KeptTextSegment[] = []
+  const orderedSpans = spans
+    .map((span) => ({
+      start: Math.max(0, Math.min(layout.text.length, span.sourceStart)),
+      end: Math.max(0, Math.min(layout.text.length, span.sourceEnd)),
+    }))
+    .filter((span) => span.start < span.end)
+    .sort((left, right) => left.start - right.start)
+  let sourceCursor = 0
+  let outputText = ''
+
+  const keepRange = (sourceStart: number, sourceEnd: number): void => {
+    if (sourceStart >= sourceEnd) {
+      return
     }
-    const start = text.length
-    text += sentence.text
-    const matchingItems = items.filter((item) => Math.round(item.y) === Math.round(sentence.y))
-    const first = matchingItems[0]
-    const boxes: Array<[number, number, number, number]> = matchingItems.map(
-      (item) => item.bbox ?? [item.x, item.y, item.x, item.y]
-    )
-    const bbox: [number, number, number, number] = boxes.length
-      ? [
-          Math.min(...boxes.map((box) => box[0])),
-          Math.min(...boxes.map((box) => box[1])),
-          Math.max(...boxes.map((box) => box[2])),
-          Math.max(...boxes.map((box) => box[3])),
-        ]
-      : [0, 0, 0, 0]
-    textFragments.push({
-      pageNum,
-      blockOrdinal: first?.blockOrdinal ?? 0,
-      lineOrdinal: first?.lineOrdinal ?? textFragments.length,
-      fragmentOrdinal: 0,
-      bbox,
-      text: sentence.text,
-      pageTextStart: start,
-      pageTextEnd: text.length,
-    })
+    kept.push({ sourceStart, sourceEnd, outputStart: outputText.length })
+    outputText += layout.text.slice(sourceStart, sourceEnd)
   }
+
+  for (const span of orderedSpans) {
+    const start = Math.max(sourceCursor, span.start)
+    if (start > sourceCursor) {
+      keepRange(sourceCursor, start)
+    }
+    sourceCursor = Math.max(sourceCursor, span.end)
+  }
+  if (sourceCursor < layout.text.length) {
+    keepRange(sourceCursor, layout.text.length)
+  }
+
+  const leadingWhitespace = outputText.length - outputText.trimStart().length
+  const trailingBoundary = outputText.trimEnd().length
+  const text = outputText.slice(leadingWhitespace, trailingBoundary)
+  const textFragments: FilteredTextFragment[] = []
+
+  for (const fragment of layout.textFragments) {
+    for (const segment of kept) {
+      const sourceStart = Math.max(fragment.pageTextStart, segment.sourceStart)
+      const sourceEnd = Math.min(fragment.pageTextEnd, segment.sourceEnd)
+      if (sourceStart >= sourceEnd) {
+        continue
+      }
+
+      const outputStart = segment.outputStart + sourceStart - segment.sourceStart
+      const outputEnd = segment.outputStart + sourceEnd - segment.sourceStart
+      const clippedStart = Math.max(outputStart, leadingWhitespace)
+      const clippedEnd = Math.min(outputEnd, trailingBoundary)
+      if (clippedStart >= clippedEnd) {
+        continue
+      }
+
+      const pageTextStart = clippedStart - leadingWhitespace
+      const pageTextEnd = clippedEnd - leadingWhitespace
+      textFragments.push({
+        ...fragment,
+        text: text.slice(pageTextStart, pageTextEnd),
+        pageTextStart,
+        pageTextEnd,
+      })
+    }
+  }
+
   return { text, textFragments }
 }
 
@@ -205,108 +252,43 @@ export function joinFilteredPages(pages: PageData[]): string {
 interface SentenceWithY {
   text: string
   y: number
+  sourceStart: number
+  sourceEnd: number
 }
 
 /**
- * Split page items into sentences, each mapped to the Y of its first item, and
- * merged when they share a Y.
+ * Split the ordered page text into sentence units while retaining exact source
+ * spans. Y is used only as the boundary detector's geometric hint.
  */
-function splitItemsIntoSentencesWithY(items: TextItemWithPosition[]): SentenceWithY[] {
+function splitItemsIntoSentencesWithY(
+  pageNum: number,
+  items: TextItemWithPosition[]
+): SentenceWithY[] {
   if (items.length === 0) {
     return []
   }
 
-  // Sort items by Y descending, then X ascending (reading order)
-  const sortedItems = [...items].sort((a, b) => {
-    const yDiff = b.y - a.y
-    if (Math.abs(yDiff) > 1) {
-      return yDiff
+  const layout = buildPageLayout(pageNum, items)
+  return splitIntoSentenceUnits(layout.text).map((unit) => {
+    const firstFragment = layout.textFragments.find(
+      (fragment) =>
+        fragment.pageTextStart < unit.sourceEnd && fragment.pageTextEnd > unit.sourceStart
+    )
+    const firstItemIndex = firstFragment
+      ? items.findIndex(
+          (item, index) =>
+            (item.blockOrdinal ?? index) === firstFragment.blockOrdinal &&
+            (item.lineOrdinal ?? 0) === firstFragment.lineOrdinal &&
+            item.text.includes(firstFragment.text)
+        )
+      : -1
+    return {
+      text: unit.text,
+      y: firstItemIndex >= 0 ? Math.round(items[firstItemIndex]?.y ?? 0) : 0,
+      sourceStart: unit.sourceStart,
+      sourceEnd: unit.sourceEnd,
     }
-    return a.x - b.x
   })
-
-  // Build text and track character positions to item mapping
-  const charToItem: Array<{ start: number; item: TextItemWithPosition }> = []
-  let fullText = ''
-  let prevY: number | null = null
-
-  for (const item of sortedItems) {
-    // Insert newline when Y coordinate changes (different line)
-    // This matches joinPageItems behavior: same Y = space, different Y = newline
-    if (prevY !== null && Math.abs(prevY - item.y) > 1) {
-      fullText = `${fullText.trimEnd()}\n`
-    }
-
-    charToItem.push({ start: fullText.length, item })
-    fullText += `${item.text} `
-    prevY = item.y
-  }
-
-  // Split into sentences
-  const sentences = splitIntoSentences(fullText)
-
-  // Map each sentence to Y coordinate of its first character's item
-  const sentencesWithY: SentenceWithY[] = []
-  let searchStart = 0
-
-  for (const sentence of sentences) {
-    // Find where this sentence starts in fullText
-    const sentenceStart = fullText.indexOf(sentence.trim(), searchStart)
-    // Benign skip (not error masking): this builds the Y-coordinate map used
-    // only for header/footer boundary detection. A miss means this sentence
-    // is omitted from boundary detection — it does NOT drop the sentence from
-    // the document body (that text comes from `fullText`). Misses are expected
-    // when `splitIntoSentences` normalizes whitespace differently than the
-    // reconstructed `fullText`, so logging here would be noise, not signal.
-    if (sentenceStart === -1) {
-      continue
-    }
-
-    // Find the item that contains this position
-    let firstItemY = sortedItems[0]?.y ?? 0
-    for (let i = charToItem.length - 1; i >= 0; i--) {
-      const entry = charToItem[i]
-      if (entry && entry.start <= sentenceStart) {
-        firstItemY = Math.round(entry.item.y)
-        break
-      }
-    }
-
-    sentencesWithY.push({ text: sentence, y: firstItemY })
-    searchStart = sentenceStart + sentence.length
-  }
-
-  // Merge sentences with same Y coordinate
-  return mergeSentencesByY(sentencesWithY)
-}
-
-/** Sentences sharing a Y coordinate are one sentence. */
-function mergeSentencesByY(sentences: SentenceWithY[]): SentenceWithY[] {
-  if (sentences.length === 0) {
-    return []
-  }
-
-  const merged: SentenceWithY[] = []
-  let current: SentenceWithY | null = null
-
-  for (const sentence of sentences) {
-    if (current === null) {
-      current = { ...sentence }
-    } else if (current.y === sentence.y) {
-      // Same Y: merge text
-      current.text += ` ${sentence.text}`
-    } else {
-      // Different Y: push current and start new
-      merged.push(current)
-      current = { ...sentence }
-    }
-  }
-
-  if (current !== null) {
-    merged.push(current)
-  }
-
-  return merged
 }
 
 // ============================================
@@ -630,9 +612,9 @@ export async function detectSentencePatterns(
   const startIndex = firstSamplePage === undefined ? 0 : pages.indexOf(firstSamplePage)
   const endIndex = startIndex + samplePages.length
 
-  // 2. Split each page into sentences with Y coordinate (merged by Y)
+  // 2. Split each page in its ordered source layout and retain first-item Y.
   const pageSentences: SentenceWithY[][] = samplePages.map((page) =>
-    splitItemsIntoSentencesWithY(page.items)
+    splitItemsIntoSentencesWithY(page.pageNum, page.items)
   )
 
   // 3. Collect first and last sentences from sampled pages
@@ -717,10 +699,11 @@ export async function filterPageBoundaryLayouts(
   config: Partial<SentencePatternConfig> = {}
 ): Promise<FilteredPageLayout[]> {
   const cfg = { ...DEFAULT_SENTENCE_PATTERN_CONFIG, ...config }
+  const layouts = pages.map((page) => buildPageLayout(page.pageNum, page.items))
 
   // Need minimum pages to detect patterns
   if (pages.length < cfg.minPages) {
-    return pages.map((page) => buildPageLayout(page.pageNum, page.items))
+    return layouts
   }
 
   // Detect block attribute candidates for boosted threshold
@@ -731,12 +714,12 @@ export async function filterPageBoundaryLayouts(
 
   // If no patterns detected, return normally joined text per page
   if (!patterns.removeFirstSentence && !patterns.removeLastSentence) {
-    return pages.map((page) => buildPageLayout(page.pageNum, page.items))
+    return layouts
   }
 
-  // Split each page into sentences with Y coordinate (merged by Y)
+  // Keep sentence source spans so a detected boundary removes only its text.
   const pageSentences: SentenceWithY[][] = pages.map((page) =>
-    splitItemsIntoSentencesWithY(page.items)
+    splitItemsIntoSentencesWithY(page.pageNum, page.items)
   )
 
   const sampledSentences = sampleCenterPages(pages, cfg.samplePages).map(
@@ -761,14 +744,22 @@ export async function filterPageBoundaryLayouts(
     )
   }
 
-  return pages.map((page, pageIndex) => {
+  return layouts.map((layout, pageIndex) => {
     let cleaned = [...(pageSentences[pageIndex] ?? [])]
+    const removed: SentenceWithY[] = []
     if (patterns.removeFirstSentence && matchesRepeatedBoundary(cleaned[0], 'first')) {
+      if (cleaned[0]) {
+        removed.push(cleaned[0])
+      }
       cleaned = cleaned.slice(1)
     }
-    if (patterns.removeLastSentence && matchesRepeatedBoundary(cleaned.at(-1), 'last')) {
+    const last = cleaned.at(-1)
+    if (patterns.removeLastSentence && matchesRepeatedBoundary(last, 'last')) {
+      if (last) {
+        removed.push(last)
+      }
       cleaned = cleaned.slice(0, -1)
     }
-    return buildSentenceLayout(page.pageNum, cleaned, page.items)
+    return removeSourceSpans(layout, removed)
   })
 }

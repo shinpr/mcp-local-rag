@@ -174,13 +174,11 @@ Find the documented behavior of ERR_CONNECTION_REFUSED.
 Read the surrounding chunks for that result.
 ```
 
-You can also ingest a single file or HTML already fetched by the client. Reusing the same path
-or source updates the existing entry. MCP file paths must be absolute and inside a configured
-document root.
+You can also ingest a single file or HTML already fetched by the client. To refresh an existing
+entry, ingest the document again using the same path or source identifier. `sync` skips unchanged
+files. MCP file paths must be absolute and inside a configured document root.
 
-Source context can include headings, original-file line numbers for MD/TXT, and page numbers
-for PDFs. PDF heading detection can miss headings or mistake body text for a heading. Re-ingest
-documents indexed before v0.21.0 to add source context; `sync` skips unchanged files.
+PDF section headings may be inaccurate. Check the original page when you need the exact heading.
 
 <details>
 <summary>MCP Tools</summary>
@@ -388,12 +386,9 @@ image setting alone does not refresh unchanged files; re-ingest them to apply it
 - The server is designed for one local user and does not provide authentication or access control.
 - Do not run multiple CLI or MCP writers against the same `DB_PATH`. Read-only queries can run
   while a sync is active.
-- Ingestion keeps one latest embedding snapshot per indexed file under `DB_PATH/embedding-cache`.
-  Successful deletion and sync pruning remove that file's snapshot. It is disposable: removing
-  `embedding-cache` leaves the current index searchable and makes later ingestion recompute those
-  vectors. Copying the whole `DB_PATH` for backup includes the snapshots; model downloads stay in
-  `CACHE_DIR`. Snapshots do not change the explicit re-ingestion required after model, dtype, or
-  embedding-prefix changes.
+- Re-ingestion can reuse saved embeddings for unchanged text when the model and settings match,
+  avoiding repeated computation. The cache is stored in `DB_PATH/embedding-cache`. Deleting it
+  leaves the index searchable, but later ingestion will recompute those embeddings.
 - Back up an index by copying its `DB_PATH` directory while no writer is active.
 
 <details>
