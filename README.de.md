@@ -178,14 +178,13 @@ Suche in der Dokumentation nach dem Verhalten bei ERR_CONNECTION_REFUSED.
 Lies auch die Abschnitte vor und nach diesem Treffer.
 ```
 
-Du kannst auch einzelne Dateien oder bereits vom Client abgerufenes HTML importieren. Derselbe
-Pfad oder dieselbe Quelle aktualisiert den vorhandenen Eintrag. MCP-Dateipfade müssen absolut
+Du kannst auch einzelne Dateien oder bereits vom Client abgerufenes HTML importieren. Um einen
+vorhandenen Eintrag neu aufzubauen, importiere das Dokument erneut mit demselben Pfad oder
+derselben Quellkennung. `sync` überspringt unveränderte Dateien. MCP-Dateipfade müssen absolut
 sein und innerhalb eines konfigurierten Stammverzeichnisses liegen.
 
-Die Quellenangaben können Überschriften, Zeilennummern der Originaldatei bei MD/TXT und
-Seitenzahlen bei PDFs enthalten. Bei PDFs kann die Erkennung Überschriften übersehen oder
-Fließtext als Überschrift einordnen. Importiere Dokumente, die vor v0.21.0 indexiert wurden,
-erneut, um Quellenangaben zu ergänzen; `sync` überspringt unveränderte Dateien.
+Bei PDFs können die erkannten Abschnittsüberschriften fehlerhaft sein. Wenn du die genaue
+Überschrift brauchst, prüfe sie auf der Originalseite.
 
 <details>
 <summary>MCP-Werkzeuge</summary>
@@ -403,6 +402,11 @@ dafür erneut.
 - Sobald die benötigten Modelle im Cache liegen, greifen Dokumentverarbeitung und Suche nicht mehr auf das Netzwerk zu, sofern `RAG_RERANK_CMD` nicht einen Befehl benennt, der das tut.
 - Der Server ist für einen einzelnen lokalen Benutzer ausgelegt und bietet keine Authentifizierung oder Zugriffskontrolle.
 - Mehrere CLI- oder MCP-Schreibprozesse dürfen nicht gleichzeitig denselben `DB_PATH` verwenden. Reine Leseabfragen sind während einer Synchronisierung möglich.
+- Beim erneuten Import können gespeicherte Embeddings für unveränderten Text wiederverwendet
+  werden, wenn Modell und Einstellungen übereinstimmen. So müssen diese Vektoren nicht erneut
+  berechnet werden. Der Cache liegt unter `DB_PATH/embedding-cache`. Du kannst ihn löschen,
+  ohne den durchsuchbaren Index zu verlieren. Beim nächsten Import werden diese Embeddings neu
+  berechnet.
 - Sichere den Index, indem du das `DB_PATH`-Verzeichnis kopierst, während kein Schreibprozess läuft.
 
 <details>

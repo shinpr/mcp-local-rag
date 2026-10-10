@@ -179,14 +179,13 @@ Cherche ce que dit la documentation sur ERR_CONNECTION_REFUSED.
 Lis aussi les segments qui précèdent et suivent ce résultat.
 ```
 
-Vous pouvez aussi importer un fichier seul ou du HTML déjà récupéré par le client. Réutiliser
-le même chemin ou la même source met à jour l'entrée existante. Les chemins de fichiers MCP
-doivent être absolus et rester dans une racine configurée.
+Vous pouvez aussi importer un fichier seul ou du HTML déjà récupéré par le client. Pour mettre
+à jour une entrée existante, réimportez le document avec le même chemin ou le même identifiant
+de source. `sync` ignore les fichiers inchangés. Les chemins de fichiers MCP doivent être
+absolus et rester dans une racine configurée.
 
-Les informations de source peuvent comprendre des titres de section, les numéros de ligne du
-fichier d'origine pour MD/TXT et les numéros de page pour les PDF. Dans les PDF, la détection
-peut manquer un titre ou prendre du texte courant pour un titre. Réimportez les documents
-indexés avant v0.21.0 pour ajouter ces informations ; `sync` ignore les fichiers inchangés.
+Les titres de section détectés dans un PDF peuvent être incorrects. Si vous avez besoin du
+titre exact, vérifiez-le sur la page d'origine.
 
 <details>
 <summary>Outils MCP</summary>
@@ -246,7 +245,7 @@ requêtes et les imports :
 npx mcp-local-rag skills install --claude-code
 npx mcp-local-rag skills install --claude-code --global
 npx mcp-local-rag skills install --codex
-```0
+```
 
 Les skills installées couvrent la formulation des requêtes, l'affinage des résultats et
 l'import de HTML. Si une skill ne s'active pas automatiquement, demandez explicitement à
@@ -348,7 +347,7 @@ installé par npm ne démarre pas sous Windows.
     "RAG_RERANK_TIMEOUT_MS": "10000"
   }
 }
-```1
+```
 
 La commande doit lire et renvoyer les résultats au format défini par le [schéma de
 sortie](docs/schema/query-output.schema.json). Elle peut supprimer ou reclasser des résultats
@@ -375,7 +374,7 @@ dans la CLI.
 
 ```bash
 npx mcp-local-rag ingest ./docs/paper.pdf --visual --visual-quality quality
-```2
+```
 
 Pour recevoir des images avec les passages correspondants, utilisez `STORE_IMAGES=true` dans
 MCP ou `--images` avec les commandes CLI `ingest` et `sync`. Cette option est indépendante des
@@ -384,7 +383,7 @@ images PNG/JPEG prises en charge dans les DOCX.
 
 ```bash
 npx mcp-local-rag ingest ./docs/paper.pdf --images
-```3
+```
 
 La synchronisation conserve le profil de description de chaque PDF. La commande CLI `sync
 --visual --visual-quality quality` le change même pour les PDF inchangés ; la synchronisation
@@ -405,6 +404,10 @@ l'appliquer.
 - Le traitement des documents et la recherche n'effectuent plus de requêtes réseau une fois les modèles nécessaires en cache, sauf si `RAG_RERANK_CMD` désigne une commande qui en effectue.
 - Le serveur est conçu pour un seul utilisateur local et ne fournit ni authentification ni contrôle d'accès.
 - Ne lancez pas plusieurs processus d'écriture CLI ou MCP sur le même `DB_PATH`. Les requêtes en lecture seule restent possibles pendant une synchronisation.
+- Un nouvel import peut réutiliser les embeddings du texte inchangé lorsque le modèle et les
+  réglages sont les mêmes, ce qui évite de les recalculer. Ils sont conservés dans
+  `DB_PATH/embedding-cache`. Vous pouvez supprimer ce cache sans perdre l'index de recherche.
+  L'import suivant recalculera ces embeddings.
 - Pour sauvegarder un index, copiez le répertoire `DB_PATH` lorsqu'aucun processus d'écriture n'est actif.
 
 <details>

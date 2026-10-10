@@ -173,17 +173,16 @@ contexto de um resultado, você pode pedir ao cliente MCP:
 
 ```text
 Busque o que a documentação diz sobre ERR_CONNECTION_REFUSED.
-Leia también los fragmentos anteriores e posteriores a esse resultado.
+Leia também os trechos anteriores e posteriores a esse resultado.
 ```
 
-Você também pode importar um único arquivo ou HTML que o cliente já tenha obtido. Usar o mesmo
-caminho ou origem atualiza a entrada existente. Os caminhos de arquivos no MCP devem ser
+Você também pode importar um único arquivo ou HTML que o cliente já tenha obtido. Para atualizar
+uma entrada existente, importe o documento novamente com o mesmo caminho ou identificador de
+origem. `sync` ignora arquivos sem alterações. Os caminhos de arquivos no MCP devem ser
 absolutos e estar dentro de um diretório raiz configurado.
 
-As informações de origem podem incluir títulos de seção, números de linha do arquivo original
-em MD/TXT e números de página em PDFs. Nos PDFs, a detecção pode deixar de identificar títulos
-ou confundir texto do corpo com um título. Importe novamente os documentos indexados antes da
-v0.21.0 para acrescentar esses dados; `sync` ignora arquivos sem alterações.
+Os títulos de seção identificados em PDFs podem estar incorretos. Quando precisar do título
+exato, confira na página original.
 
 <details>
 <summary>Ferramentas MCP</summary>
@@ -394,6 +393,10 @@ Mudar só essa opção não atualiza arquivos sem alterações; importe-os novam
 - O processamento dos documentos e as buscas não fazem solicitações de rede depois que os modelos necessários estão no cache, a menos que `RAG_RERANK_CMD` indique um comando que as faça.
 - O servidor foi projetado para um único usuário local e não oferece autenticação nem controle de acesso.
 - Não execute vários processos de escrita da CLI ou do MCP no mesmo `DB_PATH`. Consultas somente leitura podem ser executadas durante uma sincronização.
+- Ao importar um documento novamente, é possível reaproveitar os embeddings do texto sem
+  alterações quando o modelo e as configurações são os mesmos, evitando repetir o cálculo.
+  Eles ficam em `DB_PATH/embedding-cache`. Você pode excluir esse cache sem perder o índice
+  de busca. Na próxima importação, esses embeddings serão recalculados.
 - Para fazer backup do índice, copie o diretório `DB_PATH` enquanto não houver nenhum processo de escrita ativo.
 
 <details>
