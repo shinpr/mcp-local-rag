@@ -83,9 +83,16 @@ export async function relocateIndexedPaths(
     }
 
     const sourceLiterals = snapshot.mappings.map(({ sourcePath }) => sqlString(sourcePath))
+    const destinationLiterals = snapshot.mappings.map(({ destinationPath }) =>
+      sqlString(destinationPath)
+    )
+    const sourceList = `[${sourceLiterals.join(', ')}]`
+    const destinationList = `[${destinationLiterals.join(', ')}]`
     await table.update({
       where: `\`filePath\` IN (${sourceLiterals.join(', ')})`,
-      valuesSql: { filePath: replaceDirectoryPrefix(fromRoot, toRoot) },
+      valuesSql: {
+        filePath: `array_element(${destinationList}, CAST(array_position(${sourceList}, \`filePath\`) AS BIGINT))`,
+      },
     })
 
     return {
@@ -114,7 +121,7 @@ function normalizeDirectory(value: string, label: string): string {
   return path.resolve(value)
 }
 
-function normalizeStoredPath(value: unknown): string {
+function validateStoredPath(value: unknown): string {
   if (
     typeof value !== 'string' ||
     value.length === 0 ||
@@ -123,15 +130,10 @@ function normalizeStoredPath(value: unknown): string {
   ) {
     throw new DatabaseError('Indexed file paths must be non-empty absolute native paths')
   }
-  const normalized = path.normalize(value)
-  if (
-    normalized !== value ||
-    value.endsWith(path.sep) ||
-    (process.platform === 'win32' && value.endsWith('/'))
-  ) {
+  if (value.endsWith(path.sep) || (process.platform === 'win32' && value.endsWith('/'))) {
     throw new DatabaseError(`Indexed file path is malformed: ${value}`)
   }
-  return normalized
+  return value
 }
 
 function samePath(left: string, right: string): boolean {
@@ -147,7 +149,7 @@ function isOutsideRelativePath(relativePath: string): boolean {
 }
 
 function relativeWithin(root: string, candidate: string): string | null {
-  const relativePath = path.relative(root, candidate)
+  const relativePath = path.relative(root, path.normalize(candidate))
   if (isOutsideRelativePath(relativePath)) {
     return null
   }
@@ -171,7 +173,7 @@ function readIndexedPath(row: unknown): string {
   if (!isRecord(row)) {
     throw new DatabaseError('Invalid indexed path row returned by LanceDB')
   }
-  return normalizeStoredPath(row['filePath'])
+  return validateStoredPath(row['filePath'])
 }
 
 function createMappings(
@@ -233,31 +235,10 @@ function assertNoDestinationCollisions(
 }
 
 function pathKey(value: string): string {
-  return process.platform === 'win32' ? value.toLowerCase() : value
+  const normalized = path.normalize(value)
+  return process.platform === 'win32' ? normalized.toLowerCase() : normalized
 }
 
 function sqlString(value: string): string {
   return `'${value.replace(/'/g, "''")}'`
-}
-
-function escapeRegularExpression(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-}
-
-function escapeRegexReplacement(value: string): string {
-  return value.replace(/\$/g, () => '$$')
-}
-
-function directoryPrefix(value: string): string {
-  return value.endsWith(path.sep) ? value : `${value}${path.sep}`
-}
-
-function replaceDirectoryPrefix(fromRoot: string, toRoot: string): string {
-  const fromPrefix = directoryPrefix(fromRoot)
-  const toPrefix = directoryPrefix(toRoot)
-  const caseFlag = process.platform === 'win32' ? '(?i)' : ''
-  const pattern = `${caseFlag}^${escapeRegularExpression(fromPrefix)}`
-  return `regexp_replace(\`filePath\`, ${sqlString(pattern)}, ${sqlString(
-    escapeRegexReplacement(toPrefix)
-  )})`
 }

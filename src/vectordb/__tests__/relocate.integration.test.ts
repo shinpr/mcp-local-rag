@@ -137,6 +137,17 @@ function sqlString(value: string): string {
   return `'${value.replace(/'/g, "''")}'`
 }
 
+function withDotSegmentBeforeFileName(filePath: string): string {
+  return `${path.dirname(filePath)}${path.sep}.${path.sep}${path.basename(filePath)}`
+}
+
+function withNativeAlternativeSeparator(filePath: string): string {
+  if (process.platform === 'win32') {
+    return filePath.replaceAll('\\', '/')
+  }
+  return `${path.dirname(filePath)}${path.sep}${path.sep}${path.basename(filePath)}`
+}
+
 async function seedLegacyTable(
   databasePath: string,
   rows: Record<string, unknown>[]
@@ -150,14 +161,16 @@ async function seedLegacyTable(
 }
 
 describe('relocateIndexedPaths', () => {
-  it('changes only selected paths in one publication and keeps vector, FTS, and range reads visible across reopen', async () => {
+  it('normalizes selected aliases while preserving unrelated aliases in one searchable publication', async () => {
     const databasePath = createDatabasePath('success')
     const fromRoot = path.join(path.dirname(databasePath), "old project's (Ω)+")
     const toRoot = path.join(path.dirname(databasePath), "new $archive project's (Ω)+")
-    const sourceA = path.join(fromRoot, 'notes', "O'Brien_計画.md")
-    const sourceB = path.join(fromRoot, 'managed', 'archive%_one.txt')
+    const sourceA = withDotSegmentBeforeFileName(path.join(fromRoot, 'notes', "O'Brien_計画.md"))
+    const sourceB = withNativeAlternativeSeparator(
+      path.join(fromRoot, 'managed', 'archive%_one.txt')
+    )
     const sibling = path.join(`${fromRoot}-backup`, 'leave-alone.md')
-    const external = path.join(path.dirname(fromRoot), 'external.md')
+    const external = withDotSegmentBeforeFileName(path.join(path.dirname(fromRoot), 'external.md'))
     const destinationA = path.join(toRoot, 'notes', "O'Brien_計画.md")
     const destinationB = path.join(toRoot, 'managed', 'archive%_one.txt')
     const marker = 'quasarrelocationkeyword'
@@ -243,7 +256,7 @@ describe('relocateIndexedPaths', () => {
     const fromRoot = path.join(path.dirname(databasePath), 'old')
     const toRoot = path.join(path.dirname(databasePath), 'new')
     const source = path.join(fromRoot, 'notes', 'same.md')
-    const collision = path.join(toRoot, 'notes', 'same.md')
+    const collision = withDotSegmentBeforeFileName(path.join(toRoot, 'notes', 'same.md'))
     await seedLegacyTable(databasePath, [createLegacyRecord(source), createLegacyRecord(collision)])
     const before = await databaseSnapshot(databasePath)
     const callback = vi.fn(async () => undefined)
@@ -261,6 +274,33 @@ describe('relocateIndexedPaths', () => {
     expect(callback).not.toHaveBeenCalled()
     expect(await databaseSnapshot(databasePath)).toEqual(before)
     expect(before.schema.map((field) => field.name)).not.toContain('sourceContext')
+  })
+
+  it('rejects distinct selected aliases that converge on one normalized destination before writing', async () => {
+    const databasePath = createDatabasePath('source-alias-collision')
+    const fromRoot = path.join(path.dirname(databasePath), 'old')
+    const toRoot = path.join(path.dirname(databasePath), 'new')
+    const canonicalSource = path.join(fromRoot, 'notes', 'same.md')
+    const aliasedSource = withDotSegmentBeforeFileName(canonicalSource)
+    await seedLegacyTable(databasePath, [
+      createLegacyRecord(canonicalSource),
+      createLegacyRecord(aliasedSource),
+    ])
+    const before = await databaseSnapshot(databasePath)
+    const callback = vi.fn(async () => undefined)
+
+    await expect(
+      relocateIndexedPaths({
+        dbPath: databasePath,
+        tableName: 'chunks',
+        fromPath: fromRoot,
+        toPath: toRoot,
+        validateDestinations: callback,
+      })
+    ).rejects.toThrow(/same destination|collid/i)
+
+    expect(callback).not.toHaveBeenCalled()
+    expect(await databaseSnapshot(databasePath)).toEqual(before)
   })
 
   it('rejects destination validation on a legacy table without a maintenance commit', async () => {

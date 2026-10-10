@@ -37,6 +37,7 @@ interface MovedProjectFixture {
   newRoot: string
   newDatabasePath: string
   oldDocumentPaths: string[]
+  oldIndexedDocumentPaths: string[]
   newDocumentPaths: string[]
   oldRawDataPath: string
   newRawDataPath: string
@@ -83,6 +84,14 @@ function createChunk(filePath: string, id: string, text: string, chunkIndex = 0)
     sourceContext: JSON.stringify({ headingPaths: [['Relocation', 'Preserved']] }),
     timestamp: '2026-10-10T00:00:00.000Z',
   }
+}
+
+function withDotSegmentBeforeFileName(filePath: string): string {
+  return `${path.dirname(filePath)}${path.sep}.${path.sep}${path.basename(filePath)}`
+}
+
+function withRepeatedSeparatorBeforeFileName(filePath: string): string {
+  return `${path.dirname(filePath)}${path.sep}${path.sep}${path.basename(filePath)}`
 }
 
 function normalizeRow(value: unknown): Record<string, unknown> {
@@ -150,7 +159,12 @@ async function createMovedProjectFixture(): Promise<MovedProjectFixture> {
     path.join(oldRoot, 'docs', 'manual', 'intro.md'),
     path.join(oldRoot, 'docs', 'reference', 'api.md'),
   ]
-  const unrelatedPath = path.join(tempRoot, 'unrelated.md')
+  const oldIndexedDocumentPaths = [
+    withDotSegmentBeforeFileName(oldDocumentPaths[0] ?? ''),
+    oldDocumentPaths[1] ?? '',
+  ]
+  const unrelatedFilePath = path.join(tempRoot, 'unrelated.md')
+  const unrelatedPath = withRepeatedSeparatorBeforeFileName(unrelatedFilePath)
   const source = 'https://example.org/relocation-source'
   const oldRawDataPath = generateRawDataPath(oldDatabasePath, source)
   const sidecar: RawDataMeta = {
@@ -162,21 +176,21 @@ async function createMovedProjectFixture(): Promise<MovedProjectFixture> {
   await Promise.all([
     mkdir(path.dirname(oldDocumentPaths[0] ?? ''), { recursive: true }),
     mkdir(path.dirname(oldDocumentPaths[1] ?? ''), { recursive: true }),
-    mkdir(path.dirname(unrelatedPath), { recursive: true }),
+    mkdir(path.dirname(unrelatedFilePath), { recursive: true }),
     mkdir(path.dirname(oldRawDataPath), { recursive: true }),
   ])
   await Promise.all([
     writeFile(oldDocumentPaths[0] ?? '', '# Intro before moving\n', 'utf-8'),
     writeFile(oldDocumentPaths[1] ?? '', '# API before moving\n', 'utf-8'),
-    writeFile(unrelatedPath, '# Unrelated document\n', 'utf-8'),
+    writeFile(unrelatedFilePath, '# Unrelated document\n', 'utf-8'),
     writeFile(oldRawDataPath, '# Raw content\n', 'utf-8'),
   ])
   await saveMetaJson(oldRawDataPath, sidecar)
 
   const chunks = [
-    createChunk(oldDocumentPaths[0] ?? '', 'manual-a', 'Original indexed intro text', 0),
-    createChunk(oldDocumentPaths[0] ?? '', 'manual-b', 'Second original intro chunk', 1),
-    createChunk(oldDocumentPaths[1] ?? '', 'reference-a', 'Original indexed API text'),
+    createChunk(oldIndexedDocumentPaths[0], 'manual-a', 'Original indexed intro text', 0),
+    createChunk(oldIndexedDocumentPaths[0], 'manual-b', 'Second original intro chunk', 1),
+    createChunk(oldIndexedDocumentPaths[1], 'reference-a', 'Original indexed API text'),
     createChunk(oldRawDataPath, 'raw-a', 'Original indexed raw-data text'),
     createChunk(unrelatedPath, 'unrelated-a', 'Unrelated indexed text'),
   ]
@@ -201,6 +215,7 @@ async function createMovedProjectFixture(): Promise<MovedProjectFixture> {
     newRoot,
     newDatabasePath,
     oldDocumentPaths,
+    oldIndexedDocumentPaths,
     newDocumentPaths,
     oldRawDataPath,
     newRawDataPath,
@@ -284,8 +299,8 @@ describe('relocate CLI', () => {
       const { filePath, ...updatedData } = row
       expect(updatedData).toEqual(priorData)
 
-      if (fixture.oldDocumentPaths.includes(String(prior?.['filePath']))) {
-        const index = fixture.oldDocumentPaths.indexOf(String(prior?.['filePath']))
+      if (fixture.oldIndexedDocumentPaths.includes(String(prior?.['filePath']))) {
+        const index = fixture.oldIndexedDocumentPaths.indexOf(String(prior?.['filePath']))
         expect(filePath).toBe(fixture.newDocumentPaths[index])
       } else if (prior?.['filePath'] === fixture.oldRawDataPath) {
         expect(filePath).toBe(fixture.newRawDataPath)
