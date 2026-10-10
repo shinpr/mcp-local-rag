@@ -462,34 +462,158 @@ describe('relocateIndexedPaths', () => {
   })
 
   it.skipIf(process.platform !== 'win32')(
-    'uses native Windows drive and case-insensitive path semantics',
+    'maps native Windows aliases across drives in one path-only publication',
     async () => {
       const databasePath = createDatabasePath('windows-paths')
-      const source = String.raw`C:\OldRoot\Docs\CaseSensitive.md`
+      const toPath = String.raw`d:\MovedRoot\Nested\..`
+      const toRoot = path.resolve(toPath)
+      const dotSource = String.raw`C:\OldRoot\Docs\.\Dot.md`
+      const parentSource = String.raw`C:\OldRoot\Docs\Sub\..\Parent.md`
+      const alternativeSeparatorSource = 'C:/OldRoot/Docs/Alternative.md'
+      const repeatedSeparatorSource = String.raw`C:\OldRoot\Docs\\Repeated.md`
       const sibling = String.raw`C:\OldRootBackup\stay.md`
-      const destination = String.raw`D:\MovedRoot\Docs\CaseSensitive.md`
+      const otherDrive = String.raw`E:\OldRoot\stay.md`
+      const expectedMappings: RelocationPathMapping[] = [
+        {
+          sourcePath: dotSource,
+          destinationPath: path.join(toRoot, 'Docs', 'Dot.md'),
+        },
+        {
+          sourcePath: parentSource,
+          destinationPath: path.join(toRoot, 'Docs', 'Parent.md'),
+        },
+        {
+          sourcePath: alternativeSeparatorSource,
+          destinationPath: path.join(toRoot, 'Docs', 'Alternative.md'),
+        },
+        {
+          sourcePath: repeatedSeparatorSource,
+          destinationPath: path.join(toRoot, 'Docs', 'Repeated.md'),
+        },
+      ]
       const store = await seedStore(databasePath, [
-        createChunk(source, 'Windows path selected'),
+        createChunk(dotSource, 'First selected alias'),
+        createChunk(dotSource, 'Second chunk at the same alias', 1),
+        createChunk(parentSource, 'Parent-segment alias'),
+        createChunk(alternativeSeparatorSource, 'Alternative-separator alias'),
+        createChunk(repeatedSeparatorSource, 'Repeated-separator alias'),
         createChunk(sibling, 'Sibling root is not selected'),
+        createChunk(otherDrive, 'Other drive is not selected'),
       ])
       try {
+        const before = await databaseSnapshot(databasePath)
+        const callback = vi.fn(async (_mappings: readonly RelocationPathMapping[]) => undefined)
         const result = await relocateIndexedPaths({
           dbPath: databasePath,
           tableName: 'chunks',
-          fromPath: String.raw`c:\oldroot`,
-          toPath: String.raw`D:\MovedRoot`,
-          validateDestinations: async (mappings) => {
-            expect(mappings).toEqual([{ sourcePath: source, destinationPath: destination }])
-          },
+          fromPath: 'c:/oldroot/.',
+          toPath,
+          validateDestinations: callback,
         })
 
-        expect(result).toEqual({ filesRelocated: 1, chunksRelocated: 1 })
-        const snapshot = await databaseSnapshot(databasePath)
-        expect(snapshot.rows.map((row) => row['filePath'])).toContain(destination)
-        expect(snapshot.rows.map((row) => row['filePath'])).toContain(sibling)
+        expect(callback).toHaveBeenCalledOnce()
+        expect(callback.mock.calls[0]?.[0]).toHaveLength(expectedMappings.length)
+        expect(callback.mock.calls[0]?.[0]).toEqual(expect.arrayContaining(expectedMappings))
+        expect(result).toEqual({ filesRelocated: 4, chunksRelocated: 5 })
+
+        const after = await databaseSnapshot(databasePath)
+        expect(after.version).toBe(before.version + 1)
+        expect(after.schema).toEqual(before.schema)
+        const destinationsBySource = new Map(
+          expectedMappings.map(({ sourcePath, destinationPath }) => [sourcePath, destinationPath])
+        )
+        expect(after.rows).toEqual(
+          before.rows.map((row) => {
+            const destinationPath = destinationsBySource.get(String(row['filePath']))
+            return destinationPath === undefined ? row : { ...row, filePath: destinationPath }
+          })
+        )
+        expect(after.rows.map((row) => row['filePath'])).toContain(sibling)
+        expect(after.rows.map((row) => row['filePath'])).toContain(otherDrive)
       } finally {
         await store.close()
       }
+    }
+  )
+
+  it.skipIf(process.platform !== 'win32')(
+    'rejects case-insensitive destination collisions without changing legacy rows or schema',
+    async () => {
+      const databasePath = createDatabasePath('windows-destination-collision')
+      const source = String.raw`C:\OldRoot\Docs\same.md`
+      const collision = 'D:/movedroot/docs/../docs/SAME.md'
+      await seedLegacyTable(databasePath, [
+        createLegacyRecord(source),
+        createLegacyRecord(collision),
+      ])
+      const before = await databaseSnapshot(databasePath)
+      const callback = vi.fn(async () => undefined)
+
+      await expect(
+        relocateIndexedPaths({
+          dbPath: databasePath,
+          tableName: 'chunks',
+          fromPath: 'c:/oldroot',
+          toPath: String.raw`D:\MovedRoot`,
+          validateDestinations: callback,
+        })
+      ).rejects.toThrow(/collid/i)
+
+      expect(callback).not.toHaveBeenCalled()
+      expect(before.schema.map((field) => field.name)).not.toContain('sourceContext')
+      expect(await databaseSnapshot(databasePath)).toEqual(before)
+    }
+  )
+
+  it.skipIf(process.platform !== 'win32')(
+    'rejects selected source aliases differing by case when they converge on one destination',
+    async () => {
+      const databasePath = createDatabasePath('windows-source-collision')
+      const canonicalSource = String.raw`C:\OldRoot\Docs\Case.md`
+      const caseAlias = 'c:/oldroot/docs/temp/../case.md'
+      await seedLegacyTable(databasePath, [
+        createLegacyRecord(canonicalSource),
+        createLegacyRecord(caseAlias),
+      ])
+      const before = await databaseSnapshot(databasePath)
+      const callback = vi.fn(async () => undefined)
+
+      await expect(
+        relocateIndexedPaths({
+          dbPath: databasePath,
+          tableName: 'chunks',
+          fromPath: 'c:/oldroot',
+          toPath: String.raw`D:\MovedRoot`,
+          validateDestinations: callback,
+        })
+      ).rejects.toThrow(/same destination|collid/i)
+
+      expect(callback).not.toHaveBeenCalled()
+      expect(before.schema.map((field) => field.name)).not.toContain('sourceContext')
+      expect(await databaseSnapshot(databasePath)).toEqual(before)
+    }
+  )
+
+  it.skipIf(process.platform !== 'win32')(
+    'rejects roots equivalent after Windows case, separator, and dot normalization without writing',
+    async () => {
+      const databasePath = createDatabasePath('windows-same-root')
+      await seedLegacyTable(databasePath, [createLegacyRecord(String.raw`C:\OldRoot\Docs\file.md`)])
+      const before = await databaseSnapshot(databasePath)
+      const callback = vi.fn(async () => undefined)
+
+      await expect(
+        relocateIndexedPaths({
+          dbPath: databasePath,
+          tableName: 'chunks',
+          fromPath: String.raw`C:\OldRoot\Nested\..`,
+          toPath: 'c:/oldroot/./',
+          validateDestinations: callback,
+        })
+      ).rejects.toThrow(/different/i)
+
+      expect(callback).not.toHaveBeenCalled()
+      expect(await databaseSnapshot(databasePath)).toEqual(before)
     }
   )
 })

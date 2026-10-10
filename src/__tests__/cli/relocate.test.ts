@@ -94,6 +94,10 @@ function withRepeatedSeparatorBeforeFileName(filePath: string): string {
   return `${path.dirname(filePath)}${path.sep}${path.sep}${path.basename(filePath)}`
 }
 
+function windowsRootVariant(root: string): string {
+  return `${root.replaceAll('\\', '/').toUpperCase()}/./`
+}
+
 function normalizeRow(value: unknown): Record<string, unknown> {
   if (!isRecord(value)) {
     throw new Error('Expected LanceDB to return a row object')
@@ -275,7 +279,19 @@ afterEach(async () => {
 describe('relocate CLI', () => {
   it('relocates a moved project and database without reading changed content or touching unrelated rows and sidecars', async () => {
     const fixture = await createMovedProjectFixture()
-    const result = runCli(relocateArgs(fixture.newDatabasePath, fixture.oldRoot, fixture.newRoot))
+    const fromPath =
+      process.platform === 'win32' ? windowsRootVariant(fixture.oldRoot) : fixture.oldRoot
+    const toPath =
+      process.platform === 'win32' ? windowsRootVariant(fixture.newRoot) : fixture.newRoot
+    const normalizedToRoot = path.resolve(toPath)
+    const expectedNewDocumentPaths = fixture.oldDocumentPaths.map((filePath) =>
+      path.join(normalizedToRoot, path.relative(fixture.oldRoot, filePath))
+    )
+    const expectedNewRawDataPath = path.join(
+      normalizedToRoot,
+      path.relative(fixture.oldRoot, fixture.oldRawDataPath)
+    )
+    const result = runCli(relocateArgs(fixture.newDatabasePath, fromPath, toPath))
 
     expect(result.status).toBe(0)
     expect(JSON.parse(result.stdout)).toEqual({ filesRelocated: 3, chunksRelocated: 4 })
@@ -301,14 +317,29 @@ describe('relocate CLI', () => {
 
       if (fixture.oldIndexedDocumentPaths.includes(String(prior?.['filePath']))) {
         const index = fixture.oldIndexedDocumentPaths.indexOf(String(prior?.['filePath']))
-        expect(filePath).toBe(fixture.newDocumentPaths[index])
+        expect(filePath).toBe(expectedNewDocumentPaths[index])
       } else if (prior?.['filePath'] === fixture.oldRawDataPath) {
-        expect(filePath).toBe(fixture.newRawDataPath)
+        expect(filePath).toBe(expectedNewRawDataPath)
       } else {
         expect(filePath).toBe(fixture.unrelatedPath)
       }
     }
   })
+
+  it.skipIf(process.platform !== 'win32')(
+    'rejects Windows roots equivalent after case, separator, and dot normalization without changing the database',
+    async () => {
+      const fixture = await moveSingleDocumentProject()
+      const before = await snapshotDatabase(fixture.databasePath)
+      const result = runCli(
+        relocateArgs(fixture.databasePath, fixture.newRoot, windowsRootVariant(fixture.newRoot))
+      )
+
+      expect(result.status).toBe(1)
+      expect(result.stderr).toContain('--from and --to must be different directories')
+      expect(await snapshotDatabase(fixture.databasePath)).toEqual(before)
+    }
+  )
 
   it.each(['missing', 'directory', 'stat-error', 'dangling-link'] as const)(
     'fails before mutation when a destination is a %s',
