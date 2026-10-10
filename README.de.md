@@ -235,6 +235,17 @@ npx mcp-local-rag --db-path ./my-db query "Authentifizierung"
 sich per Pipe an ein anderes Werkzeug übergeben lassen. Die Definition der einzelnen Felder
 steht in [`docs/schema/query-output.schema.json`](docs/schema/query-output.schema.json).
 
+Wenn du ein Projekt verschieben und seinen Index behalten möchtest, beende zuerst den
+MCP-Server und andere Schreibprozesse. Verschiebe die Dateien und die Datenbank zusammen, ohne
+die Verzeichnisstruktur zu ändern, und führe dann diesen Befehl aus:
+
+```bash
+npx mcp-local-rag --db-path /new/project/lancedb relocate --from /old/project --to /new/project
+```
+
+Passe `BASE_DIR`/`BASE_DIRS`, `DB_PATH` und weitere betroffene Pfade in deiner MCP-Konfiguration
+an und starte den Client neu.
+
 ## Agent Skills
 
 [Agent Skills](https://agentskills.io/) geben KI-Assistenten Hinweise für Abfragen und Importe:
