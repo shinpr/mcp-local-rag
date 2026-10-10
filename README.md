@@ -180,7 +180,10 @@ document root.
 
 Source context can include headings, original-file line numbers for MD/TXT, and page numbers
 for PDFs. PDF heading detection can miss headings or mistake body text for a heading. Re-ingest
-documents indexed before v0.21.0 to add source context; `sync` skips unchanged files.
+existing PDFs to apply the improved reading order. For example, run
+`npx mcp-local-rag ingest ./docs/paper.pdf` or use MCP `ingest_file` for the same path; normal
+`sync` continues to skip unchanged files. PDFs indexed before v0.21.0 also need re-ingestion to
+add source context.
 
 <details>
 <summary>MCP Tools</summary>

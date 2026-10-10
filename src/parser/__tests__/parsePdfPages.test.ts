@@ -174,7 +174,7 @@ describe('parsePdfPages return shape', () => {
     // pages[0]: pageNum=1, text/stextJson present, page1FontHint = largest-font line.
     expect(result.pages[0]?.pageNum).toBe(1)
     expect(typeof result.pages[0]?.text).toBe('string')
-    expect(result.pages[0]?.text).toBe('Synthetic Heading\npage 1 body')
+    expect(result.pages[0]?.text).toBe('Synthetic Heading page 1 body')
     expect(typeof result.pages[0]?.stextJson).toBe('object')
     expect(result.pages[0]?.stextJson).not.toBeNull()
     expect(result.pages[0]?.textFragments).toEqual([

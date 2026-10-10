@@ -1,6 +1,7 @@
 // PDF Filter Unit Test
 
 import { describe, expect, it, vi } from 'vitest'
+import { splitIntoSentenceUnits } from '../../chunker/sentence-splitter.js'
 import {
   detectBlockAttributeCandidates,
   detectSentencePatterns,
@@ -711,7 +712,7 @@ describe('pdf-filter', () => {
   })
 
   describe('filterPageBoundaryLayouts', () => {
-    it('preserves legacy line order with exact fragment ranges', async () => {
+    it('preserves native block order with exact fragment ranges', async () => {
       const pages: PageData[] = [
         {
           pageNum: 1,
@@ -774,12 +775,12 @@ describe('pdf-filter', () => {
 
       const [layout] = await filterPageBoundaryLayouts(pages, embedder)
 
-      expect(layout?.text).toBe('Heading\nLeft one Right one\nLeft two Right two')
+      expect(layout?.text).toBe('Heading\nLeft one Left two\nRight one Right two')
       expect(layout?.textFragments.map((fragment) => fragment.text)).toEqual([
         'Heading',
         'Left one',
-        'Right one',
         'Left two',
+        'Right one',
         'Right two',
       ])
       expect(
@@ -787,7 +788,7 @@ describe('pdf-filter', () => {
           layout.text.slice(fragment.pageTextStart, fragment.pageTextEnd)
         )
       ).toEqual(layout?.textFragments.map((fragment) => fragment.text))
-      expect(layout?.textFragments[3]).toMatchObject({
+      expect(layout?.textFragments[2]).toMatchObject({
         pageNum: 1,
         blockOrdinal: 1,
         lineOrdinal: 1,
@@ -795,6 +796,26 @@ describe('pdf-filter', () => {
         bbox: [40, 120, 250, 140],
       })
       expect(embedder.embedBatch).not.toHaveBeenCalled()
+    })
+
+    it('uses supplied item order for fixtures without native ordinals', async () => {
+      const pages: PageData[] = [
+        {
+          pageNum: 1,
+          items: [
+            { text: 'Source first', x: 200, y: 100, fontSize: 12, hasEOL: true },
+            { text: 'Source second', x: 20, y: 780, fontSize: 12, hasEOL: true },
+          ],
+        },
+      ]
+
+      const [layout] = await filterPageBoundaryLayouts(pages, { embedBatch: vi.fn() })
+
+      expect(layout?.text).toBe('Source first\nSource second')
+      expect(layout?.textFragments.map((fragment) => fragment.text)).toEqual([
+        'Source first',
+        'Source second',
+      ])
     })
 
     it('removes detected boundaries while ranges still slice the filtered page text', async () => {
@@ -847,6 +868,113 @@ describe('pdf-filter', () => {
         expect(fragment?.text).toBe(layout.text.slice(fragment.pageTextStart, fragment.pageTextEnd))
         expect(fragment).toMatchObject({ blockOrdinal: 1, lineOrdinal: 0 })
       }
+    })
+
+    it('removes only a repeated same-baseline header span and preserves body sentence units', async () => {
+      const pages: PageData[] = Array.from({ length: 3 }, (_, pageIndex) => ({
+        pageNum: pageIndex + 1,
+        pageHeight: 800,
+        items: [
+          {
+            text: 'Repeated Header.',
+            x: 0,
+            y: 790,
+            fontSize: 6,
+            hasEOL: true,
+            blockOrdinal: 0,
+            lineOrdinal: 0,
+            bbox: bbox(0, 0, 100, 12),
+          },
+          {
+            text: 'The body passage begins on the same baseline as the header',
+            x: 120,
+            y: 790,
+            fontSize: 12,
+            hasEOL: true,
+            blockOrdinal: 1,
+            lineOrdinal: 0,
+            bbox: bbox(120, 0, 360, 20),
+          },
+          {
+            text: 'and continues as one complete sentence across the next visual line.',
+            x: 120,
+            y: 760,
+            fontSize: 12,
+            hasEOL: true,
+            blockOrdinal: 1,
+            lineOrdinal: 1,
+            bbox: bbox(120, 30, 360, 50),
+          },
+          {
+            text: `Printed Page ${pageIndex + 1}.`,
+            x: 0,
+            y: 10,
+            fontSize: 6,
+            hasEOL: true,
+            blockOrdinal: 2,
+            lineOrdinal: 0,
+            bbox: bbox(0, 780, 100, 792),
+          },
+        ],
+      }))
+      const embedder: EmbedderInterface = {
+        embedBatch: async (texts) => texts.map(() => [1, 0]),
+      }
+
+      const layouts = await filterPageBoundaryLayouts(pages, embedder)
+
+      expect(layouts.map((layout) => layout.text)).toEqual(
+        Array.from(
+          { length: 3 },
+          () =>
+            'The body passage begins on the same baseline as the header and continues as one complete sentence across the next visual line.'
+        )
+      )
+      for (const layout of layouts) {
+        const units = splitIntoSentenceUnits(layout.text)
+        expect(units).toHaveLength(1)
+        expect(units[0]?.text).toBe(layout.text)
+        expect(layout.textFragments.map((fragment) => fragment.blockOrdinal)).toEqual([1, 1])
+        for (const fragment of layout.textFragments) {
+          expect(layout.text.slice(fragment.pageTextStart, fragment.pageTextEnd)).toBe(
+            fragment.text
+          )
+        }
+      }
+    })
+
+    it('joins wrapped lines into one downstream sentence unit on the unfiltered path', async () => {
+      const pages: PageData[] = [
+        {
+          pageNum: 1,
+          items: [
+            {
+              text: 'A sentence begins in one visual line and',
+              x: 40,
+              y: 700,
+              fontSize: 12,
+              hasEOL: true,
+              blockOrdinal: 1,
+              lineOrdinal: 0,
+            },
+            {
+              text: 'finishes in the next line of its native block.',
+              x: 40,
+              y: 680,
+              fontSize: 12,
+              hasEOL: true,
+              blockOrdinal: 1,
+              lineOrdinal: 1,
+            },
+          ],
+        },
+      ]
+
+      const [layout] = await filterPageBoundaryLayouts(pages, { embedBatch: vi.fn() })
+
+      expect(splitIntoSentenceUnits(layout?.text ?? '').map((unit) => unit.text)).toEqual([
+        'A sentence begins in one visual line and finishes in the next line of its native block.',
+      ])
     })
   })
 })

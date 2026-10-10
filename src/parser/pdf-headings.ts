@@ -29,14 +29,30 @@ function locate(text: ReturnType<typeof searchableText>, title: string): number 
   return index < 0 || text.value.indexOf(needle, index + 1) >= 0 ? undefined : text.offsets[index]
 }
 
-/** Combine native pieces on the same baseline, e.g. a section number and its title. */
+/** Combine fragments from one native line without merging adjacent columns. */
 function pageLines(page: PageData): SourceLine[] {
   const lines: SourceLine[] = []
-  for (const item of [...page.items].sort(
-    (a, b) => Math.round(b.y) - Math.round(a.y) || a.x - b.x
-  )) {
+  for (const item of page.items) {
     const last = lines.at(-1)
-    if (last && Math.abs(last.y - item.y) < 1 && Math.abs(last.fontSize - item.fontSize) < 0.5) {
+    const hasNativeLine =
+      last !== undefined &&
+      last.blockOrdinal !== undefined &&
+      last.lineOrdinal !== undefined &&
+      item.blockOrdinal !== undefined &&
+      item.lineOrdinal !== undefined
+    const sameNativeLine =
+      last !== undefined &&
+      hasNativeLine &&
+      last.blockOrdinal === item.blockOrdinal &&
+      last.lineOrdinal === item.lineOrdinal
+    const adjacentUnnumberedFragment =
+      last !== undefined &&
+      !hasNativeLine &&
+      Math.abs(last.y - item.y) < 1 &&
+      Math.abs(last.fontSize - item.fontSize) < 0.5 &&
+      item.x >= last.x &&
+      item.x - last.x <= Math.max(1, item.fontSize * 2.5)
+    if (last && (sameNativeLine || adjacentUnnumberedFragment)) {
       last.text += ` ${item.text}`
       last.origins.push(item)
     } else {
