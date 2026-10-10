@@ -162,6 +162,7 @@ Commands:
   list                   List files and ingestion status
   status                 Show database status
   delete <path>          Delete ingested content
+  relocate               Update indexed paths after moving a project
   skills install         Install Claude Code / Codex skills`
 
 // ============================================

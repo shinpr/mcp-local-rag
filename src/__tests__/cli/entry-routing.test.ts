@@ -49,6 +49,7 @@ describe('CLI entry routing', () => {
     expect(stderr).toContain('skills')
     expect(stderr).toContain('ingest')
     expect(stderr).toContain('read-neighbors')
+    expect(stderr).toContain('relocate')
   })
 
   it('lists sync among the available commands on an unknown subcommand', () => {
@@ -69,6 +70,15 @@ describe('CLI entry routing', () => {
     expect(
       stderr.split('Usage: mcp-local-rag [global-options] sync [options] [path]')
     ).toHaveLength(2)
+  })
+
+  it('routes relocate to its command help and forwards the arguments after it', () => {
+    const { status, stderr } = runCli(['relocate', '--help'])
+
+    expect(status).toBe(0)
+    expect(stderr).toContain(
+      'Usage: mcp-local-rag [global-options] relocate --from <old-absolute-directory> --to <new-absolute-directory>'
+    )
   })
 
   it('applies global options placed before sync to the sync run', () => {

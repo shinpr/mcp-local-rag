@@ -228,6 +228,16 @@ Run `npx mcp-local-rag --help` for the complete command reference.
 tool. The field-by-field contract is in
 [`docs/schema/query-output.schema.json`](docs/schema/query-output.schema.json).
 
+If you move a project and want to keep its index, stop the MCP server and other database
+writers, move the files and database together without changing the directory layout, then run:
+
+```bash
+npx mcp-local-rag --db-path /new/project/lancedb relocate --from /old/project --to /new/project
+```
+
+Update `BASE_DIR`/`BASE_DIRS`, `DB_PATH`, and any other moved paths in your MCP configuration,
+then restart the client.
+
 ## Agent Skills
 
 [Agent Skills](https://agentskills.io/) provide query and ingestion guidance for AI assistants:

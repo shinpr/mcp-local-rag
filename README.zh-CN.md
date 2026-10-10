@@ -198,6 +198,14 @@ npx mcp-local-rag --db-path ./my-db query "身份验证"
 
 `query` 会以 JSON 格式将结果写入 stdout，最匹配的结果排在最前，因此可以通过管道传给其他工具。各字段的定义见 [`docs/schema/query-output.schema.json`](docs/schema/query-output.schema.json)。
 
+如果要迁移项目并保留现有索引，请先停止 MCP 服务器和其他写入进程，将文件和数据库一起移到新位置，保持目录结构不变，然后运行：
+
+```bash
+npx mcp-local-rag --db-path /new/project/lancedb relocate --from /old/project --to /new/project
+```
+
+在 MCP 配置中更新 `BASE_DIR`/`BASE_DIRS`、`DB_PATH` 及其他受影响的路径，再重启客户端。
+
 ## Agent Skills
 
 [Agent Skills](https://agentskills.io/) 为 AI 助手提供查询和导入指导：

@@ -232,6 +232,16 @@ Execute `npx mcp-local-rag --help` para consultar a referência completa dos com
 que você possa encaminhá-los por pipe a outra ferramenta. A definição de cada campo está em
 [`docs/schema/query-output.schema.json`](docs/schema/query-output.schema.json).
 
+Para mover um projeto e manter o índice, pare o servidor MCP e os outros processos de escrita.
+Mova os arquivos e o banco de dados juntos, sem alterar a estrutura de diretórios, e execute:
+
+```bash
+npx mcp-local-rag --db-path /new/project/lancedb relocate --from /old/project --to /new/project
+```
+
+Na configuração MCP, atualize `BASE_DIR`/`BASE_DIRS`, `DB_PATH` e os demais caminhos afetados.
+Depois, reinicie o cliente.
+
 ## Agent Skills
 
 As [Agent Skills](https://agentskills.io/) orientam assistentes de IA na formulação de
