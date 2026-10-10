@@ -209,6 +209,7 @@ npx mcp-local-rag list
 npx mcp-local-rag status
 npx mcp-local-rag delete ./docs/old.pdf
 npx mcp-local-rag delete --source "https://example.com/docs"
+npx mcp-local-rag --db-path ./lancedb relocate --from /old/project --to /new/project
 ```
 
 `ingest` imports the selected files; `sync` also removes entries for deleted files and skips
@@ -227,6 +228,33 @@ Run `npx mcp-local-rag --help` for the complete command reference.
 `query` writes its results to stdout as JSON, best match first, so it can be piped into another
 tool. The field-by-field contract is in
 [`docs/schema/query-output.schema.json`](docs/schema/query-output.schema.json).
+
+### Relocating a project
+
+To move a project and keep its existing index, stop the MCP server and any other database
+writers, then move the project directory with its database and files while preserving the
+directory layout. Run `relocate` against the database at its new location:
+
+```bash
+npx mcp-local-rag --db-path /new/project/lancedb relocate --from /old/project --to /new/project
+```
+
+On Windows, for example, after moving `C:\Folder` to `F:\Archive`:
+
+```powershell
+npx mcp-local-rag --db-path 'F:\Archive\lancedb' relocate --from 'C:\Folder' --to 'F:\Archive'
+```
+
+The command updates indexed absolute paths under the old root and checks that each mapped
+destination is a regular file. It does not read file contents or compare their identity, so a
+different file at the expected path passes; preserving the files is your responsibility. Paths
+outside the old root stay unchanged. The command reports the relocated file and chunk counts as
+JSON on stdout and does not load an embedding model or re-ingest documents.
+
+After relocation, update `BASE_DIR` or `BASE_DIRS` and `DB_PATH` in the MCP client's environment
+configuration to their new locations, then restart the client. The optional embedding snapshots
+under `DB_PATH/embedding-cache` keep their old path-based names. Existing indexed vectors remain
+searchable; a later ingest may miss the snapshot cache and recompute embeddings.
 
 ## Agent Skills
 

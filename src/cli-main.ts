@@ -6,6 +6,7 @@ import { runList } from './cli/list.js'
 import type { GlobalOptions } from './cli/options.js'
 import { runQuery } from './cli/query.js'
 import { runReadNeighbors } from './cli/read-neighbors.js'
+import { runRelocate } from './cli/relocate.js'
 import { runStatus } from './cli/status.js'
 import { runSync } from './cli/sync.js'
 
@@ -18,6 +19,7 @@ export const SUBCOMMANDS = [
   'delete',
   'read-neighbors',
   'sync',
+  'relocate',
 ] as const
 
 export type Subcommand = (typeof SUBCOMMANDS)[number]
@@ -71,6 +73,10 @@ export async function handleCli(
 
     case 'sync':
       await runSync(args, globalOptions)
+      break
+
+    case 'relocate':
+      await runRelocate(args, globalOptions)
       break
   }
 }
