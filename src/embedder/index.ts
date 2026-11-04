@@ -12,7 +12,7 @@ import {
   type DeviceType,
   env,
   ModelRegistry,
-  type PretrainedConfig,
+  PretrainedConfig,
   pipeline,
 } from '@huggingface/transformers'
 import { AppError, toError } from '../utils/errors.js'
@@ -99,7 +99,6 @@ interface ModelAssetSnapshotEntry {
 }
 
 interface ModelAssetSnapshot {
-  config: PretrainedConfig
   files: ModelAssetSnapshotEntry[]
 }
 
@@ -142,20 +141,29 @@ function isEmbeddingPipeline(value: unknown): value is EmbeddingPipeline {
   )
 }
 
-function isPretrainedConfig(value: unknown): value is PretrainedConfig {
-  return (
-    typeof value === 'object' &&
-    value !== null &&
-    'model_type' in value &&
-    (typeof value.model_type === 'string' || value.model_type === null) &&
-    'is_encoder_decoder' in value &&
-    typeof value.is_encoder_decoder === 'boolean' &&
-    'transformers.js_config' in value &&
-    (value['transformers.js_config'] === undefined ||
-      (typeof value['transformers.js_config'] === 'object' &&
-        value['transformers.js_config'] !== null)) &&
-    'normalized_config' in value
-  )
+/**
+ * The model config to load, without the vision and audio encoders when
+ * transformers.js would otherwise load them. Text embedding never runs them.
+ *
+ * Only models whose encoders transformers.js treats as optional get the
+ * text-only config; other models read these sub-configs while embedding text.
+ * Comparing the files each config loads tells the two apart.
+ */
+async function loadTextEmbeddingConfig(
+  modelPath: string,
+  options: { dtype: DataType; device: DeviceType }
+): Promise<PretrainedConfig> {
+  const config = await AutoConfig.from_pretrained(modelPath)
+  const textOnlyConfig = new PretrainedConfig({
+    ...config,
+    vision_config: null,
+    audio_config: null,
+  })
+  const [files, textOnlyFiles] = await Promise.all([
+    ModelRegistry.get_model_files(modelPath, { config, ...options }),
+    ModelRegistry.get_model_files(modelPath, { config: textOnlyConfig, ...options }),
+  ])
+  return textOnlyFiles.length < files.length ? textOnlyConfig : config
 }
 
 function embeddingDimension(loadedModel: EmbeddingPipeline): number | null {
@@ -446,29 +454,37 @@ export class Embedder {
 
     console.error(`Embedder: Setting cache directory to "${this.config.cacheDir}"`)
 
-    // Resolved before the pipeline: once `this.model` is set, `ensureInitialized`
-    // lets callers through, so no await may follow that assignment.
-    const sentenceTransformersConfig = await loadSentenceTransformersConfig(
-      this.config.modelPath,
-      this.config.cacheDir,
-      { dtype, device }
-    )
-    const settings = resolveModelSettings(this.config.modelPath, sentenceTransformersConfig)
-    for (const warning of settings.warnings) {
-      console.error(`Embedder: ${warning}`)
-    }
-    this.prompts = settings.prompts
-    this.warnings = settings.warnings
-
-    console.error(`Embedder: Loading model "${this.config.modelPath}" on device "${device}"...`)
-
     try {
+      // Every call below gets this config, so cache checks and asset
+      // identity cover exactly the files the pipeline loads.
+      const modelConfig = await loadTextEmbeddingConfig(this.config.modelPath, { dtype, device })
+
+      // Resolved before the pipeline: once `this.model` is set, `ensureInitialized`
+      // lets callers through, so no await may follow that assignment.
+      const sentenceTransformersConfig = await loadSentenceTransformersConfig(
+        this.config.modelPath,
+        this.config.cacheDir,
+        { config: modelConfig, dtype, device }
+      )
+      const settings = resolveModelSettings(this.config.modelPath, sentenceTransformersConfig)
+      for (const warning of settings.warnings) {
+        console.error(`Embedder: ${warning}`)
+      }
+      this.prompts = settings.prompts
+      this.warnings = settings.warnings
+
+      console.error(`Embedder: Loading model "${this.config.modelPath}" on device "${device}"...`)
+
       // Capture local asset names and file signatures before the pipeline can
       // load them. Later content hashes are trusted only while these exact
       // files remain unchanged, so a disk update during model loading cannot
       // assign the new asset identity to an older in-memory pipeline.
-      const assetSnapshot = await this.captureModelAssetSnapshot(dtype, device)
-      this.model = await pipeline('feature-extraction', this.config.modelPath, { dtype, device })
+      const assetSnapshot = await this.captureModelAssetSnapshot(modelConfig, dtype, device)
+      this.model = await pipeline('feature-extraction', this.config.modelPath, {
+        config: modelConfig,
+        dtype,
+        device,
+      })
       const loadedModel = this.model
       const clamp = installTokenLimitClamp(loadedModel)
       this.tokenLimit = clamp.tokenLimit
@@ -582,12 +598,7 @@ export class Embedder {
         return null
       }
 
-      const loadedConfig = loadedModel.model?.config
-      if (
-        !assetSnapshot ||
-        !isPretrainedConfig(loadedConfig) ||
-        JSON.stringify(assetSnapshot.config) !== JSON.stringify(loadedConfig)
-      ) {
+      if (!assetSnapshot) {
         return null
       }
 
@@ -648,6 +659,7 @@ export class Embedder {
   }
 
   private async captureModelAssetSnapshot(
+    config: PretrainedConfig,
     dtype: DataType,
     device: DeviceType
   ): Promise<ModelAssetSnapshot | null> {
@@ -664,13 +676,6 @@ export class Embedder {
         return null
       }
 
-      const config = await AutoConfig.from_pretrained(this.config.modelPath, {
-        cache_dir: this.config.cacheDir,
-        local_files_only: true,
-      })
-      if (!isPretrainedConfig(config)) {
-        return null
-      }
       const fileNames = await ModelRegistry.get_pipeline_files(
         'feature-extraction',
         this.config.modelPath,
@@ -688,10 +693,10 @@ export class Embedder {
         }
         files.push({ name, path, statSignature: statSignature(info) })
       }
-      return files.length === 0 ? null : { config, files }
+      return files.length === 0 ? null : { files }
     } catch {
-      // Local identity is optional; a missing cached asset or config mismatch
-      // disables reuse without changing normal pipeline initialization.
+      // Local identity is optional; a missing cached asset disables reuse
+      // without changing normal pipeline initialization.
       return null
     }
   }

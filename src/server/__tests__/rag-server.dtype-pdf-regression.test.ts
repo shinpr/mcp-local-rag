@@ -49,13 +49,16 @@ const { mockPipeline, mockGetAvailableDtypes, mockOpenDocument } = vi.hoisted(()
 }))
 
 // Minimal `@huggingface/transformers` surface used by `src/embedder/index.ts`:
-// `pipeline`, `env` (cacheDir setter), and `ModelRegistry`.
+// `pipeline`, `env` (cacheDir setter), the model config loaders, and `ModelRegistry`.
 const transformersFactory = () => ({
   pipeline: mockPipeline,
   env: { cacheDir: '' },
+  AutoConfig: { from_pretrained: async () => ({}) },
+  PretrainedConfig: class {},
   ModelRegistry: {
     get_available_dtypes: mockGetAvailableDtypes,
     is_pipeline_cached: async () => true,
+    get_model_files: async () => [],
   },
 })
 

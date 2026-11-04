@@ -3,7 +3,13 @@
 
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
-import { type DataType, type DeviceType, env, ModelRegistry } from '@huggingface/transformers'
+import {
+  type DataType,
+  type DeviceType,
+  env,
+  ModelRegistry,
+  type PretrainedConfig,
+} from '@huggingface/transformers'
 import { toError } from '../utils/errors.js'
 import { errorCode, isObjectLike } from '../utils/type-guards.js'
 
@@ -33,7 +39,7 @@ export interface ModelSettings {
 export async function loadSentenceTransformersConfig(
   modelPath: string,
   cacheDir: string,
-  pipelineOptions: { dtype: DataType; device: DeviceType }
+  pipelineOptions: { config: PretrainedConfig; dtype: DataType; device: DeviceType }
 ): Promise<unknown> {
   const cachePath = join(cacheDir, modelPath, CONFIG_FILE_NAME)
   if (await ModelRegistry.is_pipeline_cached('feature-extraction', modelPath, pipelineOptions)) {

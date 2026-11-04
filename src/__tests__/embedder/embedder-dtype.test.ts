@@ -31,7 +31,9 @@ const transformersFactory = () => ({
   pipeline: mocks.pipeline,
   // `env` is mutated by `initialize()` (sets cacheDir); a plain object suffices.
   env: asDouble<Record<string, string | undefined>>({}),
-  ModelRegistry: { is_pipeline_cached: async () => true },
+  AutoConfig: { from_pretrained: async () => ({}) },
+  PretrainedConfig: class {},
+  ModelRegistry: { is_pipeline_cached: async () => true, get_model_files: async () => [] },
 })
 
 const MOCKED_PATHS = ['@huggingface/transformers'] as const
