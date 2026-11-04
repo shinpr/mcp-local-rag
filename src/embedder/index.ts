@@ -670,7 +670,7 @@ export class Embedder {
         env.cacheDir === null ||
         resolve(env.cacheDir) !== resolve(this.config.cacheDir)
       ) {
-        // Transformers.js 4.3.1 probes tokenizer_config.json while listing
+        // Transformers.js probes tokenizer_config.json while listing
         // pipeline assets. Require it locally before enumeration so identity
         // discovery cannot cause a separate Hub metadata lookup.
         return null
