@@ -31,9 +31,12 @@ const transformersFactory = () => ({
   pipeline: mocks.pipeline,
   // `env` is mutated by `initialize()` (sets cacheDir); a plain object suffices.
   env: asDouble<Record<string, string | undefined>>({}),
+  AutoConfig: { from_pretrained: async () => ({}) },
+  PretrainedConfig: class {},
   ModelRegistry: {
     get_available_dtypes: mocks.getAvailableDtypes,
     is_pipeline_cached: async () => true,
+    get_model_files: async () => [],
   },
 })
 

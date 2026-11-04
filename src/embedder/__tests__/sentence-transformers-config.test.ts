@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { ModelRegistry } from '@huggingface/transformers'
+import { ModelRegistry, PretrainedConfig } from '@huggingface/transformers'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   loadSentenceTransformersConfig,
@@ -9,7 +9,11 @@ import {
 } from '../sentence-transformers-config.js'
 
 const MODEL = 'org/model'
-const PIPELINE_OPTIONS = { dtype: 'fp32', device: 'cpu' } as const
+const PIPELINE_OPTIONS = {
+  config: new PretrainedConfig({}),
+  dtype: 'fp32',
+  device: 'cpu',
+} as const
 const CONFIG = { prompts: { query: 'Q: ' } }
 
 describe('loadSentenceTransformersConfig', () => {

@@ -667,7 +667,9 @@ export class VectorStore {
         }
         fileInfo.chunkCount += 1
         // Keep most recent timestamp
-        fileInfo.timestamp = timestamp > fileInfo.timestamp ? timestamp : fileInfo.timestamp
+        if (timestamp > fileInfo.timestamp) {
+          fileInfo.timestamp = timestamp
+        }
       }
 
       // Convert Map to array of objects
