@@ -148,8 +148,6 @@ describe('classifyScanEntry with IGNORE_PATHS patterns', () => {
     expect(classifyScanEntry(underRoot(relativePath), entryFacts('file'), IGNORING)).toBe('file')
   })
 
-  // `*` and `**` alone never match a name starting with `.`, and vendored trees
-  // such as `node_modules` routinely contain `.github/`.
   describe('a pattern ending in /** excludes the whole directory', () => {
     const SUBTREES = {
       prefixes: [],

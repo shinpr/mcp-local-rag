@@ -101,7 +101,6 @@ export function buildScanExclusion(input: {
 
 const SUBTREE_SUFFIX = '/**'
 
-/** The ancestor directories of a `/`-spelled relative path: `a/b/c.md` → `a`, `a/b`. */
 function ancestorDirectories(relativePath: string): string[] {
   const segments = relativePath.split('/')
   return segments.slice(1).map((_, index) => segments.slice(0, index + 1).join('/'))
@@ -111,11 +110,8 @@ function ancestorDirectories(relativePath: string): string[] {
  * True when a pattern matches `filePath` relative to the root containing it,
  * spelled with `/` on every OS.
  *
- * A pattern ending in `/**` also matches when the part before `/**` matches
- * one of the file's ancestor directories, so it excludes everything under that
- * directory. `matchesGlob` never lets `*` or `**` match a name starting with
- * `.`, and without this rule `node_modules/**` kept
- * `node_modules/pkg/.github/README.md`.
+ * `matchesGlob` never lets `*` or `**` match a name starting with `.`, so a
+ * pattern ending in `/**` is also tested against the file's ancestor directories.
  */
 function matchesIgnorePattern(filePath: string, ignore: ScanExclusion['ignore']): boolean {
   if (ignore === undefined || ignore.patterns.length === 0) {
