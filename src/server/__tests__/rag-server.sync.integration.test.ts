@@ -699,6 +699,11 @@ describe('MCP sync tools', () => {
     const indexedContent = `indexed before the pattern ${'b'.repeat(200)}`
     const indexedPath = await writeFixtureFile(join(root, 'plugs', 'indexed.md'), indexedContent)
     await writeFixtureFile(join(root, 'plugs', 'new.md'), `never indexed ${'c'.repeat(200)}`)
+    // A dot-named directory, which `*` and `**` alone never match.
+    await writeFixtureFile(
+      join(root, 'plugs', 'pkg', '.github', 'SECURITY.md'),
+      `never indexed either ${'d'.repeat(200)}`
+    )
     await seedRows(fixture, indexedPath, sha256(indexedContent))
 
     const server = await makeServer(fixture, ['plugs/**'])

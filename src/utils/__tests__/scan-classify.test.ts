@@ -148,6 +148,30 @@ describe('classifyScanEntry with IGNORE_PATHS patterns', () => {
     expect(classifyScanEntry(underRoot(relativePath), entryFacts('file'), IGNORING)).toBe('file')
   })
 
+  describe('a pattern ending in /** excludes the whole directory', () => {
+    const SUBTREES = {
+      prefixes: [],
+      ignore: { roots: [`${ROOT}${sep}`], patterns: ['plugs/**', '**/node_modules/**'] },
+    }
+
+    it.each([
+      'plugs/.hidden.md',
+      'plugs/.github/SECURITY.md',
+      'node_modules/pkg/.github/SECURITY.md',
+      'packages/app/node_modules/pkg/.github/SECURITY.md',
+    ])('excludes %s', (relativePath) => {
+      expect(classifyScanEntry(underRoot(relativePath), entryFacts('file'), SUBTREES)).toBe(
+        'excluded'
+      )
+    })
+
+    it('keeps a same-named directory that the pattern does not anchor', () => {
+      expect(
+        classifyScanEntry(underRoot('notes/plugs/.github/a.md'), entryFacts('file'), SUBTREES)
+      ).toBe('file')
+    })
+  })
+
   it('applies patterns to files, not to directories', () => {
     expect(classifyScanEntry(underRoot('plugs'), entryFacts('directory'), IGNORING)).toBe(
       'directory'

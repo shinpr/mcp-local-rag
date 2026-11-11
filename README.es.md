@@ -290,10 +290,9 @@ directorio de trabajo.
 Para dejar archivos fuera del índice, configura `IGNORE_PATHS` con una matriz JSON de patrones
 glob, por ejemplo `IGNORE_PATHS='["plugs/**","**/*.draft.md"]'`. Cada patrón se compara con la
 ruta del archivo relativa al directorio raíz que lo contiene, escrita con `/` en cualquier
-sistema operativo. `*` y `**` no coinciden con nombres que empiezan por `.`, así que escribe
-esos directorios completos, como `".obsidian/**"`. Cuando `ingest`, `list` y `sync` recorren un
-directorio, omiten los archivos que coinciden, y `sync` retira del índice los que ya estaban
-indexados. Un `IGNORE_PATHS` incorrecto produce un error.
+sistema operativo. Cuando `ingest`, `list` y `sync` recorren un directorio, omiten los archivos
+que coinciden, y `sync` retira del índice los que ya estaban indexados. Un `IGNORE_PATHS`
+incorrecto produce un error.
 
 </details>
 

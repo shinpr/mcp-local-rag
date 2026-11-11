@@ -280,10 +280,9 @@ used; roots from different sources are not merged. Invalid `BASE_DIRS` is an err
 
 To keep files out of the index, set `IGNORE_PATHS` to a JSON array of glob patterns, for example
 `IGNORE_PATHS='["plugs/**","**/*.draft.md"]'`. Each pattern is matched against the file's path
-relative to the root that contains it, written with `/` on every OS. `*` and `**` do not match
-names that start with `.`, so write such directories out, as in `".obsidian/**"`. `ingest`,
-`list`, and `sync` skip matching files when they scan a directory, and `sync` removes any that
-are already indexed. Invalid `IGNORE_PATHS` is an error.
+relative to the root that contains it, written with `/` on every OS. `ingest`, `list`, and `sync`
+skip matching files when they scan a directory, and `sync` removes any that are already indexed.
+Invalid `IGNORE_PATHS` is an error.
 
 </details>
 

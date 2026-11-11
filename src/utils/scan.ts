@@ -99,9 +99,19 @@ export function buildScanExclusion(input: {
   }
 }
 
+const SUBTREE_SUFFIX = '/**'
+
+function ancestorDirectories(relativePath: string): string[] {
+  const segments = relativePath.split('/')
+  return segments.slice(1).map((_, index) => segments.slice(0, index + 1).join('/'))
+}
+
 /**
  * True when a pattern matches `filePath` relative to the root containing it,
  * spelled with `/` on every OS.
+ *
+ * `matchesGlob` never lets `*` or `**` match a name starting with `.`, so a
+ * pattern ending in `/**` is also tested against the file's ancestor directories.
  */
 function matchesIgnorePattern(filePath: string, ignore: ScanExclusion['ignore']): boolean {
   if (ignore === undefined || ignore.patterns.length === 0) {
@@ -112,7 +122,15 @@ function matchesIgnorePattern(filePath: string, ignore: ScanExclusion['ignore'])
     return false
   }
   const relativePath = relative(root, filePath).split(sep).join('/')
-  return ignore.patterns.some((pattern) => posix.matchesGlob(relativePath, pattern))
+  const ancestors = ancestorDirectories(relativePath)
+  return ignore.patterns.some(
+    (pattern) =>
+      posix.matchesGlob(relativePath, pattern) ||
+      (pattern.endsWith(SUBTREE_SUFFIX) &&
+        ancestors.some((directory) =>
+          posix.matchesGlob(directory, pattern.slice(0, -SUBTREE_SUFFIX.length))
+        ))
+  )
 }
 
 /** The `Dirent` / `Stats` subset the collect predicates read. */
