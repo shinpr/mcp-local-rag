@@ -293,10 +293,9 @@ auf das Arbeitsverzeichnis.
 Um Dateien aus dem Index herauszuhalten, setze `IGNORE_PATHS` auf ein JSON-Array mit
 Glob-Mustern, zum Beispiel `IGNORE_PATHS='["plugs/**","**/*.draft.md"]'`. Jedes Muster wird mit
 dem Pfad der Datei relativ zu ihrem Stammverzeichnis verglichen, auf jedem Betriebssystem mit
-`/` geschrieben. `*` und `**` erfassen keine Namen, die mit `.` beginnen. Schreibe solche
-Verzeichnisse aus, etwa `".obsidian/**"`. Wenn `ingest`, `list` und `sync` ein Verzeichnis
-verarbeiten, überspringen sie passende Dateien, und `sync` entfernt bereits indexierte Dateien
-wieder aus dem Index. Ungültiges `IGNORE_PATHS` führt zu einem Fehler.
+`/` geschrieben. Wenn `ingest`, `list` und `sync` ein Verzeichnis verarbeiten, überspringen sie
+passende Dateien, und `sync` entfernt bereits indexierte Dateien wieder aus dem Index. Ungültiges
+`IGNORE_PATHS` führt zu einem Fehler.
 
 </details>
 

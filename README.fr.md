@@ -293,11 +293,10 @@ relatifs `DB_PATH` et `CACHE_DIR` partent du répertoire de travail.
 
 Pour exclure des fichiers de l'index, définissez `IGNORE_PATHS` avec un tableau JSON de motifs
 glob, par exemple `IGNORE_PATHS='["plugs/**","**/*.draft.md"]'`. Chaque motif est comparé au
-chemin du fichier relatif à la racine qui le contient, écrit avec `/` sur tous les systèmes. `*`
-et `**` ne correspondent pas aux noms qui commencent par `.` : écrivez ces répertoires en
-entier, comme `".obsidian/**"`. Quand `ingest`, `list` et `sync` traitent un répertoire, ils
-ignorent les fichiers correspondants, et `sync` retire de l'index ceux qui y figurent déjà. Un
-`IGNORE_PATHS` incorrect provoque une erreur.
+chemin du fichier relatif à la racine qui le contient, écrit avec `/` sur tous les systèmes.
+Quand `ingest`, `list` et `sync` traitent un répertoire, ils ignorent les fichiers
+correspondants, et `sync` retire de l'index ceux qui y figurent déjà. Un `IGNORE_PATHS`
+incorrect provoque une erreur.
 
 </details>
 

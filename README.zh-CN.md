@@ -239,7 +239,7 @@ MCP 服务器读取环境变量，CLI 支持下表中的变量和参数。需要
 
 文件操作仅限已配置的根目录。多个目录可用 `BASE_DIRS='["/absolute/docs","/absolute/specs"]'`，或在 CLI 中重复传入 `--base-dir`。优先级依次为 CLI 根目录、`BASE_DIRS`、`BASE_DIR`、当前目录。只采用优先级最高的配置来源，不会合并不同来源的根目录。无效的 `BASE_DIRS` 会报错。相对的 `DB_PATH` 和 `CACHE_DIR` 以进程工作目录为起点。
 
-如需让某些文件不进入索引，可将 `IGNORE_PATHS` 设为 glob 模式的 JSON 数组，例如 `IGNORE_PATHS='["plugs/**","**/*.draft.md"]'`。每个模式与文件相对于其所在文档根目录的路径进行匹配，在所有操作系统上都用 `/` 书写。`*` 和 `**` 不匹配以 `.` 开头的名称，这类目录需要写全，例如 `".obsidian/**"`。`ingest`、`list` 和 `sync` 扫描目录时会跳过匹配的文件，`sync` 还会从索引中移除已建立索引的匹配文件。无效的 `IGNORE_PATHS` 会报错。
+如需让某些文件不进入索引，可将 `IGNORE_PATHS` 设为 glob 模式的 JSON 数组，例如 `IGNORE_PATHS='["plugs/**","**/*.draft.md"]'`。每个模式与文件相对于其所在文档根目录的路径进行匹配，在所有操作系统上都用 `/` 书写。`ingest`、`list` 和 `sync` 扫描目录时会跳过匹配的文件，`sync` 还会从索引中移除已建立索引的匹配文件。无效的 `IGNORE_PATHS` 会报错。
 
 </details>
 
