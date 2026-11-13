@@ -38,7 +38,8 @@
         "noEvolvingTypes": "error",
         "noImplicitAnyLet": "error",
         "noTsIgnore": "error",
-        "useErrorMessage": "error"
+        "useErrorMessage": "error",
+        "noImportCycles": "error"
       },
       "correctness": {
         "noUndeclaredDependencies": "error"

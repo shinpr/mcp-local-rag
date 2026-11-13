@@ -60,8 +60,7 @@
     "check": "biome check --error-on-warnings src",
     "check:fix": "biome check --error-on-warnings --write src",
     "check:unused": "knip --include exports",
-    "check:deps": "dpdm --no-tree --no-warning --exit-code circular:1 -T --tsconfig ./tsconfig.json --exclude \"(node_modules|__tests__|\\.test\\.ts$|\\.spec\\.ts$)\" \"src/**/*.ts\"",
-    "check:all": "pnpm run check && pnpm run lint && pnpm run format:check && pnpm run check:unused && pnpm run check:deps && pnpm run build && pnpm run type-check:test && pnpm run test",
+    "check:all": "pnpm run check && pnpm run lint && pnpm run format:check && pnpm run check:unused && pnpm run build && pnpm run type-check:test && pnpm run test",
     "test:safe": "pnpm test",
     "prepare": "husky"
   },
@@ -81,7 +80,6 @@
     "@types/jsdom": "^30.0.0",
     "@types/node": "^26.6.6",
     "@types/turndown": "5.0.6",
-    "dpdm": "^4.3.0",
     "husky": "^9.1.7",
     "knip": "^6.44.1",
     "lint-staged": "^17.6.0",
