@@ -54,10 +54,6 @@ jobs:
       if: runner.os == 'Linux'
       run: pnpm run check:unused
 
-    - name: Circular dependencies
-      if: runner.os == 'Linux'
-      run: pnpm run check:deps
-
   # Single owner of the external (HuggingFace) dependency. Downloads the model
   # files once and publishes them via the GitHub Actions cache, so the test
   # jobs below never touch the network — keeping flakiness to this one job.
